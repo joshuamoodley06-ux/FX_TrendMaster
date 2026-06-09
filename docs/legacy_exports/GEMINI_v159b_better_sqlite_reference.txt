@@ -1,0 +1,385 @@
+You are completely right. Letting the async `db.run` fire inside a standard synchronous `for` loop in native `sqlite3` creates a race condition where `COMMIT` runs while the database engine is still processing the array. It didn't just leak—it completely broke transactional integrity.
+
+Switching to `better-sqlite3` is the correct solution. It gives you raw, blocking, synchronous execution handles natively, eliminating callback loops and keeping the codebase highly maintainable.
+
+Here is the fully hardened, production-ready implementation of **Backend v159b**.
+
+---
+
+## 1. Hardened Production Implementation (`src/routes/rawMappingHardened.ts`)
+
+```typescript
+import { Router, Request, Response } from 'express';
+import Database from 'better-sqlite3';
+import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
+
+const router = Router();
+const db = new Database(process.env.DATABASE_PATH || './dev.db');
+
+// Explicit Enum Type Configurations
+const VALID_EVENT_TYPES = [
+  'SET_INITIAL_ANCHOR', 'SET_ANCHOR', 'ADJUST_ANCHOR', 
+  'MANUAL_BOS', 'AUTO_BOS', 'RECLAIM', 'ABANDON_RANGE', 
+  'DELETE_RECORD', 'NOTE'
+];
+const VALID_EVENT_SIDES = ['HIGH', 'LOW', 'NONE'];
+const VALID_SOURCES = ['manual', 'auto', 'system', 'import'];
+
+// Instrument Multiplier Normalization
+function getPriceScale(symbol: string): number {
+  const sym = symbol.toUpperCase();
+  if (sym.includes('XAUUSD') || sym.includes('GOLD')) return 100;
+  if (sym.includes('JPY')) return 1000;
+  return 100000; 
+}
+
+// Payload Validation Logic Engine
+function validatePayload(body: any): { valid: boolean; error?: string } {
+  const { case_id, symbol, timeframe, candle_time_utc_ms, event_type, event_side, source } = body;
+  
+  if (!case_id || !symbol || !timeframe || !candle_time_utc_ms || !event_type || !event_side) {
+    return { valid: false, error: 'Missing mandatory ledger properties.' };
+  }
+  if (!VALID_EVENT_TYPES.includes(event_type)) {
+    return { valid: false, error: `Invalid event_type variant: ${event_type}` };
+  }
+  if (!VALID_EVENT_SIDES.includes(event_side)) {
+    return { valid: false, error: `Invalid event_side variant: ${event_side}` };
+  }
+  if (source) {
+    const normalizedSource = source.toLowerCase();
+    if (!VALID_SOURCES.includes(normalizedSource)) {
+      return { valid: false, error: `Invalid source variant: ${source}` };
+    }
+  }
+  return { valid: true };
+}
+
+// Deep Object Structural Equivalence Check for Idempotency Protection
+function isPayloadConsistent(existing: any, incoming: any): boolean {
+  const incomingScale = getPriceScale(incoming.symbol);
+  const incomingPriceInt = incoming.price !== undefined && incoming.price !== null ? Math.round(incoming.price * incomingScale) : null;
+
+  return (
+    existing.case_id === incoming.case_id &&
+    existing.symbol === incoming.symbol &&
+    existing.timeframe === incoming.timeframe &&
+    Number(existing.candle_time_utc_ms) === Number(incoming.candle_time_utc_ms) &&
+    existing.event_type === incoming.event_type &&
+    existing.event_side === incoming.event_side &&
+    existing.source === (incoming.source || 'manual').toLowerCase() &&
+    (existing.price_int === incomingPriceInt || existing.price === incoming.price)
+  );
+}
+
+// ==========================================
+// 1. POST /api/v1/raw-mapping/events (Single Entry)
+// ==========================================
+router.post('/events', (req: Request, res: Response) => {
+  const check = validatePayload(req.body);
+  if (!check.valid) return res.status(400).json({ error: check.error });
+
+  const {
+    event_id, case_id, symbol, timeframe, candle_time_utc_ms, candle_index,
+    price, event_type, event_side, source, supersedes_event_id, notes, raw_payload_json
+  } = req.body;
+
+  const final_event_id = event_id || uuidv4();
+  const now = Date.now();
+  const safeSource = (source || 'manual').toLowerCase();
+
+  // Execute using better-sqlite3 synchronous transaction blocks
+  const executeInsertion = db.transaction(() => {
+    // Check for duplicate retries
+    const existing = db.prepare('SELECT * FROM raw_mapping_events WHERE event_id = ?').get(final_event_id) as any;
+    if (existing) {
+      if (!isPayloadConsistent(existing, req.body)) {
+        return { status: 409, payload: { error: 'Payload conflict identified on duplicate event_id reference' } };
+      }
+      return { status: 200, payload: { success: true, duplicate: true, event: existing } };
+    }
+
+    // Verify Case Container Profile Meta Context
+    const caseMeta = db.prepare('SELECT price_scale_default FROM raw_mapping_cases WHERE case_id = ?').get(case_id) as any;
+    if (!caseMeta) {
+      return { status: 400, payload: { error: 'Target reference case profile context does not exist on the VPS' } };
+    }
+
+    const scale = caseMeta.price_scale_default;
+    const price_int = price !== undefined && price !== null ? Math.round(price * scale) : null;
+
+    // Secure increment counter index sequentially
+    const orderMeta = db.prepare('SELECT COALESCE(MAX(created_order), 0) as max_order FROM raw_mapping_events WHERE case_id = ?').get(case_id) as any;
+    const next_order = orderMeta.max_order + 1;
+
+    const insertStmt = db.prepare(`
+      INSERT INTO raw_mapping_events (
+        event_id, case_id, symbol, timeframe, candle_time_utc_ms, candle_index,
+        price, price_int, price_scale, event_type, event_side, source,
+        created_order, is_deleted, schema_version, supersedes_event_id, notes, created_at_utc_ms, raw_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'raw_mapping_v1', ?, ?, ?, ?);
+    `);
+
+    insertStmt.run(
+      final_event_id, case_id, symbol, timeframe, candle_time_utc_ms, candle_index ?? null,
+      price ?? null, price_int, scale, event_type, event_side, safeSource,
+      next_order, supersedes_event_id || null, notes || '', now,
+      raw_payload_json ? JSON.stringify(raw_payload_json) : null
+    );
+
+    const savedRow = db.prepare('SELECT * FROM raw_mapping_events WHERE event_id = ?').get(final_event_id);
+    return { status: 201, payload: { success: true, event: savedRow } };
+  });
+
+  const response = executeInsertion();
+  return res.status(response.status).json(response.payload);
+});
+
+// ==========================================
+// 2. POST /api/v1/raw-mapping/events/batch (Sequential Array Loop)
+// ==========================================
+router.post('/events/batch', (req: Request, res: Response) => {
+  const { case_id, events } = req.body;
+  if (!case_id || !Array.isArray(events) || events.length === 0) {
+    return res.status(400).json({ error: 'Invalid batch configuration payload structures' });
+  }
+
+  // Validate the entire array before touching the database
+  for (const ev of events) {
+    const check = validatePayload(ev);
+    if (!check.valid) return res.status(400).json({ error: `Batch item failure: ${check.error}` });
+  }
+
+  const now = Date.now();
+
+  const executeBatch = db.transaction(() => {
+    const caseMeta = db.prepare('SELECT price_scale_default FROM raw_mapping_cases WHERE case_id = ?').get(case_id) as any;
+    if (!caseMeta) {
+      return { status: 400, payload: { error: 'Target parent case context does not exist on the VPS' } };
+    }
+
+    const scale = caseMeta.price_scale_default;
+    const orderMeta = db.prepare('SELECT COALESCE(MAX(created_order), 0) as max_order FROM raw_mapping_events WHERE case_id = ?').get(case_id) as any;
+    let current_highest_order = orderMeta.max_order;
+
+    const savedRecords: any[] = [];
+    const insertStmt = db.prepare(`
+      INSERT INTO raw_mapping_events (
+        event_id, case_id, symbol, timeframe, candle_time_utc_ms, candle_index,
+        price, price_int, price_scale, event_type, event_side, source,
+        created_order, is_deleted, schema_version, supersedes_event_id, notes, created_at_utc_ms, raw_payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'raw_mapping_v1', ?, ?, ?, ?);
+    `);
+
+    for (const ev of events) {
+      const final_id = ev.event_id || uuidv4();
+      
+      // Handle idempotency within the batch execution block
+      const existing = db.prepare('SELECT * FROM raw_mapping_events WHERE event_id = ?').get(final_id) as any;
+      if (existing) {
+        if (!isPayloadConsistent(existing, ev)) {
+          throw new Error(`CRITICAL_BATCH_CONFLICT:${final_id}`);
+        }
+        savedRecords.push(existing);
+        continue;
+      }
+
+      current_highest_order += 1;
+      const price_int = ev.price !== undefined && ev.price !== null ? Math.round(ev.price * scale) : null;
+      const safeSource = (ev.source || 'manual').toLowerCase();
+
+      insertStmt.run(
+        final_id, case_id, ev.symbol, ev.timeframe, ev.candle_time_utc_ms, ev.candle_index ?? null,
+        ev.price ?? null, price_int, scale, ev.event_type, ev.event_side, safeSource,
+        current_highest_order, ev.supersedes_event_id || null, ev.notes || '', now,
+        ev.raw_payload_json ? JSON.stringify(ev.raw_payload_json) : null
+      );
+
+      const savedRow = db.prepare('SELECT * FROM raw_mapping_events WHERE event_id = ?').get(final_id);
+      savedRecords.push(savedRow);
+    }
+
+    return { status: 201, payload: { success: true, count: savedRecords.length, events: savedRecords } };
+  });
+
+  try {
+    const response = executeBatch();
+    return res.status(response.status).json(response.payload);
+  } catch (err: any) {
+    if (err.message?.startsWith('CRITICAL_BATCH_CONFLICT:')) {
+      const conflictingId = err.message.split(':')[1];
+      return res.status(409).json({ error: `Payload consistency mismatch on duplicate batch entity reference: ${conflictingId}` });
+    }
+    return res.status(500).json({ error: 'Atomic batch transaction aborted', details: err.message });
+  }
+});
+
+// ==========================================
+// 3. POST /api/v1/raw-mapping/events/delete (Context Inheritance Engine)
+// ==========================================
+router.post('/events/delete', (req: Request, res: Response) => {
+  const { event_id, case_id, notes } = req.body;
+  if (!event_id || !case_id) {
+    return res.status(400).json({ error: 'Missing mandatory target reference metadata values' });
+  }
+
+  const final_event_id = uuidv4();
+  const now = Date.now();
+
+  const executeDeleteLog = db.transaction(() => {
+    // Fetch target entity row to pull historical context values
+    const targetEvent = db.prepare('SELECT * FROM raw_mapping_events WHERE event_id = ? AND case_id = ?').get(event_id, case_id) as any;
+    if (!targetEvent) {
+      return { status: 404, payload: { error: 'Target event record does not exist within the specified case log scope' } };
+    }
+
+    const orderMeta = db.prepare('SELECT COALESCE(MAX(created_order), 0) as max_order FROM raw_mapping_events WHERE case_id = ?').get(case_id) as any;
+    const next_order = orderMeta.max_order + 1;
+
+    // Fix: is_deleted = 0. DELETE_RECORD is an active modifier row.
+    const insertStmt = db.prepare(`
+      INSERT INTO raw_mapping_events (
+        event_id, case_id, symbol, timeframe, candle_time_utc_ms, candle_index,
+        price, price_int, price_scale, event_type, event_side, source,
+        created_order, is_deleted, schema_version, supersedes_event_id, notes, created_at_utc_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DELETE_RECORD', 'NONE', 'manual', ?, 0, 'raw_mapping_v1', ?, ?, ?);
+    `);
+
+    insertStmt.run(
+      final_event_id, case_id, targetEvent.symbol, targetEvent.timeframe, targetEvent.candle_time_utc_ms,
+      targetEvent.candle_index, targetEvent.price, targetEvent.price_int, targetEvent.price_scale,
+      next_order, event_id, notes || 'Soft-delete event modifier appended', now
+    );
+
+    const savedRow = db.prepare('SELECT * FROM raw_mapping_events WHERE event_id = ?').get(final_event_id);
+    return { status: 201, payload: { success: true, event: savedRow } };
+  });
+
+  const response = executeDeleteLog();
+  return res.status(response.status).json(response.payload);
+});
+
+// ==========================================
+// 4. GET /api/v1/raw-mapping/events?case_id=...
+// ==========================================
+router.get('/events', (req: Request, res: Response) => {
+  const { case_id } = req.query;
+  if (!case_id) return res.status(400).json({ error: 'Missing case_id query parameters' });
+
+  const rows = db.prepare('SELECT * FROM raw_mapping_events WHERE case_id = ? ORDER BY created_order ASC;').all(case_id);
+  return res.status(200).json({ data: rows });
+});
+
+// ==========================================
+// 5. GET /api/v1/raw-mapping/events/export?case_id=...
+// ==========================================
+router.get('/events/export', (req: Request, res: Response) => {
+  const { case_id } = req.query;
+  if (!case_id) return res.status(400).json({ error: 'Missing case_id specification parameter' });
+
+  const caseMeta = db.prepare('SELECT * FROM raw_mapping_cases WHERE case_id = ?').get(case_id);
+  if (!caseMeta) return res.status(404).json({ error: 'Target parent case context record profiles not found' });
+
+  const rows = db.prepare('SELECT * FROM raw_mapping_events WHERE case_id = ?').all(case_id) as any[];
+
+  const sequence_by_intent = [...rows].sort((a, b) => a.created_order - b.created_order);
+  const sequence_by_timeline = [...rows].sort((a, b) => a.candle_time_utc_ms - b.candle_time_utc_ms);
+
+  // Generate SHA-256 fingerprint matching intent tracking strings
+  const fingerprintContent = sequence_by_intent.map(r => `${r.event_id}:${r.created_order}:${r.is_deleted}`).join('|');
+  const ledger_hash = crypto.createHash('sha256').update(fingerprintContent).digest('hex');
+
+  return res.status(200).json({
+    meta: {
+      case_id,
+      schema_version: 'raw_mapping_v1',
+      total_records: rows.length,
+      ledger_hash
+    },
+    sequence_by_intent,
+    sequence_by_timeline
+  });
+});
+
+export default router;
+
+```
+
+---
+
+## 2. Hardened Verification Terminal Protocols
+
+Execute these integration tests to verify your validations, conflict states, and contextual inheritance tracking rules.
+
+### Test A: Strict Input Validation Handling (400 Bad Request)
+
+```bash
+curl -X POST http://localhost:3000/api/v1/raw-mapping/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "case_id": "c3bc21ea-9081-422f-ad34-e4215f7bb900",
+    "symbol": "XAUUSD",
+    "timeframe": "W1",
+    "candle_time_utc_ms": 1574642400000,
+    "price": 1484.50,
+    "event_type": "POTENTIAL_SUPER_RECLAIM_DISCOUNT_WIZARD",
+    "event_side": "HIGH",
+    "source": "MANUAL"
+  }'
+
+```
+
+* **Expected Output Code:** `400 Bad Request`
+* **Response Body JSON:** `{"error":"Invalid event_type variant: POTENTIAL_SUPER_RECLAIM_DISCOUNT_WIZARD"}`
+
+### Test B: Safe Idempotency Retry vs Payload Conflict (409 Conflict)
+
+1. Write an initial raw row using a specific price:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/raw-mapping/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_id": "99999999-9999-4999-a999-999999999999",
+    "case_id": "c3bc21ea-9081-422f-ad34-e4215f7bb900",
+    "symbol": "XAUUSD",
+    "timeframe": "W1",
+    "candle_time_utc_ms": 1574642400000,
+    "price": 1484.50,
+    "event_type": "SET_INITIAL_ANCHOR",
+    "event_side": "HIGH",
+    "source": "manual"
+  }'
+
+```
+
+* **Expected Output Code:** `201 Created` (returns full row payload with server properties).
+
+2. Re-send the exact same payload ID, but modify the target market price to simulate a corrupted network retry:
+
+```bash
+curl -X POST http://localhost:3000/api/v1/raw-mapping/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_id": "99999999-9999-4999-a999-999999999999",
+    "case_id": "c3bc21ea-9081-422f-ad34-e4215f7bb900",
+    "symbol": "XAUUSD",
+    "timeframe": "W1",
+    "candle_time_utc_ms": 1574642400000,
+    "price": 1999.99,
+    "event_type": "SET_INITIAL_ANCHOR",
+    "event_side": "HIGH",
+    "source": "manual"
+  }'
+
+```
+
+* **Expected Output Code:** `409 Conflict`
+* **Response Body JSON:** `{"error":"Payload conflict identified on duplicate event_id reference"}`
+
+---
+
+The backend ledger is fully hardened. The server handles validation errors gracefully, enforces idempotency across updates, and ensures data integrity during async requests.
+
+Let's put the binoculars down and move on to the next stage. Should we write the Electron v087.29 user interface tracking module now?

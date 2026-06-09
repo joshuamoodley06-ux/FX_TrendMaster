@@ -1,0 +1,2666 @@
+:root{
+  --bg:#05070d;
+  --panel:#0b111a;
+  --panel2:#070c13;
+  --border:#203040;
+  --gold:#ffbf2f;
+  --gold2:#f8d67a;
+  --blue:#2f81ff;
+  --cyan:#00ffd0;
+  --red:#ff4d67;
+  --green:#42e68a;
+  --text:#e8eef7;
+  --muted:#7b8794;
+}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(circle at 40% 0%,#09203b 0%,#05070d 35%,#020308 100%);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif;overflow:hidden}
+button,select,input,textarea{font:inherit}
+.appShell{display:flex;height:100vh;width:100vw}
+.sidebar{width:280px;background:linear-gradient(180deg,#070b11,#030407);border-right:1px solid #1b2633;padding:22px;display:flex;flex-direction:column;gap:24px}
+.brandBlock{display:flex;align-items:center;gap:14px}
+.logoOrb{width:54px;height:54px;border-radius:18px;background:radial-gradient(circle,#ffe8a0,#ffbf2f 42%,#7c5200);display:grid;place-items:center;color:#060606;font-weight:1000;box-shadow:0 0 28px rgba(255,191,47,.45)}
+h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font-size:12px}
+.navGroup{display:flex;flex-direction:column;gap:10px}.navItem{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid transparent;border-radius:16px;color:#9aa8b7}.navItem.active{color:#071014;background:linear-gradient(135deg,var(--gold),#ffe18a);font-weight:900;box-shadow:0 0 22px rgba(255,191,47,.14)}
+.sidebarFooter{margin-top:auto;padding:14px;border:1px solid var(--border);border-radius:18px;background:#060a10}.muted{color:var(--muted);margin:0}.apiText{font-size:12px;color:#b7c4d8;word-break:break-all}.statusDot{display:flex;align-items:center;gap:8px;font-weight:900;font-size:13px}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}.online{background:var(--green);box-shadow:0 0 12px var(--green)}.offline{background:var(--red);box-shadow:0 0 12px var(--red)}
+.mainArea{flex:1;padding:20px 22px 30px;overflow:auto}.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.topbar h2{margin:0;font-size:30px}.topbar p{margin:4px 0 0;color:var(--muted)}.topActions{display:flex;align-items:center;gap:10px}.topActions select,.topActions button,.timePill{background:#07101a;border:1px solid var(--border);color:var(--text);border-radius:14px;padding:11px 13px}.topActions button{display:flex;align-items:center;gap:8px;cursor:pointer}.timePill{color:var(--cyan);font-weight:900}.errorBox{display:flex;gap:8px;align-items:center;border:1px solid var(--red);background:#2a0b13;color:#ffd5dc;border-radius:16px;padding:12px;margin-bottom:14px}
+.gridLayout{display:grid;grid-template-columns:minmax(620px,1.45fr) minmax(380px,.85fr);gap:18px}.leftStack,.rightStack{display:flex;flex-direction:column;gap:14px}.panelTitle{display:flex;align-items:center;gap:8px;color:#dbeafe;font-weight:900;letter-spacing:.3px}
+.card,.trajectoryCard{background:linear-gradient(180deg,rgba(11,17,26,.96),rgba(5,9,14,.96));border:1px solid var(--border);border-radius:22px;padding:16px;box-shadow:0 16px 48px rgba(0,0,0,.28)}.cardHeader{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}.cardHeader.tight h3,.cardHeader h3{margin:0;font-size:18px}.cardHeader p{margin:4px 0 0;color:var(--muted);font-size:13px}.locationBadge{padding:8px 12px;border-radius:999px;background:#050b12;border:1px solid #29415a;color:var(--gold);font-weight:900;white-space:nowrap}
+.rangeGraph{height:170px;border:1px solid #23364a;border-radius:20px;margin-top:16px;position:relative;overflow:hidden;background:linear-gradient(90deg,rgba(0,119,255,.1),rgba(255,191,47,.06),rgba(0,119,255,.1))}.rangeGraph:before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 80% 35%,rgba(255,191,47,.18),transparent 32%),radial-gradient(circle at 35% 50%,rgba(47,129,255,.14),transparent 28%)}.zone{position:relative;z-index:2;float:left;width:14.285%;height:100%;border-right:1px solid rgba(255,255,255,.06);display:flex;align-items:flex-end;justify-content:center;color:#78889a;font-size:11px;font-weight:900;padding-bottom:10px}.zone.fair{color:#dbeafe}.zoneLow,.zoneHigh{color:var(--cyan)}
+.trajectorySvg{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}.solidPath{fill:none;stroke:var(--gold);stroke-width:2.6;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 8px rgba(255,191,47,.6))}.dottedPath{fill:none;stroke:var(--blue);stroke-width:2;stroke-dasharray:5 5;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 8px rgba(47,129,255,.55))}.liveDot{position:absolute;z-index:7;top:55px;width:16px;height:16px;border-radius:50%;background:#fff;border:3px solid var(--cyan);transform:translateX(-50%);box-shadow:0 0 22px var(--cyan)}.glowObjective{position:absolute;z-index:3;top:24px;width:54px;height:54px;border-radius:50%;background:rgba(255,191,47,.16);transform:translateX(-50%);filter:blur(1px);box-shadow:0 0 42px rgba(255,191,47,.62)}
+.legendRow{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px}.mini,.metric{background:#060b12;border:1px solid #1e2c3b;border-radius:14px;padding:10px}.mini span,.metric span{display:block;color:var(--muted);font-size:11px}.mini b,.metric b{display:block;margin-top:5px;font-size:13px}.goldText{color:var(--gold)}.mitigationRow{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}.pill{display:flex;justify-content:space-between;gap:8px;border:1px solid #1e2c3b;border-radius:999px;padding:8px 10px;background:#050910}.pill span{color:var(--muted);font-size:12px}.pill b{font-size:12px;color:#dbeafe}.gold .locationBadge{color:var(--gold)}.blue .locationBadge{color:#8ab7ff}.cyan .locationBadge{color:var(--cyan)}
+.tradeIdeaCard{border-color:#2e4058}.ideaForm{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:14px}.ideaForm input,.ideaForm select,.ideaForm textarea{background:#050b12;border:1px solid #203040;color:var(--text);border-radius:14px;padding:11px;outline:none}.ideaForm textarea{grid-column:span 2;min-height:58px;resize:vertical}.primaryBtn{grid-column:span 2;background:linear-gradient(135deg,var(--gold),#ffe18a);color:#071014;border:0;border-radius:14px;font-weight:1000;padding:12px;cursor:pointer;box-shadow:0 0 20px rgba(255,191,47,.16)}.ideaList{margin-top:12px;display:flex;flex-direction:column;gap:8px}.ideaItem{display:flex;align-items:center;justify-content:space-between;gap:8px;background:#050b12;border:1px solid #1d2c3b;border-radius:15px;padding:10px;cursor:pointer}.ideaItem.picked{border-color:var(--gold);box-shadow:0 0 20px rgba(255,191,47,.08)}.ideaItem b{display:block}.ideaItem span{display:block;color:var(--muted);font-size:12px}.ideaItem em{color:var(--cyan);font-style:normal;font-size:12px;text-align:right}.emptyText{color:var(--muted);font-size:13px;line-height:1.5}.blueIcon{color:var(--blue)}.goldIcon{color:var(--gold)}
+.metricGrid{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:13px}.tpRow{display:flex;gap:8px;margin-top:12px}.check{display:flex;align-items:center;gap:6px;flex:1;border:1px solid #26364a;color:#7b8794;background:#050b12;border-radius:14px;padding:10px;font-weight:900}.check.on{color:var(--green);border-color:rgba(66,230,138,.7);background:rgba(66,230,138,.08)}.journalItem{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #172334;padding:10px 0}.journalItem:last-child{border-bottom:0}.journalItem b{color:#fff}.journalItem span{color:var(--muted)}
+@media(max-width:1250px){.gridLayout{grid-template-columns:1fr}.sidebar{width:230px}.legendRow{grid-template-columns:1fr}.mitigationRow{grid-template-columns:1fr 1fr}}
+
+/* v0.02 collapsible shell + X/Y trajectory graph */
+.appShell.navCollapsed .sidebar{width:86px;padding:18px 12px;align-items:center}.appShell.navCollapsed .navItem{justify-content:center;padding:13px}.appShell.navCollapsed .brandBlock{justify-content:center}.collapseBtn{border:1px solid var(--border);background:#060a10;color:#dbeafe;border-radius:14px;padding:10px 12px;display:flex;align-items:center;gap:8px;cursor:pointer;width:100%;justify-content:center}.navCollapsed .collapseBtn{width:52px}.headerBadges{display:flex;flex-direction:column;gap:8px;align-items:flex-end}.objectiveBadge{padding:8px 12px;border-radius:999px;background:rgba(255,191,47,.07);border:1px solid rgba(255,191,47,.38);color:var(--gold);font-weight:900;white-space:nowrap}
+.rangeInputs{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:14px}.rangeInputs label{display:flex;flex-direction:column;gap:6px;color:var(--muted);font-size:12px;font-weight:900}.rangeInputs input,.rangeInputs select{background:#050b12;border:1px solid #203040;color:var(--text);border-radius:13px;padding:10px;outline:none}.xyGraph{height:360px;border:1px solid #23364a;border-radius:24px;margin-top:16px;position:relative;overflow:hidden;background:linear-gradient(180deg,rgba(255,191,47,.07),rgba(47,129,255,.08),rgba(0,255,208,.06));box-shadow:inset 0 0 80px rgba(0,0,0,.35)}.xyGraph:before{content:"";position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.035) 1px,transparent 1px);background-size:100% 14.28%,12.5% 100%;z-index:1}.graphGrid{position:absolute;inset:0;z-index:2}.hBand{height:14.285%;border-bottom:1px solid rgba(255,255,255,.05);display:flex;align-items:center;justify-content:flex-end;padding-right:18px;color:rgba(219,234,254,.32);font-weight:1000;font-size:14px;text-transform:uppercase;letter-spacing:.5px}.band0,.band6{background:rgba(0,255,208,.035)}.band1,.band5{background:rgba(255,191,47,.035)}.band2,.band4{background:rgba(47,129,255,.035)}.band3{background:rgba(255,255,255,.025)}.axisY{position:absolute;left:10px;top:12px;bottom:30px;z-index:8;display:flex;flex-direction:column;justify-content:space-between;color:rgba(232,238,247,.55);font-size:11px;font-weight:900}.axisX{position:absolute;left:70px;right:24px;bottom:9px;z-index:8;display:flex;justify-content:space-between;color:rgba(232,238,247,.45);font-size:11px;font-weight:900}.xySvg{position:absolute;inset:0;width:100%;height:100%;z-index:5;pointer-events:none}.pricePath{fill:none;stroke:var(--gold);stroke-width:3.2;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 10px rgba(255,191,47,.72))}.ghostPath{fill:none;stroke:var(--blue);stroke-width:2.2;stroke-dasharray:6 6;vector-effect:non-scaling-stroke;filter:drop-shadow(0 0 8px rgba(47,129,255,.55))}.graphNode{position:absolute;z-index:9;width:18px;height:18px;border-radius:50%;background:#050b12;border:3px solid var(--gold);transform:translate(-50%,-50%);box-shadow:0 0 18px rgba(255,191,47,.6)}.graphNode span{position:absolute;left:18px;top:-24px;white-space:nowrap;background:rgba(5,11,18,.78);border:1px solid rgba(255,191,47,.22);padding:4px 7px;border-radius:9px;color:#e8eef7;font-size:11px;font-weight:900}.currentNode{border-color:var(--cyan);box-shadow:0 0 22px rgba(0,255,208,.7)}.objectiveGlow{position:absolute;left:76px;right:18px;height:30px;border-radius:999px;transform:translateY(-50%);background:linear-gradient(90deg,rgba(255,191,47,.02),rgba(255,191,47,.16),rgba(255,191,47,.04));box-shadow:0 0 46px rgba(255,191,47,.38);z-index:3}.pathEditor{margin-top:12px;border:1px solid #1e2c3b;background:#050b12;border-radius:18px;padding:12px}.editorTitle{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}.editorTitle b{color:#dbeafe}.editorTitle button,.smallDanger{background:#07101a;border:1px solid #26364a;color:#dbeafe;border-radius:12px;padding:8px 10px;cursor:pointer}.pointRow{display:grid;grid-template-columns:1.2fr .7fr 1fr 38px;gap:8px;margin-bottom:8px}.pointRow input,.pointRow select{background:#03070c;border:1px solid #203040;color:var(--text);border-radius:12px;padding:9px;outline:none}.pointRow input[type=range]{accent-color:var(--gold)}.smallDanger{color:#ff92a3;border-color:rgba(255,77,103,.45)}.wideVisuals{grid-template-columns:minmax(780px,1.55fr) minmax(390px,.75fr)}
+@media(max-width:1250px){.rangeInputs{grid-template-columns:1fr 1fr}.wideVisuals{grid-template-columns:1fr}.xyGraph{height:300px}.pointRow{grid-template-columns:1fr 1fr}.pointRow input[type=range]{grid-column:span 2}.smallDanger{grid-column:span 2}.headerBadges{align-items:flex-start}.cardHeader{flex-direction:column}.objectiveBadge,.locationBadge{white-space:normal}}
+
+/* v0.03 more horizontal, price-level driven, draggable trajectory points */
+.xyGraph{height:280px;margin-top:14px;touch-action:none;}
+.xyGraph .graphNode{cursor:grab;touch-action:none;user-select:none;}
+.xyGraph .graphNode:active{cursor:grabbing;transform:translate(-50%,-50%) scale(1.08);}
+.priceAxis{position:absolute;right:18px;top:0;bottom:0;z-index:9;pointer-events:none;color:rgba(232,238,247,.48);font-size:10px;font-weight:900;}
+.priceAxis span{position:absolute;right:0;transform:translateY(-50%);background:rgba(5,11,18,.55);border:1px solid rgba(255,255,255,.08);padding:2px 6px;border-radius:8px;}
+.livePriceLine{position:absolute;left:0;right:0;height:0;border-top:1px dashed rgba(36,211,255,.88);z-index:6;filter:drop-shadow(0 0 8px rgba(36,211,255,.52));}
+.livePriceLine span{position:absolute;right:86px;top:-13px;background:rgba(36,211,255,.1);border:1px solid rgba(36,211,255,.38);color:#8ee7ff;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:1000;}
+.pointRowV3{grid-template-columns:1.05fr .55fr .7fr 1fr 38px;}
+.pointRowV3 input[type=range]{grid-column:auto;}
+.cardHeader h3{font-size:19px;}
+.axisX{left:86px;right:92px;}
+.axisY{left:12px;}
+@media(max-width:1250px){.xyGraph{height:260px}.pointRowV3{grid-template-columns:1fr 1fr}.pointRowV3 input[type=range]{grid-column:span 2}.pointRowV3 .smallDanger{grid-column:span 2}}
+
+/* v0.04 navigation, graph settings, stable input focus, cleaner boxed graphs */
+.navItem{border:1px solid transparent;background:transparent;cursor:pointer;text-align:left;width:100%}
+.singlePage{max-width:1180px;margin:0 auto}.largeCard{min-height:520px}.boxedGraph{height:270px;max-width:980px;margin-left:auto;margin-right:auto;border-radius:18px}.rangeInputs.compact{grid-template-columns:repeat(4,minmax(120px,1fr));max-width:980px}.priceAxis.clean span{min-width:58px;text-align:right;opacity:.8}.pointRowV4{grid-template-columns:1.1fr .55fr .7fr 1fr 38px}.btnRow{display:flex;gap:8px}.tinyDelete{border:1px solid rgba(255,77,103,.45);background:#070b11;color:#ff92a3;border-radius:10px;padding:6px 10px;cursor:pointer}.ideaItem select{background:#050b12;border:1px solid #203040;color:var(--text);border-radius:10px;padding:5px;margin-top:5px}.layerTabs{display:flex;gap:10px;margin:18px 0}.layerTabs button{background:#07101a;border:1px solid #26364a;color:#dbeafe;border-radius:14px;padding:12px 16px;font-weight:1000;cursor:pointer}.layerTabs button.active{background:linear-gradient(135deg,var(--gold),#ffe18a);color:#071014}.settingsGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.settingsGrid label{display:flex;flex-direction:column;gap:7px;color:var(--muted);font-weight:900}.settingsGrid input,.settingsGrid select{background:#050b12;border:1px solid #203040;color:var(--text);border-radius:14px;padding:12px;outline:none}.primaryBtn.solo{grid-column:auto;margin-top:16px}.tableLike{display:flex;flex-direction:column;margin-top:14px}.tableRow{display:grid;grid-template-columns:1.4fr .8fr .7fr .8fr .5fr;gap:10px;padding:12px;border-bottom:1px solid #172334}.tableRow span{color:#b7c4d8}.jsonBox{background:#03070c;border:1px solid #203040;border-radius:16px;padding:18px;white-space:pre-wrap;color:#dbeafe;overflow:auto}.graphNode span{max-width:190px;overflow:hidden;text-overflow:ellipsis}.xyGraph{min-width:0}.wideVisuals{grid-template-columns:minmax(720px,1.38fr) minmax(360px,.72fr)}
+@media(max-width:1250px){.rangeInputs.compact{grid-template-columns:1fr 1fr}.settingsGrid{grid-template-columns:1fr 1fr}.pointRowV4{grid-template-columns:1fr 1fr}.pointRowV4 input[type=range]{grid-column:span 2}.pointRowV4 .smallDanger{grid-column:span 2}.boxedGraph{height:250px}}
+
+/* v0.05 saved maps + editable map settings */
+.overviewMapsPage{display:flex;flex-direction:column;gap:18px;max-width:1440px;margin:0 auto}.mapPair{display:grid;grid-template-columns:1fr 1fr;gap:18px}.lowerPair{grid-template-columns:minmax(520px,1.05fr) minmax(380px,.85fr)}.overviewBottom{display:grid;grid-template-columns:1fr 1fr;gap:18px}.readOnlyMap .rangeInputs,.readOnlyMap .pathEditor{display:none}.readOnlyMap .xyGraph{touch-action:auto;cursor:default}.readOnlyMap .graphNode{cursor:default;pointer-events:none}.readOnlyMap .lockedNode{opacity:.96}.readOnlyMap .cardHeader{padding-bottom:6px}.compactMap{padding:18px}.compactMap .boxedGraph{height:245px;max-width:100%;margin-top:10px}.compactMap .legendRow{grid-template-columns:1fr 1fr 1fr;margin-top:10px}.compactMap .mitigationRow{grid-template-columns:repeat(4,1fr);gap:7px}.compactMap .pill{padding:8px}.compactMap .mini{padding:9px}.compactMap .axisX{font-size:10px}.compactMap .axisY{font-size:10px}.compactMap .graphNode span{font-size:10px;max-width:150px}.mapSettingsPage .editableMap{margin-top:18px}.mapSettingsPage .boxedGraph{height:330px;max-width:1120px}.mapSettingsPage .priceAxis.clean span{min-width:64px}.priceAxis.clean span{opacity:.82;right:2px}.xyGraph.boxedGraph{border-radius:16px}.trajectoryCard.xy{overflow:hidden}.mainArea{overflow-x:hidden}.navItem span{white-space:nowrap}
+@media(max-width:1100px){.mapPair,.lowerPair,.overviewBottom{grid-template-columns:1fr}.compactMap .boxedGraph{height:230px}.mapSettingsPage .boxedGraph{height:285px}.overviewMapsPage{max-width:100%}}
+/* v0.06 map readability polish */
+.compactMap .ghostPath{stroke-dasharray:5 7;opacity:.92}
+.compactMap .boxedGraph{height:232px;}
+.mapSettingsPage .boxedGraph{height:345px;}
+.readOnlyMap .graphNode span{pointer-events:none;}
+.topActions .timePill{min-width:92px;text-align:center;}
+/* v0.08 active lifecycle + data collection scaffold */
+.eventStream{margin-top:16px;border:1px solid #203040;background:#03070c;border-radius:16px;padding:12px;display:flex;flex-direction:column;gap:8px}.eventStream>b{color:var(--gold)}.eventStream p{color:var(--muted);margin:0}.eventRow{display:grid;grid-template-columns:70px 130px 1fr;gap:10px;padding:9px;border-top:1px solid #142231;color:#b7c4d8}.eventRow span{color:var(--muted)}.eventRow b{color:var(--cyan)}.eventRow em{font-style:normal;color:#dbeafe}.dataSteps{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-top:22px}.dataSteps div{border:1px solid #203040;background:#050b12;border-radius:18px;padding:16px;min-height:120px}.dataSteps b{display:grid;place-items:center;width:34px;height:34px;border-radius:12px;background:linear-gradient(135deg,var(--gold),#ffe18a);color:#071014;margin-bottom:12px}.dataSteps span{color:#dbeafe;font-weight:900;line-height:1.35}@media(max-width:1250px){.dataSteps{grid-template-columns:1fr 1fr}.eventRow{grid-template-columns:1fr}}
+
+/* v0.10 clean black map view: no grid, left prices, right external flow rail */
+.cleanMapGraph,
+.xyGraph.cleanMapGraph{
+  background:#000 !important;
+  border:1px solid rgba(255,255,255,.14) !important;
+  box-shadow:inset 0 0 70px rgba(0,0,0,.88), 0 0 0 1px rgba(255,255,255,.02) !important;
+}
+.cleanMapGraph:before,
+.xyGraph.cleanMapGraph:before{display:none !important;background:none !important;}
+.cleanMapGraph .graphGrid,
+.cleanMapGraph .hBand{display:none !important;}
+.leftPriceAxis{left:12px !important;right:auto !important;top:14px !important;bottom:34px !important;text-align:left;}
+.leftPriceAxis span{left:0 !important;right:auto !important;min-width:68px;text-align:left;background:rgba(0,0,0,.78);border:1px solid rgba(255,255,255,.12);color:rgba(232,238,247,.72);}
+.leftPriceAxis.zoneFallback span{min-width:62px;}
+.rightExtAxis{position:absolute;right:10px;top:14px;bottom:34px;z-index:8;display:flex;flex-direction:column;align-items:flex-end;justify-content:space-between;pointer-events:none;color:rgba(232,238,247,.72);font-size:11px;font-weight:1000;letter-spacing:.7px;}
+.rightExtAxis b{writing-mode:vertical-rl;transform:rotate(180deg);background:rgba(255,191,47,.08);border:1px solid rgba(255,191,47,.22);color:rgba(255,191,47,.95);border-radius:999px;padding:10px 4px;font-size:10px;letter-spacing:1px;}
+.rightExtAxis span{background:rgba(0,0,0,.72);border:1px solid rgba(255,255,255,.12);border-radius:8px;padding:3px 7px;}
+.rangeBoundaryLine{position:absolute;left:86px;right:74px;height:0;border-top:1px dotted rgba(255,255,255,.32);z-index:3;pointer-events:none;}
+.rangeBoundaryLine.high{top:8%;}.rangeBoundaryLine.low{top:92%;}
+.rangeBoundaryLine span{position:absolute;right:0;top:-12px;color:rgba(232,238,247,.45);font-size:10px;font-weight:1000;background:#000;padding:2px 6px;border-radius:8px;}
+.objectiveGlow{left:86px !important;right:74px !important;height:0 !important;border-top:1px dashed rgba(255,191,47,.7);background:none !important;box-shadow:none !important;z-index:4 !important;}
+.objectiveGlow span{position:absolute;right:0;top:-13px;background:rgba(255,191,47,.11);border:1px solid rgba(255,191,47,.35);color:var(--gold);border-radius:999px;padding:3px 8px;font-size:10px;font-weight:1000;white-space:nowrap;}
+.cleanMapGraph .axisX{left:86px !important;right:74px !important;color:rgba(232,238,247,.38);}
+.cleanMapGraph .pricePath{stroke-width:3;filter:drop-shadow(0 0 7px rgba(255,191,47,.55));}
+.cleanMapGraph .ghostPath{stroke-dasharray:4 8;opacity:.8;}
+.cleanMapGraph .livePriceLine{left:86px;right:74px;}
+.cleanMapGraph .livePriceLine span{right:0;}
+.cleanMapGraph .graphNode{background:#000;}
+
+/* v0.11 external break + draggable projection controls */
+.rangeInputs.compact{grid-template-columns:repeat(6,minmax(110px,1fr));}
+.brokenExternalLine{position:absolute;left:86px;right:74px;height:0;border-top:2px dashed rgba(0,255,208,.66);z-index:4;pointer-events:none;filter:drop-shadow(0 0 7px rgba(0,255,208,.35));}
+.brokenExternalLine.high{border-top-color:rgba(255,77,103,.72);filter:drop-shadow(0 0 7px rgba(255,77,103,.32));}
+.brokenExternalLine.high span{border-color:rgba(255,77,103,.35);color:#ff9aaa;background:rgba(28,0,8,.82);}
+.brokenExternalLine.low{border-top-color:rgba(0,255,208,.72);filter:drop-shadow(0 0 7px rgba(0,255,208,.32));}
+.brokenExternalLine.low span{border-color:rgba(0,255,208,.35);color:#9fffee;background:rgba(0,24,21,.82);}
+.brokenExternalLine span{position:absolute;left:0;top:-15px;background:#000;border:1px solid rgba(255,255,255,.16);color:#e8eef7;border-radius:999px;padding:3px 8px;font-size:10px;font-weight:1000;white-space:nowrap;}
+.projectionHandle{position:absolute;z-index:10;width:22px;height:22px;border-radius:999px;background:#050b12;border:3px solid var(--blue);box-shadow:0 0 20px rgba(47,129,255,.8);transform:translate(-50%,-50%);cursor:grab;touch-action:none;user-select:none;}
+.projectionHandle:active{cursor:grabbing;transform:translate(-50%,-50%) scale(1.08);}
+.projectionHandle span{position:absolute;right:24px;top:-27px;white-space:nowrap;background:rgba(5,11,18,.9);border:1px solid rgba(47,129,255,.35);padding:4px 7px;border-radius:9px;color:#dbeafe;font-size:10px;font-weight:1000;}
+.readOnlyMap .projectionHandle{display:none;}
+@media(max-width:1250px){.rangeInputs.compact{grid-template-columns:1fr 1fr}.projectionHandle span{display:none}}
+
+/* v0.12 map precision refinements */
+.cleanMapGraph{background:#000 !important;padding-right:18px;}
+.fibBackdrop{position:absolute;left:86px;right:112px;top:8%;bottom:8%;z-index:2;pointer-events:none;border-radius:12px;overflow:hidden;}
+.fibBackdrop>div{position:absolute;left:0;right:0;border:1px solid rgba(255,255,255,.035);}
+.fibPremium{top:0;height:42%;background:rgba(255,191,47,.055);}
+.fibFair{top:46%;height:8%;background:rgba(255,255,255,.05);border-top:1px dashed rgba(255,255,255,.14)!important;border-bottom:1px dashed rgba(255,255,255,.14)!important;}
+.fibDiscount{bottom:0;height:42%;background:rgba(0,255,208,.05);}
+.fibBackdrop span{position:absolute;right:10px;top:8px;font-size:10px;font-weight:1000;text-transform:uppercase;letter-spacing:.8px;color:rgba(232,238,247,.28);}
+.rightExtAxis{right:18px !important;top:12px !important;bottom:36px !important;width:88px;align-items:center !important;}
+.rightExtAxis span{min-width:54px;text-align:center;}
+.rangeBoundaryLine,.objectiveGlow,.brokenExternalLine,.cleanMapGraph .livePriceLine{right:112px !important;}
+.cleanMapGraph .axisX{right:112px !important;}
+.projectionHandle span{right:28px;}
+.checkLabel,.settingsCheck{align-items:flex-start;justify-content:center;min-height:46px;background:#050b12;border:1px solid #203040;border-radius:14px;padding:9px 12px;color:var(--text)!important;}
+.checkLabel input,.settingsCheck input,.pointLiveToggle input{margin-right:7px;accent-color:var(--gold);}
+.pointRowV5{grid-template-columns:54px 1.05fr .52fr .68fr 1fr 72px 38px;align-items:center;}
+.orderButtons{display:flex;gap:4px;}
+.orderButtons button{background:#07101a;border:1px solid #26364a;color:#dbeafe;border-radius:9px;padding:7px 6px;font-weight:1000;cursor:pointer;}
+.orderButtons button:disabled{opacity:.32;cursor:not-allowed;}
+.pointLiveToggle{display:flex!important;flex-direction:row!important;align-items:center!important;justify-content:center;gap:4px;background:#03070c;border:1px solid #203040;border-radius:12px;padding:9px;color:var(--muted);font-size:11px;font-weight:1000;}
+.graphNode span{background:rgba(0,0,0,.86)!important;}
+@media(max-width:1250px){.pointRowV5{grid-template-columns:1fr 1fr}.orderButtons{grid-column:1/-1}.pointLiveToggle{justify-content:flex-start}.fibBackdrop{right:86px}.rightExtAxis{width:62px}.rangeBoundaryLine,.objectiveGlow,.brokenExternalLine,.cleanMapGraph .livePriceLine,.cleanMapGraph .axisX{right:86px!important}}
+
+/* v0.13 overview hierarchy cleanup: current dominance + calmer maps */
+.overviewMapsPage{max-width:1560px;gap:14px;padding-bottom:30px;}
+.mapPair{gap:14px;align-items:start;}
+.compactMap{padding:14px 14px 12px;}
+.compactMap .cardHeader{padding-bottom:4px;margin-bottom:4px;}
+.compactMap .cardHeader h3{font-size:20px;line-height:1.05;}
+.compactMap .cardHeader p{font-size:12px;opacity:.72;}
+.compactMap .headerBadges{gap:6px;}
+.compactMap .locationBadge,.compactMap .objectiveBadge{font-size:12px;padding:8px 13px;box-shadow:none;}
+.compactMap .boxedGraph{height:300px;margin-top:8px;}
+.lowerPair .compactMap .boxedGraph{height:285px;}
+.compactMap .legendRow{grid-template-columns:1fr 1fr 90px;gap:8px;margin-top:8px;opacity:.7;}
+.compactMap .legendRow .mini{padding:8px 10px;min-height:54px;}
+.compactMap .legendRow .mini label{font-size:10px;opacity:.55;}
+.compactMap .legendRow .mini b{font-size:12px;line-height:1.25;}
+.compactMap .mitigationRow{margin-top:7px;opacity:.65;}
+.compactMap .pill{padding:7px 8px;font-size:11px;}
+.fibBackdrop{opacity:.55;}
+.fibBackdrop span{opacity:.65;}
+.rangeBoundaryLine{opacity:.38;}
+.objectiveGlow{opacity:.82;}
+.brokenExternalLine{opacity:.78;}
+.rightExtAxis{opacity:.82;}
+.rightExtAxis b{font-size:9px;padding:8px 4px;opacity:.9;}
+.rightExtAxis span{font-size:10px;padding:3px 6px;}
+.leftPriceAxis span{font-size:10px;opacity:.72;padding:2px 6px;}
+.cleanMapGraph .pricePath{stroke-width:3.5;filter:drop-shadow(0 0 10px rgba(255,191,47,.75));}
+.cleanMapGraph .ghostPath{stroke-width:1.6;stroke-dasharray:3 9;opacity:.66;filter:drop-shadow(0 0 7px rgba(36,211,255,.45));}
+.currentGuideLine{position:absolute;left:86px;right:112px;height:0;border-top:2px solid rgba(36,211,255,.86);z-index:7;pointer-events:none;filter:drop-shadow(0 0 10px rgba(36,211,255,.38));}
+.currentGuideLine span{position:absolute;right:0;top:-16px;background:rgba(5,18,32,.92);border:1px solid rgba(36,211,255,.45);color:#8ee7ff;border-radius:999px;padding:4px 9px;font-size:10px;font-weight:1000;letter-spacing:.3px;white-space:nowrap;box-shadow:0 0 16px rgba(36,211,255,.2);}
+.currentGuideLine.stale{border-top-color:rgba(255,191,47,.62);filter:drop-shadow(0 0 10px rgba(255,191,47,.25));}
+.currentGuideLine.stale span{background:rgba(28,20,0,.92);border-color:rgba(255,191,47,.4);color:#ffdc7a;}
+.currentGuideLine.manual{border-top-style:dashed;border-top-color:rgba(36,211,255,.72);}
+.liveDominantNode{width:24px!important;height:24px!important;border-width:4px!important;border-color:#00ffd0!important;box-shadow:0 0 0 6px rgba(0,255,208,.09),0 0 28px rgba(0,255,208,.95),0 0 54px rgba(0,255,208,.28)!important;background:#001b18!important;z-index:13!important;animation:currentPulse 1.8s ease-in-out infinite;}
+.liveDominantNode span{border-color:rgba(0,255,208,.42)!important;color:#cffff8!important;box-shadow:0 0 18px rgba(0,255,208,.16)!important;}
+@keyframes currentPulse{0%,100%{transform:translate(-50%,-50%) scale(1)}50%{transform:translate(-50%,-50%) scale(1.09)}}
+.graphNode:not(.liveDominantNode){opacity:.92;}
+.graphNode:not(.liveDominantNode) span{font-size:10px;padding:4px 7px;opacity:.92;}
+.compactMap .axisX{bottom:8px!important;font-size:10px;opacity:.45;}
+@media(min-width:1280px){.mapPair{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.compactMap .boxedGraph{height:315px}.lowerPair .compactMap .boxedGraph{height:295px}}
+@media(max-width:1250px){.currentGuideLine{right:86px!important}.compactMap .boxedGraph{height:265px}.compactMap .legendRow{grid-template-columns:1fr}.compactMap .mitigationRow{grid-template-columns:repeat(2,1fr)}}
+
+/* v0.14 broken external bias cue colors: Broken EXT L green, Broken EXT H red. */
+
+/* v0.15 overview declutter: maps suggest, panels explain */
+.readOnlyMap .graphNode span,
+.readOnlyMap .brokenExternalLine span,
+.readOnlyMap .objectiveGlow span,
+.readOnlyMap .currentGuideLine span,
+.readOnlyMap .projectionHandle span{
+  display:none !important;
+}
+.readOnlyMap .graphNode{
+  width:15px !important;
+  height:15px !important;
+  border-width:2.5px !important;
+}
+.readOnlyMap .liveDominantNode{
+  width:24px !important;
+  height:24px !important;
+  border-width:4px !important;
+  box-shadow:0 0 28px rgba(0,255,208,.82),0 0 60px rgba(0,255,208,.26) !important;
+}
+.readOnlyMap .currentGuideLine{
+  border-top-width:2.5px !important;
+  opacity:.92;
+}
+.readOnlyMap .brokenExternalLine{
+  opacity:.54 !important;
+  border-top-width:1.6px !important;
+}
+.readOnlyMap .objectiveGlow{
+  opacity:.58 !important;
+}
+.readOnlyMap .fibBackdrop{
+  opacity:.52 !important;
+}
+.compactMap .legendRow{
+  opacity:.62 !important;
+  margin-top:7px !important;
+}
+.compactMap .legendRow .mini{
+  padding:6px 8px !important;
+  min-height:44px !important;
+  border-radius:12px !important;
+}
+.compactMap .mini span{
+  font-size:9px !important;
+}
+.compactMap .mini b{
+  font-size:11px !important;
+  line-height:1.15 !important;
+}
+.compactMap .mitigationRow{
+  opacity:.6 !important;
+  margin-top:7px !important;
+}
+.compactMap .pill{
+  padding:6px 8px !important;
+}
+.compactMap .pill span,.compactMap .pill b{
+  font-size:10px !important;
+}
+.compactMap .boxedGraph{
+  height:260px !important;
+}
+@media(max-width:1250px){.compactMap .boxedGraph{height:275px!important}}
+
+/* v0.16 premium/discount focus zones: explicit 75-100% red and 0-25% green */
+.fibBackdrop{
+  opacity:.72 !important;
+}
+.fibBackdrop>div{
+  border-radius:10px;
+}
+.fibPremium{
+  top:0 !important;
+  height:25% !important;
+  background:linear-gradient(180deg, rgba(255,42,75,.24), rgba(255,42,75,.105)) !important;
+  border:1px solid rgba(255,77,103,.22) !important;
+  box-shadow:inset 0 0 28px rgba(255,42,75,.08);
+}
+.fibDiscount{
+  bottom:0 !important;
+  height:25% !important;
+  background:linear-gradient(0deg, rgba(0,255,150,.24), rgba(0,255,150,.105)) !important;
+  border:1px solid rgba(0,255,150,.20) !important;
+  box-shadow:inset 0 0 28px rgba(0,255,150,.075);
+}
+.fibFair{
+  top:48% !important;
+  height:4% !important;
+  background:rgba(255,255,255,.038) !important;
+  border-top:1px dashed rgba(255,255,255,.13)!important;
+  border-bottom:1px dashed rgba(255,255,255,.13)!important;
+}
+.fibPremium span::before{content:"75-100% ";}
+.fibDiscount span::before{content:"0-25% ";}
+.readOnlyMap .fibBackdrop{
+  opacity:.68 !important;
+}
+.readOnlyMap .fibBackdrop span{
+  opacity:.75 !important;
+}
+
+
+/* v0.19 clean trajectory alignment + stronger BOS memory lines */
+.readOnlyMap .pricePath{
+  stroke-width:3.1px !important;
+  filter:drop-shadow(0 0 8px rgba(255,191,47,.62)) !important;
+}
+.readOnlyMap .ghostPath{
+  stroke-width:1.55px !important;
+  stroke-dasharray:3 9 !important;
+  opacity:.74 !important;
+  filter:drop-shadow(0 0 6px rgba(36,211,255,.42)) !important;
+}
+.cleanMapGraph .brokenExternalLine{
+  border-top-style:solid !important;
+  border-top-width:2.6px !important;
+  opacity:.92 !important;
+  filter:none !important;
+}
+.cleanMapGraph .brokenExternalLine.high{
+  border-top-color:rgba(150,20,38,.96) !important;
+}
+.cleanMapGraph .brokenExternalLine.low{
+  border-top-color:rgba(0,112,78,.96) !important;
+}
+.readOnlyMap .brokenExternalLine{
+  border-top-width:2.4px !important;
+  opacity:.86 !important;
+}
+.cleanMapGraph .axisX{
+  left:88px !important;
+  right:118px !important;
+}
+
+/* v0.20 Map Settings v2: standardized anchor grammar + matrix columns */
+.settingsSectionTitle{
+  margin:18px 0 8px;
+  font-size:12px;
+  font-weight:1000;
+  letter-spacing:.9px;
+  text-transform:uppercase;
+  color:#ffbf2f;
+  opacity:.92;
+}
+.settingsActionRow{display:flex;align-items:center;gap:12px;margin:14px 0 12px;}
+.settingsActionRow span{font-size:12px;color:var(--muted);font-weight:800;}
+.pointRowV6{grid-template-columns:54px 1.1fr .9fr .65fr .8fr 1fr 58px 72px 38px;align-items:center;}
+.pointRowV6 select,.pointRowV6 input{min-width:0;}
+.matrixCol{font-size:10px;font-weight:1000;color:#8ee7ff;background:#06131e;border:1px solid rgba(36,211,255,.24);border-radius:10px;padding:9px 7px;text-align:center;white-space:nowrap;}
+.jsonPreview{margin-top:14px;background:#02050a;border:1px solid #162434;border-radius:16px;padding:14px;}
+.jsonPreview b{display:block;margin-bottom:8px;color:#ffbf2f;font-size:12px;text-transform:uppercase;letter-spacing:.8px;}
+.jsonPreview pre{max-height:320px;overflow:auto;margin:0;font-size:11px;line-height:1.45;color:#b8c7d9;white-space:pre-wrap;}
+.pathEditor .editorTitle b::after{content:' · Matrix sequence mode';color:#8ee7ff;font-size:11px;margin-left:8px;font-weight:900;}
+.cleanMapGraph .pricePath{stroke-linecap:round;stroke-linejoin:round;}
+.cleanMapGraph .ghostPath{stroke:#24d3ff!important;stroke-width:2!important;stroke-dasharray:5 8!important;opacity:.78!important;}
+.brokenExternalLine.high{border-top-style:solid!important;border-top-width:2.5px!important;border-top-color:rgba(120,20,34,.92)!important;filter:none!important;}
+.brokenExternalLine.low{border-top-style:solid!important;border-top-width:2.5px!important;border-top-color:rgba(10,96,62,.92)!important;filter:none!important;}
+@media(max-width:1250px){.pointRowV6{grid-template-columns:1fr 1fr}.matrixCol{grid-column:auto}.settingsActionRow{flex-direction:column;align-items:flex-start}}
+
+
+/* v0.21 Weekly/Daily overview cleanup: remove redundant EXT text and stretch premium/discount zones */
+.rightExtAxis{
+  display:none !important;
+}
+.rangeBoundaryLine span{
+  display:none !important;
+}
+.cleanMapGraph .fibBackdrop{
+  left:8px !important;
+  right:8px !important;
+  top:8% !important;
+  bottom:8% !important;
+  border-radius:14px !important;
+}
+.readOnlyMap .fibBackdrop{
+  left:8px !important;
+  right:8px !important;
+}
+/* keep operational overlays aligned to the actual plotting lane, while fib context spans the whole map */
+.rangeBoundaryLine,.objectiveGlow,.brokenExternalLine,.cleanMapGraph .livePriceLine,.currentGuideLine{
+  right:74px !important;
+}
+.cleanMapGraph .axisX{
+  right:74px !important;
+}
+.fibPremium span,.fibDiscount span,.fibFair span{
+  right:14px !important;
+}
+
+/* v0.22 Overview refactor: intraday gets the room, live trade becomes optional, journal removed */
+.overviewCommandRow{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  background:rgba(5,11,18,.72);
+  border:1px solid #162434;
+  border-radius:18px;
+  padding:12px 14px;
+  box-shadow:0 14px 36px rgba(0,0,0,.20);
+}
+.overviewCommandRow b{display:block;font-size:14px;color:#e8eef7;letter-spacing:.25px;}
+.overviewCommandRow span{display:block;margin-top:3px;font-size:12px;color:var(--muted);font-weight:800;}
+.panelToggle{
+  display:flex;align-items:center;gap:8px;
+  background:#07111d;border:1px solid #203246;color:#dbeafe;
+  border-radius:999px;padding:9px 13px;font-size:12px;font-weight:1000;cursor:pointer;
+}
+.panelToggle.active{border-color:rgba(36,211,255,.48);color:#8ee7ff;box-shadow:0 0 18px rgba(36,211,255,.10);}
+.topContextPair .compactMap .boxedGraph{height:245px!important;}
+.intradayHero{display:block;position:relative;}
+.intradayHero .trajectoryCard{padding:16px 16px 14px;border-color:rgba(36,211,255,.20);}
+.intradayHero .compactMap .boxedGraph{
+  height:clamp(420px, 50vh, 620px)!important;
+  max-width:100%;
+}
+.intradayHero .cardHeader h3{font-size:24px;}
+.intradayHero .cardHeader p{font-size:13px;}
+.intradayHero .legendRow{grid-template-columns:1fr 1fr 1fr!important;}
+.overviewPlanningStrip .card{max-height:310px;overflow:auto;}
+.overviewPlanningStrip .cardHeader{margin-bottom:8px;}
+.overviewLivePopover{
+  position:fixed;
+  right:24px;
+  bottom:24px;
+  width:min(460px, calc(100vw - 48px));
+  max-height:70vh;
+  overflow:auto;
+  z-index:40;
+  border-radius:22px;
+  box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(36,211,255,.14);
+}
+.overviewLivePopover .card{margin:0;border-color:rgba(36,211,255,.18);background:rgba(3,7,12,.96);backdrop-filter:blur(16px);}
+.overviewBottom{display:none!important;}
+@media(max-width:1100px){
+  .overviewCommandRow{flex-direction:column;align-items:flex-start;}
+  .panelToggle{width:100%;justify-content:center;}
+  .topContextPair .compactMap .boxedGraph{height:230px!important;}
+  .intradayHero .compactMap .boxedGraph{height:430px!important;}
+  .overviewLivePopover{right:12px;bottom:12px;width:calc(100vw - 24px);}
+}
+
+/* v0.23: magnetic matrix rails, intraday CHOCH gateway, deltas, invalidation cloak */
+.matrixRailGraph .matrixRails{position:absolute;left:76px;right:74px;top:0;bottom:0;z-index:2;pointer-events:none;}
+.matrixRailGraph .matrixRails span{position:absolute;top:8px;bottom:20px;width:0;border-left:1px solid rgba(148,163,184,.13);transform:translateX(-50%);}
+.matrixRailGraph .matrixRails span b{position:absolute;left:6px;bottom:5px;writing-mode:vertical-rl;text-orientation:mixed;font-size:8px;letter-spacing:.65px;color:rgba(148,163,184,.28);font-weight:1000;text-transform:uppercase;}
+.matrixRailGraph .metricOverlay{position:absolute;left:92px;top:14px;z-index:11;display:flex;gap:7px;flex-wrap:wrap;max-width:62%;pointer-events:none;}
+.matrixRailGraph .metricOverlay span{font-size:9px;font-weight:1000;letter-spacing:.35px;color:#9fb4c9;background:rgba(3,7,12,.72);border:1px solid rgba(148,163,184,.18);border-radius:999px;padding:4px 8px;box-shadow:0 8px 22px rgba(0,0,0,.22);}
+.invalidatedCloak{position:absolute;left:8px;right:8px;top:8px;bottom:8px;z-index:12;display:flex;flex-direction:column;align-items:center;justify-content:center;background:linear-gradient(90deg,rgba(60,5,12,.74),rgba(60,5,12,.38));border:1px solid rgba(255,77,103,.28);border-radius:14px;pointer-events:none;box-shadow:inset 0 0 80px rgba(255,0,50,.10);}
+.invalidatedCloak b{font-size:18px;letter-spacing:1.1px;color:#ff91a3;text-transform:uppercase;}
+.invalidatedCloak span{font-size:11px;color:#ffc1cb;font-weight:900;margin-top:6px;opacity:.78;}
+.invalidatedGraph .pricePath,.invalidatedGraph .ghostPath,.invalidatedGraph .graphNode{opacity:.28!important;filter:grayscale(.55)!important;}
+.layer-intraday .matrixRails span:first-child{border-left-color:rgba(255,191,47,.24);}
+.layer-intraday .matrixRails span:first-child b{color:rgba(255,191,47,.42);}
+.layer-intraday .graphNode span{font-size:9px;}
+.editableMap .graphNode{cursor:ns-resize!important;}
+.pointRowV6 .matrixCol{background:linear-gradient(180deg,#06131e,#03101a);}
+
+
+/* v0.24: declutter matrix rails. Rails stay, background text is gone. */
+.matrixRailGraph .matrixRails span b{display:none!important;}
+.matrixRailGraph .matrixRails span{border-left-color:rgba(148,163,184,.10)!important;}
+.layer-intraday .matrixRails span:first-child b{display:none!important;}
+
+/* v0.24: objective grammar update. Objective dropdown now supports Discount/Premium M1/M2. */
+.objectiveBadge,.locationBadge{white-space:nowrap;}
+
+/* v0.26 intraday cleanup patch: purple liquidity clean-up line + backend map state buttons */
+.liquidityCleanUpLine{
+  position:absolute;
+  left:86px;
+  right:74px;
+  height:0;
+  border-top:3px solid rgba(109,76,255,.96);
+  z-index:8;
+  pointer-events:none;
+  filter:drop-shadow(0 0 10px rgba(109,76,255,.38));
+}
+.liquidityCleanUpLine span{
+  position:absolute;
+  left:50%;
+  top:-16px;
+  transform:translateX(-50%);
+  background:rgba(16,10,38,.96);
+  border:1px solid rgba(139,116,255,.62);
+  color:#d8d0ff;
+  border-radius:999px;
+  padding:4px 10px;
+  font-size:10px;
+  font-weight:1000;
+  white-space:nowrap;
+  box-shadow:0 0 18px rgba(109,76,255,.20);
+}
+.readOnlyMap .liquidityCleanUpLine span{display:inline-block!important;}
+.layer-intraday .ghostPath{
+  stroke:#24d3ff!important;
+  stroke-width:2.1!important;
+  stroke-dasharray:5 9!important;
+  opacity:.9!important;
+}
+.layer-intraday .pricePath{
+  stroke-width:3.05px!important;
+}
+.layer-intraday .metricOverlay{
+  max-width:70%;
+}
+/* show more exact range ladders for the user-defined M-level structure */
+.fibPremium span::before{content:""!important;}
+.fibDiscount span::before{content:""!important;}
+.fibPremium span{font-size:11px!important;}
+.fibDiscount span{font-size:11px!important;}
+
+.lifecycleBrainCard{border:1px solid rgba(0,255,208,.22);box-shadow:0 0 0 1px rgba(0,255,208,.06),0 18px 50px rgba(0,0,0,.28)}
+.machineMessage{margin-top:12px;padding:12px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(255,255,255,.035);display:flex;gap:10px;align-items:flex-start;color:#dbeafe}
+.machineMessage b{color:#ffbf2f;white-space:nowrap}.machineMessage span{line-height:1.35}.mutedMessage b{color:#00ffd0}
+.tradeIdeaCard .ideaForm button:not(.primaryBtn){border:1px solid rgba(0,255,208,.2);background:rgba(0,255,208,.08);color:#dff;}
+.catchUpWizard { max-width: 1500px; }
+.catchGrid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 14px; margin-top: 14px; }
+.catchCard { border: 1px solid rgba(148,163,184,.18); background: rgba(2,6,23,.45); border-radius: 16px; padding: 14px; }
+.catchCard h4 { margin: 0 0 10px; color: #f8fafc; font-size: 14px; letter-spacing: .02em; }
+.fieldLine { display: grid; grid-template-columns: 140px 1fr; align-items: center; gap: 10px; margin: 8px 0; }
+.fieldLine span { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: .06em; }
+.fieldLine input, .fieldLine select { width: 100%; background: #05070d; color: #e5e7eb; border: 1px solid rgba(148,163,184,.25); border-radius: 10px; padding: 9px 10px; }
+@media (max-width: 900px) { .catchGrid { grid-template-columns: 1fr; } .fieldLine { grid-template-columns: 1fr; gap: 5px; } }
+
+/* V131 structured journal reporting */
+.kpiGrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:14px 0}
+.kpiCard{background:#060c13;border:1px solid #1f2d3a;border-radius:16px;padding:12px}
+.kpiCard span{display:block;color:#7b8794;font-size:12px;margin-bottom:6px}.kpiCard b{color:#00ffd0;font-size:22px}
+.splitGrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:12px 0}.miniPanel{background:#060c13;border:1px solid #1f2d3a;border-radius:16px;padding:12px}.jsonBox.small{max-height:220px;overflow:auto;font-size:11px}
+@media(max-width:900px){.kpiGrid,.splitGrid{grid-template-columns:1fr}}
+
+.ideaRow{width:100%;text-align:left;border:1px solid #1f2d3a;background:#060c13;color:#dbeafe;border-radius:14px;padding:12px;margin-top:8px;display:flex;flex-direction:column;gap:5px;cursor:pointer}.ideaRow:hover{border-color:#00ffd0}.ideaRow span{color:#94a3b8;font-size:12px}.detailGrid{display:grid;gap:8px;margin-top:10px}.infoLine{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid #13202b;padding:7px 0}.infoLine span{color:#7b8794}.infoLine b{color:#e5e7eb;text-align:right}.machineText{border:1px solid #223142;background:#07101a;border-radius:14px;padding:12px;color:#e5e7eb}.bigTextArea{width:100%;min-height:250px;background:#03070d;color:#dbeafe;border:1px solid #1f2d3a;border-radius:14px;padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:12px}.primaryBtn{margin-top:10px;background:#ffbf2f;color:#0b0f14;border:0;border-radius:14px;padding:12px 16px;font-weight:900;cursor:pointer}
+
+
+/* v0.34 cleaned journal + form-based scenario calculator */
+.journalClean .journalTabs{display:flex;gap:10px;margin:16px 0 18px;flex-wrap:wrap}.journalTabs button{background:#07101a;border:1px solid #26364a;color:#dbeafe;border-radius:14px;padding:11px 14px;font-weight:1000;cursor:pointer}.journalTabs button.active{background:linear-gradient(135deg,var(--gold),#ffe18a);color:#071014}.journalSplit{align-items:start}.tradeMemoryRow{width:100%;text-align:left;background:#050b12;border:1px solid #1d2c3b;border-radius:16px;padding:13px 14px;margin-bottom:9px;color:var(--text);cursor:pointer}.tradeMemoryRow.picked{border-color:var(--gold);box-shadow:0 0 18px rgba(255,191,47,.12)}.tradeMemoryRow b,.tradeMemoryRow span,.tradeMemoryRow em{display:block}.tradeMemoryRow span{color:#94a3b8;margin-top:5px}.tradeMemoryRow em{color:var(--cyan);font-style:normal;margin-top:5px;font-size:12px}.editTradeForm,.scenarioForm{display:grid;grid-template-columns:repeat(2,minmax(180px,1fr));gap:10px;margin-top:12px}.editTradeForm label,.scenarioForm label{display:flex;flex-direction:column;gap:7px;color:var(--muted);font-weight:900;font-size:12px}.editTradeForm input,.editTradeForm select,.editTradeForm textarea,.scenarioForm input,.scenarioForm select,.scenarioForm textarea{background:#050b12;border:1px solid #203040;color:var(--text);border-radius:13px;padding:10px;outline:none}.editTradeForm textarea,.scenarioForm textarea{min-height:74px;resize:vertical}.editTradeForm .wide,.scenarioForm .wide{grid-column:1/-1}.saveNote{color:var(--cyan);font-weight:900}.cleanList{display:flex;flex-direction:column;gap:10px}.scenarioResult{margin-top:16px;border:1px solid #203040;border-radius:18px;padding:14px;background:#050b12}.resultBadge{display:inline-flex;margin-top:10px;background:rgba(0,255,208,.1);border:1px solid rgba(0,255,208,.35);color:var(--cyan);border-radius:999px;padding:8px 12px;font-weight:1000}
+
+/* v0.36 finalised data collector: clean mitigation M-levels and scenario sections */
+.formSection{border:1px solid rgba(148,163,184,.16);background:rgba(2,6,23,.38);border-radius:18px;padding:13px;margin:13px 0}
+.formSection h4{margin:0 0 10px;color:#f8fafc;font-size:13px;letter-spacing:.05em;text-transform:uppercase}
+.mitigationMatrix{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0 16px}
+.mitigationZone{border:1px solid rgba(148,163,184,.16);background:#050b12;border-radius:16px;padding:12px}
+.mitigationZone h4{margin:0 0 10px;color:#ffbf2f;font-size:13px;text-transform:uppercase;letter-spacing:.06em}
+.mLevelRow{display:grid;grid-template-columns:42px 1fr 120px;gap:8px;align-items:center;margin:7px 0}
+.mLevelRow b{color:#00ffd0;font-size:12px}.mLevelRow input,.mLevelRow select,.sequenceRow select{background:#03070d;border:1px solid #203040;color:#dbeafe;border-radius:10px;padding:9px}
+.sequenceRow{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin:10px 0 14px}
+.sequenceRow label{display:flex;flex-direction:column;gap:6px;color:#94a3b8;font-size:11px;font-weight:1000;text-transform:uppercase;letter-spacing:.05em}
+@media(max-width:1050px){.mitigationMatrix{grid-template-columns:1fr}.sequenceRow{grid-template-columns:1fr 1fr}.mLevelRow{grid-template-columns:42px 1fr}}
+
+/* v0.38 Map Studio: candle + coordinate memory workstation */
+.mapStudioShell{display:flex;flex-direction:column;gap:14px;width:100%;height:calc(100vh - 130px);}
+.mapStudioToolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid #203040;background:#050b12;border-radius:18px;padding:12px;}
+.tfSwitch{display:flex;gap:6px;background:#02060a;border:1px solid #1b2b3a;border-radius:14px;padding:5px;}
+.tfSwitch button,.mapStudioToolbar button{border:1px solid #26364a;background:#07101a;color:#dbeafe;border-radius:11px;padding:9px 12px;font-weight:900;display:flex;gap:7px;align-items:center;cursor:pointer;}
+.tfSwitch button.active{background:linear-gradient(135deg,#ffbf2f,#ffe18a);color:#081018;border-color:#ffbf2f;}
+.mapStudioToolbar button:disabled{opacity:.5;cursor:wait;}
+.mapStudioMsg{color:#7b8794;font-weight:800;margin-left:auto;}
+.mapStudioControls{display:grid;grid-template-columns:repeat(4,minmax(170px,1fr));gap:10px;}
+.mapStudioControls label{display:flex;flex-direction:column;gap:7px;background:#050b12;border:1px solid #203040;border-radius:15px;padding:10px;color:#7b8794;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.6px;}
+.mapStudioControls input,.mapStudioControls select{background:#02060a;border:1px solid #26364a;border-radius:11px;color:#e8eef7;padding:10px;outline:none;}
+.mapStudioGrid{display:grid;grid-template-columns:1fr 310px;gap:14px;min-height:0;flex:1;}
+.mapChartPanel,.mapSidePanel{border:1px solid #203040;background:linear-gradient(180deg,#070d15,#030609);border-radius:20px;padding:14px;min-height:0;}
+.mapChartHeader{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:10px;gap:14px;}
+.mapChartHeader b{font-size:20px;color:#ffbf2f;}.mapChartHeader span{color:#7b8794;font-size:12px;font-weight:800;}
+.mapCanvas{height:70vh;min-height:640px;background:#000;border:1px solid rgba(255,255,255,.12);border-radius:16px;overflow:hidden;cursor:crosshair;touch-action:manipulation;}
+.mapCanvas svg{width:100%;height:100%;display:block;}
+.mapSidePanel{overflow:auto;}
+.mapSidePanel h3{margin:0 0 10px;color:#ffbf2f;}
+.routeList{display:flex;flex-direction:column;gap:8px;margin-bottom:18px;}
+.routeList div{display:flex;justify-content:space-between;gap:10px;border:1px solid #172536;background:#03070c;border-radius:12px;padding:10px;}
+.routeList b{color:#e8eef7;}.routeList span{color:#7b8794;font-size:12px;font-weight:800;text-align:right;}
+.routeList.events b{color:#00ffd0;}
+@media(max-width:1200px){.mapStudioGrid{grid-template-columns:1fr}.mapStudioControls{grid-template-columns:1fr 1fr}.mapCanvas{min-height:420px}.mapStudioMsg{margin-left:0}}
+
+.mapZoomBar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:12px 0 0;padding:10px;border:1px solid rgba(148,163,184,.16);border-radius:14px;background:rgba(2,6,23,.42)}
+.mapZoomBar button{padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.14);background:#08121f;color:#e8eef7;font-weight:1000;cursor:pointer}
+.mapZoomBar label{display:flex;align-items:center;gap:8px;color:#8fa0b3;font-size:12px;font-weight:1000;text-transform:uppercase;letter-spacing:.5px}
+.mapZoomBar input[type=range]{width:190px;accent-color:#ffbf2f}.mapZoomBar b{color:#ffbf2f;min-width:70px;text-align:left}
+.mapStudioGrid{grid-template-columns:minmax(720px,1fr) minmax(320px,420px)!important}
+
+.dragMapCanvas { cursor: grab; touch-action: none; user-select: none; }
+.dragMapCanvas:active { cursor: grabbing; }
+.mapHint { color: rgba(232,238,247,.55); font-size: 12px; align-self: center; }
+.mapZoomBar input[type="range"] { min-width: 160px; }
+
+/* v0.43 precision chart patch: usable candles, shocking concept */
+.mapZoomBar button.activeSmall{background:linear-gradient(135deg,#00ffd0,#7fffe8);color:#031018;border-color:#00ffd0}
+.mapCanvas{height:78vh;min-height:760px}
+.mapChartPanel{padding:18px}
+.mapStudioGrid{grid-template-columns:minmax(900px,1fr) minmax(320px,420px)!important}
+.mapChartHeader b{font-size:24px}.mapChartHeader span{font-size:13px}
+@media(max-width:1200px){.mapCanvas{height:72vh;min-height:560px}.mapStudioGrid{grid-template-columns:1fr!important}}
+
+/* v044 precision map studio */
+.precisionMapStudio{min-height:100vh;}
+.precisionGrid{grid-template-columns:minmax(960px,1fr) minmax(340px,420px)!important;align-items:stretch;}
+.precisionPanel{padding:12px!important;}
+.precisionCanvas{height:78vh!important;min-height:720px!important;cursor:crosshair!important;touch-action:none!important;user-select:none!important;}
+.precisionCanvas.panMode{cursor:grab!important;}
+.precisionCanvas.panMode:active{cursor:grabbing!important;}
+.precisionCanvas.plotMode{cursor:crosshair!important;}
+.precisionReadout{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:10px 0;padding:10px 14px;border:1px solid rgba(255,191,47,.22);border-radius:14px;background:rgba(2,6,23,.70);color:#e8eef7;font-weight:900;}
+.precisionReadout b{color:#ffbf2f}.precisionReadout span{color:#9ca3af}
+.precisionTools button.activeSmall{background:linear-gradient(135deg,#00ffd0,#7fffe8)!important;color:#041018!important;border-color:#00ffd0!important;}
+.draggableEvent{cursor:grab;}.draggableEvent:active{cursor:grabbing;}
+.precisionSide{max-height:78vh;overflow:auto;}
+.precisionSide .routeList div{gap:10px;}
+@media(max-width:1200px){.precisionGrid{grid-template-columns:1fr!important}.precisionCanvas{height:72vh!important;min-height:560px!important}}
+.dateJump { display:flex; align-items:center; gap:8px; }
+.dateJump input { width:145px; height:38px; border-radius:12px; border:1px solid rgba(151,167,190,.22); background:#060b10; color:#eaf0f7; padding:0 10px; font-weight:800; }
+.dateJump button { height:38px; padding:0 14px; }
+.visibleDateRange { color:#ffbf2f; font-weight:900; margin-left:8px; white-space:nowrap; }
+
+
+/* v046 D3 Map Canvas */
+.d3MapStudio .mapStudioToolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:14px 0;padding:14px;border:1px solid rgba(88,166,255,.18);background:rgba(7,13,24,.76);border-radius:18px}
+.d3MapStudio .secondaryToolbar{margin-top:8px;background:rgba(9,16,27,.62)}
+.d3MapStudio .tfTabs{display:flex;gap:8px;padding:6px;border:1px solid rgba(88,166,255,.2);border-radius:15px;background:rgba(0,0,0,.22)}
+.d3MapStudio button.active,.d3MapStudio .tfTabs button.active{background:#ffcf4d;color:#06101f;border-color:#ffcf4d;box-shadow:0 0 0 1px rgba(255,207,77,.2)}
+.d3MapStudio .loadedPill,.d3MapStudio .mutedHelp{color:#94a3b8;font-weight:800;margin-left:auto}
+.d3MapStudio .crosshairReadout{display:flex;gap:14px;flex-wrap:wrap;align-items:center;padding:10px 14px;margin:12px 0;border:1px solid rgba(0,255,208,.2);background:rgba(0,255,208,.06);border-radius:14px;color:#dbeafe;font-weight:800}
+.d3MapStudio .mapInputsGrid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:14px;margin:14px 0}
+.d3MapStudio .mapInputsGrid label{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid rgba(88,166,255,.18);border-radius:16px;background:rgba(7,13,24,.72)}
+.d3MapStudio .mapInputsGrid span{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8;font-weight:900}
+.d3Workspace{display:grid;grid-template-columns:minmax(740px,1fr) 320px;gap:16px;align-items:stretch}
+.d3ChartCard{border:1px solid rgba(88,166,255,.22);border-radius:20px;background:linear-gradient(180deg,rgba(9,16,27,.88),rgba(4,9,17,.96));padding:14px;min-height:680px}
+.chartTitleRow{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}
+.chartTitleRow h3{margin:0;color:#ffbf2f;font-size:26px}
+.chartTitleRow span{color:#94a3b8;font-weight:800;text-align:right}
+.d3CandleSvg{width:100%;height:620px;display:block;border-radius:16px;border:1px solid rgba(255,255,255,.1);background:#000;touch-action:none;user-select:none}
+.d3Side{min-height:680px;overflow:auto}
+.d3Side .routeList{max-height:270px;overflow:auto;padding-right:4px}
+.d3Side .routeList div{display:flex;justify-content:space-between;gap:10px;padding:12px 14px;margin:8px 0;border:1px solid rgba(88,166,255,.18);border-radius:14px;background:rgba(7,13,24,.72)}
+.d3Side .routeList b{color:#e8eef7}.d3Side .routeList span{color:#94a3b8;font-size:12px;text-align:right;font-weight:800}
+@media(max-width:1100px){.d3Workspace{grid-template-columns:1fr}.d3MapStudio .mapInputsGrid{grid-template-columns:1fr 1fr}.d3Side{min-height:auto}.d3CandleSvg{height:560px}}
+
+.candleContextMenu{
+  position: fixed;
+  z-index: 9999;
+  min-width: 230px;
+  max-width: 260px;
+  padding: 10px;
+  border: 1px solid rgba(255,191,47,.35);
+  border-radius: 14px;
+  background: rgba(2, 6, 23, .96);
+  box-shadow: 0 18px 60px rgba(0,0,0,.55);
+  display: grid;
+  gap: 6px;
+}
+.candleContextMenu .menuTitle{
+  color: #ffdf76;
+  font-weight: 900;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.candleContextMenu button{
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(148,163,184,.18);
+  background: rgba(15,23,42,.88);
+  color: #e8eef7;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.candleContextMenu button:hover{ border-color: rgba(0,255,208,.5); color:#00ffd0; }
+.candleContextMenu .ghostBtn{ color:#94a3b8; }
+
+/* v055 selected candle drawer + clean event markers */
+.selectedCandleDrawer{
+  border:1px solid rgba(0,255,208,.22);
+  background:linear-gradient(180deg,rgba(7,13,24,.94),rgba(3,7,13,.98));
+  border-radius:18px;
+  padding:12px;
+  margin:12px 0;
+  box-shadow:0 0 22px rgba(0,255,208,.05);
+}
+.selectedCandleHeader{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;}
+.selectedCandleHeader b{color:#00ffd0;font-size:14px;text-transform:uppercase;letter-spacing:.08em;display:block;margin-bottom:3px;}
+.selectedCandleHeader span{color:#94a3b8;font-size:12px;font-weight:900;}
+.eventButtonGrid{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:8px;max-height:210px;overflow:auto;padding-right:4px;}
+.eventButtonGrid button{border:1px solid rgba(148,163,184,.18);background:rgba(15,23,42,.88);color:#e8eef7;border-radius:12px;padding:10px 11px;font-weight:900;cursor:pointer;text-align:left;}
+.eventButtonGrid button:hover{border-color:rgba(0,255,208,.55);color:#00ffd0;background:rgba(0,255,208,.06);}
+.eventButtonGrid .dangerBtn{border-color:rgba(255,77,103,.34);color:#ffd4dc;background:rgba(64,6,18,.64);}
+.eventButtonGrid .dangerBtn:hover{border-color:rgba(255,77,103,.72);color:#fff;background:rgba(255,77,103,.16);}
+.ghostBtn{border:1px solid rgba(148,163,184,.22);background:#07101a;color:#94a3b8;border-radius:10px;padding:8px 10px;font-weight:900;cursor:pointer;}
+.d3Side .routeList .eventRow{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.d3Side .routeList .eventRow>div{display:flex;flex-direction:column;gap:2px;padding:0;margin:0;border:0;background:transparent;border-radius:0;}
+.d3Side .routeList .eventRow b{font-size:18px;color:#00ffd0;letter-spacing:.04em;}
+.d3Side .routeList .eventRow span{text-align:left;}
+.miniDelete{width:30px;height:30px;border-radius:999px;border:1px solid rgba(255,77,103,.35);background:rgba(255,77,103,.10);color:#ff9aaa;font-weight:1000;cursor:pointer;flex:0 0 auto;}
+.miniDelete:hover{background:rgba(255,77,103,.22);color:#fff;}
+@media(max-width:1250px){.eventButtonGrid{grid-template-columns:repeat(3,minmax(120px,1fr));}.selectedCandleHeader{align-items:flex-start;}}
+@media(max-width:800px){.eventButtonGrid{grid-template-columns:1fr 1fr;}}
+
+/* v057 selected candle top event selector */
+.chartTitleRowMap{align-items:flex-start!important;gap:12px!important;}
+.selectedInlineTools{
+  flex:1;
+  min-width:0;
+  border:1px solid rgba(0,255,208,.20);
+  background:linear-gradient(180deg,rgba(7,13,24,.92),rgba(3,7,13,.96));
+  border-radius:16px;
+  padding:8px 10px;
+  box-shadow:0 0 22px rgba(0,255,208,.045);
+}
+.selectedInlineMeta{display:flex;align-items:center;gap:10px;margin-bottom:6px;white-space:nowrap;}
+.selectedInlineMeta b{color:#00ffd0;font-size:13px;letter-spacing:.04em;}
+.selectedInlineMeta span{color:#94a3b8!important;font-size:11px!important;text-align:left!important;font-weight:900!important;}
+.selectedInlineScroller{
+  display:flex;
+  gap:10px;
+  overflow-x:auto;
+  overflow-y:hidden;
+  padding:2px 2px 6px;
+  scrollbar-width:thin;
+  max-width:100%;
+}
+.inlineEventGroup{flex:0 0 auto;min-width:126px;border-left:1px solid rgba(148,163,184,.11);padding-left:9px;}
+.inlineEventGroup:first-child{border-left:0;padding-left:0;}
+.inlineEventGroup small{display:block;color:rgba(148,163,184,.72);font-size:10px;font-weight:1000;text-transform:uppercase;letter-spacing:.10em;margin-bottom:5px;}
+.inlineEventGroup div{display:flex;gap:6px;flex-wrap:nowrap;}
+.inlineEventGroup button{
+  border:1px solid rgba(148,163,184,.18);
+  background:rgba(15,23,42,.88);
+  color:#e8eef7;
+  border-radius:10px;
+  padding:7px 9px;
+  font-weight:1000;
+  font-size:11px;
+  cursor:pointer;
+  white-space:nowrap;
+}
+.inlineEventGroup button:hover{border-color:rgba(0,255,208,.55);color:#00ffd0;background:rgba(0,255,208,.06);}
+.inlineEventGroup.dangerGroup button{border-color:rgba(255,77,103,.34);color:#ffd4dc;background:rgba(64,6,18,.64);}
+.inlineEventGroup.dangerGroup button:hover{border-color:rgba(255,77,103,.72);color:#fff;background:rgba(255,77,103,.16);}
+@media(max-width:1200px){.chartTitleRowMap{flex-direction:column}.selectedInlineTools{width:100%;}}
+
+/* MOS v1 GPS panel */
+.gpsPanel {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  padding: 12px;
+  margin-bottom: 14px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.gpsPanel h3 { margin: 0 0 4px; }
+.gpsRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+}
+.gpsRow span { color: rgba(226,232,240,0.62); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+.gpsRow b { text-align: right; font-size: 12px; color: #e5e7eb; }
+.gpsPhaseBox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 10px 0;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(2, 132, 199, 0.12);
+  border: 1px solid rgba(56, 189, 248, 0.2);
+}
+.gpsPhaseBox strong {
+  font-size: 14px;
+  color: #bae6fd;
+}
+.gpsPhaseBox em { color: rgba(226,232,240,0.45); font-style: normal; }
+.gpsEmpty { color: rgba(226,232,240,0.62); font-size: 12px; padding: 10px 0; }
+
+/* v064 MOS mock GPS editor + clearer phase coordinate */
+.gpsPhaseBox.phaseCoordinate strong{
+  font-size:18px;
+  letter-spacing:.04em;
+  color:#7dd3fc;
+}
+.gpsMockEditor{
+  margin-top:12px;
+  padding-top:10px;
+  border-top:1px solid rgba(148,163,184,.14);
+  display:grid;
+  gap:8px;
+}
+.gpsMockEditor label{
+  display:grid;
+  gap:5px;
+  color:rgba(226,232,240,.62);
+  font-size:10px;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.07em;
+}
+.gpsMockEditor select,
+.gpsMockEditor input{
+  width:100%;
+  border:1px solid rgba(148,163,184,.18);
+  background:#050b12;
+  color:#e5e7eb;
+  border-radius:10px;
+  padding:8px 9px;
+  font-size:12px;
+  font-weight:900;
+  outline:none;
+}
+.gpsMockEditor select:focus,
+.gpsMockEditor input:focus{border-color:rgba(0,255,208,.55);box-shadow:0 0 0 2px rgba(0,255,208,.08);}
+.gpsMockGrid{display:grid;grid-template-columns:1fr 1.35fr;gap:8px;}
+.gpsSaveBtn{width:100%;margin-top:10px;border:1px solid rgba(0,245,212,.35);background:linear-gradient(135deg,rgba(0,245,212,.18),rgba(255,200,58,.12));color:#f8fafc;border-radius:14px;padding:11px 12px;font-weight:900;cursor:pointer}.gpsSaveBtn.secondary{margin-top:8px;background:rgba(15,23,42,.75);border-color:rgba(148,163,184,.25);color:#cbd5e1}
+
+
+/* v067 MOS narrative timeline */
+.storyTimelineContainer{background:#11171d;border:1px solid rgba(255,255,255,.08);padding:14px;border-radius:14px;margin:12px 0 14px 0;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;}
+.timelineHeader{font-size:10px;color:#708090;letter-spacing:1.2px;text-transform:uppercase;margin-bottom:14px;font-weight:1000;}
+.timelineTree{position:relative;padding-left:22px;max-height:280px;overflow:auto;padding-right:4px;}
+.timelineTree:before{content:'';position:absolute;left:6px;top:5px;bottom:5px;width:2px;background:#26313d;border-radius:999px;}
+.timelineNode{position:relative;padding-bottom:16px;}
+.timelineNode:last-child{padding-bottom:2px;}
+.nodeDot{position:absolute;left:-21px;top:4px;width:11px;height:11px;border-radius:999px;background:#3b4856;border:2px solid #11171d;box-shadow:0 0 0 1px rgba(255,255,255,.05);}
+.anchorNode .nodeDot{background:#eab308;box-shadow:0 0 10px rgba(234,179,8,.35);}
+.chapterNode .nodeDot{background:#3b82f6;box-shadow:0 0 10px rgba(59,130,246,.25);}
+.phaseNode.completedNode .nodeDot{background:#10b981;box-shadow:0 0 10px rgba(16,185,129,.22);}
+.phaseNode.activeCurrent .nodeDot{background:#ef4444;box-shadow:0 0 12px rgba(239,68,68,.8);}
+.nodeContent{display:flex;flex-direction:column;gap:2px;}
+.nodeLabel{font-size:9px;color:#657282;text-transform:uppercase;letter-spacing:.8px;font-weight:1000;}
+.nodeTitle{font-size:12px;color:#dbeafe;font-weight:1000;line-height:1.25;word-break:break-word;}
+.activeCurrent .nodeTitle{color:#fff;}
+.nodeContent small{font-size:10px;color:#8291a4;line-height:1.25;}
+.timelineEmpty{color:#8291a4;font-size:12px;padding:10px 0;}
+
+/* MOS v150 playback ledger */
+.playbackContainer { margin-top: 14px; }
+.playbackControls { align-items: end; }
+.playbackTree .timelineNode.validated .nodeDot { background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.18); }
+.playbackTree .timelineNode.validated_superseded .nodeDot { background: #38bdf8; box-shadow: 0 0 0 4px rgba(56,189,248,.18); }
+.playbackTree .timelineNode.failed .nodeDot { background: #ef4444; box-shadow: 0 0 0 4px rgba(239,68,68,.18); }
+.playbackTree .timelineNode.delayed .nodeDot { background: #f59e0b; box-shadow: 0 0 0 4px rgba(245,158,11,.18); }
+.playbackTree .timelineNode.pending .nodeDot { background: #94a3b8; box-shadow: 0 0 0 4px rgba(148,163,184,.18); }
+.playbackTree .nodeContent small { display:block; margin-top:3px; overflow-wrap:anywhere; }
+
+/* v0.69 MOS Replay Mode: visible controls inside Map Studio, because hidden replay buttons are apparently modern comedy. */
+.toolbarStoryInput{display:flex;align-items:center;gap:6px;background:#050b12;border:1px solid #203040;border-radius:12px;padding:6px 8px;color:var(--muted);font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:.4px;}
+.toolbarStoryInput input{width:54px;background:#02060a;border:1px solid #26364a;color:var(--text);border-radius:9px;padding:7px 8px;font-weight:900;}
+.replayActiveBtn{border-color:rgba(255,191,47,.7)!important;box-shadow:0 0 18px rgba(255,191,47,.2)!important;}
+.replayToolbar{border:1px solid rgba(255,191,47,.18);background:linear-gradient(135deg,rgba(255,191,47,.08),rgba(36,211,255,.04));}
+.replaySlider{min-width:220px;accent-color:var(--gold);}
+.replayPill{border-color:rgba(255,191,47,.34)!important;color:#ffe8a3!important;}
+.resultPill.validated{border-color:rgba(0,255,208,.45)!important;color:#a7fff0!important;background:rgba(0,255,208,.07)!important;}
+.resultPill.failed{border-color:rgba(255,77,103,.5)!important;color:#ffacba!important;background:rgba(255,77,103,.07)!important;}
+.resultPill.validated_superseded{border-color:rgba(36,211,255,.5)!important;color:#b9eeff!important;background:rgba(36,211,255,.07)!important;}
+.resultPill.delayed,.resultPill.pending{border-color:rgba(255,191,47,.38)!important;color:#ffe3a0!important;background:rgba(255,191,47,.06)!important;}
+.replayNow{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.replayFrameBanner{display:grid;grid-template-columns:1.2fr 1fr 1fr 1.2fr;gap:10px;margin:8px 0 12px;padding:11px 12px;border:1px solid rgba(255,191,47,.22);border-radius:16px;background:rgba(5,11,18,.92);box-shadow:0 10px 28px rgba(0,0,0,.28);}
+.replayFrameBanner>div{background:#02070d;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:9px 10px;min-width:0;}
+.replayFrameBanner b,.replayFrameBanner strong{display:block;color:var(--text);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.replayFrameBanner span{display:block;color:var(--muted);font-size:10px;margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.replayFrameBanner.validated{border-color:rgba(0,255,208,.36);box-shadow:0 0 26px rgba(0,255,208,.09);}
+.replayFrameBanner.failed{border-color:rgba(255,77,103,.45);box-shadow:0 0 26px rgba(255,77,103,.09);}
+.replayFrameBanner.validated_superseded{border-color:rgba(36,211,255,.42);box-shadow:0 0 26px rgba(36,211,255,.09);}
+.playbackMiniControls{display:grid;grid-template-columns:42px 1fr 42px 1.6fr;gap:6px;align-items:center;margin:8px 0;}
+.playbackMiniControls button{background:#07101a;border:1px solid #26364a;color:#dbeafe;border-radius:9px;padding:8px;font-weight:1000;cursor:pointer;}
+.playbackMiniControls button:disabled{opacity:.35;cursor:not-allowed;}
+.playbackMiniControls input{accent-color:var(--gold);}
+.playbackClickable{cursor:pointer;}
+.playbackClickable:hover{background:rgba(255,255,255,.035);}
+.playbackTree .timelineNode.validated .nodeDot{background:#00ffd0;box-shadow:0 0 16px rgba(0,255,208,.7);}
+.playbackTree .timelineNode.failed .nodeDot{background:#ff4d67;box-shadow:0 0 16px rgba(255,77,103,.7);}
+.playbackTree .timelineNode.validated_superseded .nodeDot{background:#24d3ff;box-shadow:0 0 16px rgba(36,211,255,.7);}
+.playbackTree .timelineNode.delayed .nodeDot,.playbackTree .timelineNode.pending .nodeDot{background:#ffbf2f;box-shadow:0 0 16px rgba(255,191,47,.55);}
+@media(max-width:1250px){.replayFrameBanner{grid-template-columns:1fr}.replaySlider{min-width:120px}.playbackMiniControls{grid-template-columns:1fr 1fr 1fr}.playbackMiniControls input{grid-column:1/-1}.replayNow{display:none}}
+
+/* MOS candle-by-candle replay + seed idea builder */
+.candleReplayToolbar {
+  border: 1px solid rgba(0, 255, 208, .22);
+  background: linear-gradient(135deg, rgba(0,255,208,.08), rgba(255,191,47,.05));
+}
+.speedInput {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(226,232,240,.75);
+  font-size: 12px;
+}
+.speedInput input {
+  width: 82px;
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 9px;
+  background: rgba(2,6,23,.72);
+  color: #e2e8f0;
+  padding: 8px 9px;
+}
+.candleReplayBanner {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr 1fr;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0,255,208,.28);
+  border-radius: 14px;
+  background: rgba(0,255,208,.07);
+  margin-bottom: 10px;
+}
+.candleReplayBanner div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.candleReplayBanner b,
+.candleReplayBanner strong { color: #00ffd0; }
+.candleReplayBanner span { color: rgba(226,232,240,.72); font-size: 12px; }
+.seedIdeaPanel {
+  margin: 10px 0 12px;
+  border: 1px solid rgba(255,191,47,.22);
+  border-radius: 18px;
+  background: rgba(255,191,47,.045);
+  padding: 12px;
+}
+.seedHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.seedHeader div { display: flex; flex-direction: column; gap: 3px; }
+.seedHeader b { color: #ffbf2f; }
+.seedHeader span { color: rgba(226,232,240,.68); font-size: 12px; }
+.seedGrid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  gap: 8px;
+}
+.seedGrid label,
+.seedNotes {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: rgba(226,232,240,.72);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.seedGrid input,
+.seedNotes textarea {
+  border: 1px solid rgba(255,255,255,.13);
+  background: rgba(2,6,23,.78);
+  color: #e2e8f0;
+  border-radius: 10px;
+  padding: 9px 10px;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.seedNotes { margin-top: 8px; }
+.seedNotes textarea { min-height: 56px; resize: vertical; }
+.seedAnchorBtns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+.seedAnchorBtns button {
+  border: 1px solid rgba(0,255,208,.22);
+  background: rgba(0,255,208,.07);
+  color: #dffef8;
+  border-radius: 999px;
+  padding: 8px 10px;
+}
+.seedIdeaList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(226,232,240,.65);
+}
+.seedIdeaList b { color: #ffbf2f; margin-right: 2px; }
+.seedIdeaList span {
+  border: 1px solid rgba(255,255,255,.11);
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: rgba(15,23,42,.58);
+}
+@media (max-width: 1300px) {
+  .seedGrid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .candleReplayBanner { grid-template-columns: 1fr; }
+}
+
+/* v151 cockpit cleanup: Map Studio stops being a vertical junk drawer */
+.d3MapStudio.mapStudioShell{
+  height:calc(100vh - 96px);
+  gap:10px;
+  overflow:hidden;
+}
+.d3MapStudio .mapStudioHeader{
+  margin-bottom:0;
+  padding:4px 0 0;
+}
+.d3MapStudio .mapStudioHeader h2{font-size:22px;margin:0 0 2px;}
+.d3MapStudio .mapStudioHeader p{font-size:13px;margin:0;color:rgba(148,163,184,.72)}
+.d3MapStudio .mapStudioToolbar{
+  margin:6px 0;
+  padding:8px 10px;
+  gap:8px;
+  border-radius:14px;
+}
+.d3MapStudio .mapStudioToolbar button,
+.d3MapStudio .tfTabs button{
+  padding:7px 10px;
+  border-radius:10px;
+  font-size:12px;
+}
+.d3MapStudio .tfTabs{padding:4px;gap:5px;border-radius:12px;}
+.d3MapStudio .loadedPill{font-size:12px;margin-left:4px;}
+.d3MapStudio .candleReplayToolbar{
+  position:sticky;
+  top:0;
+  z-index:5;
+  flex-wrap:nowrap;
+}
+.d3MapStudio .candleReplayToolbar .replaySlider{min-width:260px;flex:1;}
+.d3MapStudio .crosshairReadout{
+  margin:6px 0;
+  padding:8px 10px;
+  font-size:12px;
+}
+.d3Workspace{
+  grid-template-columns:minmax(880px,1fr) 360px!important;
+  gap:12px;
+  flex:1;
+  min-height:0;
+}
+.d3ChartCard{
+  min-height:0;
+  height:100%;
+  padding:10px;
+}
+.d3CandleSvg{
+  height:calc(100vh - 315px);
+  min-height:520px;
+}
+.chartTitleRowMap{
+  margin-bottom:6px;
+}
+.chartTitleRow h3{font-size:22px;}
+.candleReplayBanner{
+  margin:6px 0 8px!important;
+  padding:8px 10px!important;
+}
+.compactSideDeck{
+  min-height:0;
+  height:100%;
+  overflow:hidden;
+  padding:10px!important;
+}
+.sideDeckTabs{
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:6px;
+  margin-bottom:10px;
+  padding:5px;
+  border:1px solid rgba(88,166,255,.18);
+  border-radius:14px;
+  background:rgba(2,6,23,.7);
+  position:sticky;
+  top:0;
+  z-index:3;
+}
+.sideDeckTabs button{
+  border:1px solid rgba(148,163,184,.18);
+  border-radius:10px;
+  padding:8px 6px;
+  background:#07101a;
+  color:#dbeafe;
+  font-weight:1000;
+  cursor:pointer;
+}
+.sideDeckTabs button.active{
+  background:linear-gradient(135deg,#ffbf2f,#ffe18a);
+  color:#07101a;
+  border-color:#ffbf2f;
+}
+.compactSideDeck .gpsPanel,
+.rightTabPanel{
+  height:calc(100% - 55px);
+  overflow:auto;
+  padding-right:4px;
+}
+.compactSideDeck .gpsPanel h3,
+.rightTabPanel h3{font-size:20px;margin:0 0 8px;}
+.markToolDock{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  margin:10px 0;
+  padding:10px;
+  border:1px solid rgba(88,166,255,.16);
+  border-radius:14px;
+  background:rgba(7,13,24,.55);
+}
+.markToolDock button,
+.markToolDock input{
+  min-width:0;
+  border:1px solid rgba(148,163,184,.2);
+  background:#07101a;
+  color:#dbeafe;
+  border-radius:10px;
+  padding:8px 10px;
+  font-weight:900;
+}
+.markToolDock button.active{background:#ffcf4d;color:#06101f;border-color:#ffcf4d;}
+.markToolDock .mutedHelp{grid-column:1/-1;margin:0;font-size:11px;line-height:1.35;}
+.d3MapStudio .sideMapInputs{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:8px;
+  margin:10px 0;
+}
+.d3MapStudio .sideMapInputs label{padding:9px;border-radius:12px;}
+.markQuickReadout{
+  display:flex;
+  flex-direction:column;
+  gap:5px;
+  padding:10px;
+  border:1px solid rgba(0,255,208,.18);
+  border-radius:14px;
+  background:rgba(0,255,208,.05);
+}
+.markQuickReadout b{color:#00ffd0}.markQuickReadout span{color:#94a3b8;font-size:12px;font-weight:800}
+.sideSeedPanel{
+  margin:0;
+  border-color:rgba(255,191,47,.25);
+}
+.sideSeedPanel .seedHeader{display:grid;grid-template-columns:1fr;}
+.sideSeedPanel .seedGrid{grid-template-columns:1fr;}
+.sideSeedPanel .seedAnchorBtns{display:grid;grid-template-columns:1fr;}
+.sideSeedPanel .seedNotes textarea{min-height:90px;}
+.gpsMockEditor label{margin-bottom:8px;}
+.gpsMockGrid{gap:8px;}
+.storyTimelineContainer,.playbackContainer{display:none!important;}
+@media(max-width:1280px){
+  .d3Workspace{grid-template-columns:1fr!important;}
+  .compactSideDeck{height:auto;max-height:720px;}
+  .d3CandleSvg{height:560px;}
+}
+
+
+/* v075/v151b fixed split cockpit: chart left, controls right, no basement tabs */
+.d3MapStudio.mapStudioShell{
+  height: calc(100vh - 104px) !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 8px !important;
+}
+.d3MapStudio .mapStudioHeader{
+  display:none !important;
+}
+.d3MapStudio .mapStudioToolbar{
+  margin: 0 !important;
+  padding: 8px 10px !important;
+  flex: 0 0 auto !important;
+}
+.d3MapStudio .crosshairReadout{
+  flex: 0 0 auto !important;
+  margin: 0 !important;
+}
+.d3Workspace{
+  display:grid !important;
+  grid-template-columns: minmax(0, 1fr) 360px !important;
+  gap: 12px !important;
+  align-items: stretch !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  overflow: hidden !important;
+}
+.d3ChartCard{
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+.d3ChartCard .chartTitleRowMap{
+  flex: 0 0 auto !important;
+}
+.d3ChartCard .replayFrameBanner,
+.d3ChartCard .candleReplayBanner{
+  flex: 0 0 auto !important;
+}
+.d3CandleSvg{
+  flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 420px !important;
+  max-height: none !important;
+}
+.compactSideDeck{
+  min-width:0 !important;
+  height:100% !important;
+  max-height:none !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+.compactSideDeck .gpsPanel,
+.rightTabPanel{
+  flex:1 1 auto !important;
+  height:auto !important;
+  min-height:0 !important;
+  overflow:auto !important;
+}
+.sideDeckTabs{
+  flex:0 0 auto !important;
+}
+/* keep page itself from becoming the scrollbar while Map Studio is active */
+.mainArea:has(.d3MapStudio){
+  overflow:hidden !important;
+}
+@media(max-width:900px){
+  .d3Workspace{grid-template-columns:1fr !important; overflow:auto !important;}
+  .compactSideDeck{height:560px !important;}
+}
+
+
+/* v076 Patch A: reclaim chart height, move candle replay to bottom dock */
+.d3MapStudio.mapStudioShell{
+  height: calc(100vh - 92px) !important;
+  overflow: hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+  gap:8px !important;
+}
+.d3MapStudio .candleReplayToolbar,
+.d3ChartCard .candleReplayBanner{
+  display:none !important;
+}
+.d3Workspace{
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  height: auto !important;
+  overflow: hidden !important;
+}
+.d3ChartCard{
+  position: relative !important;
+  min-height:0 !important;
+  height:100% !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+.d3CandleSvg{
+  flex: 1 1 auto !important;
+  height: auto !important;
+  min-height: 560px !important;
+}
+.chartReplayOverlay{
+  position:absolute;
+  top:58px;
+  left:24px;
+  z-index:8;
+  max-width:420px;
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:7px 11px;
+  padding:9px 12px;
+  border:1px solid rgba(0,255,208,.35);
+  border-radius:14px;
+  background:rgba(2,12,18,.78);
+  backdrop-filter: blur(6px);
+  box-shadow:0 14px 42px rgba(0,0,0,.35);
+  color:#dbeafe;
+  pointer-events:none;
+  font-weight:800;
+}
+.chartReplayOverlay b{color:#00ffd0;text-transform:uppercase;letter-spacing:.04em;}
+.chartReplayOverlay span{color:#b7c3d6;font-size:12px;}
+.fixedBottomReplayDock{
+  flex:0 0 52px;
+  height:52px;
+  display:flex;
+  align-items:center;
+  gap:12px;
+  padding:7px 12px;
+  border:1px solid rgba(88,166,255,.22);
+  border-radius:16px;
+  background:linear-gradient(180deg,rgba(9,16,27,.94),rgba(4,9,17,.98));
+  overflow:hidden;
+}
+.fixedBottomReplayDock button{
+  min-width:54px;
+  height:36px;
+  padding:0 13px;
+  border-radius:12px;
+  white-space:nowrap;
+}
+.fixedBottomReplayDock button.active{
+  background:#ffcf4d;
+  color:#06101f;
+  border-color:#ffcf4d;
+}
+.fixedBottomReplayDock .dockReplaySlider{
+  flex:1 1 auto;
+  min-width:240px;
+}
+.fixedBottomReplayDock .dockSpeedInput{
+  margin-left:0;
+  flex:0 0 auto;
+}
+.fixedBottomReplayDock .dockSpeedInput input{
+  width:78px;
+  padding:7px 8px;
+}
+.fixedBottomReplayDock .dockMetaText{
+  flex:0 0 auto;
+  max-width:330px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#ffdf76;
+  font-weight:900;
+  font-size:12px;
+}
+@media(max-width:1100px){
+  .fixedBottomReplayDock{flex-wrap:wrap;height:auto;min-height:52px;}
+  .fixedBottomReplayDock .dockReplaySlider{min-width:160px;}
+  .fixedBottomReplayDock .dockMetaText{max-width:100%;}
+}
+
+/* v077 Patch B-lite: stop the HUD blocking tools, move quick marks to Mark tab */
+.d3ChartCard .chartTitleRowMap.compactChartTitle{
+  min-height: 34px !important;
+  margin-bottom: 6px !important;
+  align-items:center !important;
+}
+.d3ChartCard .chartTitleRowMap.compactChartTitle h3{
+  font-size:22px !important;
+  line-height:1 !important;
+}
+.d3ChartCard .chartTitleRowMap.compactChartTitle span{
+  font-size:12px !important;
+  color:#94a3b8 !important;
+  white-space:nowrap !important;
+  overflow:hidden !important;
+  text-overflow:ellipsis !important;
+}
+.chartReplayOverlay{
+  top: 48px !important;
+  left: 20px !important;
+  max-width: none !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  box-shadow: none !important;
+  gap: 10px !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  font-size: 11px !important;
+  color: rgba(203,213,225,.82) !important;
+  text-shadow: 0 1px 2px rgba(0,0,0,.85) !important;
+  pointer-events: none !important;
+}
+.chartReplayOverlay b{
+  color:#00ffd0 !important;
+  font-size:11px !important;
+}
+.chartReplayOverlay span{
+  color:rgba(203,213,225,.82) !important;
+  font-size:11px !important;
+}
+.selectedInlineTools,.selectedInlineScroller{display:none !important;}
+.markQuickGroups{
+  display:grid;
+  gap:10px;
+  margin-top:10px;
+  padding:10px;
+  border:1px solid rgba(88,166,255,.16);
+  border-radius:14px;
+  background:rgba(7,13,24,.46);
+}
+.markQuickGroup small{
+  display:block;
+  color:rgba(148,163,184,.76);
+  font-size:10px;
+  font-weight:1000;
+  text-transform:uppercase;
+  letter-spacing:.10em;
+  margin-bottom:6px;
+}
+.markQuickGroup div{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:7px;
+}
+.markQuickGroup button{
+  border:1px solid rgba(148,163,184,.18);
+  background:#07101a;
+  color:#e8eef7;
+  border-radius:10px;
+  padding:8px 8px;
+  font-weight:1000;
+  cursor:pointer;
+  white-space:nowrap;
+}
+.markQuickGroup button:hover{border-color:rgba(0,255,208,.55);color:#00ffd0;background:rgba(0,255,208,.06);}
+.markQuickGroup.dangerGroup button{border-color:rgba(255,77,103,.34);color:#ffd4dc;background:rgba(64,6,18,.64);}
+/* reclaim a little more height until the compact-header patch */
+.d3MapStudio .mapStudioToolbar{padding:7px 9px !important; gap:7px !important;}
+.d3MapStudio .crosshairReadout{padding:7px 10px !important;}
+.d3CandleSvg{min-height:610px !important;}
+
+/* v084 Workspace Consolidation: bigger side deck, compact toolbar, narrative-first cockpit */
+.d3Workspace{
+  grid-template-columns:minmax(0,1fr) 430px !important;
+  gap:10px !important;
+}
+.compactMapToolbar{
+  display:flex !important;
+  align-items:center !important;
+  flex-wrap:wrap !important;
+  gap:6px !important;
+  padding:6px 8px !important;
+}
+.compactMapToolbar button,
+.compactMapToolbar .tfTabs button,
+.toolsMenu summary{
+  min-height:32px !important;
+  padding:7px 11px !important;
+  border-radius:10px !important;
+  font-size:12px !important;
+}
+.compactMapToolbar .tfTabs{
+  gap:5px !important;
+  padding:4px !important;
+}
+.compactStatus{font-size:11px !important;opacity:.78 !important;}
+.toolsMenu{position:relative;display:inline-flex;align-items:center;z-index:40;}
+.toolsMenu summary{
+  list-style:none;
+  cursor:pointer;
+  border:1px solid #223248;
+  background:#07101a;
+  color:#e8eef7;
+  font-weight:1000;
+  user-select:none;
+}
+.toolsMenu summary::-webkit-details-marker{display:none;}
+.toolsMenu[open] summary{background:rgba(255,191,47,.92);color:#071014;border-color:#ffcf4d;}
+.toolsMenuPanel{
+  position:absolute;
+  top:40px;
+  right:0;
+  min-width:210px;
+  display:grid;
+  gap:6px;
+  padding:10px;
+  border:1px solid rgba(88,166,255,.28);
+  border-radius:14px;
+  background:rgba(5,11,18,.98);
+  box-shadow:0 22px 60px rgba(0,0,0,.45);
+}
+.toolsMenuPanel button{justify-content:flex-start !important;width:100%;}
+.toolsMenuPanel .loadedPill{justify-content:center;}
+.fourTabs{grid-template-columns:repeat(4,minmax(0,1fr)) !important;}
+.fourTabs button{font-size:13px !important;padding:10px 8px !important;}
+.narrativeTabPanel h3{color:#ffbf2f;margin:0 0 8px;font-size:22px;}
+.caseBadge{margin:12px 0;padding:10px 12px;border:1px solid rgba(0,255,208,.25);border-radius:14px;background:rgba(0,255,208,.07);color:#00ffd0;font-weight:1000;font-size:12px;letter-spacing:.08em;}
+.narrativeSteps{display:grid;gap:9px;margin-top:10px;}
+.narrativeSteps div{display:grid;grid-template-columns:42px 1fr;gap:8px;align-items:start;padding:10px;border:1px solid rgba(148,163,184,.14);border-radius:14px;background:rgba(7,13,24,.56);}
+.narrativeSteps b{color:#ffbf2f;font-family:ui-monospace,Menlo,monospace;font-size:13px;}
+.narrativeSteps span{color:#e8eef7;font-weight:1000;font-size:13px;}
+.narrativeSteps em{grid-column:2;color:#94a3b8;font-style:normal;font-size:11px;margin-top:2px;}
+.narrativeHint{margin-top:12px;padding:10px;border-radius:12px;border:1px dashed rgba(255,191,47,.25);color:#dbeafe;background:rgba(255,191,47,.05);font-size:12px;line-height:1.45;}
+.d3ChartCard .chartTitleRowMap.compactChartTitle{min-height:28px !important;margin-bottom:4px !important;}
+.d3ChartCard .chartTitleRowMap.compactChartTitle h3{font-size:20px !important;}
+.d3ChartCard .chartTitleRowMap.compactChartTitle span{font-size:11px !important;}
+.d3MapStudio .crosshairReadout{padding:6px 9px !important;font-size:12px !important;}
+@media(max-width:1250px){.d3Workspace{grid-template-columns:minmax(0,1fr) 390px !important;}.fourTabs button{font-size:12px!important;}}
+
+/* v085 timeframe-aware marker engine */
+.markerSection {
+  border: 1px solid #1f2933;
+  border-radius: 10px;
+  background: rgba(7, 12, 16, 0.72);
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.markerSection > summary {
+  cursor: pointer;
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.78);
+  border-bottom: 1px solid #1f2933;
+}
+.markerSection:not([open]) > summary { border-bottom: 0; }
+.timeframeAwareGroups .markQuickGroup {
+  margin: 10px;
+}
+.timeframeAwareGroups .markQuickGroup small {
+  color: #94a3b8;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+.timeframeAwareGroups .markQuickGroup div {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 7px;
+}
+.timeframeAwareGroups .markQuickGroup button {
+  min-height: 30px;
+  font-size: 11px;
+  padding: 6px 7px;
+  text-align: center;
+  white-space: normal;
+}
+.liveNarrativeSteps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.narrativeStepButton {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  border: 1px solid #1f2933;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.56);
+  padding: 10px;
+  color: #e5e7eb;
+  cursor: pointer;
+}
+.narrativeStepButton:hover {
+  border-color: #38bdf8;
+  background: rgba(14, 116, 144, 0.15);
+}
+.narrativeStepButton b {
+  color: #f59e0b;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.narrativeStepButton span {
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.narrativeStepButton em {
+  grid-column: 2;
+  color: #94a3b8;
+  font-size: 11px;
+  font-style: normal;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.emptyNarrative {
+  border: 1px dashed #334155;
+  border-radius: 12px;
+  padding: 22px 14px;
+  color: #94a3b8;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.emptyNarrative b { color: #e2e8f0; }
+
+/* v086 workflow patch: deliberate Mark commit + restore replay dock breathing room */
+.markTabPanel{
+  display:flex !important;
+  flex-direction:column !important;
+  min-height:0 !important;
+  overflow:hidden !important;
+}
+.markQuickGroups.timeframeAwareGroups{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  overflow:auto !important;
+  padding-bottom:10px !important;
+}
+.timeframeAwareGroups .markQuickGroup button.queued{
+  background:linear-gradient(135deg,#ffbf2f,#ffe18a) !important;
+  color:#06101f !important;
+  border-color:#ffbf2f !important;
+  box-shadow:0 0 0 1px rgba(255,191,47,.18), 0 8px 24px rgba(255,191,47,.12) !important;
+}
+.markCommitFooter{
+  flex:0 0 auto;
+  position:sticky;
+  bottom:0;
+  z-index:8;
+  display:grid;
+  grid-template-columns:1fr;
+  gap:8px;
+  margin-top:10px;
+  padding:10px;
+  border:1px solid rgba(0,255,208,.25);
+  border-radius:14px;
+  background:linear-gradient(180deg,rgba(8,18,28,.98),rgba(3,8,15,.98));
+  box-shadow:0 -12px 28px rgba(0,0,0,.28);
+}
+.markCommitFooter div{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.markCommitFooter b{color:#00ffd0;font-size:12px;text-transform:uppercase;letter-spacing:.05em;}
+.markCommitFooter span{color:#cbd5e1;font-size:11px;line-height:1.35;max-height:34px;overflow:auto;}
+.markCommitFooter button{
+  border-radius:12px;
+  padding:10px 12px;
+  font-weight:1000;
+  border:1px solid rgba(148,163,184,.18);
+}
+.markCommitFooter .saveNarrativeBtn{
+  background:linear-gradient(135deg,#00ffd0,#14b8a6);
+  color:#02110f;
+  border-color:rgba(0,255,208,.45);
+}
+.markCommitFooter .saveNarrativeBtn:disabled,
+.markCommitFooter .clearQueueBtn:disabled{opacity:.45;cursor:not-allowed;}
+.markCommitFooter .clearQueueBtn{background:#0b1220;color:#dbeafe;}
+/* kill the old layout gremlin that hid the replay dock under the screen edge */
+.d3MapStudio.mapStudioShell{
+  height:calc(100vh - 118px) !important;
+  padding-bottom:8px !important;
+  box-sizing:border-box !important;
+}
+.d3Workspace,
+.d3ChartCard,
+.compactSideDeck{
+  min-height:0 !important;
+}
+.d3CandleSvg{
+  min-height:0 !important;
+}
+.fixedBottomReplayDock{
+  flex:0 0 56px !important;
+  min-height:56px !important;
+  height:56px !important;
+  margin-top:0 !important;
+  margin-bottom:0 !important;
+  position:relative !important;
+  z-index:20 !important;
+}
+@media(max-width:1100px){
+  .fixedBottomReplayDock{height:auto !important;min-height:56px !important;}
+}
+
+/* v086.1 modern Mark panel: fixed context header + scrollable taxonomy + fixed action footer */
+.markPanelModern{
+  display:flex !important;
+  flex-direction:column !important;
+  height:100% !important;
+  min-height:0 !important;
+  overflow:hidden !important;
+  padding:0 !important;
+}
+.markPanelHeader{
+  flex:0 0 auto;
+  padding:12px 12px 10px;
+  border-bottom:1px solid rgba(148,163,184,.14);
+  background:linear-gradient(180deg,rgba(13,20,31,.98),rgba(8,13,22,.96));
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.markPanelTitleRow h3{margin:0;color:#ffcf4d;font-size:20px;}
+.markPanelTitleRow .mutedSmall{margin:4px 0 0;font-size:12px;line-height:1.35;}
+.markSelectedCard{
+  border:1px solid rgba(0,255,208,.18);
+  background:rgba(0,255,208,.045);
+  border-radius:12px;
+  padding:8px 10px;
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+}
+.markSelectedCard b,
+.markQueueChips b{
+  color:#00ffd0;
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+}
+.markSelectedCard span{color:#dbeafe;font-size:12px;font-weight:800;line-height:1.35;}
+.markQueueChips{display:flex;flex-direction:column;gap:6px;}
+.markQueueChips > div{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+  min-height:28px;
+  align-items:center;
+}
+.markQueueChips span{color:#64748b;font-size:11px;font-weight:800;}
+.markQueueChips button{
+  border:1px solid rgba(255,207,77,.45);
+  background:linear-gradient(135deg,rgba(255,191,47,.18),rgba(255,225,138,.1));
+  color:#ffe18a;
+  border-radius:999px;
+  padding:4px 8px;
+  font-size:10px;
+  font-weight:1000;
+  cursor:pointer;
+  max-width:100%;
+}
+.markQueueChips button:hover{background:rgba(255,207,77,.28);color:#fff2bd;}
+.markPanelScroll{
+  flex:1 1 auto;
+  min-height:0;
+  overflow-y:auto;
+  padding:12px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.compactMarkTools{margin:0 !important;}
+.compactMapInputs{margin:0 !important;}
+.modernEventGroups{
+  flex:0 0 auto !important;
+  overflow:visible !important;
+  padding-bottom:8px !important;
+}
+.markEmptyState{
+  border:1px dashed rgba(148,163,184,.25);
+  border-radius:14px;
+  padding:18px;
+  color:#94a3b8;
+  font-size:13px;
+  line-height:1.4;
+  background:rgba(15,23,42,.34);
+}
+.modernMarkFooter{
+  flex:0 0 auto !important;
+  position:static !important;
+  margin:0 !important;
+  border-radius:0 !important;
+  border-left:0 !important;
+  border-right:0 !important;
+  border-bottom:0 !important;
+  display:grid !important;
+  grid-template-columns:1fr 1.6fr !important;
+  padding:10px 12px !important;
+  background:linear-gradient(180deg,rgba(9,15,25,.98),rgba(3,8,15,.98)) !important;
+}
+.modernMarkFooter .saveNarrativeBtn,
+.modernMarkFooter .clearQueueBtn{
+  min-height:42px;
+}
+
+/* v086.3 floating workspace dock: chart owns the screen, tools appear when summoned */
+.d3Workspace{
+  position:relative !important;
+  display:block !important;
+  grid-template-columns:1fr !important;
+  gap:0 !important;
+  overflow:hidden !important;
+}
+.d3ChartCard{
+  width:100% !important;
+  height:100% !important;
+  min-width:0 !important;
+  padding-right:58px !important;
+  box-sizing:border-box !important;
+}
+.floatingWorkspaceDock{
+  position:absolute;
+  right:14px;
+  top:72px;
+  z-index:90;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  padding:7px;
+  border:1px solid rgba(148,163,184,.2);
+  background:rgba(3,8,15,.76);
+  backdrop-filter:blur(12px);
+  border-radius:16px;
+  box-shadow:0 18px 46px rgba(0,0,0,.38);
+}
+.floatingWorkspaceDock button{
+  width:38px;
+  height:38px;
+  border-radius:13px;
+  border:1px solid rgba(148,163,184,.24);
+  background:rgba(15,23,42,.88);
+  color:#dbeafe;
+  font-weight:1000;
+  letter-spacing:.04em;
+  cursor:pointer;
+}
+.floatingWorkspaceDock button:hover,
+.floatingWorkspaceDock button.active{
+  background:linear-gradient(135deg,#ffbf2f,#ffe18a);
+  border-color:#ffbf2f;
+  color:#071018;
+  box-shadow:0 0 24px rgba(255,191,47,.25);
+}
+.floatingWorkspacePanel{
+  position:absolute !important;
+  top:18px !important;
+  right:66px !important;
+  bottom:18px !important;
+  width:min(520px,42vw) !important;
+  max-width:620px !important;
+  min-width:390px !important;
+  z-index:88 !important;
+  border-radius:20px !important;
+  box-shadow:0 28px 80px rgba(0,0,0,.58),0 0 0 1px rgba(255,255,255,.05) inset !important;
+  background:linear-gradient(180deg,rgba(7,13,24,.96),rgba(3,8,15,.98)) !important;
+  backdrop-filter:blur(16px);
+  transition:transform .18s ease, opacity .18s ease, visibility .18s ease;
+  overflow:hidden !important;
+}
+.floatingWorkspacePanel.closed{
+  transform:translateX(calc(100% + 94px));
+  opacity:0;
+  visibility:hidden;
+  pointer-events:none;
+}
+.floatingWorkspacePanel.open{
+  transform:translateX(0);
+  opacity:1;
+  visibility:visible;
+  pointer-events:auto;
+}
+.floatingPanelChrome{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:12px 12px 8px;
+  border-bottom:1px solid rgba(148,163,184,.12);
+  background:rgba(2,6,23,.45);
+}
+.floatingPanelChrome b{display:block;color:#ffcf4d;font-size:15px;line-height:1.1;}
+.floatingPanelChrome span{display:block;color:#64748b;font-size:11px;font-weight:900;margin-top:2px;}
+.floatingPanelChrome button{
+  width:32px;
+  height:32px;
+  border-radius:10px;
+  border:1px solid rgba(148,163,184,.22);
+  background:rgba(15,23,42,.82);
+  color:#e2e8f0;
+  font-size:20px;
+  line-height:1;
+  cursor:pointer;
+}
+.floatingPanelChrome button:hover{border-color:rgba(255,77,103,.45);color:#ff9aaa;background:rgba(127,29,29,.28);}
+.floatingTabs{padding:8px 10px !important;flex:0 0 auto;}
+.floatingWorkspacePanel .rightTabPanel{height:auto;min-height:0;}
+.floatingWorkspacePanel .markTabPanel{height:calc(100% - 88px) !important;}
+.floatingWorkspacePanel .narrativeTabPanel,
+.floatingWorkspacePanel .seedTabPanel,
+.floatingWorkspacePanel .gpsPanel,
+.floatingWorkspacePanel .gpsMockForm{
+  max-height:calc(100vh - 190px);
+  overflow:auto;
+}
+/* The old event dropdown was from the archaeological layer. Keep tool selection minimal, remove legacy event selector. */
+.floatingWorkspacePanel .compactMapInputs{display:none !important;}
+.floatingWorkspacePanel .compactMarkTools{
+  display:grid !important;
+  grid-template-columns:1fr 1fr !important;
+  gap:8px !important;
+}
+.floatingWorkspacePanel .compactMarkTools input,
+.floatingWorkspacePanel .compactMarkTools .mutedHelp,
+.floatingWorkspacePanel .compactMarkTools button:nth-of-type(3),
+.floatingWorkspacePanel .compactMarkTools button:nth-of-type(4),
+.floatingWorkspacePanel .compactMarkTools button:nth-of-type(5),
+.floatingWorkspacePanel .compactMarkTools button:nth-of-type(6){display:none !important;}
+.floatingWorkspacePanel .compactMarkTools button{justify-content:center !important;}
+@media(max-width:1050px){
+  .d3ChartCard{padding-right:50px !important;}
+  .floatingWorkspacePanel{left:14px !important;right:58px !important;width:auto !important;min-width:0 !important;}
+  .floatingWorkspaceDock{right:8px;top:70px;}
+  .floatingWorkspaceDock button{width:34px;height:34px;}
+}
+
+/* v086.4 final UI pass: floating dock is the navigation, panel content does the work */
+.historyMarksBtn{
+  border:1px solid rgba(148,163,184,.22) !important;
+  background:#07101a !important;
+  color:#94a3b8 !important;
+}
+.historyMarksBtn.active{
+  background:linear-gradient(135deg,#00ffd0,#8efce9) !important;
+  color:#031018 !important;
+  border-color:#00ffd0 !important;
+}
+.floatingTabs{display:none !important;}
+.floatingWorkspacePanel .markTabPanel{height:calc(100% - 54px) !important;}
+.floatingWorkspacePanel .rightTabPanel{height:calc(100% - 54px); min-height:0;}
+.floatingWorkspacePanel .narrativeTabPanel,
+.floatingWorkspacePanel .seedTabPanel,
+.floatingWorkspacePanel .gpsPanel,
+.floatingWorkspacePanel .gpsMockForm{
+  max-height:none !important;
+  height:calc(100% - 54px) !important;
+  overflow:auto;
+}
+.markModeStrip{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px;
+  padding:0 0 4px;
+}
+.markModeStrip button{
+  border:1px solid rgba(148,163,184,.2);
+  background:#07101a;
+  color:#dbeafe;
+  border-radius:12px;
+  padding:10px 12px;
+  font-weight:1000;
+  cursor:pointer;
+}
+.markModeStrip button.active{
+  background:linear-gradient(135deg,#ffbf2f,#ffe18a);
+  color:#06101f;
+  border-color:#ffbf2f;
+}
+.markerSection{
+  border:1px solid rgba(148,163,184,.14);
+  border-radius:14px;
+  background:rgba(7,15,26,.58);
+  overflow:hidden;
+}
+.markerSection summary{
+  cursor:pointer;
+  padding:11px 12px;
+  color:#ffcf4d;
+  font-weight:1000;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  background:rgba(15,23,42,.62);
+  border-bottom:1px solid rgba(148,163,184,.1);
+}
+.markerSection:not([open]) summary{border-bottom:0;}
+.modernEventGroups .markQuickGroup{
+  margin:10px 10px 12px !important;
+  padding:0 !important;
+  border:0 !important;
+  background:transparent !important;
+}
+.modernEventGroups .markQuickGroup small{
+  display:block;
+  color:#7dd3fc;
+  font-size:10px;
+  font-weight:1000;
+  letter-spacing:.09em;
+  text-transform:uppercase;
+  margin:0 0 7px;
+}
+.modernEventGroups .markQuickGroup div{
+  display:grid !important;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:7px !important;
+}
+.modernEventGroups .markQuickGroup button{
+  min-height:38px;
+  border:1px solid rgba(148,163,184,.18);
+  background:#07101a;
+  color:#cbd5e1;
+  border-radius:11px;
+  padding:8px 10px;
+  font-weight:900;
+  cursor:pointer;
+  white-space:normal;
+  line-height:1.15;
+}
+.modernEventGroups .markQuickGroup button:hover{
+  border-color:rgba(255,191,47,.45);
+  color:#fff;
+  background:#0b1726;
+}
+.modernEventGroups .markQuickGroup button.queued{
+  background:linear-gradient(135deg,#ffbf2f,#ffe18a) !important;
+  color:#06101f !important;
+  border-color:#ffbf2f !important;
+}
+.seedIdeaPanel .seedHeader b{color:#ffcf4d;}
+.seedIdeaPanel .seedHeader span{color:#94a3b8;}
+@media(max-width:1050px){
+  .modernEventGroups .markQuickGroup div{grid-template-columns:1fr;}
+}
+
+/* v086.5: Mark workbench + real event taxonomy visibility */
+.floatingWorkspacePanel{
+  width:min(860px,76vw) !important;
+  min-width:650px !important;
+  right:66px !important;
+}
+.floatingWorkspacePanel .markWorkbenchPanel{
+  height:calc(100% - 54px) !important;
+  padding:0 !important;
+  overflow:hidden !important;
+}
+.markWorkbench{
+  height:100%;
+  display:grid;
+  grid-template-columns:270px minmax(0,1fr);
+  min-height:0;
+  overflow:hidden;
+}
+.markWorkbenchLeft{
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:14px;
+  border-right:1px solid rgba(148,163,184,.14);
+  background:linear-gradient(180deg,rgba(10,17,28,.98),rgba(4,9,17,.98));
+}
+.markWorkbenchLeft .markSelectedCard,
+.markWorkbenchLeft .markQueueChips{
+  flex:0 0 auto;
+}
+.markWorkbenchLeft .markQueueChips{
+  min-height:88px;
+  max-height:190px;
+  overflow:auto;
+  border:1px solid rgba(148,163,184,.12);
+  border-radius:14px;
+  padding:10px;
+  background:rgba(15,23,42,.38);
+}
+.markWorkbenchLeft .modernMarkFooter{
+  margin-top:auto !important;
+  border:1px solid rgba(148,163,184,.12) !important;
+  border-radius:16px !important;
+  padding:10px !important;
+  grid-template-columns:1fr 1.3fr !important;
+}
+.markWorkbenchLeft .markModeStrip.compact{
+  grid-template-columns:1fr 1fr;
+  padding:0;
+}
+.markEventTaxonomy{
+  min-height:0;
+  overflow-y:auto;
+  padding:14px;
+  background:rgba(2,6,23,.36);
+}
+.markEventTaxonomy .markQuickGroups{
+  margin:0 !important;
+  padding:0 !important;
+  border:0 !important;
+  background:transparent !important;
+  display:grid !important;
+  gap:12px !important;
+}
+.markEventTaxonomy .markerSection{
+  display:block !important;
+  margin:0 !important;
+  background:rgba(7,15,26,.72) !important;
+}
+.markEventTaxonomy .markerSection summary{
+  display:block !important;
+}
+.markEventTaxonomy .markQuickGroup{
+  display:block !important;
+}
+.markEventTaxonomy .markQuickGroup div{
+  display:grid !important;
+  grid-template-columns:repeat(3,minmax(0,1fr)) !important;
+  gap:8px !important;
+}
+.markEventTaxonomy .markQuickGroup button{
+  min-height:40px !important;
+  display:flex !important;
+  align-items:center;
+  justify-content:center;
+  text-align:center;
+}
+.caseAutoHint{
+  border:1px solid rgba(0,255,208,.15);
+  background:rgba(0,255,208,.05);
+  border-radius:12px;
+  padding:8px 10px;
+  color:#94a3b8;
+  font-size:11px;
+  line-height:1.35;
+}
+@media(max-width:1050px){
+  .floatingWorkspacePanel{left:10px !important;right:54px !important;width:auto !important;min-width:0 !important;}
+  .markWorkbench{grid-template-columns:1fr;}
+  .markWorkbenchLeft{border-right:0;border-bottom:1px solid rgba(148,163,184,.14);}
+  .markEventTaxonomy .markQuickGroup div{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}
+}
+
+/* v086.7: Floating panel safe-area above candle replay footer.
+   The replay dock finally behaves, so the panel now respects it instead of sitting on its lap like bad UI furniture. */
+:root{
+  --tm-replay-safe-zone: 76px;
+}
+.floatingWorkspacePanel{
+  top:14px !important;
+  bottom:var(--tm-replay-safe-zone) !important;
+  max-height:calc(100vh - 190px) !important;
+}
+.floatingWorkspacePanel .rightTabPanel,
+.floatingWorkspacePanel .markWorkbenchPanel,
+.floatingWorkspacePanel .narrativeTabPanel,
+.floatingWorkspacePanel .seedTabPanel,
+.floatingWorkspacePanel .gpsPanel,
+.floatingWorkspacePanel .gpsMockForm{
+  min-height:0 !important;
+}
+.markWorkbenchLeft{
+  min-height:0 !important;
+  overflow:hidden !important;
+}
+.markWorkbenchLeft .modernMarkFooter{
+  position:sticky !important;
+  bottom:0 !important;
+  z-index:6 !important;
+  background:linear-gradient(180deg,rgba(10,17,28,.96),rgba(4,9,17,.99)) !important;
+  box-shadow:0 -10px 22px rgba(0,0,0,.28) !important;
+}
+.markWorkbenchLeft .markModeStrip.compact,
+.markWorkbenchLeft .markSelectedCard{
+  flex:0 0 auto !important;
+}
+.markWorkbenchLeft .markQueueChips{
+  flex:1 1 auto !important;
+  min-height:72px !important;
+  max-height:160px !important;
+}
+.markEventTaxonomy{
+  padding-bottom:18px !important;
+}
+.fixedBottomReplayDock{
+  flex-basis:48px !important;
+  height:48px !important;
+  padding:6px 12px !important;
+  border-radius:14px !important;
+}
+.fixedBottomReplayDock button{
+  height:34px !important;
+  min-width:50px !important;
+  border-radius:11px !important;
+}
+.fixedBottomReplayDock .dockSpeedInput input{
+  padding:6px 8px !important;
+}
+@media(max-height:760px){
+  .floatingWorkspacePanel{
+    top:8px !important;
+    bottom:64px !important;
+    max-height:calc(100vh - 160px) !important;
+  }
+  .markWorkbenchLeft{gap:7px !important;padding:10px !important;}
+  .markEventTaxonomy{padding:10px !important;}
+  .markEventTaxonomy .markQuickGroup button{min-height:34px !important;font-size:11px !important;}
+  .fixedBottomReplayDock{flex-basis:44px !important;height:44px !important;}
+}
+
+/* v086.13 independent timeframe Case Manager */
+.caseScopeStrip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  margin: 10px 0 12px;
+}
+.caseScopeStrip button {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.82);
+  color: #94a3b8;
+  border-radius: 8px;
+  padding: 8px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.caseScopeStrip button.active {
+  border-color: rgba(59, 130, 246, 0.78);
+  color: #dbeafe;
+  background: rgba(37, 99, 235, 0.25);
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.18) inset;
+}
+.caseLinkHint {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  background: rgba(245, 158, 11, 0.07);
+  border-radius: 10px;
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* v086.14 Case save confirmation + duplicate-save guard */
+.caseSavedNotice{
+  margin:10px 0 0;
+  padding:9px 11px;
+  border:1px solid rgba(34,197,94,.35);
+  background:rgba(22,163,74,.14);
+  color:#bbf7d0;
+  border-radius:10px;
+  font-size:12px;
+  font-weight:800;
+  line-height:1.25;
+}
+.gpsSaveBtn:disabled,
+.saveNarrativeBtn:disabled,
+.clearQueueBtn:disabled{
+  opacity:.55;
+  cursor:not-allowed;
+  filter:grayscale(.35);
+}
+
+/* v087 Event Ledger Viewer + Case Update Guard */
+.ledgerViewerPanel{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  overflow:hidden !important;
+}
+.compilerPreviewCard{
+  border:1px solid rgba(56,189,248,.22);
+  background:rgba(8,20,32,.76);
+  border-radius:14px;
+  padding:12px;
+  display:grid;
+  gap:8px;
+}
+.compilerPreviewCard>b{color:#38bdf8;font-size:12px;text-transform:uppercase;letter-spacing:.08em;}
+.compilerPreviewCard div{display:grid;grid-template-columns:76px 1fr;gap:6px;align-items:center;border-top:1px solid rgba(148,163,184,.08);padding-top:7px;}
+.compilerPreviewCard span{color:#94a3b8;font-size:11px;font-weight:800;text-transform:uppercase;}
+.compilerPreviewCard strong{color:#e2e8f0;font-family:ui-monospace,Menlo,monospace;font-size:12px;}
+.compilerPreviewCard em{grid-column:2;color:#64748b;font-size:10px;font-style:normal;font-family:ui-monospace,Menlo,monospace;}
+.ledgerRows{
+  min-height:0;
+  overflow:auto;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  padding-right:2px;
+}
+.ledgerRowButton{
+  display:grid;
+  grid-template-columns:38px 1fr;
+  gap:8px;
+  align-items:center;
+  width:100%;
+  text-align:left;
+  border:1px solid rgba(148,163,184,.14);
+  border-radius:12px;
+  background:rgba(15,23,42,.62);
+  padding:10px;
+  color:#e2e8f0;
+  cursor:pointer;
+}
+.ledgerRowButton:hover{border-color:rgba(56,189,248,.65);background:rgba(14,116,144,.16);}
+.ledgerRowButton b{color:#f59e0b;font-family:ui-monospace,Menlo,monospace;font-size:12px;}
+.ledgerRowButton span{font-weight:1000;font-size:12px;text-transform:uppercase;}
+.ledgerRowButton em{grid-column:2;color:#94a3b8;font-size:11px;font-style:normal;font-family:ui-monospace,Menlo,monospace;}
+.caseManagerHeader{margin-bottom:8px;}
+.activeCaseCard{
+  display:grid;
+  grid-template-columns:82px 1fr auto;
+  gap:8px;
+  align-items:center;
+  border:1px solid rgba(34,197,94,.22);
+  background:rgba(20,83,45,.12);
+  border-radius:12px;
+  padding:10px 12px;
+  margin:8px 0 10px;
+}
+.activeCaseCard span{color:#94a3b8;font-size:10px;text-transform:uppercase;font-weight:900;letter-spacing:.08em;}
+.activeCaseCard b{color:#dcfce7;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.activeCaseCard button{border:1px solid rgba(148,163,184,.22);background:#07101a;color:#cbd5e1;border-radius:8px;padding:6px 8px;font-size:11px;font-weight:800;cursor:pointer;}
+.activeCaseCard button:disabled{opacity:.38;cursor:not-allowed;}
+.caseActionRow{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;}
+.seedIdeaList{display:grid;gap:6px;}
+.seedIdeaList button{
+  border:1px solid rgba(148,163,184,.14);
+  background:rgba(15,23,42,.5);
+  color:#cbd5e1;
+  border-radius:10px;
+  padding:8px 10px;
+  text-align:left;
+  cursor:pointer;
+  font-size:11px;
+}
+.seedIdeaList button.active{border-color:#38bdf8;background:rgba(14,116,144,.18);color:#e0f2fe;}
+
+/* v087.4 Case Ledger Detail Preview */
+.caseLedgerDetail{
+  border:1px solid rgba(56,189,248,.22);
+  background:rgba(8,20,32,.72);
+  border-radius:14px;
+  padding:10px;
+  margin:10px 0;
+  display:grid;
+  gap:9px;
+}
+.caseLedgerHeader{display:flex;justify-content:space-between;gap:10px;align-items:flex-start;}
+.caseLedgerHeader b{color:#38bdf8;text-transform:uppercase;letter-spacing:.08em;font-size:11px;}
+.caseLedgerHeader span{color:#94a3b8;font-size:11px;font-weight:800;text-align:right;}
+.caseLedgerMeta{display:grid;grid-template-columns:1fr 1fr;gap:6px;}
+.caseLedgerMeta div{border:1px solid rgba(148,163,184,.12);border-radius:10px;background:rgba(15,23,42,.46);padding:8px;display:grid;gap:3px;}
+.caseLedgerMeta div:nth-child(3){grid-column:1 / -1;}
+.caseLedgerMeta span{color:#64748b;font-size:9px;text-transform:uppercase;letter-spacing:.08em;font-weight:1000;}
+.caseLedgerMeta b{color:#e2e8f0;font-size:11px;font-family:ui-monospace,Menlo,monospace;}
+.caseLedgerRows{max-height:260px;overflow:auto;display:grid;gap:6px;padding-right:2px;}
+.caseLedgerRows button{display:grid;grid-template-columns:34px 1fr;gap:7px;align-items:center;width:100%;text-align:left;border:1px solid rgba(148,163,184,.14);background:rgba(15,23,42,.62);color:#e2e8f0;border-radius:10px;padding:8px;cursor:pointer;}
+.caseLedgerRows button:hover{border-color:rgba(56,189,248,.65);background:rgba(14,116,144,.18);}
+.caseLedgerRows button b{color:#f59e0b;font-family:ui-monospace,Menlo,monospace;font-size:11px;}
+.caseLedgerRows button span{font-weight:1000;font-size:11px;text-transform:uppercase;}
+.caseLedgerRows button em{grid-column:2;color:#94a3b8;font-size:10px;font-style:normal;font-family:ui-monospace,Menlo,monospace;}
+.caseLedgerEmpty,.caseLedgerMore{border:1px dashed rgba(148,163,184,.2);border-radius:10px;padding:10px;color:#94a3b8;font-size:11px;line-height:1.35;background:rgba(15,23,42,.35);}
+
+.caseLedgerMeta em{
+  color:#64748b;
+  font-size:9px;
+  font-style:normal;
+  font-family:ui-monospace,Menlo,monospace;
+  opacity:.85;
+}
+
+/* v087.8 HTF semi-auto state engine */
+.htfLiteCard,.htfCandidateBox{border:1px solid rgba(148,163,184,.25);background:rgba(15,23,42,.72);border-radius:14px;padding:10px;margin:10px 0;box-shadow:0 10px 24px rgba(0,0,0,.16)}
+.htfLiteHeader{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.htfLiteHeader b{font-size:13px}.htfLiteHeader span{font-size:11px;color:#94a3b8;text-align:right}.htfLiteGrid{display:grid;grid-template-columns:1fr;gap:7px}.htfLiteGrid div{display:grid;grid-template-columns:70px 1fr;gap:4px;align-items:center;background:rgba(2,6,23,.45);border-radius:10px;padding:7px}.htfLiteGrid span,.htfCandidateState span{font-size:10px;color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}.htfLiteGrid strong{font-size:12px;color:#e5e7eb}.htfLiteGrid em,.htfCandidateState em{grid-column:2;color:#94a3b8;font-size:10px;font-style:normal}.htfLiteNote{font-size:10px;color:#94a3b8;line-height:1.35;margin-top:8px}.htfCandidateState{display:flex;justify-content:space-between;gap:8px;margin-bottom:8px}.htfCandidateList{display:flex;flex-direction:column;gap:8px;max-height:310px;overflow:auto}.htfCandidateItem{border:1px solid rgba(148,163,184,.22);background:rgba(2,6,23,.48);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:5px}.htfCandidateItem b{font-size:12px;color:#f8fafc}.htfCandidateItem span{font-size:11px;color:#cbd5e1;line-height:1.3}.htfCandidateItem em{font-size:10px;color:#93c5fd;font-style:normal}.htfCandidateItem div{display:flex;gap:6px;flex-wrap:wrap}.htfCandidateItem button{border:1px solid rgba(148,163,184,.28);background:rgba(15,23,42,.9);color:#e5e7eb;border-radius:8px;padding:5px 8px;font-size:10px}.htfCandidateItem button:first-child{border-color:rgba(34,197,94,.45);color:#bbf7d0}.htfCandidateItem button:last-child{border-color:rgba(248,113,113,.45);color:#fecaca}.htfNoCandidates{font-size:11px;color:#94a3b8;background:rgba(2,6,23,.35);padding:8px;border-radius:10px}
+
+/* v087.9 HTF workspace UI: modes inside Mark + slimmer full-height dock */
+:root{--tm-replay-safe-zone:64px;}
+.d3ChartCard{padding-right:48px !important;}
+.floatingWorkspaceDock{
+  right:8px !important;
+  top:10px !important;
+  bottom:var(--tm-replay-safe-zone) !important;
+  height:auto !important;
+  width:42px !important;
+  padding:6px 4px !important;
+  border-radius:18px !important;
+  justify-content:flex-start !important;
+  gap:8px !important;
+}
+.floatingWorkspaceDock button{
+  width:32px !important;
+  height:44px !important;
+  min-height:44px !important;
+  border-radius:14px !important;
+  font-size:14px !important;
+}
+.floatingWorkspacePanel{
+  right:56px !important;
+  top:10px !important;
+  bottom:var(--tm-replay-safe-zone) !important;
+  width:min(500px,38vw) !important;
+  min-width:420px !important;
+  max-width:560px !important;
+  max-height:calc(100vh - 78px) !important;
+}
+.floatingWorkspacePanel .markWorkspaceV0879{
+  height:calc(100% - 54px) !important;
+  padding:0 !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+  min-height:0 !important;
+}
+.markWorkspaceModeTabs{
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:6px;
+  padding:10px;
+  border-bottom:1px solid rgba(148,163,184,.12);
+  background:rgba(2,6,23,.42);
+  flex:0 0 auto;
+}
+.markWorkspaceModeTabs button{
+  border:1px solid rgba(148,163,184,.18);
+  background:rgba(15,23,42,.8);
+  color:#94a3b8;
+  border-radius:11px;
+  padding:9px 6px;
+  font-size:11px;
+  font-weight:1000;
+  letter-spacing:.04em;
+  cursor:pointer;
+}
+.markWorkspaceModeTabs button.active{
+  color:#071018;
+  border-color:#ffbf2f;
+  background:linear-gradient(135deg,#ffbf2f,#ffe18a);
+  box-shadow:0 0 20px rgba(255,191,47,.18);
+}
+.markModePane{
+  min-height:0;
+  flex:1 1 auto;
+  overflow:auto;
+  padding:12px;
+}
+.htfEnginePane{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+.markSelectedCard.wide,
+.htfStateLiteCard,
+.htfCandidateBox.fullWidth{
+  width:auto !important;
+  margin:0 !important;
+}
+.htfStateLiteCard{
+  border:1px solid rgba(56,189,248,.22);
+  background:rgba(8,20,32,.76);
+  border-radius:16px;
+  padding:12px;
+}
+.compactStateGrid{
+  grid-template-columns:repeat(2,minmax(0,1fr)) !important;
+}
+.htfCandidateListTall{
+  max-height:none !important;
+  flex:1 1 auto;
+}
+.htfPaneFooter{
+  position:sticky;
+  bottom:-12px;
+  z-index:5;
+  margin-top:auto;
+  display:grid;
+  grid-template-columns:1fr 1.35fr;
+  gap:10px;
+  padding:10px 0 0;
+  background:linear-gradient(180deg,rgba(7,13,24,0),rgba(7,13,24,.98) 26%);
+}
+.htfPaneFooter button{min-height:42px;}
+.manualEventsPane{padding:0 !important;overflow:hidden !important;}
+.manualMarkWorkbench{
+  height:100%;
+  grid-template-columns:250px minmax(0,1fr) !important;
+}
+.manualMarkWorkbench .markWorkbenchLeft{padding:12px !important;}
+.caseQuickPane{display:flex;flex-direction:column;gap:10px;}
+.caseQuickHeader h3{margin:0;color:#ffcf4d;font-size:20px;}
+.caseQuickHeader p{margin:4px 0 0;}
+.compactCaseGrid{grid-template-columns:1fr !important;}
+.compactCaseBtns{display:grid !important;grid-template-columns:1fr !important;gap:8px !important;}
+.compactCaseLedger{min-height:0;}
+.compactCaseLedger .caseLedgerRows{max-height:240px;overflow:auto;}
+@media(max-width:1050px){
+  .floatingWorkspacePanel{left:10px !important;right:54px !important;width:auto !important;min-width:0 !important;}
+  .manualMarkWorkbench{grid-template-columns:1fr !important;}
+}
+@media(max-height:760px){
+  .floatingWorkspaceDock{top:8px !important;bottom:56px !important;}
+  .floatingWorkspacePanel{top:8px !important;bottom:56px !important;max-height:calc(100vh - 64px) !important;}
+}
+
+/* v087.17 candidate audit + history mark filters */
+.historyMarksControl{display:flex;align-items:center;gap:8px;padding:0 12px;border:1px solid rgba(136,160,190,.22);border-radius:12px;background:#07111d;color:#dfe8f5;font-weight:900;font-size:13px;height:38px;letter-spacing:.03em}
+.historyMarksControl select{background:#0c1626;color:#f6f8ff;border:1px solid rgba(136,160,190,.26);border-radius:9px;padding:6px 8px;font-weight:800;outline:none}
+.candidateAuditCard{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0;padding:10px;border:1px solid rgba(0,255,208,.18);background:rgba(0,255,208,.045);border-radius:14px}
+.candidateAuditCard div{display:flex;flex-direction:column;gap:4px;min-height:54px;justify-content:center;background:rgba(5,13,25,.55);border:1px solid rgba(136,160,190,.12);border-radius:12px;padding:8px}
+.candidateAuditCard span{text-transform:uppercase;letter-spacing:.1em;font-size:10px;color:#96a5b9;font-weight:900}
+.candidateAuditCard b{font-size:18px;color:#fff8d5}
+.rejectedAuditList{margin:10px 0;padding:10px;border:1px solid rgba(255,98,124,.22);border-radius:14px;background:rgba(255,98,124,.045);display:flex;flex-direction:column;gap:7px}
+.rejectedAuditList>b{text-transform:uppercase;letter-spacing:.09em;color:#ff9baa;font-size:12px}
+.rejectedAuditList button{display:flex;justify-content:space-between;gap:10px;text-align:left;background:#0a1322;border:1px solid rgba(255,98,124,.16);border-radius:10px;color:#e8eef7;padding:8px 10px;cursor:pointer}
+.rejectedAuditList button span{font-weight:900;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rejectedAuditList button em{font-size:11px;color:#9aa8ba;font-style:normal;white-space:nowrap}
+/* v087.19 UI stability + database reset controls */
+.d3MapStudio .gpsSaveBtn.danger{border-color:rgba(239,68,68,.45)!important;background:rgba(239,68,68,.12)!important;color:#fecaca!important;}
+.d3MapStudio .gpsSaveBtn.danger:hover{background:rgba(239,68,68,.22)!important;color:#fff!important;}
+.d3MapStudio .seedGrid input::placeholder{color:rgba(148,163,184,.55)}
+.d3CandleSvg .priceBubble rect,.d3CandleSvg .dateBubble rect{shape-rendering:crispEdges;}
+.d3CandleSvg .priceBubble,.d3CandleSvg .dateBubble{will-change:transform;}
+
+/* v087.20 structural mapping cleanup */
+.structuralDoctrineCard,
+.dangerZoneBox {
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin: 10px 0;
+  background: rgba(255,255,255,0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.structuralDoctrineCard b { color: #f5d77b; }
+.structuralDoctrineCard span,
+.dangerZoneBox span { color: rgba(255,255,255,0.72); font-size: 12px; line-height: 1.45; }
+.dangerZoneDetails { margin-top: 8px; width: 100%; }
+.dangerZoneDetails summary { cursor: pointer; color: #ffb4a8; font-weight: 700; }
+.dangerZoneBox { border-color: rgba(255,80,80,0.35); background: rgba(255,0,0,0.06); }
+.displaySettingsPage .settingsSectionTitle { margin-top: 14px; }
+
+/* v087.23b parent high/low mapping helper */
+.parentRangeMiniBar{position:absolute;left:16px;top:78px;z-index:7;display:flex;gap:8px;align-items:center;background:rgba(2,6,23,.78);border:1px solid rgba(148,163,184,.22);border-radius:12px;padding:7px 9px;color:#cbd5e1;font-size:11px;backdrop-filter:blur(8px)}
+.parentRangeMiniBar b{color:#e2e8f0;font-weight:900;text-transform:uppercase;letter-spacing:.08em}
+.parentRangeMiniBar span{color:#94a3b8;max-width:360px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.parentRangeMiniBar button{border:1px solid rgba(148,163,184,.28);background:rgba(15,23,42,.78);color:#e2e8f0;border-radius:9px;padding:5px 8px;font-size:10px;font-weight:800;cursor:pointer}
+.parentRangeMiniBar button:hover{border-color:rgba(255,191,47,.55);color:#ffdf76}
+
+/* v087.25 proper full-chart focus mode: hide the board, keep floating NGMC/workspace dock and compact anchors. */
+.mapStudioShell.chartFullscreenActive{
+  position:fixed !important;
+  inset:0 !important;
+  z-index:9998 !important;
+  background:#020617 !important;
+  padding:0 !important;
+  margin:0 !important;
+  overflow:hidden !important;
+}
+.mapStudioShell.chartFullscreenActive .mapStudioHeader,
+.mapStudioShell.chartFullscreenActive .mapStudioToolbar,
+.mapStudioShell.chartFullscreenActive .crosshairReadout{
+  display:none !important;
+}
+.mapStudioShell.chartFullscreenActive .d3Workspace{
+  position:fixed !important;
+  inset:0 !important;
+  z-index:9999 !important;
+  padding:6px !important;
+  margin:0 !important;
+  background:#020617 !important;
+  width:100vw !important;
+  height:100vh !important;
+  overflow:hidden !important;
+}
+.mapStudioShell.chartFullscreenActive .d3ChartCard{
+  height:calc(100vh - 12px) !important;
+  min-height:0 !important;
+  border-radius:12px !important;
+  padding:8px 48px 8px 8px !important;
+  background:#000 !important;
+}
+.mapStudioShell.chartFullscreenActive .chartTitleRowMap.compactChartTitle,
+.mapStudioShell.chartFullscreenActive .chartReplayOverlay{
+  transform:scale(.82);
+  transform-origin:left top;
+  opacity:.72;
+}
+.mapStudioShell.chartFullscreenActive .d3CandleSvg{
+  height:calc(100vh - 42px) !important;
+  min-height:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .quickAnchorBar{
+  position:absolute !important;
+  left:12px !important;
+  top:12px !important;
+  z-index:10002 !important;
+  display:flex !important;
+  gap:6px !important;
+  padding:6px !important;
+  border-radius:12px !important;
+  background:rgba(2,6,23,.72) !important;
+  border:1px solid rgba(148,163,184,.18) !important;
+  backdrop-filter:blur(10px) !important;
+}
+.mapStudioShell.chartFullscreenActive .quickAnchorBar button{
+  min-height:28px !important;
+  padding:4px 9px !important;
+  font-size:11px !important;
+  border-radius:9px !important;
+}
+.mapStudioShell.chartFullscreenActive .floatingWorkspaceDock{
+  z-index:10003 !important;
+  top:12px !important;
+  right:10px !important;
+  bottom:76px !important;
+}
+.mapStudioShell.chartFullscreenActive .floatingWorkspacePanel{
+  z-index:10002 !important;
+  top:12px !important;
+  right:58px !important;
+  bottom:76px !important;
+  width:min(430px,34vw) !important;
+  min-width:360px !important;
+}
+
+/* v087.26 fullscreen mapping controls: keep parent reference out of the Set H/L area and make replay usable inside full chart. */
+.parentRangeMiniBar{
+  left:16px !important;
+  top:auto !important;
+  bottom:18px !important;
+  max-width:min(520px,48vw) !important;
+  pointer-events:none !important;
+  opacity:.78 !important;
+}
+.parentRangeMiniBar button{display:none !important;}
+.mapStudioShell.chartFullscreenActive .parentRangeMiniBar{
+  left:12px !important;
+  top:56px !important;
+  bottom:auto !important;
+  max-width:420px !important;
+  transform:scale(.88);
+  transform-origin:left top;
+  opacity:.72 !important;
+}
+.mapStudioShell.chartFullscreenActive .quickAnchorBar{
+  left:12px !important;
+  top:10px !important;
+}
+.fullscreenTfDock{
+  position:absolute;
+  top:10px;
+  right:70px;
+  z-index:10004;
+  display:flex;
+  gap:5px;
+  padding:6px;
+  border-radius:12px;
+  background:rgba(2,6,23,.72);
+  border:1px solid rgba(148,163,184,.18);
+  backdrop-filter:blur(10px);
+}
+.fullscreenTfDock button,
+.fullscreenReplayDock button{
+  min-height:27px;
+  border-radius:9px;
+  border:1px solid rgba(148,163,184,.24);
+  background:#07111d;
+  color:#e2e8f0;
+  font-size:11px;
+  font-weight:900;
+  padding:4px 8px;
+  cursor:pointer;
+}
+.fullscreenTfDock button.active,
+.fullscreenReplayDock button.active{
+  background:linear-gradient(180deg,#ffe07a,#ffbf2f);
+  color:#05111f;
+  border-color:rgba(255,191,47,.75);
+}
+.fullscreenTfDock button:disabled,
+.fullscreenReplayDock button:disabled{opacity:.42;cursor:not-allowed;}
+.fullscreenReplayDock{
+  position:absolute;
+  left:50%;
+  bottom:10px;
+  transform:translateX(-50%);
+  z-index:10004;
+  display:flex;
+  align-items:center;
+  gap:6px;
+  max-width:calc(100vw - 190px);
+  padding:7px 9px;
+  border-radius:14px;
+  background:rgba(2,6,23,.76);
+  border:1px solid rgba(148,163,184,.2);
+  backdrop-filter:blur(10px);
+}
+.fullscreenReplayDock span{
+  color:#ffdf76;
+  font-size:11px;
+  font-weight:900;
+  white-space:nowrap;
+  max-width:44vw;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.mapStudioShell.chartFullscreenActive .fixedBottomReplayDock{display:none !important;}
+body:has(.mapStudioShell.chartFullscreenActive){overflow:hidden !important;}
+body:has(.mapStudioShell.chartFullscreenActive) .sidebar{display:none !important;}
+body:has(.mapStudioShell.chartFullscreenActive) .mainContent{padding:0 !important;margin:0 !important;}
+body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenActive{width:100vw !important;height:100vh !important;}
+
+/* v087.27 camera + scale controls */
+.cameraModeSelect{
+  height:44px;border-radius:14px;border:1px solid rgba(148,163,184,.28);background:#07111f;color:#e8eef7;font-weight:900;padding:0 10px;
+}
+.scaleNudges{display:flex;align-items:center;gap:4px;background:rgba(15,23,42,.55);border:1px solid rgba(148,163,184,.20);border-radius:14px;padding:4px 6px}
+.scaleNudges button,.fullscreenScaleDock button{min-width:34px;height:34px;border-radius:10px;border:1px solid rgba(148,163,184,.25);background:#0f172a;color:#e8eef7;font-weight:900;font-size:12px;padding:0 8px}
+.scaleNudges span,.fullscreenScaleDock span{color:#ffdf76;font-size:11px;font-weight:900;min-width:38px;text-align:center}
+.fullscreenScaleDock{position:absolute;right:18px;top:70px;z-index:60;display:flex;gap:5px;align-items:center;background:rgba(2,6,23,.82);border:1px solid rgba(148,163,184,.25);border-radius:14px;padding:6px;box-shadow:0 16px 40px rgba(0,0,0,.35)}
+.fullscreenTfDock select{height:30px;border-radius:10px;border:1px solid rgba(148,163,184,.25);background:#07111f;color:#e8eef7;font-weight:900;padding:0 6px;font-size:11px}
+.chartFullscreenMode .d3CandleSvg{height:calc(100vh - 120px)!important;min-height:680px}

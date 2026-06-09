@@ -1,0 +1,793 @@
+Here’s the clean export to paste into the new chat. This should give the next thread the full brain without dragging this laggy dinosaur behind us.
+
+```text
+PROJECT EXPORT: FX TrendMaster / Map Studio / Narrative Mapping Engine
+
+User is building a custom Electron trading analysis platform called FX TrendMaster / TrendMaster Cockpit. The goal is to replace TradingView + spreadsheets with a candle replay, event marking, range compiling, narrative-building, and eventually AI/statistics engine for FX/indices/Gold analysis.
+
+Current focus:
+We are building the HTF brain first: Macro, Weekly, Daily. Intraday and Micro/15m will come later. Intraday is expected to be the hardest layer and should not be rushed until HTF logic is solid.
+
+LATEST ELECTRON VERSION:
+v087.5 Case Summary Auto-Derive
+File sent:
+fx_trendmaster_electron_mvp_v087_5_case_summary_autoderive.zip
+
+LATEST BACKEND PATCH SENT:
+backend_v147_case_update_endpoint.zip
+
+Important:
+Backend update may or may not have been applied yet. If case update/save-as-new does not persist correctly, backend v147 must be installed. Electron itself has been patched many times and should now be based on v087.5.
+
+==================================================
+CORE ARCHITECTURE LOCKED
+==================================================
+
+Main model:
+
+Macro qualifies.
+Weekly qualifies.
+Daily narrates.
+Intraday executes.
+Micro confirms.
+
+Context does not trigger. Context qualifies.
+
+The system should store raw market facts first, then derive ranges, relationships, and narratives later.
+
+Correct long-term pipeline:
+
+Saved Bundle
+→ Event Ledger
+→ Range Compiler
+→ Relationship Compiler
+→ Narrator Engine
+→ Statistics / ML / AI
+
+Save Bundle is the source of truth.
+Save Case is only a bookmark/container.
+Case Manager must not be treated as the main data source.
+
+==================================================
+EVENT LEDGER VS CASE
+==================================================
+
+Save Bundle:
+- Saves atomic market facts/events to backend.
+- This is mandatory during mapping.
+- This is the true data ledger.
+
+Save Case:
+- Optional bookmark/container.
+- Should update current active case, not create endless duplicates.
+- Save As New Case deliberately creates a new container.
+- Case should later contain linked events/ranges, but the event ledger remains truth.
+
+The user realized Case saving is not necessary for data preservation because Save Bundle already writes history marks to backend. Case is useful for grouping/reviewing/exporting, not for raw truth.
+
+Known current behavior:
+- Saved backend marks were visible so aggressively that we built History Marks ON/OFF toggle.
+- History saving works.
+- Important remaining checks are around exact fib anchor restoration and case linking.
+
+==================================================
+UI CURRENT STATE
+==================================================
+
+The fixed right sidebar was removed.
+Now there is a floating vertical dock on the right side of the chart:
+
+N = Narrative / Event Ledger Viewer
+G = GPS
+M = Mark
+C = Case
+
+The chart/map now stays large.
+
+Floating panel:
+- Opens when clicking N/G/M/C.
+- Can be closed.
+- Mark panel has modern workbench with selected candle, event queue, event taxonomy, Save Bundle.
+- Case panel shows recent cases and selected case ledger preview.
+- Narrative panel now functions as global Event Ledger Viewer / Range Compiler Preview.
+
+The inner tab row inside the floating panel was removed because the dock already controls N/G/M/C.
+
+==================================================
+HISTORY MARKS TOGGLE
+==================================================
+
+Top toolbar has:
+History Marks ON/OFF
+
+Purpose:
+- OFF hides old backend/history marks.
+- Current session marks should stay visible.
+- ON shows backend/saved marks.
+
+This was necessary because old saved backend marks were cluttering the chart.
+
+Current desired behavior:
+Startup should show current/live range and context, NOT old historical case fibs.
+Historical case range restore should only happen later when deliberately loading a case.
+
+Startup = current map mode.
+Case load = future historical case mode.
+
+==================================================
+FIB / RANGE ANCHOR RULES
+==================================================
+
+Very important.
+
+Only explicit Set M/W/D High and Set M/W/D Low buttons should move fib/range anchors.
+
+External high/low, current high/low, ref high/low, BOS, reclaim, profile, retracement, etc. must NOT silently move fibs.
+
+Range anchor buttons:
+
+MN1 / Macro:
+Set M High = selected candle high
+Set M Low = selected candle low
+
+W1 / Weekly:
+Set W High = selected candle high
+Set W Low = selected candle low
+
+D1 / Daily:
+Set D High = selected candle high
+Set D Low = selected candle low
+
+The user was debugging a serious precision issue where:
+- Set W Low initially chose correct low.
+- Then Set W High reset low to an older/lower backend value.
+Several patches were made:
+v086.9 Fib Range State Fix
+v086.10 Fib Low Anchor Fix
+v086.11 Explicit Fib Anchors
+v086.12 Anchor Side Preserve Fix
+v086.13 Independent Case + Range Guard
+
+Current rule:
+Saving high must only update high.
+Saving low must only update low.
+No full range resync during explicit anchor saves.
+Backend range may fill blanks but must not overwrite explicit local anchors.
+
+Still must smoke-test this carefully.
+
+==================================================
+MACRO TAXONOMY LOCKED
+==================================================
+
+Macro is mostly location only.
+
+Macro locations:
+
+MACRO_EXTERNAL_HIGH
+MACRO_EXTERNAL_LOW
+MACRO_EXTREME_PREMIUM
+MACRO_EXTREME_DISCOUNT
+MACRO_ABOVE_FP
+MACRO_FAIR_PRICE
+MACRO_BELOW_FP
+
+Macro does not need BOS/CHOCH/phases right now.
+Macro acts as broad context/qualification.
+
+==================================================
+WEEKLY TAXONOMY LOCKED
+==================================================
+
+Weekly locations:
+
+WEEKLY_EXTERNAL_HIGH
+WEEKLY_EXTERNAL_LOW
+WEEKLY_EXTREME_PREMIUM
+WEEKLY_EXTREME_DISCOUNT
+WEEKLY_ABOVE_FP
+WEEKLY_FAIR_PRICE
+WEEKLY_BELOW_FP
+
+Weekly events:
+
+WEEKLY_REF_HIGH_ACTIVE
+WEEKLY_REF_LOW_ACTIVE
+
+WEEKLY_BOS_UP
+WEEKLY_BOS_DOWN
+
+WEEKLY_RECLAIM_REF_HIGH
+WEEKLY_RECLAIM_REF_LOW
+
+WEEKLY_RANGE_CONFIRMED_AFTER_BOS_UP
+WEEKLY_RANGE_CONFIRMED_AFTER_BOS_DOWN
+
+WEEKLY_RANGE_ABANDONED_UP
+WEEKLY_RANGE_ABANDONED_DOWN
+
+WEEKLY_CURRENT_HIGH_FORMED
+WEEKLY_CURRENT_LOW_FORMED
+
+WEEKLY_EXTREME_REVERSAL_ZONE
+WEEKLY_EXTERNAL_REVERSAL_ZONE
+
+Weekly profile attributes:
+
+PROFILE_SD_DEEP
+PROFILE_SR_SHALLOW
+PROFILE_ABANDON_NO_RECLAIM
+
+Weekly retracement buckets:
+
+RETRACEMENT_0_MINUS
+RETRACEMENT_0_25
+RETRACEMENT_25_50
+RETRACEMENT_50_75
+RETRACEMENT_75_100
+RETRACEMENT_100_PLUS
+
+Weekly PWH/PWL concept added, mirrored from Daily PDH/PDL:
+
+WEEKLY_PWH_REFERENCE
+WEEKLY_PWL_REFERENCE
+WEEKLY_PWH_SWEEP_REF_CANDLE
+WEEKLY_PWL_SWEEP_REF_CANDLE
+WEEKLY_NO_SWEEP_REF_CANDLE
+
+Important:
+PWH/PWL does not move fib anchors unless explicit Set W High/Low is also selected.
+
+==================================================
+DAILY TAXONOMY LOCKED
+==================================================
+
+Daily locations:
+
+DAILY_EXTERNAL_HIGH
+DAILY_EXTERNAL_LOW
+DAILY_EXTREME_PREMIUM
+DAILY_EXTREME_DISCOUNT
+DAILY_ABOVE_FP
+DAILY_FAIR_PRICE
+DAILY_BELOW_FP
+
+Daily A+ reference model:
+
+DAILY_PDH_REFERENCE
+DAILY_PDL_REFERENCE
+
+DAILY_PDH_SWEEP_REF_CANDLE
+DAILY_PDL_SWEEP_REF_CANDLE
+
+DAILY_NO_SWEEP_REF_CANDLE
+
+Critical Daily reference logic:
+Day 1 = liquidity reference candle.
+For PDH: store Day 1 high.
+For PDL: store Day 1 low.
+
+Day 2:
+- Sweeps Day 1 PDH/PDL and becomes actual ref candle, OR
+- Does not sweep but still becomes ref candle.
+
+Day 2 is the actual ref candle post-sweep or no-sweep.
+
+Bearish A+:
+Price at Daily premium/extreme premium/external high OR Weekly extreme premium/external high.
+Day 1 = PDH reference.
+Day 2 = PDH sweep ref candle OR no-sweep ref candle.
+Then CHOCH down, P1 retest, P1 BOS, etc.
+
+Bullish A+:
+Price at Daily discount/extreme discount/external low OR Weekly extreme discount/external low.
+Day 1 = PDL reference.
+Day 2 = PDL sweep ref candle OR no-sweep ref candle.
+Then CHOCH up, P1 retest, P1 BOS, etc.
+
+Daily reference structure added:
+DAILY_REF_HIGH_ACTIVE
+DAILY_REF_LOW_ACTIVE
+
+Daily phase events:
+
+PRE_CHOCH
+CHOCH_UP
+CHOCH_DOWN
+
+P1_RETEST
+P1_BOS
+
+P2_RETEST
+P2_BOS
+
+P3_RETEST
+P3_FAIL
+
+PC_CONTINUATION
+CONTINUATION
+
+RANGE_ABANDONED
+
+Daily profiles:
+
+PROFILE_SD_DEEP
+PROFILE_SR_SHALLOW
+PROFILE_ABANDON_NO_RECLAIM
+
+Daily profile change:
+DAILY_PROFILE_CHANGE
+
+Responsible point metadata:
+
+RESPONSIBLE_HIGH
+RESPONSIBLE_LOW
+
+Stored with:
+price
+timestamp
+candle_index
+linked_phase
+
+Range state:
+
+DAILY_RANGE_CONFIRMED_AFTER_BOS_UP
+DAILY_RANGE_CONFIRMED_AFTER_BOS_DOWN
+DAILY_RANGE_ABANDONED_UP
+DAILY_RANGE_ABANDONED_DOWN
+DAILY_OBJECTIVE_COMPLETE
+
+==================================================
+INDUCEMENT SWING LOGIC
+==================================================
+
+Macro/Weekly/Daily inducement swing is not a separate event.
+
+It is captured through:
+ABOVE_FP
+FAIR_PRICE
+BELOW_FP
+
+Example bullish:
+Discount → Fair Price → Above FP → reject → back to discount.
+The move above FP is inducement.
+
+Example bearish:
+Premium → Fair Price → Below FP → reject → back to premium.
+The move below FP is inducement.
+
+No separate MACRO_INDUCEMENT_SWING / WEEKLY_INDUCEMENT_SWING / DAILY_INDUCEMENT_SWING needed.
+
+==================================================
+RANGE HIERARCHY / RELATIONSHIP MODEL
+==================================================
+
+Each timeframe eventually needs its own range table.
+
+Macro range table:
+macro_range_id
+symbol
+RH_date
+RH_price
+RL_date
+RL_price
+range_start_date
+range_end_date
+status
+
+Weekly range table:
+weekly_range_id
+symbol
+macro_range_id nullable
+RH_date
+RH_price
+RL_date
+RL_price
+range_start_date
+range_end_date
+status
+
+Daily range table:
+daily_range_id
+symbol
+weekly_range_id nullable
+RH_date
+RH_price
+RL_date
+RL_price
+range_start_date
+range_end_date
+status
+
+Important:
+range_start_date and range_end_date are needed because RH_date and RL_date are not always chronological.
+
+Relationship rule:
+Macro active → Weekly links to Macro.
+Macro abandoned → Weekly becomes source/root.
+Weekly active → Daily links to Weekly.
+Weekly abandoned → Daily becomes source/root.
+Daily abandoned → stand down, no trade until new Daily range.
+
+Date containment links children to parents:
+child.range_start_date inside parent.range_start_date → parent.range_end_date.
+
+This lets the machine analyze:
+- Timeframes independently.
+- Timeframes jointly via HTF/LTF relationships.
+
+==================================================
+MULTI-RANGE CASE LOGIC
+==================================================
+
+The user wants to map multiple daily ranges in one go, especially trending daily markets with HTF objective in play.
+
+One Daily Case should support multiple Daily ranges.
+
+Example:
+Daily Case
+├── Daily Range 1
+├── Daily Range 2
+├── Daily Range 3
+└── HTF objective still active
+
+Do NOT force:
+One Daily Case = One Daily Range
+
+Daily trend sequence may include:
+CHoCH → P1 Retest → P1 BOS → P2 Retest → P2 BOS → profile change → continuation impulses until Weekly objective.
+
+Case manager should eventually allow:
+Add Current Range to Case
+Update Current Case
+Save As New Case
+
+But raw truth remains Event Ledger.
+
+==================================================
+CASE MANAGER CURRENT STATE
+==================================================
+
+Case was renamed from Seed.
+
+Dock is now:
+N/G/M/C
+
+Case = saved study/bookmark/container.
+
+Case Manager now:
+- Shows recent cases.
+- Lets user select active case.
+- Shows case-specific ledger preview.
+- Shows linked events for selected case.
+- v087.5 patch auto-derives summary from linked ledger:
+  high, low, window.
+
+Desired case behavior:
+Save Case updates active case.
+Save As New creates a fresh case.
+Double-click duplicates must be blocked.
+Save Bundle must not create cases.
+Case table should stay clean.
+Event ledger may have many rows intentionally.
+
+Known issue fixed:
+Saving a daily range case then adding Daily Ref Low and saving case again created Case #6 and Case #7. Need activeCaseId update logic.
+
+Backend v147 was sent to support PUT update endpoint:
+PUT /api/v1/mos/seed-idea/{case_id}
+
+If backend is not updated, case update may not persist properly.
+
+==================================================
+EVENT LEDGER VIEWER / RANGE COMPILER PREVIEW
+==================================================
+
+v087 introduced:
+- Event Ledger Viewer under N panel.
+- Range Compiler Preview.
+- Case Manager active case / linked ledger preview.
+- Click ledger row should jump chart toward candle.
+
+N = Global event ledger.
+C = Case-specific ledger preview.
+
+Case-specific ledger preview now shows:
+- Active case
+- Scope/timeframe
+- Linked event rows
+- Derived high/low/window if not directly saved on case
+
+Recent screenshot showed:
+Case Ledger Preview:
+DAILY · D1 · 8 linked events
+Rows:
+#1 REF LOW TAKEN
+#2 RANGE HIGH
+#3 RANGE LOW
+#4 D REF L
+etc.
+
+This is looking good.
+
+Next refinement:
+Event Ledger Viewer + Range Compiler Preview should become the basis for the future Narrator Engine.
+
+==================================================
+NARRATOR / COMPILER ARCHITECTURE
+==================================================
+
+Do not build full narrator yet.
+
+Correct build order:
+
+1. Event Ledger
+2. Range Compiler
+3. Relationship Compiler
+4. Narrator Engine
+5. Case / Scenario Review
+
+Narrator must not guess. It must read compiled structure.
+
+Example:
+User marks:
+SET_W_HIGH
+SET_W_LOW
+WEEKLY_BOS_DOWN
+WEEKLY_RECLAIM_REF_LOW
+RETRACEMENT_25_50
+PROFILE_SR_SHALLOW
+
+Range Compiler builds:
+Weekly Range #1
+High
+Low
+Status
+Start/end
+Parent macro range
+
+Relationship Compiler derives:
+- Old range low was broken.
+- Reclaim back inside old range.
+- Old range low becomes Ref L.
+- Retracement depth links to old range.
+- New reference structure forms.
+
+Retracement must always link to a measured range:
+measured_range_id
+range_high
+range_low
+event_id
+bucket
+
+Narrator then explains:
+“Price broke below weekly range low, reclaimed back inside, old weekly low became active Ref L, retracement depth measured against old weekly range was 25–50%.”
+
+Narrator is translator, not prophet.
+
+==================================================
+CHAINED STATE MACHINE IDEA
+==================================================
+
+A range breach + reclaim should cause cascading state transitions.
+
+Example:
+State 0:
+Current Range High = 2350
+
+State 1:
+Price breaches high and stages new extreme 2380.
+
+State 2:
+Price closes back inside old range.
+Engine:
+- Old high becomes Ref H
+- New staged high becomes current high
+- Logs reclaim relationship
+- Links retracement to old range
+
+Abandoned vs reclaim:
+Breach staged = price breaks active boundary.
+Reclaim = later candle closes back inside old boundary.
+Abandoned = price breaks boundary and continues forming structure outside old range without closing back inside within allowed confirmation window.
+
+Confirmation window still needs refining:
+Weekly probably 1–3 candles.
+Daily probably 1–3 candles.
+Intraday later.
+
+==================================================
+IMPORTANT UI / LABEL NOTES
+==================================================
+
+Some redundancy appeared in Weekly panel:
+W External H/L
+W Ref H/L
+W Current H/L
+Set W High/Low
+
+Resolution:
+Separate jobs clearly.
+
+Anchor = updates fibs.
+Location = where price is.
+Event = what happened.
+Attribute = how it happened.
+Range state = what changed.
+
+One candle can carry multiple facts.
+
+Example candle bundle:
+Set W High
+Weekly External High
+Weekly BOS Up
+Retracement 100+
+Profile S&R Shallow
+
+Save Bundle should save a bundle of facts on one candle.
+
+Save button renamed to:
+Save Bundle
+
+==================================================
+RECENT BUGS / PATCHES HISTORY
+==================================================
+
+Important patch line:
+
+v086.3 Floating Workspace Dock
+- Big chart.
+- Floating N/G/M/S dock.
+
+v086.4 Case Dock + History Toggle
+- Dock N/G/M/C.
+- History Marks toggle.
+
+v086.5 Mark Workbench + Case Autofill
+- Wider Mark panel.
+- Event taxonomy workbench.
+- Case autofill.
+
+v086.6 Range Anchor Sync
+- New taxonomy markers linked to range engine.
+
+v086.7 Floating Panel Safe Area
+- Floating panel stops above replay dock.
+
+v086.8 Selected Candle Range Anchors
+- Set M/W/D High/Low from selected candle high/low.
+
+v086.9 Fib Range State Fix
+- Bundled range anchor saves update fibs.
+
+v086.10 Fib Low Anchor Fix
+- Low anchor fix.
+
+v086.11 Explicit Fib Anchors
+- Only explicit Set M/W/D H/L move fibs.
+
+v086.12 Anchor Side Preserve Fix
+- Saving high preserves low; saving low preserves high.
+
+v086.13 Independent Case + Range Guard
+- Independent Macro/Weekly/Daily/Intraday/Micro cases.
+- Removed default range hijack.
+- Explicit local anchors protected.
+
+v086.14 Case Save Confirmation Guard
+- Saved confirmation.
+- Double-click de-dupe.
+- Case save no longer renders extra overlays.
+
+v086.15 Weekly PWH/PWL + Daily Ref H/L
+- Added Weekly PWH/PWL mirrored reference system.
+- Added Daily Ref H/L.
+
+v087 Case Update + Ledger Viewer
+- Added case update, event ledger viewer, range compiler preview.
+- Backend v147 introduced update endpoint.
+
+v087.1/v087.2/v087.3 were crash/URL/runtime fixes.
+Important:
+Do NOT force 127.0.0.1. User has domain:
+https://api01.apexcoastalrentals.co.za
+
+v087.4 Case Ledger Detail Preview
+- Case-specific ledger preview.
+
+v087.5 Case Summary Auto-Derive
+- Derives high/low/window from linked event rows.
+
+==================================================
+DOMAIN / API NOTE
+==================================================
+
+Do NOT break the domain setup.
+
+API base should use:
+https://api01.apexcoastalrentals.co.za
+
+A bad patch tried 127.0.0.1 / localhost and user got angry because domain already exists. Do not repeat that nonsense. Yes, we learned. Painfully.
+
+==================================================
+CURRENT NEXT TASKS
+==================================================
+
+1. Continue smoke testing Weekly.
+   Verify:
+   - Set W Low exact candle low.
+   - Set W High exact candle high.
+   - Saving high does not move low.
+   - Saving low does not move high.
+   - Weekly PWH/PWL works.
+   - History ON/OFF works.
+   - Restart shows current map, not old case fibs.
+   - History marks reload when ON.
+
+2. Test Macro same way.
+   Macro should be simpler:
+   Set M High/Low + location marks.
+
+3. Test Daily basics:
+   Set D High/Low
+   Daily PDH/PDL reference
+   Sweep ref candle
+   No sweep ref candle
+   Daily Ref H/L
+   CHOCH
+   P1/P2/P3
+   Profiles
+   Responsible point
+
+4. Keep Case Manager clean:
+   Save Case updates active case.
+   Save As New creates new case.
+   No duplicate spam.
+
+5. Event Ledger Viewer / Case Ledger Preview should be used to inspect what actually saved.
+
+6. Next major dev milestone after smoke tests:
+   Range Compiler Preview v1
+   Then Relationship Compiler
+   Then Narrator Engine
+
+==================================================
+USER WORKFLOW RIGHT NOW
+==================================================
+
+For mapping:
+1. Replay historical chart.
+2. Click candle.
+3. Open M.
+4. Select multiple facts.
+5. Save Bundle.
+6. Continue.
+
+Case Save is optional.
+Do not rely on Case as the raw data source.
+
+History Marks:
+OFF while mapping clean current session.
+ON to inspect saved/backend marks.
+
+Startup behavior:
+Should load current/live context, not old historical case.
+
+==================================================
+PERSONAL / PROJECT CONTEXT
+==================================================
+
+User is Josh.
+He is building this as his trading machine for XAUUSD and later other instruments.
+He wants statistics, ML/AI, and eventually advice based on HTF conditions + independent LTF scenarios.
+He trades with strict HTF logic and wants the app to teach the machine how he reads charts.
+He wants to map 20 historical cases/scenarios once UI and ledger are stable.
+Intraday and Micro will be added later.
+Micro/15m won’t be too hard.
+Intraday will require deep planning and should wait until HTF is refined.
+
+Tone:
+Be direct. No sugarcoating. He likes practical architecture and hates vague UI/form nonsense.
+```
+
+Paste that into the new chat and we can continue without hauling this bloated chat corpse around like a cursed suitcase.
