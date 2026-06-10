@@ -1387,6 +1387,10 @@ def save_map_event(payload: dict[str, Any]) -> dict[str, Any]:
 
 ALLOWED_STRUCTURAL_EVENT_TYPES = {
     "RANGE_CREATED",
+    "RANGE_HIGH_SELECTED",
+    "RANGE_LOW_SELECTED",
+    "BREAK_HIGH_SELECTED",
+    "BREAK_LOW_SELECTED",
     "BOS_UP",
     "BOS_DOWN",
     "ACTIVE_RANGE_CHANGED",
@@ -1394,6 +1398,24 @@ ALLOWED_STRUCTURAL_EVENT_TYPES = {
     "RANGE_REBASED",
     "RANGE_ABANDONED",
 }
+
+
+def _meta_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _event_is_undone(row: sqlite3.Row | dict[str, Any]) -> bool:
+    d = dict(row)
+    meta = _meta_dict(d.get("meta_json"))
+    return bool(meta.get("undone") or meta.get("deleted_at"))
 
 
 def save_structural_map_event(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1527,7 +1549,7 @@ def get_map_events(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 1
                 """,
                 (symbol, tf, limit),
             ).fetchall()
-    events = [_event_row_to_dict(r) for r in rows]
+    events = [_event_row_to_dict(r) for r in rows if not _event_is_undone(r)]
     return {"ok": True, "symbol": symbol, "timeframe": tf, "case_id": case_id, "count": len(events), "events": events}
 
 
@@ -1980,7 +2002,7 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
 
     with connect() as conn:
         ranges = [_range_row_to_structural_dict(r) for r in conn.execute(f"SELECT * FROM map_ranges WHERE {where} ORDER BY id ASC", args).fetchall()]
-        events = [dict(r) for r in conn.execute(f"SELECT * FROM map_events WHERE {where} ORDER BY id ASC", args).fetchall()]
+        events = [dict(r) for r in conn.execute(f"SELECT * FROM map_events WHERE {where} ORDER BY id ASC", args).fetchall() if not _event_is_undone(r)]
 
         counts_by_layer = {layer: 0 for layer in STRUCTURE_LAYER_ORDER}
         orphan_daily: list[dict[str, Any]] = []
@@ -2129,7 +2151,10 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         if "case_ref" not in payload and ("case_id" in payload or "raw_case_id" in payload):
             updates["case_ref"] = case_ref
         if "meta_json" in payload:
-            updates["meta_json"] = json.dumps(payload.get("meta_json"), ensure_ascii=False, default=str) if isinstance(payload.get("meta_json"), dict) else payload.get("meta_json")
+            if isinstance(payload.get("meta_json"), dict):
+                updates["meta_json"] = json.dumps({**_meta_dict(existing_d.get("meta_json")), **payload.get("meta_json")}, ensure_ascii=False, default=str)
+            else:
+                updates["meta_json"] = payload.get("meta_json")
 
         if "range_high_price" in updates:
             updates["range_high"] = updates["range_high_price"]
@@ -2154,13 +2179,17 @@ def patch_structural_map_event(event_id: str, payload: dict[str, Any]) -> dict[s
     event_type_aliases = {
         "RH": "RANGE_HIGH",
         "RANGE_HIGH": "RANGE_HIGH",
+        "RANGE_HIGH_SELECTED": "RANGE_HIGH_SELECTED",
         "RL": "RANGE_LOW",
         "RANGE_LOW": "RANGE_LOW",
+        "RANGE_LOW_SELECTED": "RANGE_LOW_SELECTED",
         "BH": "BOS_UP",
         "BREAK_HIGH": "BOS_UP",
+        "BREAK_HIGH_SELECTED": "BREAK_HIGH_SELECTED",
         "BOS_UP": "BOS_UP",
         "BL": "BOS_DOWN",
         "BREAK_LOW": "BOS_DOWN",
+        "BREAK_LOW_SELECTED": "BREAK_LOW_SELECTED",
         "BOS_DOWN": "BOS_DOWN",
     }
     with connect() as conn:

@@ -377,7 +377,7 @@ function NavItem({ icon, label, page, active, collapsed, setPage }: any) { retur
 type Candle = { symbol:string; timeframe:string; time:string; open:number; high:number; low:number; close:number; volume?:number };
 type MapEvent = { id:string; event_type:string; event_name?:string; time?:string; price:number; zone?:string; zone_percent?:number; notes?:string; candle_open?:number; candle_high?:number; candle_low?:number; candle_close?:number; source?:'map'|'seed'|'auto'|'candidate'|'manual'; primitive?:string; derived_event_code?:string; movement_rule?:string; range_status_after?:string; engine_source?:string; logic_version?:string; candidate_id?:string; confidence?:string; candidate_status?:'ACCEPTED'|'REJECTED'|'EDITED'|'CANDIDATE'; meta_json?:any; structural_event?:string; layer?:string; parent_timeframe?:string; range_id?:any; active_range_id?:any; parent_range_id?:any; old_range_id?:any; new_range_id?:any; raw_event_id?:string };
 
-type StructureLayer = 'WEEKLY'|'DAILY'|'INTRADAY';
+type StructureLayer = 'WEEKLY'|'DAILY'|'INTRADAY'|'MICRO';
 type StructuralAnchor = { price:string; time:string; candle?:Candle|null };
 type StructuralRange = {
   range_id?:number|string;
@@ -1213,12 +1213,17 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [sourceTimeframe, setSourceTimeframe] = useLocalStorage<string>('fx_tm_structure_source_tf_phase3', 'W1');
   const [structuralSaving, setStructuralSaving] = useState(false);
   const [structuralRanges, setStructuralRanges] = useState<StructuralRange[]>([]);
+  const [savedStructuralRanges, setSavedStructuralRanges] = useState<StructuralRange[]>([]);
+  const [lastSavedRangeConfirmation, setLastSavedRangeConfirmation] = useState<any>(null);
   const [selectedParentRangeId, setSelectedParentRangeId] = useLocalStorage<string>('fx_tm_selected_parent_range_id_phase3', '');
   const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
   const [rhAnchor, setRhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [rlAnchor, setRlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [bhAnchor, setBhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [blAnchor, setBlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
+  const [quickEventSaving, setQuickEventSaving] = useState(false);
+  const [lastSavedQuickEvent, setLastSavedQuickEvent] = useState<any>(null);
+  const [quickEventHistory, setQuickEventHistory] = useState<any[]>([]);
   const [structuralRangeDraftDirty, setStructuralRangeDraftDirty] = useState(false);
   const [structuralBosDraftDirty, setStructuralBosDraftDirty] = useState(false);
   const [hierarchyAudit, setHierarchyAudit] = useState<any>(null);
@@ -2568,6 +2573,72 @@ function MapStudio({ symbol }: { symbol:string }) {
     return data;
   };
 
+  const selectedSavedRange = useMemo(() => {
+    if (!activeStructuralRangeId) return null;
+    return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
+  }, [savedStructuralRanges, activeStructuralRangeId]);
+
+  const savePreview = useMemo(() => {
+    const mappingCase = getCurrentMappingCaseRef();
+    const parentId = structureLayer === 'WEEKLY' ? null : (selectedParentRangeId || null);
+    return {
+      chart_timeframe: timeframe,
+      structure_layer: structureLayer,
+      source_timeframe: sourceTimeframe,
+      case_ref: mappingCase.case_ref,
+      raw_case_id: mappingCase.raw_case_id,
+      case_id: mappingCase.case_id,
+      hasCase: mappingCase.hasCase,
+      parent_range_id: parentId,
+      range_high_price: rhAnchor.price || null,
+      range_high_time: rhAnchor.time || null,
+      range_low_price: rlAnchor.price || null,
+      range_low_time: rlAnchor.time || null,
+      action: activeStructuralRangeId ? 'UPDATE_SELECTED_RANGE' : 'SAVE_NEW_RANGE',
+      actionLabel: activeStructuralRangeId ? 'Update Selected Range' : 'Save New Range',
+      warning: String(timeframe).toUpperCase() === 'D1' && structureLayer === 'WEEKLY'
+        ? 'You are viewing D1 candles but saving a WEEKLY range.'
+        : '',
+    };
+  }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, selectedParentRangeId, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId]);
+
+  const refreshSavedRangesForCurrentCase = async () => {
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) {
+      setSavedStructuralRanges([]);
+      return [] as StructuralRange[];
+    }
+    const params = appendMappingCaseParams(new URLSearchParams({ symbol, limit:'5000' }), mappingCase);
+    const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/ranges?${params.toString()}`);
+    const rows = safeArray<StructuralRange>(data.ranges);
+    setSavedStructuralRanges(rows);
+    return rows;
+  };
+
+  const selectSavedStructuralRange = (range:any) => {
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return;
+    setActiveStructuralRangeId(id);
+    setStructureLayer((String(range.structure_layer || range.layer || structureLayer).toUpperCase() as StructureLayer) || structureLayer);
+    if (range.source_timeframe || range.timeframe) setSourceTimeframe(String(range.source_timeframe || range.timeframe).toUpperCase());
+    if (range.parent_range_id !== undefined && range.parent_range_id !== null) setSelectedParentRangeId(String(range.parent_range_id));
+    const high = range.range_high_price ?? range.range_high;
+    const low = range.range_low_price ?? range.range_low;
+    if (high !== undefined && high !== null && high !== '') {
+      const next = { price:String(high), time:String(range.range_high_time || ''), candle:null };
+      setRhAnchor(next);
+      setRangeHigh(String(high));
+    }
+    if (low !== undefined && low !== null && low !== '') {
+      const next = { price:String(low), time:String(range.range_low_time || ''), candle:null };
+      setRlAnchor(next);
+      setRangeLow(String(low));
+    }
+    setRangeWindowByTf(prev => ({ ...prev, [timeframe]: { ...(prev[timeframe] || {}), start:range.range_start_time || range.range_high_time || prev[timeframe]?.start || '', end:range.range_end_time || range.range_low_time || prev[timeframe]?.end || '' } }));
+    setStructuralRangeDraftDirty(false);
+    setMessage(`Selected saved range #${id}. Save Range button is now Update Selected Range.`);
+  };
+
   const refreshStructuralRanges = async () => {
     const params = new URLSearchParams({ symbol });
     const mappingCase = getCurrentMappingCaseRef();
@@ -2624,14 +2695,23 @@ function MapStudio({ symbol }: { symbol:string }) {
   };
 
   useEffect(() => {
-    if (rightDeckTab === 'mark' && markWorkspaceMode === 'htf') refreshStructuralRanges();
+    if (rightDeckTab === 'mark' && markWorkspaceMode === 'htf') {
+      refreshStructuralRanges();
+      refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`));
+    }
   }, [rightDeckTab, markWorkspaceMode, structureLayer, sourceTimeframe, symbol, activeCaseId, rawActiveCaseId]);
 
-  const setStructuralPoint = (kind:'RH'|'RL'|'BH'|'BL') => {
-    const candle = selectedCandle || replayCandle;
-    if (!candle) { setMessage('Select a candle first, then set RH/RL/BH/BL.'); return; }
-    const price = kind === 'RL' || kind === 'BL' ? candle.low : candle.high;
-    const next = { price: Number(price).toFixed(2), time: candle.time, candle };
+  const chartStructureForTimeframe = (tfRaw:string) => {
+    const tf = String(tfRaw || 'D1').toUpperCase();
+    if (tf === 'W1') return { structure_layer:'WEEKLY' as StructureLayer, source_timeframe:'W1' };
+    if (tf === 'D1') return { structure_layer:'DAILY' as StructureLayer, source_timeframe:'D1' };
+    if (tf === 'H4') return { structure_layer:'INTRADAY' as StructureLayer, source_timeframe:'H4' };
+    if (tf === 'H1') return { structure_layer:'INTRADAY' as StructureLayer, source_timeframe:'H1' };
+    if (tf === 'M15') return { structure_layer:'MICRO' as StructureLayer, source_timeframe:'M15' };
+    return { structure_layer:'WEEKLY' as StructureLayer, source_timeframe:tf };
+  };
+
+  const applyStructuralDraftPoint = (kind:'RH'|'RL'|'BH'|'BL', candle:Candle, next:{price:string; time:string; candle:Candle|null}) => {
     if (kind === 'RH') {
       setRhAnchor(next);
       setRangeHigh(next.price);
@@ -2660,7 +2740,141 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     const label = kind === 'RH' ? 'Range High' : kind === 'RL' ? 'Range Low' : kind === 'BH' ? 'Break High' : 'Break Low';
     const viewNote = kind === 'RH' || kind === 'RL' ? 'visible fib range updated; not saved yet' : 'draft marker only; fib range unchanged';
-    setMessage(`Set ${label} ${next.price} · ${shortTime(candle.time, timeframe)} (${viewNote})`);
+    return { label, viewNote };
+  };
+
+  const setStructuralPoint = async (kind:'RH'|'RL'|'BH'|'BL') => {
+    if (quickEventSaving) return;
+    const candle = selectedCandle || replayCandle;
+    if (!candle) { setMessage('Select a candle first, then set RH/RL/BH/BL.'); return; }
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving structural quick events.'); return; }
+    const chartStructure = chartStructureForTimeframe(timeframe);
+    const price = kind === 'RL' || kind === 'BL' ? candle.low : candle.high;
+    const next = { price: Number(price).toFixed(2), time: candle.time, candle };
+    const previous = {
+      RH: rhAnchor,
+      RL: rlAnchor,
+      BH: bhAnchor,
+      BL: blAnchor,
+      range: rangeByTf[timeframe] || null,
+      window: rangeWindowByTf[timeframe] || null,
+    };
+    const eventTypeByRole:any = {
+      RH: 'RANGE_HIGH_SELECTED',
+      RL: 'RANGE_LOW_SELECTED',
+      BH: 'BREAK_HIGH_SELECTED',
+      BL: 'BREAK_LOW_SELECTED',
+    };
+    const eventId = crypto.randomUUID();
+    const layerWarning = chartStructure.structure_layer !== structureLayer
+      ? `Chart timeframe implies ${chartStructure.structure_layer} but active mapping layer is ${structureLayer}. Event will be saved as ${chartStructure.structure_layer} because chart timeframe is ${timeframe}.`
+      : '';
+    const isBreak = kind === 'BH' || kind === 'BL';
+    const payload:any = {
+      event_id: eventId,
+      case_id: mappingCase.case_id,
+      raw_case_id: mappingCase.raw_case_id,
+      case_ref: mappingCase.case_ref,
+      symbol,
+      chart_timeframe: timeframe,
+      source_timeframe: chartStructure.source_timeframe,
+      structure_layer: chartStructure.structure_layer,
+      active_range_id: activeStructuralRangeId || null,
+      parent_range_id: chartStructure.structure_layer === 'WEEKLY' ? null : (selectedParentRangeId || null),
+      event_type: eventTypeByRole[kind],
+      structural_event: eventTypeByRole[kind],
+      event_time: candle.time,
+      event_price: Number(next.price),
+      candle_time: candle.time,
+      candle_open: candle.open,
+      candle_high: candle.high,
+      candle_low: candle.low,
+      candle_close: candle.close,
+      direction: kind === 'BH' ? 'UP' : kind === 'BL' ? 'DOWN' : null,
+      meta_json: {
+        role: kind,
+        quick_button: true,
+        chart_timeframe_wins: true,
+        active_mapping_layer_at_click: structureLayer,
+        warning: layerWarning || null,
+        analytics_ready: chartStructure.structure_layer !== 'MICRO',
+        analytics_note: chartStructure.structure_layer === 'MICRO' ? 'MICRO/M15 quick event stored; analytics not ready yet.' : null,
+      },
+    };
+    if (isBreak) {
+      payload.break_level_type = kind;
+      payload.break_level_price = Number(next.price);
+      payload.break_level_time = candle.time;
+    }
+    setQuickEventSaving(true);
+    try {
+      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const applied = applyStructuralDraftPoint(kind, candle, next);
+      const saved = {
+        role: kind,
+        event_id: data.event_id || data.event?.event_id || eventId,
+        db_id: data.id || data.event?.id || null,
+        timeframe,
+        structure_layer: chartStructure.structure_layer,
+        source_timeframe: chartStructure.source_timeframe,
+        candle_time: candle.time,
+        event_price: Number(next.price),
+        previous,
+        payload,
+        saved_at: new Date().toISOString(),
+      };
+      setLastSavedQuickEvent(saved);
+      setQuickEventHistory(prev => [...prev, saved].slice(-50));
+      setMessage(`Saved ${kind} event ${String(saved.event_id).slice(0,8)} · ${chartStructure.structure_layer}/${chartStructure.source_timeframe} · ${shortTime(candle.time, timeframe)}${layerWarning ? ` · ${layerWarning}` : ` (${applied.viewNote})`}`);
+    } catch (err:any) {
+      setMessage(`Quick ${kind} event save failed: ${err?.message || err}`);
+    } finally {
+      setQuickEventSaving(false);
+    }
+  };
+
+  const undoLastQuickEvent = async () => {
+    if (!lastSavedQuickEvent?.event_id || quickEventSaving) return;
+    const ev = lastSavedQuickEvent;
+    setQuickEventSaving(true);
+    try {
+      await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event/${encodeURIComponent(String(ev.event_id))}`, {
+        method:'PATCH',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          meta_json: {
+            undone: true,
+            undone_at: new Date().toISOString(),
+            undo_reason: 'quick_undo',
+          },
+        }),
+      });
+      const prev = ev.previous || {};
+      if (ev.role === 'RH') {
+        setRhAnchor(prev.RH || { price:'', time:'' });
+        if (prev.range) setRangeByTf((p:any)=>({ ...p, [ev.timeframe]: prev.range }));
+        else setRangeHigh(prev.RH?.price || '');
+        setRangeWindowByTf((p:any)=>({ ...p, [ev.timeframe]: prev.window || {} }));
+      }
+      if (ev.role === 'RL') {
+        setRlAnchor(prev.RL || { price:'', time:'' });
+        if (prev.range) setRangeByTf((p:any)=>({ ...p, [ev.timeframe]: prev.range }));
+        else setRangeLow(prev.RL?.price || '');
+        setRangeWindowByTf((p:any)=>({ ...p, [ev.timeframe]: prev.window || {} }));
+      }
+      if (ev.role === 'BH') setBhAnchor(prev.BH || { price:'', time:'' });
+      if (ev.role === 'BL') setBlAnchor(prev.BL || { price:'', time:'' });
+      if (ev.role === 'RH' || ev.role === 'RL') setStructuralRangeDraftDirty(!!(prev.RH?.price || prev.RL?.price));
+      if (ev.role === 'BH' || ev.role === 'BL') setStructuralBosDraftDirty(!!(prev.BH?.price || prev.BL?.price));
+      setQuickEventHistory(prevList => prevList.filter((x:any)=>String(x.event_id) !== String(ev.event_id)));
+      setLastSavedQuickEvent(null);
+      setMessage(`Undid ${ev.role} event on ${ev.timeframe} ${shortTime(ev.candle_time, ev.timeframe)}.`);
+    } catch (err:any) {
+      setMessage(`Undo last quick event failed: ${err?.message || err}`);
+    } finally {
+      setQuickEventSaving(false);
+    }
   };
 
   const structuralWindow = () => {
@@ -2687,7 +2901,10 @@ function MapStudio({ symbol }: { symbol:string }) {
     setStructuralSaving(true);
     try {
       const win = structuralWindow();
+      const isUpdate = !!activeStructuralRangeId;
+      const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
       const payload = {
+        ...(isUpdate ? { range_id: activeStructuralRangeId } : { range_key: `${safeCaseKey}_${structureLayer}_${sourceTimeframe}_${Date.now()}` }),
         case_id: mappingCase.case_id,
         raw_case_id: mappingCase.raw_case_id,
         case_ref: mappingCase.case_ref,
@@ -2710,9 +2927,22 @@ function MapStudio({ symbol }: { symbol:string }) {
       const id = String(data.range_id || data.id || data.range?.range_id || data.range?.id || '');
       setActiveStructuralRangeId(id);
       setStructuralRangeDraftDirty(false);
-      setMessage(`Saved ${structureLayer} range #${id || '?'} · ${data.parent_link_status || data.range?.parent_link_status || 'status pending'}`);
-      await refreshStructuralRanges();
-      await refreshHierarchyAudit();
+      const confirmation = {
+        range_id: id || null,
+        mode: isUpdate ? 'updated' : 'created',
+        structure_layer: data.range?.structure_layer || structureLayer,
+        source_timeframe: data.range?.source_timeframe || sourceTimeframe,
+        parent_range_id: data.range?.parent_range_id ?? payload.parent_range_id,
+        raw_case_id: data.range?.raw_case_id || mappingCase.raw_case_id,
+        case_ref: data.range?.case_ref || mappingCase.case_ref,
+        range_high_price: data.range?.range_high_price ?? payload.range_high_price,
+        range_low_price: data.range?.range_low_price ?? payload.range_low_price,
+      };
+      setLastSavedRangeConfirmation(confirmation);
+      setMessage(`${isUpdate ? 'Updated selected' : 'Saved new'} ${confirmation.structure_layer} range #${id || '?'} · ${confirmation.source_timeframe} · parent ${confirmation.parent_range_id || 'none'} · RH ${confirmation.range_high_price} / RL ${confirmation.range_low_price}`);
+      try { await refreshSavedRangesForCurrentCase(); } catch (refreshErr:any) { setMessage(`Saved range #${id || '?'}; saved-ranges refresh failed: ${refreshErr?.message || refreshErr}`); }
+      try { await refreshStructuralRanges(); } catch {}
+      try { await refreshHierarchyAudit(); } catch {}
     } catch (err:any) {
       setMessage(`Range save failed: ${err?.message || err}`);
     } finally {
@@ -2790,6 +3020,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       structuralFetchJson(`${BASE_URL}/api/v1/map/range-tree?${appendMappingCaseParams(new URLSearchParams({ symbol }), mappingCase).toString()}`),
       structuralFetchJson(`${BASE_URL}/api/v1/map/hierarchy-audit?${appendMappingCaseParams(new URLSearchParams({ symbol }), mappingCase).toString()}`),
     ]);
+    const refreshedSavedRanges = safeArray<StructuralRange>(rangesData.ranges);
+    setSavedStructuralRanges(refreshedSavedRanges);
     let eventsData:any = null;
     let eventsTodo:string|null = null;
     if (mappingCase.case_id !== null) {
@@ -2797,7 +3029,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     } else {
       eventsTodo = 'Saved structural event fetch by raw_case_id/case_ref is not exposed through the existing Electron-safe GET /api/v1/map/events endpoint yet.';
     }
-    return { mappingCase, rangesData, treeData, auditData, eventsData, eventsTodo };
+    return { mappingCase, rangesData, refreshedSavedRanges, treeData, auditData, eventsData, eventsTodo };
   };
 
   const exportAuditJson = async () => {
@@ -2837,8 +3069,11 @@ function MapStudio({ symbol }: { symbol:string }) {
           BL: blAnchor,
         },
         saved_structural_ranges: snapshot.rangesData,
+        saved_ranges_for_current_case: snapshot.refreshedSavedRanges,
         saved_structural_events: snapshot.eventsData,
         saved_structural_events_todo: snapshot.eventsTodo,
+        last_saved_quick_event: lastSavedQuickEvent,
+        quick_events_tracked_this_session: quickEventHistory,
         range_tree: snapshot.treeData,
         hierarchy_audit: snapshot.auditData,
         chart_context: {
@@ -3546,16 +3781,18 @@ function MapStudio({ symbol }: { symbol:string }) {
           <span>{activeParentRangeOverlay.map(x=>`${x.kind.toUpperCase()} ${Number(x.price).toFixed(2)}`).join(' · ')}</span>
         </div>}
         {chartFullscreen && <div className="quickAnchorBar" aria-label="Quick structural mapping controls">
-          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('RH')} title="Set structural Range High from selected/replay candle high"><b>Range High</b><span>RH</span></button>
-          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('RL')} title="Set structural Range Low from selected/replay candle low"><b>Range Low</b><span>RL</span></button>
-          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('BH')} title="Set structural Break High from selected/replay candle high"><b>Break High</b><span>BH</span></button>
-          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('BL')} title="Set structural Break Low from selected/replay candle low"><b>Break Low</b><span>BL</span></button>
+          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RH')} title="Save RH event and set structural Range High from selected/replay candle high"><b>Range High</b><span>RH</span></button>
+          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RL')} title="Save RL event and set structural Range Low from selected/replay candle low"><b>Range Low</b><span>RL</span></button>
+          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BH')} title="Save BH event and set structural Break High from selected/replay candle high"><b>Break High</b><span>BH</span></button>
+          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BL')} title="Save BL event and set structural Break Low from selected/replay candle low"><b>Break Low</b><span>BL</span></button>
           <span className="quickAnchorDivider" />
           <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
-          <button className="quickSaveBtn primary" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : 'Save Range'}</button>
+          <button className="quickSaveBtn primary" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
           <button className="quickSaveBtn" onClick={refreshHierarchyAudit}>Refresh Audit</button>
           <button className="quickSaveBtn" onClick={exportCurrentMappingJson}>Export JSON</button>
+          <button className="quickSaveBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
           <span className={`quickDraftStatus ${structuralRangeDraftDirty || structuralBosDraftDirty ? 'dirty' : 'saved'}`}>{structuralRangeDraftDirty || structuralBosDraftDirty ? 'Unsaved draft' : 'Draft clean'}</span>
+          <span className={`quickDraftStatus ${lastSavedQuickEvent ? 'saved' : ''}`}>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} ${lastSavedQuickEvent.source_timeframe} ${String(lastSavedQuickEvent.event_id).slice(0,8)}` : 'No quick event saved'}</span>
           <span className="quickAnchorDivider" title="TODO: add fullscreen Save BOS_UP, Save BOS_DOWN, and Refresh Audit actions after this compact row is validated." />
           <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')}>Select</button>
           <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')}>Scrub</button>
@@ -3769,10 +4006,30 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <div><span>BL</span><strong>{blAnchor.price || 'not set'}</strong><em>{blAnchor.time ? shortTime(blAnchor.time, timeframe) : 'Break Low'}</em></div>
               </div>
               <div className="caseActionRow">
-                <button onClick={()=>setStructuralPoint('RH')} disabled={!selectedCandle && !replayCandle}>Range High</button>
-                <button onClick={()=>setStructuralPoint('RL')} disabled={!selectedCandle && !replayCandle}>Range Low</button>
-                <button onClick={()=>setStructuralPoint('BH')} disabled={!selectedCandle && !replayCandle}>Break High</button>
-                <button onClick={()=>setStructuralPoint('BL')} disabled={!selectedCandle && !replayCandle}>Break Low</button>
+                <button onClick={()=>setStructuralPoint('RH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range High</button>
+                <button onClick={()=>setStructuralPoint('RL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range Low</button>
+                <button onClick={()=>setStructuralPoint('BH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break High</button>
+                <button onClick={()=>setStructuralPoint('BL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Low</button>
+                <button className="gpsSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
+              </div>
+              <div className="htfCandidateState">
+                <span>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} · ${lastSavedQuickEvent.structure_layer}/${lastSavedQuickEvent.source_timeframe} · ${String(lastSavedQuickEvent.event_id).slice(0,8)}` : 'No quick event saved this session.'}</span>
+                <em>Quick buttons save event ledger records only. Save Range remains separate.</em>
+              </div>
+            </div>
+
+            <div className="htfStateLiteCard">
+              <div className="htfLiteHeader"><b>Save Preview</b><span>{savePreview.actionLabel}</span></div>
+              {savePreview.warning && <div className="caseBadge warningBadge">{savePreview.warning}</div>}
+              <div className="htfLiteGrid compactStateGrid">
+                <div><span>Chart TF</span><strong>{savePreview.chart_timeframe}</strong><em>view only</em></div>
+                <div><span>Will Save</span><strong>{savePreview.structure_layer}</strong><em>{savePreview.actionLabel}</em></div>
+                <div><span>Source TF</span><strong>{savePreview.source_timeframe}</strong><em>structural truth</em></div>
+                <div><span>Case Ref</span><strong>{savePreview.case_ref || 'no case'}</strong><em>{savePreview.raw_case_id || savePreview.case_id || 'missing'}</em></div>
+                <div><span>Parent</span><strong>{savePreview.parent_range_id || 'none'}</strong><em>{structureLayer === 'DAILY' ? 'Weekly parent' : 'root range'}</em></div>
+                <div><span>RH</span><strong>{savePreview.range_high_price || 'not set'}</strong><em>{savePreview.range_high_time ? shortTime(savePreview.range_high_time, timeframe) : 'draft'}</em></div>
+                <div><span>RL</span><strong>{savePreview.range_low_price || 'not set'}</strong><em>{savePreview.range_low_time ? shortTime(savePreview.range_low_time, timeframe) : 'draft'}</em></div>
+                <div><span>Selected</span><strong>{activeStructuralRangeId || 'new'}</strong><em>{selectedSavedRange ? 'will update' : 'will create'}</em></div>
               </div>
             </div>
 
@@ -3780,9 +4037,28 @@ function MapStudio({ symbol }: { symbol:string }) {
               <div className="htfLiteHeader"><b>Save Structural Facts</b><span>{activeStructuralRangeId ? `active range #${activeStructuralRangeId}` : 'range id set after save'}</span></div>
               <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. BOS_UP requires BH. BOS_DOWN requires BL.</span><em>Create/Update Case saves the container only. Draft clicks do not auto-save.</em></div>
               <div className="caseActionRow">
-                <button className="gpsSaveBtn" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : 'Save Range'}</button>
+                <button className="gpsSaveBtn" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
+                <button className="gpsSaveBtn secondary" onClick={()=>{ setActiveStructuralRangeId(''); setLastSavedRangeConfirmation(null); setMessage('New range mode selected. Next Save Range will create a new saved range.'); }}>Start New Range</button>
                 <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('UP')} disabled={structuralSaving || !bhAnchor.price}>Save BOS_UP</button>
                 <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('DOWN')} disabled={structuralSaving || !blAnchor.price}>Save BOS_DOWN</button>
+              </div>
+              {lastSavedRangeConfirmation && <div className="caseBadge">
+                Saved confirmation: #{lastSavedRangeConfirmation.range_id || '?'} · {lastSavedRangeConfirmation.structure_layer} · {lastSavedRangeConfirmation.source_timeframe} · parent {lastSavedRangeConfirmation.parent_range_id || 'none'} · raw {lastSavedRangeConfirmation.raw_case_id || 'none'} · {lastSavedRangeConfirmation.case_ref || 'no case_ref'} · RH {lastSavedRangeConfirmation.range_high_price} / RL {lastSavedRangeConfirmation.range_low_price}
+              </div>}
+            </div>
+
+            <div className="htfStateLiteCard">
+              <div className="htfLiteHeader"><b>Saved Ranges for Current Case</b><span>{savedStructuralRanges.length} saved</span></div>
+              <div className="caseActionRow">
+                <button className="gpsSaveBtn secondary" onClick={()=>refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`))}>Refresh Saved Ranges</button>
+              </div>
+              <div className="caseLedgerRows">
+                {!savedStructuralRanges.length && <div className="caseLedgerEmpty">No saved structural ranges for this active case yet.</div>}
+                {savedStructuralRanges.slice(0, 24).map((r:any)=><button key={r.range_id || r.id} className={String(r.range_id || r.id) === String(activeStructuralRangeId) ? 'active' : ''} onClick={()=>selectSavedStructuralRange(r)}>
+                  <b>#{r.range_id || r.id}</b>
+                  <span>{r.structure_layer || r.layer || '?'} · RH {r.range_high_price ?? r.range_high ?? '—'} / RL {r.range_low_price ?? r.range_low ?? '—'}</span>
+                  <em>parent {r.parent_range_id || 'none'} · {r.parent_link_status || 'status pending'}</em>
+                </button>)}
               </div>
             </div>
 
