@@ -179,3 +179,50 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# FX TrendMaster / project-specific
+exports/
+*.audit.json
+
+# Databases / ledgers / candle stores
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.sqlite-journal
+raw_mapping*.db
+market_memory*.db
+
+# Node / Electron
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+electron/dist/
+electron/build/
+electron/out/
+electron/.vite/
+electron/.parcel-cache/
+
+# Runtime / local app state
+*.log
+logs/
+tmp/
+temp/
+.cache/
+
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Zips and patch artifacts
+*.zip
+*.7z
+*.rar
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini

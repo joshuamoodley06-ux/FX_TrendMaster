@@ -1,0 +1,112 @@
+# PROJECT_TRUTH: FX_TrendMaster_Mapping_Layer
+
+## 1. THE GOLDEN RULE: RAW LEDGER ONLY
+This system is an evidence locker, not a trading brain.
+
+- ABSOLUTELY NO derived range logic, no phase detection, no objective tracking, no profile snapshots, and no training labels in Electron or Backend.
+- Electron is allowed to show temporary UI visuals only: lines, markers, boxes, buttons, replay HUD, and raw event state.
+- Backend is allowed to store raw facts only.
+- Durable truth must come from explicit raw events written to the ledger.
+- Any attempt to add intelligence, calculate structure, infer ranges, or automate processed market state inside Electron or Backend is a critical architectural violation.
+
+## 2. SYSTEM ARCHITECTURE
+- Backend / VPS: dumb, hardened, append-only raw ledger.
+- Electron / UI: dumb visual marker and raw event emitter.
+- Python processor: the ONLY layer allowed to think, compile, resolve state, build ranges, link relationships, and produce features.
+- Amy / future assistant: reads processed summaries only.
+
+## 3. RAW EVENT CONTRACT
+Allowed raw event types only:
+
+- SET_INITIAL_ANCHOR
+- SET_ANCHOR
+- ADJUST_ANCHOR
+- MANUAL_BOS
+- AUTO_BOS
+- RECLAIM
+- ABANDON_RANGE
+- DELETE_RECORD
+- NOTE
+
+Preferred raw sides:
+
+- HIGH
+- LOW
+- REF
+- UP
+- DOWN
+- NONE
+
+Do not invent new event types without explicit user approval.
+
+## 4. LEDGER RULES
+- The ledger is append-only.
+- Never hard-delete rows.
+- Deletes are represented by DELETE_RECORD events using supersedes_event_id.
+- candle_time_utc_ms is the market-time key.
+- candle_index is only a UI hint and must not be used for durable joins.
+- price_int + price_scale should be used for precise price comparisons.
+- schema_version must remain raw_mapping_v1 unless explicitly migrated.
+
+## 5. HASHING CONTRACT
+Ledger hash must mirror the backend implementation exactly.
+
+Current backend fingerprint:
+
+event_id:created_order:is_deleted:supersedes_event_id_or_empty
+
+Current backend order:
+
+sequence_by_intent sorted by created_order only.
+
+Rules:
+- Do not add event_id as a tie-breaker for hash ordering unless the backend is changed first.
+- Explicitly normalize all hash fields to strings.
+- supersedes_event_id null/None must become an empty string.
+- Do not hash price, price_int, raw JSON, candle data, or any derived fields.
+
+## 6. VISIBILITY CONTRACT
+- Canonical visibility is derived from DELETE_RECORD chains.
+- Ignore is_deleted for visibility truth.
+- If a non-delete event has is_deleted=1, warn but do not use it as truth.
+- DELETE_RECORD rows remain audit records and are never visible output events.
+- Missing delete targets must produce audit warnings, not crashes.
+
+## 7. PYTHON PROCESSOR RULES
+- Use RawEvent dataclasses for type safety.
+- Do not pass loose dicts through core processor logic.
+- Parsers must ignore unknown JSON fields and preserve original raw payloads.
+- Processor code must support package execution:
+
+python -m processor.main
+
+- Python is allowed to build derived truth, but only from raw ledger exports.
+- Processor must be read-only against the VPS until explicitly approved otherwise.
+
+## 8. ELECTRON UI CONTRACT
+- Electron must stay simple and brainless.
+- Electron may emit raw user-selected events such as HIGH, LOW, REF, MANUAL_BOS, AUTO_BOS, NOTE, and DELETE_RECORD.
+- Electron may auto-detect simple threshold breaks for AUTO_BOS UP/DOWN after user-defined H/L anchors.
+- Electron must not compile ranges, assign parent-child relationships, calculate zones, infer phases, or generate training labels.
+- Electron local UI state must never become durable truth.
+- Case save must use raw mapping routes only and must not revive legacy event bundles.
+
+## 9. BACKEND CONTRACT
+- Backend must remain a hardened raw evidence locker.
+- Backend should validate, store, export, and hash raw events.
+- Backend must not perform structural market interpretation.
+- Backend must keep candle/history DB separate from raw mapping DB.
+
+Required DB split:
+- DATABASE_PATH = market_memory.db
+- RAW_MAPPING_DB_PATH = raw_mapping_v159.db
+
+## 10. AGENT BEHAVIOR
+- Before editing, inspect relevant files and propose a scoped plan.
+- Modify the smallest number of files necessary.
+- Do not touch backend or electron when working on processor-only tasks.
+- Do not touch processor when working on Electron UI-only tasks unless explicitly requested.
+- Refuse or push back if asked to add trading brain logic to Electron or Backend.
+- Prefer explicit types over implicit any.
+- Keep code modular. Do not consolidate files unless explicitly requested.
+- Preserve architecture docs and update them when contracts change.
