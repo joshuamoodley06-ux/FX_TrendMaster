@@ -1096,7 +1096,20 @@ def _is_range_low_event(event_type: str, structural_event: str | None = None) ->
 
 def _is_bos_event(event_type: str, structural_event: str | None = None) -> bool:
     t = str(structural_event or event_type or "").upper()
-    return t.endswith("BOS_UP") or t.endswith("BOS_DOWN") or t in {"BOS_UP", "BOS_DOWN"}
+    return t.endswith("BOS_UP") or t.endswith("BOS_DOWN") or t in {"BOS_UP", "BOS_DOWN", "BREAK_HIGH_SELECTED", "BREAK_LOW_SELECTED"}
+
+
+def _normalise_bos_event_type(event_type: str | None, structural_event: str | None = None) -> str:
+    t = str(structural_event or event_type or "").upper()
+    if t == "BREAK_HIGH_SELECTED":
+        return "BOS_UP"
+    if t == "BREAK_LOW_SELECTED":
+        return "BOS_DOWN"
+    if t.endswith("BOS_UP") or t == "BOS_UP":
+        return "BOS_UP"
+    if t.endswith("BOS_DOWN") or t == "BOS_DOWN":
+        return "BOS_DOWN"
+    return t
 
 
 def _find_active_range_id(conn: sqlite3.Connection, symbol: str, timeframe: str, case_id: int | None) -> int | None:
@@ -2055,11 +2068,12 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
         events_without_active_range = []
         for ev in events:
             event_type = str(ev.get("event_type") or ev.get("structural_event") or "").upper()
-            if event_type in {"BOS_UP", "BOS_DOWN"}:
-                expected = "BH" if event_type == "BOS_UP" else "BL"
+            bos_type = _normalise_bos_event_type(ev.get("event_type"), ev.get("structural_event"))
+            if bos_type in {"BOS_UP", "BOS_DOWN"}:
+                expected = "BH" if bos_type == "BOS_UP" else "BL"
                 if str(ev.get("break_level_type") or "").upper() != expected or ev.get("break_level_price") in (None, ""):
                     bos_missing_bh_bl.append(ev)
-            if ev.get("active_range_id") in (None, "") and event_type in {"BOS_UP", "BOS_DOWN"}:
+            if ev.get("active_range_id") in (None, "") and bos_type in {"BOS_UP", "BOS_DOWN"}:
                 events_without_active_range.append(ev)
 
     tree = get_range_tree(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, parent_timeframe="W1", child_timeframe="D1")
@@ -2197,11 +2211,11 @@ def patch_structural_map_event(event_id: str, payload: dict[str, Any]) -> dict[s
         "RANGE_LOW_SELECTED": "RANGE_LOW_SELECTED",
         "BH": "BOS_UP",
         "BREAK_HIGH": "BOS_UP",
-        "BREAK_HIGH_SELECTED": "BREAK_HIGH_SELECTED",
+        "BREAK_HIGH_SELECTED": "BOS_UP",
         "BOS_UP": "BOS_UP",
         "BL": "BOS_DOWN",
         "BREAK_LOW": "BOS_DOWN",
-        "BREAK_LOW_SELECTED": "BREAK_LOW_SELECTED",
+        "BREAK_LOW_SELECTED": "BOS_DOWN",
         "BOS_DOWN": "BOS_DOWN",
     }
     with connect() as conn:

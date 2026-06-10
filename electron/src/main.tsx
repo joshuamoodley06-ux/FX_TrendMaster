@@ -2765,8 +2765,6 @@ function MapStudio({ symbol }: { symbol:string }) {
     const eventTypeByRole:any = {
       RH: 'RANGE_HIGH_SELECTED',
       RL: 'RANGE_LOW_SELECTED',
-      BH: 'BREAK_HIGH_SELECTED',
-      BL: 'BREAK_LOW_SELECTED',
     };
     const eventId = crypto.randomUUID();
     const layerWarning = chartStructure.structure_layer !== structureLayer
@@ -3109,20 +3107,29 @@ function MapStudio({ symbol }: { symbol:string }) {
     const savedEvents = safeArray<any>(eventsData.events);
     const rangesById = new globalThis.Map<string, any>();
     refreshedSavedRanges.forEach((r:any)=>rangesById.set(String(r.range_id || r.id || ''), r));
+    const formalBosTypeFor = (ev:any) => {
+      const t = String(ev.event_type || ev.structural_event || '').toUpperCase();
+      if (t === 'BREAK_HIGH_SELECTED') return 'BOS_UP';
+      if (t === 'BREAK_LOW_SELECTED') return 'BOS_DOWN';
+      if (t === 'BOS_UP' || t === 'BOS_DOWN') return t;
+      return '';
+    };
     const formalBosEvents = savedEvents
-      .filter((ev:any)=>['BOS_UP','BOS_DOWN'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()))
+      .filter((ev:any)=>!!formalBosTypeFor(ev))
       .map((ev:any) => {
         const range = rangesById.get(String(ev.active_range_id || ''));
-        const isUp = String(ev.event_type || ev.structural_event || '').toUpperCase() === 'BOS_UP';
+        const normalizedType = formalBosTypeFor(ev);
+        const isUp = normalizedType === 'BOS_UP';
         return {
           ...ev,
+          normalized_structural_event: normalizedType,
           derived_ref_price: range ? (isUp ? (range.range_high_price ?? range.range_high ?? null) : (range.range_low_price ?? range.range_low ?? null)) : null,
           derived_ref_time: range ? (isUp ? (range.range_high_time ?? null) : (range.range_low_time ?? null)) : null,
           derived_ref_source: isUp ? 'active_range.range_high_price' : 'active_range.range_low_price',
           ref_derivation: isUp ? 'BOS_UP reference is derived from active_range.range_high_price' : 'BOS_DOWN reference is derived from active_range.range_low_price',
         };
       });
-    const quickMarkerEvents = savedEvents.filter((ev:any)=>['RANGE_HIGH_SELECTED','RANGE_LOW_SELECTED','BREAK_HIGH_SELECTED','BREAK_LOW_SELECTED'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()));
+    const quickMarkerEvents = savedEvents.filter((ev:any)=>['RANGE_HIGH_SELECTED','RANGE_LOW_SELECTED'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()));
     const eventsTodo = null;
     return { mappingCase, rangesData, refreshedSavedRanges, treeData, auditData, eventsData, formalBosEvents, quickMarkerEvents, eventsTodo };
   };
