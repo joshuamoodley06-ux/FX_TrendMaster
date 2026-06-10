@@ -1,0 +1,18 @@
+{
+  "generated_at_utc_ms": 1781051887889,
+  "case_id": "81cc6eb9-8976-4ff5-9059-89aa691fa00e",
+  "schema_version": "raw_mapping_v1",
+  "backend_ledger_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "local_ledger_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "ledger_hash_match": true,
+  "raw_record_count": 0,
+  "delete_record_count": 0,
+  "visible_record_count": 0,
+  "hidden_event_ids": [],
+  "orphaned_delete_count": 0,
+  "orphaned_delete_ids": [],
+  "warnings": [],
+  "delete_trail": [],
+  "visible_events": [],
+  "delete_effects": {}
+}
