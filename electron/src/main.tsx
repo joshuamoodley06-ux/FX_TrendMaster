@@ -2958,9 +2958,17 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'BH' : 'BL'} before saving BOS_${direction}.`); return; }
     const chartStructure = chartStructureForTimeframe(timeframe);
     if (!activeStructuralRangeId) { setMessage(`Select or save the active ${chartStructure.structure_layer} range before saving BOS_${direction}.`); return; }
+    if (chartStructure.structure_layer === 'DAILY' && !selectedParentRangeId) { setMessage(`Select the Weekly parent range before saving Daily BOS_${direction}.`); return; }
     setStructuralSaving(true);
     try {
       const candle = anchor.candle || selectedCandle || replayCandle;
+      if (!candle) { throw new Error(`Select a candle or set ${direction === 'UP' ? 'BH' : 'BL'} from a candle before saving BOS_${direction}.`); }
+      const sourceBreakRole = direction === 'UP' ? 'BH' : 'BL';
+      const sourceBreakEvent = [...quickEventHistory].reverse().find((ev:any) =>
+        ev?.role === sourceBreakRole &&
+        String(ev?.candle_time || '') === String(anchor.time || candle.time || '') &&
+        String(ev?.source_timeframe || '') === String(chartStructure.source_timeframe)
+      ) || (lastSavedQuickEvent?.role === sourceBreakRole ? lastSavedQuickEvent : null);
       const payload = {
         event_id: crypto.randomUUID(),
         case_id: mappingCase.case_id,
@@ -2987,13 +2995,29 @@ function MapStudio({ symbol }: { symbol:string }) {
         direction,
         meta_json: {
           phase:'electron_phase3_structural_mapping',
+          role: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
+          formal_bos: true,
           formal_bos_event: true,
           quick_marker_role_source: direction === 'UP' ? 'BH' : 'BL',
+          created_from_break_marker_event_id: sourceBreakEvent?.event_id || null,
           parent_break_not_updated: true,
           parent_break_note: 'Weekly parent BH/BL is updated only by the later Parent Break action.',
         },
       };
       const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const returned = data?.event || data || {};
+      const expectedType = direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN';
+      const validationErrors:string[] = [];
+      if (String(returned.event_type || '').toUpperCase() !== expectedType) validationErrors.push(`event_type=${returned.event_type || 'missing'}`);
+      if (String(returned.structural_event || '').toUpperCase() !== expectedType) validationErrors.push(`structural_event=${returned.structural_event || 'missing'}`);
+      if (mappingCase.raw_case_id && String(returned.raw_case_id || '') !== String(mappingCase.raw_case_id)) validationErrors.push('raw_case_id missing/mismatch');
+      if (mappingCase.case_ref && String(returned.case_ref || '') !== String(mappingCase.case_ref)) validationErrors.push('case_ref missing/mismatch');
+      if (String(returned.active_range_id || '') !== String(activeStructuralRangeId)) validationErrors.push('active_range_id missing/mismatch');
+      if (payload.parent_range_id && String(returned.parent_range_id || '') !== String(payload.parent_range_id)) validationErrors.push('parent_range_id missing/mismatch');
+      if (String(returned.break_level_type || '').toUpperCase() !== String(payload.break_level_type)) validationErrors.push('break_level_type missing/mismatch');
+      if (validationErrors.length) {
+        throw new Error(`Backend saved BOS through wrong/unlinked path: ${validationErrors.join(', ')}`);
+      }
       setStructuralBosDraftDirty(false);
       setMessage(`Saved formal BOS_${direction} event ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${chartStructure.structure_layer}/${chartStructure.source_timeframe} · active range #${activeStructuralRangeId} · parent ${payload.parent_range_id || 'none'}`);
       await refreshHierarchyAudit();
