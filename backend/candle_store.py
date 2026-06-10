@@ -111,11 +111,20 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str, *, log_existing: bool = False) -> None:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     existing = {str(r[1]) for r in rows}
     if column not in existing:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        print(f"[schema] added column {table}.{column} {definition}")
+    elif log_existing:
+        print(f"[schema] existing column {table}.{column}")
+
+
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]], label: str) -> None:
+    print(f"[schema] {label}: checking {table}")
+    for column, definition in columns:
+        _ensure_column(conn, table, column, definition, log_existing=True)
 
 
 def init_db() -> None:
@@ -303,6 +312,82 @@ def init_db() -> None:
             )
             """
         )
+        # Phase 1 hierarchy-ready schema only. This is intentionally add-only:
+        # no data rewrites, no hard FK constraints, and parent_range_id stays nullable.
+        _ensure_columns(conn, "map_ranges", [
+            ("case_id", "INTEGER"),
+            ("raw_case_id", "TEXT"),
+            ("case_ref", "TEXT"),
+            ("symbol", "TEXT"),
+            ("structure_layer", "TEXT"),
+            ("chart_timeframe", "TEXT"),
+            ("source_timeframe", "TEXT"),
+            ("parent_range_id", "INTEGER"),
+            ("parent_timeframe", "TEXT"),
+            ("parent_case_id", "INTEGER"),
+            ("range_high_price", "REAL"),
+            ("range_low_price", "REAL"),
+            ("range_high_time", "TEXT"),
+            ("range_low_time", "TEXT"),
+            ("break_high_price", "REAL"),
+            ("break_low_price", "REAL"),
+            ("break_high_time", "TEXT"),
+            ("break_low_time", "TEXT"),
+            ("range_start_time", "TEXT"),
+            ("range_end_time", "TEXT"),
+            ("duration_minutes", "INTEGER"),
+            ("status", "TEXT"),
+            ("direction_of_break", "TEXT"),
+            ("active_from_time", "TEXT"),
+            ("inactive_from_time", "TEXT"),
+            ("old_range_id", "INTEGER"),
+            ("new_range_id", "INTEGER"),
+            ("created_by_event_id", "INTEGER"),
+            ("broken_by_event_id", "INTEGER"),
+            ("structure_version", "TEXT"),
+            ("parent_link_status", "TEXT DEFAULT 'NEEDS_REVIEW'"),
+            ("meta_json", "TEXT"),
+            ("updated_at", "TEXT"),
+        ], "Phase 1 range hierarchy migration")
+        _ensure_columns(conn, "map_events", [
+            ("event_id", "TEXT"),
+            ("case_id", "INTEGER"),
+            ("raw_case_id", "TEXT"),
+            ("case_ref", "TEXT"),
+            ("symbol", "TEXT"),
+            ("structure_layer", "TEXT"),
+            ("chart_timeframe", "TEXT"),
+            ("source_timeframe", "TEXT"),
+            ("active_range_id", "INTEGER"),
+            ("parent_range_id", "INTEGER"),
+            ("old_range_id", "INTEGER"),
+            ("new_range_id", "INTEGER"),
+            ("event_type", "TEXT"),
+            ("structural_event", "TEXT"),
+            ("break_level_type", "TEXT"),
+            ("break_level_price", "REAL"),
+            ("break_level_time", "TEXT"),
+            ("event_time", "TEXT"),
+            ("event_price", "REAL"),
+            ("candle_time", "TEXT"),
+            ("candle_open", "REAL"),
+            ("candle_high", "REAL"),
+            ("candle_low", "REAL"),
+            ("candle_close", "REAL"),
+            ("direction", "TEXT"),
+            ("calculation_engine_version", "TEXT"),
+            ("ruleset_version", "TEXT"),
+            ("meta_json", "TEXT"),
+            ("updated_at", "TEXT"),
+        ], "Phase 1 event hierarchy migration")
+        _ensure_columns(conn, "event_features", [
+            ("calculation_engine_version", "TEXT"),
+            ("ruleset_version", "TEXT"),
+            ("analysis_type", "TEXT"),
+            ("created_at", "TEXT"),
+            ("result_json", "TEXT"),
+            ("meta_json", "TEXT"),
+        ], "Phase 1 analytics versioning migration")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_event_features_case_tf ON event_features(case_id,symbol,timeframe,event_time)")
         # v159: raw mapping ledger. This is the append-only evidence locker.
         # Mapping writes go here only; parent/range/features are compiled later by the local processor.
@@ -643,6 +728,37 @@ def parse_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _optional_text(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _case_refs_from_payload(payload: dict[str, Any]) -> tuple[int | None, str | None, str | None]:
+    """Keep legacy integer cases separate from raw UUID mapping cases."""
+    case_id = _optional_int(payload.get("case_id"))
+    raw_case_id = _optional_text(payload.get("raw_case_id"))
+    if raw_case_id is None and payload.get("case_id") not in (None, "") and case_id is None:
+        raw_case_id = _optional_text(payload.get("case_id"))
+    case_ref = _optional_text(payload.get("case_ref"))
+    if case_ref is None:
+        if raw_case_id:
+            case_ref = f"raw:{raw_case_id}"
+        elif case_id is not None:
+            case_ref = f"case:{case_id}"
+    return case_id, raw_case_id, case_ref
+
+
 def normalise_candle(row: dict[str, Any], symbol: str | None = None, timeframe: str | None = None, source: str = "unknown") -> dict[str, Any]:
     sym = str(row.get("symbol") or symbol or "XAUUSD").strip()
     tf = normalise_timeframe(str(row.get("timeframe") or timeframe or "D1"))
@@ -786,6 +902,171 @@ def _parent_timeframe_for(tf: str) -> str | None:
     except ValueError:
         return None
     return order[i - 1] if i > 0 else None
+
+
+STRUCTURE_LAYER_ORDER = ["WEEKLY", "DAILY", "INTRADAY", "MICRO"]
+
+
+def _structure_layer_for_timeframe(tf: str | None) -> str:
+    t = normalise_timeframe(tf or "D1")
+    if t == "W1":
+        return "WEEKLY"
+    if t == "D1":
+        return "DAILY"
+    if t in {"H4", "H1"}:
+        return "INTRADAY"
+    if t in {"M15", "M5"}:
+        return "MICRO"
+    return "WEEKLY"
+
+
+def _source_timeframe_for_layer(layer: str | None) -> str:
+    l = str(layer or "").upper()
+    return {"WEEKLY": "W1", "DAILY": "D1", "INTRADAY": "H1", "MICRO": "M15"}.get(l, "D1")
+
+
+def _normalise_structure_layer(value: Any, fallback_timeframe: str | None = None) -> str:
+    raw = str(value or "").strip().upper()
+    aliases = {
+        "W1": "WEEKLY",
+        "WEEK": "WEEKLY",
+        "D1": "DAILY",
+        "DAY": "DAILY",
+        "H4": "INTRADAY",
+        "H1": "INTRADAY",
+        "M15": "MICRO",
+        "M5": "MICRO",
+    }
+    layer = aliases.get(raw, raw)
+    if layer in STRUCTURE_LAYER_ORDER:
+        return layer
+    return _structure_layer_for_timeframe(fallback_timeframe or "D1")
+
+
+def _expected_parent_layer(layer: str) -> str | None:
+    l = _normalise_structure_layer(layer)
+    if l == "WEEKLY":
+        return None
+    if l == "DAILY":
+        return "WEEKLY"
+    if l == "INTRADAY":
+        return "DAILY"
+    if l == "MICRO":
+        return "INTRADAY"
+    return None
+
+
+def _row_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    return dict(row)
+
+
+def _range_layer(row: sqlite3.Row | dict[str, Any]) -> str:
+    d = _row_dict(row)
+    return _normalise_structure_layer(
+        d.get("structure_layer") or d.get("layer"),
+        d.get("source_timeframe") or d.get("timeframe"),
+    )
+
+
+def _range_source_timeframe(row: sqlite3.Row | dict[str, Any]) -> str:
+    d = _row_dict(row)
+    return normalise_timeframe(str(d.get("source_timeframe") or d.get("timeframe") or _source_timeframe_for_layer(_range_layer(d))))
+
+
+def _range_price(row: sqlite3.Row | dict[str, Any], side: str) -> float | None:
+    d = _row_dict(row)
+    if side == "HIGH":
+        return parse_float(d.get("range_high_price", d.get("range_high")), None)
+    return parse_float(d.get("range_low_price", d.get("range_low")), None)
+
+
+def _has_parent_cycle(conn: sqlite3.Connection, child_id: int, parent_id: int) -> bool:
+    seen = {child_id}
+    current: int | None = parent_id
+    while current is not None:
+        if current in seen:
+            return True
+        seen.add(current)
+        row = conn.execute("SELECT parent_range_id FROM map_ranges WHERE id=?", (current,)).fetchone()
+        if row is None or row["parent_range_id"] in (None, ""):
+            return False
+        try:
+            current = int(row["parent_range_id"])
+        except Exception:
+            return False
+    return False
+
+
+def _validate_parent_link(
+    conn: sqlite3.Connection,
+    *,
+    child_id: int | None,
+    symbol: str,
+    case_id: Any,
+    raw_case_id: Any = None,
+    case_ref: Any = None,
+    structure_layer: str,
+    parent_range_id: Any,
+) -> tuple[str, list[str], sqlite3.Row | None]:
+    layer = _normalise_structure_layer(structure_layer)
+    parent_id: int | None
+    try:
+        parent_id = int(parent_range_id) if parent_range_id not in (None, "") else None
+    except Exception:
+        return "INVALID_PARENT", ["parent_range_id is not an integer"], None
+
+    if parent_id is None:
+        return ("VALID" if layer == "WEEKLY" else "ORPHAN"), [], None
+    if child_id is not None and int(child_id) == parent_id:
+        return "INVALID_PARENT", ["range cannot be its own parent"], None
+
+    parent = conn.execute("SELECT * FROM map_ranges WHERE id=?", (parent_id,)).fetchone()
+    if parent is None:
+        return "INVALID_PARENT", [f"parent range {parent_id} does not exist"], None
+    if str(parent["symbol"]) != str(symbol):
+        return "INVALID_PARENT", ["parent symbol does not match child symbol"], parent
+
+    parent_keys = set(parent.keys())
+    parent_case = parent["case_id"] if "case_id" in parent_keys else None
+    parent_raw_case = parent["raw_case_id"] if "raw_case_id" in parent_keys else None
+    parent_case_ref = parent["case_ref"] if "case_ref" in parent_keys else None
+    if case_id not in (None, "") and parent_case not in (None, "") and str(parent_case) != str(case_id):
+        return "INVALID_PARENT", ["parent case_id does not match child case_id"], parent
+    if raw_case_id not in (None, "") and parent_raw_case not in (None, "") and str(parent_raw_case) != str(raw_case_id):
+        return "INVALID_PARENT", ["parent raw_case_id does not match child raw_case_id"], parent
+    if case_ref not in (None, "") and parent_case_ref not in (None, "") and str(parent_case_ref) != str(case_ref):
+        return "INVALID_PARENT", ["parent case_ref does not match child case_ref"], parent
+
+    expected_parent = _expected_parent_layer(layer)
+    parent_layer = _range_layer(parent)
+    if expected_parent and parent_layer != expected_parent:
+        return "INVALID_PARENT", [f"{layer} parent must be {expected_parent}, got {parent_layer}"], parent
+    if not expected_parent:
+        return "NEEDS_REVIEW", ["root layer should not normally have parent_range_id"], parent
+    if child_id is not None and _has_parent_cycle(conn, int(child_id), parent_id):
+        return "INVALID_PARENT", ["parent link would create a circular chain"], parent
+
+    return "VALID", [], parent
+
+
+def _range_row_to_structural_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    layer = _range_layer(d)
+    source_tf = _range_source_timeframe(d)
+    chart_tf = str(d.get("chart_timeframe") or d.get("timeframe") or source_tf)
+    high = _range_price(d, "HIGH")
+    low = _range_price(d, "LOW")
+    out = dict(d)
+    out.update({
+        "range_id": d.get("id"),
+        "structure_layer": d.get("structure_layer") or layer,
+        "chart_timeframe": chart_tf,
+        "source_timeframe": source_tf,
+        "range_high_price": high,
+        "range_low_price": low,
+        "parent_link_status": d.get("parent_link_status") or "NEEDS_REVIEW",
+    })
+    return out
 
 
 def _structural_event_name(event_type: str) -> str:
@@ -1104,6 +1385,123 @@ def save_map_event(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "id": event_db_id, "client_event_id": client_event_id, "created": True, "case_event_index": case_event_index, "active_range_id": active_range_id, "parent_range_id": parent_range_id}
 
 
+ALLOWED_STRUCTURAL_EVENT_TYPES = {
+    "RANGE_CREATED",
+    "BOS_UP",
+    "BOS_DOWN",
+    "ACTIVE_RANGE_CHANGED",
+    "OLD_RANGE_SAVED",
+    "RANGE_REBASED",
+    "RANGE_ABANDONED",
+}
+
+
+def save_structural_map_event(payload: dict[str, Any]) -> dict[str, Any]:
+    init_db()
+    now = now_iso()
+    event_type = str(payload.get("event_type") or payload.get("structural_event") or "").upper()
+    if event_type not in ALLOWED_STRUCTURAL_EVENT_TYPES:
+        return {"ok": False, "status": 400, "error": f"Invalid structural event_type: {event_type}"}
+
+    symbol = str(payload.get("symbol") or "XAUUSD")
+    source_timeframe = normalise_timeframe(str(payload.get("source_timeframe") or payload.get("timeframe") or "D1"))
+    chart_timeframe = normalise_timeframe(str(payload.get("chart_timeframe") or payload.get("timeframe") or source_timeframe))
+    structure_layer = _normalise_structure_layer(payload.get("structure_layer"), source_timeframe)
+    active_range_id = payload.get("active_range_id") or payload.get("range_id")
+    parent_range_id = payload.get("parent_range_id")
+    case_id, raw_case_id, case_ref = _case_refs_from_payload(payload)
+
+    try:
+        active_range_id_int = int(active_range_id) if active_range_id not in (None, "") else None
+    except Exception:
+        return {"ok": False, "status": 400, "error": "active_range_id must be an integer when supplied"}
+    try:
+        parent_range_id_int = int(parent_range_id) if parent_range_id not in (None, "") else None
+    except Exception:
+        return {"ok": False, "status": 400, "error": "parent_range_id must be an integer when supplied"}
+
+    break_level_type = str(payload.get("break_level_type") or "").upper() or None
+    break_level_price = parse_float(payload.get("break_level_price"), None)
+    if event_type == "BOS_UP":
+        if break_level_type != "BH" or break_level_price is None:
+            return {"ok": False, "status": 400, "error": "BOS_UP requires break_level_type=BH and break_level_price"}
+    if event_type == "BOS_DOWN":
+        if break_level_type != "BL" or break_level_price is None:
+            return {"ok": False, "status": 400, "error": "BOS_DOWN requires break_level_type=BL and break_level_price"}
+
+    event_id = str(payload.get("event_id") or str(uuid.uuid4()))
+    event_time = payload.get("event_time") or payload.get("time") or payload.get("candle_time") or now
+    event_price = parse_float(payload.get("event_price", payload.get("price", break_level_price)), 0)
+    meta_json = json.dumps(payload.get("meta_json"), ensure_ascii=False, default=str) if isinstance(payload.get("meta_json"), dict) else payload.get("meta_json")
+
+    with connect() as conn:
+        if active_range_id_int is not None:
+            active = conn.execute("SELECT * FROM map_ranges WHERE id=?", (active_range_id_int,)).fetchone()
+            if active is None:
+                return {"ok": False, "status": 400, "error": "active_range_id does not exist"}
+            if str(active["symbol"]) != symbol:
+                return {"ok": False, "status": 400, "error": "active range symbol does not match event symbol"}
+        if parent_range_id_int is not None:
+            parent = conn.execute("SELECT * FROM map_ranges WHERE id=?", (parent_range_id_int,)).fetchone()
+            if parent is None:
+                return {"ok": False, "status": 400, "error": "parent_range_id does not exist"}
+            if str(parent["symbol"]) != symbol:
+                return {"ok": False, "status": 400, "error": "parent range symbol does not match event symbol"}
+
+        existing = conn.execute("SELECT * FROM map_events WHERE event_id=?", (event_id,)).fetchone()
+        if existing:
+            return {"ok": True, "duplicate": True, "event": _event_row_to_dict(existing)}
+
+        cur = conn.execute(
+            """
+            INSERT INTO map_events(range_id,symbol,timeframe,event_type,event_name,time,price,notes,source,created_at,updated_at,event_id,case_id,raw_case_id,case_ref,structure_layer,chart_timeframe,source_timeframe,active_range_id,parent_range_id,old_range_id,new_range_id,structural_event,break_level_type,break_level_price,break_level_time,event_time,event_price,candle_time,candle_open,candle_high,candle_low,candle_close,direction,calculation_engine_version,ruleset_version,meta_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                active_range_id_int,
+                symbol,
+                source_timeframe,
+                event_type,
+                payload.get("event_name") or event_type,
+                event_time,
+                event_price,
+                payload.get("notes"),
+                payload.get("source") or "backend-structural",
+                now,
+                now,
+                event_id,
+                case_id,
+                raw_case_id,
+                case_ref,
+                structure_layer,
+                chart_timeframe,
+                source_timeframe,
+                active_range_id_int,
+                parent_range_id_int,
+                payload.get("old_range_id"),
+                payload.get("new_range_id"),
+                payload.get("structural_event") or event_type,
+                break_level_type,
+                break_level_price,
+                payload.get("break_level_time"),
+                event_time,
+                event_price,
+                payload.get("candle_time") or event_time,
+                parse_float(payload.get("candle_open"), None),
+                parse_float(payload.get("candle_high"), None),
+                parse_float(payload.get("candle_low"), None),
+                parse_float(payload.get("candle_close"), None),
+                payload.get("direction"),
+                payload.get("calculation_engine_version"),
+                payload.get("ruleset_version"),
+                meta_json,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM map_events WHERE id=?", (cur.lastrowid,)).fetchone()
+    return {"ok": True, "id": cur.lastrowid, "event_id": event_id, "event": _event_row_to_dict(row)}
+
+
 def get_map_events(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 1000, case_id: int | None = None) -> dict[str, Any]:
     init_db()
     tf = normalise_timeframe(timeframe)
@@ -1220,42 +1618,104 @@ def clear_map_events_for_candle(symbol: str, timeframe: str, time: str) -> dict[
 def _range_row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    return dict(row)
+    return _range_row_to_structural_dict(row)
 
 
 def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
     init_db()
     now = now_iso()
     symbol = str(payload.get("symbol") or "XAUUSD")
-    timeframe = normalise_timeframe(payload.get("timeframe") or "D1")
+    source_timeframe = normalise_timeframe(str(payload.get("source_timeframe") or payload.get("timeframe") or "D1"))
+    chart_timeframe = normalise_timeframe(str(payload.get("chart_timeframe") or payload.get("timeframe") or source_timeframe))
+    timeframe = source_timeframe
+    structure_layer = _normalise_structure_layer(payload.get("structure_layer") or payload.get("layer"), source_timeframe)
     range_key = str(payload.get("range_key") or "active")
     high_price = parse_float(payload.get("range_high_price", payload.get("range_high")), None)
     low_price = parse_float(payload.get("range_low_price", payload.get("range_low")), None)
+    parent_range_id = payload.get("parent_range_id")
+    case_id, raw_case_id, case_ref = _case_refs_from_payload(payload)
+    parent_case_id = payload.get("parent_case_id") or case_id
+    parent_timeframe = payload.get("parent_timeframe") or (_source_timeframe_for_layer(_expected_parent_layer(structure_layer)) if _expected_parent_layer(structure_layer) else None)
+    meta_json = json.dumps(payload.get("meta_json"), ensure_ascii=False, default=str) if isinstance(payload.get("meta_json"), dict) else payload.get("meta_json")
 
     with connect() as conn:
-        existing = conn.execute(
-            "SELECT * FROM map_ranges WHERE symbol=? AND timeframe=? AND COALESCE(range_key,'active')=? AND status!='archived' ORDER BY id DESC LIMIT 1",
-            (symbol, timeframe, range_key),
-        ).fetchone()
+        range_id = payload.get("range_id") or payload.get("id")
+        existing = None
+        if range_id not in (None, ""):
+            try:
+                existing = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(range_id),)).fetchone()
+            except Exception:
+                existing = None
+        if existing is None:
+            lookup_clauses = ["symbol=?", "timeframe=?", "COALESCE(range_key,'active')=?", "status!='archived'"]
+            lookup_args: list[Any] = [symbol, timeframe, range_key]
+            if case_id is not None:
+                lookup_clauses.append("case_id=?")
+                lookup_args.append(case_id)
+            if raw_case_id:
+                lookup_clauses.append("raw_case_id=?")
+                lookup_args.append(raw_case_id)
+            if case_ref:
+                lookup_clauses.append("case_ref=?")
+                lookup_args.append(case_ref)
+            existing = conn.execute(
+                f"SELECT * FROM map_ranges WHERE {' AND '.join(lookup_clauses)} ORDER BY id DESC LIMIT 1",
+                lookup_args,
+            ).fetchone()
+
+        child_id = int(existing["id"]) if existing else None
+        parent_link_status, validation_warnings, parent = _validate_parent_link(
+            conn,
+            child_id=child_id,
+            symbol=symbol,
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+            structure_layer=structure_layer,
+            parent_range_id=parent_range_id,
+        )
+        if parent is not None:
+            parent_timeframe = parent_timeframe or _range_source_timeframe(parent)
+            parent_case_id = parent_case_id or parent["case_id"]
+        if parent_link_status == "INVALID_PARENT":
+            return {"ok": False, "status": 400, "error": "Invalid parent_range_id", "warnings": validation_warnings, "parent_link_status": parent_link_status}
+
         if existing:
             conn.execute(
                 """
                 UPDATE map_ranges SET
                     range_high=COALESCE(?, range_high), range_low=COALESCE(?, range_low),
+                    range_high_price=COALESCE(?, range_high_price), range_low_price=COALESCE(?, range_low_price),
                     range_high_time=COALESCE(?, range_high_time), range_low_time=COALESCE(?, range_low_time),
-                    ref_high_price=?, ref_high_time=?, ref_low_price=?, ref_low_time=?,
-                    bias=?, destination=?, notes=?, source=?,
-                    case_id=COALESCE(?, case_id), parent_range_id=COALESCE(?, parent_range_id), layer=COALESCE(?, layer), parent_timeframe=COALESCE(?, parent_timeframe),
+                    break_high_price=COALESCE(?, break_high_price), break_low_price=COALESCE(?, break_low_price),
+                    break_high_time=COALESCE(?, break_high_time), break_low_time=COALESCE(?, break_low_time),
+                    range_start_time=COALESCE(?, range_start_time), range_end_time=COALESCE(?, range_end_time),
+                    duration_minutes=COALESCE(?, duration_minutes), status=COALESCE(?, status),
+                    ref_high_price=COALESCE(?, ref_high_price), ref_high_time=COALESCE(?, ref_high_time), ref_low_price=COALESCE(?, ref_low_price), ref_low_time=COALESCE(?, ref_low_time),
+                    bias=COALESCE(?, bias), destination=COALESCE(?, destination), notes=COALESCE(?, notes), source=COALESCE(?, source),
+                    case_id=COALESCE(?, case_id), raw_case_id=COALESCE(?, raw_case_id), case_ref=COALESCE(?, case_ref), parent_range_id=?, layer=COALESCE(?, layer), structure_layer=COALESCE(?, structure_layer),
+                    chart_timeframe=COALESCE(?, chart_timeframe), source_timeframe=COALESCE(?, source_timeframe), parent_timeframe=COALESCE(?, parent_timeframe),
                     parent_case_id=COALESCE(?, parent_case_id), created_by_event_id=COALESCE(?, created_by_event_id), broken_by_event_id=COALESCE(?, broken_by_event_id),
                     direction_of_break=COALESCE(?, direction_of_break), active_from_time=COALESCE(?, active_from_time), inactive_from_time=COALESCE(?, inactive_from_time),
-                    old_range_id=COALESCE(?, old_range_id), new_range_id=COALESCE(?, new_range_id), structure_version=COALESCE(?, structure_version), meta_json=COALESCE(?, meta_json), updated_at=?
+                    old_range_id=COALESCE(?, old_range_id), new_range_id=COALESCE(?, new_range_id), structure_version=COALESCE(?, structure_version),
+                    parent_link_status=?, meta_json=COALESCE(?, meta_json), updated_at=?
                 WHERE id=?
                 """,
                 (
                     high_price,
                     low_price,
+                    high_price,
+                    low_price,
                     payload.get("range_high_time"),
                     payload.get("range_low_time"),
+                    parse_float(payload.get("break_high_price"), None),
+                    parse_float(payload.get("break_low_price"), None),
+                    payload.get("break_high_time"),
+                    payload.get("break_low_time"),
+                    payload.get("range_start_time"),
+                    payload.get("range_end_time"),
+                    payload.get("duration_minutes"),
+                    payload.get("status"),
                     parse_float(payload.get("ref_high_price"), None),
                     payload.get("ref_high_time"),
                     parse_float(payload.get("ref_low_price"), None),
@@ -1264,11 +1724,16 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     payload.get("destination"),
                     payload.get("notes"),
                     payload.get("source") or "electron",
-                    payload.get("case_id"),
-                    payload.get("parent_range_id"),
+                    case_id,
+                    raw_case_id,
+                    case_ref,
+                    parent_range_id,
                     payload.get("layer") or timeframe,
-                    payload.get("parent_timeframe"),
-                    payload.get("parent_case_id"),
+                    structure_layer,
+                    chart_timeframe,
+                    source_timeframe,
+                    parent_timeframe,
+                    parent_case_id,
                     payload.get("created_by_event_id"),
                     payload.get("broken_by_event_id"),
                     payload.get("direction_of_break"),
@@ -1277,20 +1742,22 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     payload.get("old_range_id"),
                     payload.get("new_range_id"),
                     payload.get("structure_version") or "STRUCTURE_ONLY_V1",
-                    json.dumps(payload.get("meta_json"), ensure_ascii=False, default=str) if isinstance(payload.get("meta_json"), dict) else payload.get("meta_json"),
+                    parent_link_status,
+                    meta_json,
                     now,
                     existing["id"],
                 ),
             )
             conn.commit()
-            return {"ok": True, "id": existing["id"], "updated": True, "range": get_map_range(symbol, timeframe, range_key).get("range")}
+            row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (existing["id"],)).fetchone()
+            return {"ok": True, "id": existing["id"], "range_id": existing["id"], "updated": True, "parent_link_status": parent_link_status, "warnings": validation_warnings, "range": _range_row_to_dict(row)}
 
         # map_ranges columns range_high/range_low are NOT NULL from the earlier prototype.
         # If only one anchor exists, store 0 for missing side and let frontend replace it later.
         cur = conn.execute(
             """
-            INSERT INTO map_ranges(symbol,timeframe,name,range_high,range_low,range_high_time,range_low_time,ref_high_price,ref_high_time,ref_low_price,ref_low_time,bias,destination,status,range_key,notes,source,case_id,parent_range_id,layer,parent_timeframe,parent_case_id,created_by_event_id,broken_by_event_id,direction_of_break,active_from_time,inactive_from_time,old_range_id,new_range_id,structure_version,meta_json,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO map_ranges(symbol,timeframe,name,range_high,range_low,range_high_price,range_low_price,range_high_time,range_low_time,break_high_price,break_low_price,break_high_time,break_low_time,range_start_time,range_end_time,duration_minutes,ref_high_price,ref_high_time,ref_low_price,ref_low_time,bias,destination,status,range_key,notes,source,case_id,raw_case_id,case_ref,parent_range_id,layer,structure_layer,chart_timeframe,source_timeframe,parent_timeframe,parent_case_id,created_by_event_id,broken_by_event_id,direction_of_break,active_from_time,inactive_from_time,old_range_id,new_range_id,structure_version,parent_link_status,meta_json,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 symbol,
@@ -1298,8 +1765,17 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                 payload.get("name") or f"{symbol} {timeframe} active range",
                 high_price if high_price is not None else 0,
                 low_price if low_price is not None else 0,
+                high_price,
+                low_price,
                 payload.get("range_high_time"),
                 payload.get("range_low_time"),
+                parse_float(payload.get("break_high_price"), None),
+                parse_float(payload.get("break_low_price"), None),
+                payload.get("break_high_time"),
+                payload.get("break_low_time"),
+                payload.get("range_start_time"),
+                payload.get("range_end_time"),
+                payload.get("duration_minutes"),
                 parse_float(payload.get("ref_high_price"), None),
                 payload.get("ref_high_time"),
                 parse_float(payload.get("ref_low_price"), None),
@@ -1310,11 +1786,16 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                 range_key,
                 payload.get("notes"),
                 payload.get("source") or "electron",
-                payload.get("case_id"),
-                payload.get("parent_range_id"),
+                case_id,
+                raw_case_id,
+                case_ref,
+                parent_range_id,
                 payload.get("layer") or timeframe,
-                payload.get("parent_timeframe"),
-                payload.get("parent_case_id"),
+                structure_layer,
+                chart_timeframe,
+                source_timeframe,
+                parent_timeframe,
+                parent_case_id,
                 payload.get("created_by_event_id"),
                 payload.get("broken_by_event_id"),
                 payload.get("direction_of_break"),
@@ -1323,13 +1804,15 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                 payload.get("old_range_id"),
                 payload.get("new_range_id"),
                 payload.get("structure_version") or "STRUCTURE_ONLY_V1",
-                json.dumps(payload.get("meta_json"), ensure_ascii=False, default=str) if isinstance(payload.get("meta_json"), dict) else payload.get("meta_json"),
+                parent_link_status,
+                meta_json,
                 now,
                 now,
             ),
         )
         conn.commit()
-        return {"ok": True, "id": cur.lastrowid, "created": True, "range": get_map_range(symbol, timeframe, range_key).get("range")}
+        row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (cur.lastrowid,)).fetchone()
+        return {"ok": True, "id": cur.lastrowid, "range_id": cur.lastrowid, "created": True, "parent_link_status": parent_link_status, "warnings": validation_warnings, "range": _range_row_to_dict(row)}
 
 
 def get_map_range(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: str = "active") -> dict[str, Any]:
@@ -1347,7 +1830,7 @@ def get_map_range(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: str 
     return {"ok": True, "symbol": symbol, "timeframe": tf, "range": _range_row_to_dict(row)}
 
 
-def list_map_ranges(symbol: str = "XAUUSD", timeframe: str | None = None, case_id: int | None = None, limit: int = 1000) -> dict[str, Any]:
+def list_map_ranges(symbol: str = "XAUUSD", timeframe: str | None = None, case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, limit: int = 1000, structure_layer: str | None = None, source_timeframe: str | None = None, parent_range_id: int | None = None) -> dict[str, Any]:
     """Return structural ranges for a symbol/case/timeframe.
 
     This is the boring-but-useful range ledger Amy/analytics will read later.
@@ -1363,21 +1846,58 @@ def list_map_ranges(symbol: str = "XAUUSD", timeframe: str | None = None, case_i
     if case_id is not None:
         clauses.append("case_id=?")
         args.append(int(case_id))
+    if raw_case_id:
+        clauses.append("raw_case_id=?")
+        args.append(str(raw_case_id))
+    if case_ref:
+        clauses.append("case_ref=?")
+        args.append(str(case_ref))
+    if structure_layer:
+        layer = _normalise_structure_layer(structure_layer, source_timeframe or timeframe or "D1")
+        clauses.append("COALESCE(structure_layer, layer)=?")
+        args.append(layer)
+    if source_timeframe:
+        tf = normalise_timeframe(source_timeframe)
+        clauses.append("COALESCE(source_timeframe, timeframe)=?")
+        args.append(tf)
+    if parent_range_id is not None:
+        clauses.append("parent_range_id=?")
+        args.append(int(parent_range_id))
     sql = f"SELECT * FROM map_ranges WHERE {' AND '.join(clauses)} ORDER BY COALESCE(range_start_time, active_from_time, created_at) ASC, id ASC LIMIT ?"
     args.append(limit)
     with connect() as conn:
         rows = conn.execute(sql, args).fetchall()
-    ranges = [_range_row_to_dict(r) for r in rows]
-    return {"ok": True, "symbol": symbol, "timeframe": timeframe, "case_id": case_id, "count": len(ranges), "ranges": ranges}
+        ranges = []
+        for r in rows:
+            d = _range_row_to_dict(r)
+            if d is None:
+                continue
+            status, warnings, _ = _validate_parent_link(
+                conn,
+                child_id=int(d["range_id"]),
+                symbol=str(d["symbol"]),
+                case_id=d.get("case_id"),
+                raw_case_id=d.get("raw_case_id"),
+                case_ref=d.get("case_ref"),
+                structure_layer=str(d.get("structure_layer") or ""),
+                parent_range_id=d.get("parent_range_id"),
+            )
+            d["parent_link_status"] = d.get("parent_link_status") if d.get("parent_link_status") not in (None, "", "NEEDS_REVIEW") else status
+            if warnings:
+                d["parent_link_warnings"] = warnings
+            ranges.append(d)
+    return {"ok": True, "symbol": symbol, "timeframe": timeframe, "case_id": case_id, "raw_case_id": raw_case_id, "case_ref": case_ref, "structure_layer": structure_layer, "source_timeframe": source_timeframe, "parent_range_id": parent_range_id, "count": len(ranges), "ranges": ranges}
 
 
-def get_range_tree(symbol: str = "XAUUSD", case_id: int | None = None, parent_timeframe: str = "W1", child_timeframe: str = "D1") -> dict[str, Any]:
+def get_range_tree(symbol: str = "XAUUSD", case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, parent_timeframe: str = "W1", child_timeframe: str = "D1", parent_layer: str | None = None, child_layer: str | None = None) -> dict[str, Any]:
     """Return parent->child structural range hierarchy for Weekly/Daily simultaneous mapping."""
     init_db()
     parent_tf = normalise_timeframe(parent_timeframe)
     child_tf = normalise_timeframe(child_timeframe)
-    parent_result = list_map_ranges(symbol=symbol, timeframe=parent_tf, case_id=case_id, limit=5000)
-    child_result = list_map_ranges(symbol=symbol, timeframe=child_tf, case_id=case_id, limit=5000)
+    parent_l = _normalise_structure_layer(parent_layer, parent_tf) if parent_layer else _structure_layer_for_timeframe(parent_tf)
+    child_l = _normalise_structure_layer(child_layer, child_tf) if child_layer else _structure_layer_for_timeframe(child_tf)
+    parent_result = list_map_ranges(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, structure_layer=parent_l, source_timeframe=parent_tf, limit=5000)
+    child_result = list_map_ranges(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, structure_layer=child_l, source_timeframe=child_tf, limit=5000)
     parents = parent_result.get("ranges") or []
     children = child_result.get("ranges") or []
     by_parent: dict[str, list[dict[str, Any]]] = {}
@@ -1390,11 +1910,15 @@ def get_range_tree(symbol: str = "XAUUSD", case_id: int | None = None, parent_ti
             by_parent.setdefault(str(pid), []).append(child)
     tree = []
     for parent in parents:
-        tree.append({"parent": parent, "children": by_parent.get(str(parent.get("id")), [])})
+        tree.append({"parent": parent, "children": by_parent.get(str(parent.get("range_id") or parent.get("id")), [])})
     return {
         "ok": True,
         "symbol": symbol,
         "case_id": case_id,
+        "raw_case_id": raw_case_id,
+        "case_ref": case_ref,
+        "parent_layer": parent_l,
+        "child_layer": child_l,
         "parent_timeframe": parent_tf,
         "child_timeframe": child_tf,
         "parents": len(parents),
@@ -1402,6 +1926,294 @@ def get_range_tree(symbol: str = "XAUUSD", case_id: int | None = None, parent_ti
         "orphans": orphans,
         "tree": tree,
     }
+
+
+def reparent_map_range(child_range_id: int, parent_range_id: int | None) -> dict[str, Any]:
+    init_db()
+    now = now_iso()
+    with connect() as conn:
+        child = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(child_range_id),)).fetchone()
+        if child is None:
+            return {"ok": False, "status": 404, "error": "Child range not found"}
+        status, warnings, parent = _validate_parent_link(
+            conn,
+            child_id=int(child_range_id),
+            symbol=str(child["symbol"]),
+            case_id=child["case_id"],
+            raw_case_id=child["raw_case_id"] if "raw_case_id" in child.keys() else None,
+            case_ref=child["case_ref"] if "case_ref" in child.keys() else None,
+            structure_layer=_range_layer(child),
+            parent_range_id=parent_range_id,
+        )
+        if status == "INVALID_PARENT":
+            return {"ok": False, "status": 400, "error": "Invalid parent_range_id", "warnings": warnings, "parent_link_status": status}
+        conn.execute(
+            "UPDATE map_ranges SET parent_range_id=?, parent_timeframe=?, parent_case_id=?, parent_link_status=?, updated_at=? WHERE id=?",
+            (
+                parent_range_id,
+                _range_source_timeframe(parent) if parent is not None else None,
+                parent["case_id"] if parent is not None else None,
+                status,
+                now,
+                int(child_range_id),
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(child_range_id),)).fetchone()
+    return {"ok": True, "range_id": int(child_range_id), "parent_range_id": parent_range_id, "parent_link_status": status, "warnings": warnings, "range": _range_row_to_dict(row)}
+
+
+def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None) -> dict[str, Any]:
+    init_db()
+    clauses = ["symbol=?"]
+    args: list[Any] = [symbol]
+    if case_id is not None:
+        clauses.append("case_id=?")
+        args.append(int(case_id))
+    if raw_case_id:
+        clauses.append("raw_case_id=?")
+        args.append(str(raw_case_id))
+    if case_ref:
+        clauses.append("case_ref=?")
+        args.append(str(case_ref))
+    where = " AND ".join(clauses)
+
+    with connect() as conn:
+        ranges = [_range_row_to_structural_dict(r) for r in conn.execute(f"SELECT * FROM map_ranges WHERE {where} ORDER BY id ASC", args).fetchall()]
+        events = [dict(r) for r in conn.execute(f"SELECT * FROM map_events WHERE {where} ORDER BY id ASC", args).fetchall()]
+
+        counts_by_layer = {layer: 0 for layer in STRUCTURE_LAYER_ORDER}
+        orphan_daily: list[dict[str, Any]] = []
+        orphan_intraday: list[dict[str, Any]] = []
+        invalid_parent_links: list[dict[str, Any]] = []
+        missing_rh_rl: list[dict[str, Any]] = []
+        daily_linked_weekly = 0
+        intraday_linked_daily = 0
+
+        for r in ranges:
+            layer = _normalise_structure_layer(r.get("structure_layer"), r.get("source_timeframe"))
+            counts_by_layer[layer] = counts_by_layer.get(layer, 0) + 1
+            status, warnings, parent = _validate_parent_link(
+                conn,
+                child_id=int(r["range_id"]),
+                symbol=str(r["symbol"]),
+                case_id=r.get("case_id"),
+                raw_case_id=r.get("raw_case_id"),
+                case_ref=r.get("case_ref"),
+                structure_layer=layer,
+                parent_range_id=r.get("parent_range_id"),
+            )
+            r["parent_link_status"] = status
+            if layer == "DAILY" and status == "ORPHAN":
+                orphan_daily.append(r)
+            if layer == "INTRADAY" and status == "ORPHAN":
+                orphan_intraday.append(r)
+            if status == "INVALID_PARENT":
+                invalid_parent_links.append({"range": r, "warnings": warnings})
+            if layer == "DAILY" and status == "VALID" and parent is not None and _range_layer(parent) == "WEEKLY":
+                daily_linked_weekly += 1
+            if layer == "INTRADAY" and status == "VALID" and parent is not None and _range_layer(parent) == "DAILY":
+                intraday_linked_daily += 1
+            if _range_price(r, "HIGH") in (None, 0) or _range_price(r, "LOW") in (None, 0):
+                missing_rh_rl.append(r)
+
+        bos_missing_bh_bl = []
+        events_without_active_range = []
+        for ev in events:
+            event_type = str(ev.get("event_type") or ev.get("structural_event") or "").upper()
+            if event_type in {"BOS_UP", "BOS_DOWN"}:
+                expected = "BH" if event_type == "BOS_UP" else "BL"
+                if str(ev.get("break_level_type") or "").upper() != expected or ev.get("break_level_price") in (None, ""):
+                    bos_missing_bh_bl.append(ev)
+            if ev.get("active_range_id") in (None, "") and event_type in ALLOWED_STRUCTURAL_EVENT_TYPES:
+                events_without_active_range.append(ev)
+
+    tree = get_range_tree(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, parent_timeframe="W1", child_timeframe="D1")
+    warnings = []
+    if orphan_daily:
+        warnings.append({"code": "ORPHAN_DAILY_RANGES", "count": len(orphan_daily)})
+    if orphan_intraday:
+        warnings.append({"code": "ORPHAN_INTRADAY_RANGES", "count": len(orphan_intraday)})
+    errors = []
+    if invalid_parent_links:
+        errors.append({"code": "INVALID_PARENT_LINKS", "count": len(invalid_parent_links)})
+    if missing_rh_rl:
+        errors.append({"code": "RANGES_MISSING_RH_RL", "count": len(missing_rh_rl)})
+    if bos_missing_bh_bl:
+        errors.append({"code": "BOS_EVENTS_MISSING_BH_BL", "count": len(bos_missing_bh_bl)})
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "case_id": case_id,
+        "raw_case_id": raw_case_id,
+        "case_ref": case_ref,
+        "summary": {
+            "total_ranges": len(ranges),
+            "ranges_by_structure_layer": counts_by_layer,
+            "weekly_ranges": counts_by_layer.get("WEEKLY", 0),
+            "daily_ranges": counts_by_layer.get("DAILY", 0),
+            "intraday_ranges": counts_by_layer.get("INTRADAY", 0),
+            "daily_ranges_linked_to_weekly": daily_linked_weekly,
+            "intraday_ranges_linked_to_daily": intraday_linked_daily,
+            "orphan_daily_ranges": len(orphan_daily),
+            "orphan_intraday_ranges": len(orphan_intraday),
+            "invalid_parent_links": len(invalid_parent_links),
+            "ranges_missing_rh_rl": len(missing_rh_rl),
+            "bos_events_missing_bh_bl": len(bos_missing_bh_bl),
+            "events_not_linked_to_active_range_id": len(events_without_active_range),
+        },
+        "errors": errors,
+        "warnings": warnings,
+        "incomplete": {
+            "orphan_daily_ranges": orphan_daily,
+            "orphan_intraday_ranges": orphan_intraday,
+            "events_not_linked_to_active_range_id": events_without_active_range,
+        },
+        "invalid_parent_links": invalid_parent_links,
+        "ranges_missing_rh_rl": missing_rh_rl,
+        "bos_events_missing_bh_bl": bos_missing_bh_bl,
+        "range_tree": tree,
+    }
+
+
+def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    init_db()
+    now = now_iso()
+    with connect() as conn:
+        existing = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(range_id),)).fetchone()
+        if existing is None:
+            return {"ok": False, "status": 404, "error": "Range not found"}
+        existing_d = dict(existing)
+        merged = {**existing_d, **(payload or {})}
+        case_id, raw_case_id, case_ref = _case_refs_from_payload(merged)
+        structure_layer = _normalise_structure_layer(merged.get("structure_layer") or merged.get("layer"), merged.get("source_timeframe") or merged.get("timeframe"))
+        parent_range_id = merged.get("parent_range_id")
+        status, warnings, parent = _validate_parent_link(
+            conn,
+            child_id=int(range_id),
+            symbol=str(merged.get("symbol") or existing_d.get("symbol")),
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+            structure_layer=structure_layer,
+            parent_range_id=parent_range_id,
+        )
+        if status == "INVALID_PARENT":
+            return {"ok": False, "status": 400, "error": "Invalid parent_range_id", "warnings": warnings, "parent_link_status": status}
+
+        updates: dict[str, Any] = {"updated_at": now, "parent_link_status": status}
+        if parent is not None:
+            updates["parent_timeframe"] = _range_source_timeframe(parent)
+            updates["parent_case_id"] = parent["case_id"] if "case_id" in parent.keys() else None
+
+        float_fields = {"range_high_price", "range_low_price", "break_high_price", "break_low_price"}
+        text_fields = {
+            "range_high_time", "range_low_time", "break_high_time", "break_low_time", "structure_layer",
+            "chart_timeframe", "source_timeframe", "status", "direction_of_break", "case_ref", "raw_case_id",
+        }
+        int_fields = {"parent_range_id", "case_id"}
+        passthrough_fields = {"meta_json"}
+
+        for field in float_fields:
+            if field in payload:
+                updates[field] = parse_float(payload.get(field), None)
+        for field in text_fields:
+            if field in payload:
+                updates[field] = _optional_text(payload.get(field))
+        for field in int_fields:
+            if field in payload:
+                updates[field] = _optional_int(payload.get(field))
+        if "case_id" in payload and updates.get("case_id") is None and payload.get("case_id") not in (None, "") and "raw_case_id" not in payload:
+            updates["raw_case_id"] = _optional_text(payload.get("case_id"))
+        if "case_ref" not in payload and ("case_id" in payload or "raw_case_id" in payload):
+            updates["case_ref"] = case_ref
+        if "meta_json" in payload:
+            updates["meta_json"] = json.dumps(payload.get("meta_json"), ensure_ascii=False, default=str) if isinstance(payload.get("meta_json"), dict) else payload.get("meta_json")
+
+        if "range_high_price" in updates:
+            updates["range_high"] = updates["range_high_price"]
+        if "range_low_price" in updates:
+            updates["range_low"] = updates["range_low_price"]
+        if "source_timeframe" in updates and updates["source_timeframe"]:
+            updates["timeframe"] = normalise_timeframe(str(updates["source_timeframe"]))
+        if "structure_layer" in updates and updates["structure_layer"]:
+            updates["structure_layer"] = _normalise_structure_layer(updates["structure_layer"], merged.get("source_timeframe") or merged.get("timeframe"))
+
+        set_sql = ", ".join([f"{field}=?" for field in updates.keys()])
+        args = list(updates.values()) + [int(range_id)]
+        conn.execute(f"UPDATE map_ranges SET {set_sql} WHERE id=?", args)
+        conn.commit()
+        row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(range_id),)).fetchone()
+    return {"ok": True, "range_id": int(range_id), "updated": True, "parent_link_status": status, "warnings": warnings, "range": _range_row_to_dict(row)}
+
+
+def patch_structural_map_event(event_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    init_db()
+    now = now_iso()
+    event_type_aliases = {
+        "RH": "RANGE_HIGH",
+        "RANGE_HIGH": "RANGE_HIGH",
+        "RL": "RANGE_LOW",
+        "RANGE_LOW": "RANGE_LOW",
+        "BH": "BOS_UP",
+        "BREAK_HIGH": "BOS_UP",
+        "BOS_UP": "BOS_UP",
+        "BL": "BOS_DOWN",
+        "BREAK_LOW": "BOS_DOWN",
+        "BOS_DOWN": "BOS_DOWN",
+    }
+    with connect() as conn:
+        existing = conn.execute("SELECT * FROM map_events WHERE event_id=? OR id=?", (str(event_id), _optional_int(event_id) or -1)).fetchone()
+        if existing is None:
+            return {"ok": False, "status": 404, "error": "Structural event not found"}
+        existing_d = dict(existing)
+        merged = {**existing_d, **(payload or {})}
+        case_id, raw_case_id, case_ref = _case_refs_from_payload(merged)
+
+        updates: dict[str, Any] = {"updated_at": now}
+        if "event_type" in payload or "structural_event" in payload:
+            raw_type = str(payload.get("event_type") or payload.get("structural_event") or "").upper()
+            next_type = event_type_aliases.get(raw_type, raw_type)
+            allowed_patch_types = set(ALLOWED_STRUCTURAL_EVENT_TYPES) | {"RANGE_HIGH", "RANGE_LOW"}
+            if next_type not in allowed_patch_types:
+                return {"ok": False, "status": 400, "error": f"Invalid structural event_type: {next_type}"}
+            updates["event_type"] = next_type
+            updates["structural_event"] = str(payload.get("structural_event") or next_type).upper()
+            if next_type == "BOS_UP" and "break_level_type" not in payload:
+                updates["break_level_type"] = "BH"
+            if next_type == "BOS_DOWN" and "break_level_type" not in payload:
+                updates["break_level_type"] = "BL"
+
+        float_fields = {"break_level_price", "event_price", "candle_open", "candle_high", "candle_low", "candle_close"}
+        text_fields = {"break_level_type", "break_level_time", "event_time", "candle_time", "raw_case_id", "case_ref", "direction"}
+        int_fields = {"active_range_id", "parent_range_id", "case_id"}
+        for field in float_fields:
+            if field in payload:
+                updates[field] = parse_float(payload.get(field), None)
+        for field in text_fields:
+            if field in payload:
+                updates[field] = _optional_text(payload.get(field))
+        for field in int_fields:
+            if field in payload:
+                updates[field] = _optional_int(payload.get(field))
+        if "case_id" in payload and updates.get("case_id") is None and payload.get("case_id") not in (None, "") and "raw_case_id" not in payload:
+            updates["raw_case_id"] = _optional_text(payload.get("case_id"))
+        if "case_ref" not in payload and ("case_id" in payload or "raw_case_id" in payload):
+            updates["case_ref"] = case_ref
+        if "meta_json" in payload:
+            updates["meta_json"] = json.dumps(payload.get("meta_json"), ensure_ascii=False, default=str) if isinstance(payload.get("meta_json"), dict) else payload.get("meta_json")
+        if "event_time" in updates:
+            updates["time"] = updates["event_time"]
+        if "event_price" in updates:
+            updates["price"] = updates["event_price"]
+
+        set_sql = ", ".join([f"{field}=?" for field in updates.keys()])
+        args = list(updates.values()) + [int(existing_d["id"])]
+        conn.execute(f"UPDATE map_events SET {set_sql} WHERE id=?", args)
+        conn.commit()
+        row = conn.execute("SELECT * FROM map_events WHERE id=?", (int(existing_d["id"]),)).fetchone()
+    return {"ok": True, "id": int(existing_d["id"]), "event_id": row["event_id"] if row and "event_id" in row.keys() else event_id, "updated": True, "event": _event_row_to_dict(row)}
 
 
 def delete_map_range(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: str = "active") -> dict[str, Any]:

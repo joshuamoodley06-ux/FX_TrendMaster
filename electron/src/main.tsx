@@ -2,14 +2,19 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, Map, RefreshCw, Save, Settings, Target, Zap } from 'lucide-react';
+import { buildRawPayloadJson, createRawCase, saveRawEvent } from './rawMapping';
 import './styles.css';
 
 const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
+const DEBUG_CAMERA = false;
 const SYMBOLS = ['XAUUSD', 'US500.cash'];
 const ZONES = ['Ext L', 'DD', 'D', 'Fair', 'P', 'DP', 'Ext H'];
 const LAYERS = ['weekly', 'daily', 'intraday'] as const;
 type LayerKey = typeof LAYERS[number];
 type Page = 'visual' | 'ideas' | 'live' | 'journal' | 'sql' | 'settings' | 'data' | 'brain' | 'historical' | 'mapstudio';
+type CameraIntent = 'LATEST' | 'FIT_ALL' | 'CASE' | 'REPLAY' | 'RANGE' | 'RESTORE_LOCKED' | 'PRESERVE_OR_NEAREST_TIME' | 'HORIZONTAL_STRETCH' | 'VERTICAL_STRETCH' | 'NONE';
+type CameraCommand = { intent: CameraIntent; token: number; targetTime?: string | null; reason?: string; scaleFactor?: number };
+type VisibleCameraDomain = { start:string; end:string; priceLow:number; priceHigh:number };
 
 type Layer = {
   layer: string;
@@ -370,7 +375,28 @@ function NavItem({ icon, label, page, active, collapsed, setPage }: any) { retur
 
 
 type Candle = { symbol:string; timeframe:string; time:string; open:number; high:number; low:number; close:number; volume?:number };
-type MapEvent = { id:string; event_type:string; event_name?:string; time?:string; price:number; zone?:string; zone_percent?:number; notes?:string; candle_open?:number; candle_high?:number; candle_low?:number; candle_close?:number; source?:'map'|'seed'|'auto'|'candidate'; primitive?:string; derived_event_code?:string; movement_rule?:string; range_status_after?:string; engine_source?:string; logic_version?:string; candidate_id?:string; confidence?:string; candidate_status?:'ACCEPTED'|'REJECTED'|'EDITED'|'CANDIDATE'; meta_json?:any; structural_event?:string; layer?:string; parent_timeframe?:string; range_id?:any; active_range_id?:any; parent_range_id?:any; old_range_id?:any; new_range_id?:any };
+type MapEvent = { id:string; event_type:string; event_name?:string; time?:string; price:number; zone?:string; zone_percent?:number; notes?:string; candle_open?:number; candle_high?:number; candle_low?:number; candle_close?:number; source?:'map'|'seed'|'auto'|'candidate'|'manual'; primitive?:string; derived_event_code?:string; movement_rule?:string; range_status_after?:string; engine_source?:string; logic_version?:string; candidate_id?:string; confidence?:string; candidate_status?:'ACCEPTED'|'REJECTED'|'EDITED'|'CANDIDATE'; meta_json?:any; structural_event?:string; layer?:string; parent_timeframe?:string; range_id?:any; active_range_id?:any; parent_range_id?:any; old_range_id?:any; new_range_id?:any; raw_event_id?:string };
+
+type StructureLayer = 'WEEKLY'|'DAILY'|'INTRADAY';
+type StructuralAnchor = { price:string; time:string; candle?:Candle|null };
+type StructuralRange = {
+  range_id?:number|string;
+  id?:number|string;
+  case_id?:number|string|null;
+  symbol?:string;
+  structure_layer?:string;
+  chart_timeframe?:string;
+  source_timeframe?:string;
+  parent_range_id?:number|string|null;
+  parent_link_status?:string;
+  range_high_price?:number|string|null;
+  range_low_price?:number|string|null;
+  range_high_time?:string;
+  range_low_time?:string;
+  range_start_time?:string;
+  range_end_time?:string;
+  status?:string;
+};
 
 type HTFCandidate = { id:string; event_type:string; label:string; price:number; time:string; candle:Candle; priceMode:'high'|'low'|'close'; confidence:'LOW'|'MEDIUM'|'HIGH'; reason:string; primitive:string; derived_event_code:string; movement_rule:string; range_status_after?:string; meta:any; status?:'CANDIDATE'|'ACCEPTED'|'REJECTED'|'EDITED' };
 
@@ -1005,6 +1031,8 @@ function eventAbbrev(type:any) {
 
 function MapStudio({ symbol }: { symbol:string }) {
   const [timeframe, setTimeframe] = useState('D1');
+  const activeTimeframeRef = useRef('D1');
+  useEffect(()=>{ activeTimeframeRef.current = timeframe; }, [timeframe]);
   const [candles, setCandles] = useState<Candle[]>([]);
   // v086.13: Persist explicit range anchors locally. Without this, restart/replay can
   // fall back to old backend/default ranges and move the fibs away from Josh's
@@ -1086,11 +1114,25 @@ function MapStudio({ symbol }: { symbol:string }) {
   // v087.27: camera state is now user-owned. Timeframe toggles should not throw the chart around like a shopping trolley.
   const [cameraMode, setCameraMode] = useLocalStorage<'AUTO'|'LOCKED'|'CASE'|'REPLAY'>('fx_tm_camera_mode_v087_27', 'CASE');
   const [cameraDomainByCaseTf, setCameraDomainByCaseTf] = useLocalStorage<Record<string,{start:string;end:string}>>('fx_tm_camera_domain_v087_27', {});
+  const [cameraPriceDomainByCaseTf, setCameraPriceDomainByCaseTf] = useLocalStorage<Record<string,{low:number;high:number}>>('fx_tm_camera_price_domain_v087_31', {});
   const [candleWidthScale, setCandleWidthScale] = useLocalStorage<number>('fx_tm_candle_width_scale_v087_27', 1);
   const [priceZoomScale, setPriceZoomScale] = useLocalStorage<number>('fx_tm_price_zoom_scale_v087_27', 1);
+  const candleLoadSeqRef = useRef(0);
+  const pendingCameraIntentRef = useRef<{intent:CameraIntent; targetTime?:string|null; reason?:string}>({ intent:'LATEST', reason:'initial-load' });
+  const visibleCameraDomainRef = useRef<VisibleCameraDomain|null>(null);
+  const [cameraCommand, setCameraCommand] = useState<CameraCommand>({ intent:'NONE', token:0 });
+  const cameraLog = (...args:any[]) => { if (DEBUG_CAMERA) console.log('[camera]', ...args); };
   const clampScale = (v:number) => Math.max(0.35, Math.min(4, Number(v) || 1));
-  const bumpCandleWidth = (delta:number) => setCandleWidthScale(v => Number(clampScale((Number(v)||1) + delta).toFixed(2)));
-  const bumpPriceZoom = (delta:number) => setPriceZoomScale(v => Number(clampScale((Number(v)||1) + delta).toFixed(2)));
+  const bumpCandleWidth = (delta:number) => {
+    const factor = delta > 0 ? 1.18 : 1 / 1.18;
+    setCandleWidthScale(v => Number(clampScale((Number(v)||1) + delta).toFixed(2)));
+    applyCameraCommand('HORIZONTAL_STRETCH', null, delta > 0 ? 'manual-W-plus' : 'manual-W-minus', factor);
+  };
+  const bumpPriceZoom = (delta:number) => {
+    const factor = delta > 0 ? 1.18 : 1 / 1.18;
+    setPriceZoomScale(v => Number(clampScale((Number(v)||1) + delta).toFixed(2)));
+    applyCameraCommand('VERTICAL_STRETCH', null, delta > 0 ? 'manual-H-plus' : 'manual-H-minus', factor);
+  };
   const resetCameraScale = () => { setCandleWidthScale(1); setPriceZoomScale(1); setFitToken(x=>x+1); };
   const autoSavedBosIdsRef = useRef<Set<string>>(new Set());
 
@@ -1099,12 +1141,12 @@ function MapStudio({ symbol }: { symbol:string }) {
   useEffect(()=>{
     if (!chartFullscreen) return;
     setWorkspacePanelOpen(false);
-    // Only force a fit in Auto/Case/Replay. Locked camera means exactly that: stop helping.
     if (cameraMode === 'LOCKED') return;
-    const t1 = window.setTimeout(()=>setFitToken(x=>x+1), 80);
-    const t2 = window.setTimeout(()=>setFitToken(x=>x+1), 360);
-    return () => { window.clearTimeout(t1); window.clearTimeout(t2); };
-  }, [chartFullscreen, timeframe, cameraMode]);
+    const intent:CameraIntent = cameraMode === 'CASE' ? 'CASE' : cameraMode === 'REPLAY' ? 'REPLAY' : 'PRESERVE_OR_NEAREST_TIME';
+    const targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
+    const t = window.setTimeout(()=>applyCameraCommand(intent, targetTime, 'fullscreen-layout-ready'), 120);
+    return () => window.clearTimeout(t);
+  }, [chartFullscreen]);
 
   // Full candle-by-candle replay: this is separate from MOS playback_frames.
   // It rewinds the actual candle stream so Josh can mark HTF/Daily anchors at the correct historical point.
@@ -1127,10 +1169,59 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [rawActiveCaseId, setRawActiveCaseId] = useLocalStorage<string>('fx_tm_raw_active_case_id_v087_29c', '');
   const [activeCaseLabel, setActiveCaseLabel] = useLocalStorage<string>('fx_tm_active_case_label_v086_16', '');
   const activeCaseDisplayId = rawActiveCaseId || (activeCaseId ? String(activeCaseId) : '');
+  const getCurrentMappingCaseRef = () => {
+    const rawId = String(rawActiveCaseId || '').trim();
+    if (rawId) {
+      return {
+        case_id: null as number | null,
+        raw_case_id: rawId,
+        case_ref: `raw:${rawId}`,
+        label: activeCaseLabel || `Raw ${rawId.slice(0, 8)}`,
+        hasCase: true,
+      };
+    }
+    const numericId = activeCaseId === null || activeCaseId === undefined ? null : Number(activeCaseId);
+    if (Number.isFinite(numericId) && numericId !== null) {
+      return {
+        case_id: numericId,
+        raw_case_id: null as string | null,
+        case_ref: `case:${numericId}`,
+        label: activeCaseLabel || `Case #${numericId}`,
+        hasCase: true,
+      };
+    }
+    return {
+      case_id: null as number | null,
+      raw_case_id: null as string | null,
+      case_ref: null as string | null,
+      label: null as string | null,
+      hasCase: false,
+    };
+  };
+  const appendMappingCaseParams = (params: URLSearchParams, ref = getCurrentMappingCaseRef()) => {
+    if (ref.case_id !== null) params.set('case_id', String(ref.case_id));
+    if (ref.raw_case_id) params.set('raw_case_id', ref.raw_case_id);
+    if (ref.case_ref) params.set('case_ref', ref.case_ref);
+    return params;
+  };
   const cameraKey = `${activeCaseDisplayId || 'global'}_${timeframe}`;
   const lockedCameraDomain = cameraDomainByCaseTf[cameraKey] || null;
   const caseSaveInFlightRef = useRef<Set<string>>(new Set());
   const [bundleSaving, setBundleSaving] = useState(false);
+  const [rawMarkSaving, setRawMarkSaving] = useState(false);
+  const [structureLayer, setStructureLayer] = useLocalStorage<StructureLayer>('fx_tm_structure_layer_phase3', 'WEEKLY');
+  const [sourceTimeframe, setSourceTimeframe] = useLocalStorage<string>('fx_tm_structure_source_tf_phase3', 'W1');
+  const [structuralSaving, setStructuralSaving] = useState(false);
+  const [structuralRanges, setStructuralRanges] = useState<StructuralRange[]>([]);
+  const [selectedParentRangeId, setSelectedParentRangeId] = useLocalStorage<string>('fx_tm_selected_parent_range_id_phase3', '');
+  const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
+  const [rhAnchor, setRhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
+  const [rlAnchor, setRlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
+  const [bhAnchor, setBhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
+  const [blAnchor, setBlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
+  const [structuralRangeDraftDirty, setStructuralRangeDraftDirty] = useState(false);
+  const [structuralBosDraftDirty, setStructuralBosDraftDirty] = useState(false);
+  const [hierarchyAudit, setHierarchyAudit] = useState<any>(null);
   const [caseScope, setCaseScope] = useState<CaseScope>(() => timeframeToScope(timeframe));
   useEffect(()=>{ setCaseScope(timeframeToScope(timeframe)); }, [timeframe]);
   const [historyMarkMode, setHistoryMarkMode] = useLocalStorage<string>('fx_tm_history_mark_mode_v087_17', 'OFF');
@@ -1191,6 +1282,32 @@ function MapStudio({ symbol }: { symbol:string }) {
     return out;
   }, [seedIdeas, candleReplayMode, replayCandle?.time]);
 
+  const structuralDraftEvents = useMemo<MapEvent[]>(() => {
+    const out:MapEvent[] = [];
+    const pushDraft = (anchor:StructuralAnchor, type:'BH'|'BL', name:string) => {
+      if (!anchor.price || !anchor.time) return;
+      out.push({
+        id: `structural_draft_${type}_${timeframe}`,
+        source: 'candidate',
+        event_type: type,
+        event_name: `${name} Draft`,
+        time: anchor.time,
+        price: Number(anchor.price),
+        notes: 'Unsaved structural draft marker',
+        candidate_status: 'CANDIDATE',
+        meta_json: {
+          draft_only: true,
+          structure_layer: structureLayer,
+          source_timeframe: sourceTimeframe,
+          chart_timeframe: timeframe,
+        },
+      });
+    };
+    pushDraft(bhAnchor, 'BH', 'Break High');
+    pushDraft(blAnchor, 'BL', 'Break Low');
+    return out;
+  }, [bhAnchor.price, bhAnchor.time, blAnchor.price, blAnchor.time, structureLayer, sourceTimeframe, timeframe]);
+
   const visibleEvents = useMemo(() => {
     // v087.17: Stored does not mean displayed. The database can remember everything;
     // the chart should only show the slice that helps the current mapping decision.
@@ -1216,8 +1333,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       }
       return true; // ALL
     });
-    return filtered;
-  }, [mapEventsVisibleToReplay, historyMarkMode, showRejectedMarks, sessionEventIds, rangeWindow.start, rangeWindow.end, activeCaseId, selectedCandle?.time, replayCandle?.time]);
+    return [...filtered, ...structuralDraftEvents];
+  }, [mapEventsVisibleToReplay, structuralDraftEvents, historyMarkMode, showRejectedMarks, sessionEventIds, rangeWindow.start, rangeWindow.end, activeCaseId, selectedCandle?.time, replayCandle?.time]);
   const narrativeFacts = useMemo(() => {
     return (visibleEvents || [])
       .filter((e:any) => e?.source !== 'seed' && e?.event_type)
@@ -1323,6 +1440,11 @@ function MapStudio({ symbol }: { symbol:string }) {
   const activeCaseRecord = useMemo(() => {
     return safeArray<any>(seedIdeas).find((idea:any) => Number(idea?.id) === Number(activeCaseId)) || null;
   }, [seedIdeas, activeCaseId]);
+  const activeRawCaseRecord = useMemo(() => {
+    if (!rawActiveCaseId) return null;
+    return safeArray<any>(seedIdeas).find((idea:any) => String(idea?.raw_case_id || idea?.id || '') === String(rawActiveCaseId)) || null;
+  }, [seedIdeas, rawActiveCaseId]);
+  const activeMappingCaseContainer = rawActiveCaseId ? activeRawCaseRecord : activeCaseRecord;
 
   const activeCaseLedger = useMemo(() => {
     const idea:any = activeCaseRecord;
@@ -1452,8 +1574,9 @@ function MapStudio({ symbol }: { symbol:string }) {
   const jumpToCaseLedgerEvent = (ev:any) => {
     const tf = String(activeCaseLedger.timeframe || timeframe).toUpperCase();
     if (tf !== timeframe) {
+      pendingCameraIntentRef.current = { intent:'PRESERVE_OR_NEAREST_TIME', targetTime:ev?.time || null, reason:'case-ledger-timeframe-switch' };
+      activeTimeframeRef.current = tf;
       setTimeframe(tf);
-      if (ev?.time) setJumpDate(String(ev.time).slice(0,10));
       setRightDeckTab('narrative');
       setWorkspacePanelOpen(true);
       setMessage(`Switched to ${tf} for Case #${activeCaseId} ledger row. If the candle is shy, hit the row again after candles load.`);
@@ -1682,9 +1805,10 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const traj = hasRange ? autoTrajectory(trajectoryCandles, low, high) : [];
 
-  const loadMapMemory = async () => {
+  const loadMapMemory = async (requestedTf = timeframe, requestId = candleLoadSeqRef.current) => {
+    const isCurrentLoad = () => requestId === candleLoadSeqRef.current && activeTimeframeRef.current === requestedTf;
     try {
-      const localRangeBeforeLoad = rangeByTf[timeframe] || {};
+      const localRangeBeforeLoad = rangeByTf[requestedTf] || {};
       const hasLocalExplicitHigh = !!String(localRangeBeforeLoad.high || '').trim();
       const hasLocalExplicitLow = !!String(localRangeBeforeLoad.low || '').trim();
 
@@ -1692,42 +1816,44 @@ function MapStudio({ symbol }: { symbol:string }) {
       // The old global map/event feed can still exist, but it must not vomit legacy marks into a clean workspace.
       if (activeCaseId) {
         const payload = await fetch(`${BASE_URL}/api/v1/mos/seed-idea/${activeCaseId}/payload`).then(r=>r.json()).catch(()=>null);
+        if (!isCurrentLoad()) { cameraLog('map memory ignored as stale', { requestId, requestedTf, activeTf:activeTimeframeRef.current }); return false; }
         if (payload?.ok) {
           const caseEvents = safeArray<any>(payload.events)
-            .filter((raw:any)=>String(raw?.timeframe || raw?.meta?.timeframe || '').toUpperCase() === String(timeframe).toUpperCase())
+            .filter((raw:any)=>String(raw?.timeframe || raw?.meta?.timeframe || '').toUpperCase() === String(requestedTf).toUpperCase())
             .map(normalizeBackendEvent)
             .filter(Boolean) as MapEvent[];
-          setEventsByTf(prev => ({ ...prev, [timeframe]: caseEvents }));
+          setEventsByTf(prev => ({ ...prev, [requestedTf]: caseEvents }));
 
           const caseRanges = safeArray<any>(payload.ranges)
-            .filter((r:any)=>String(r?.timeframe || '').toUpperCase() === String(timeframe).toUpperCase());
+            .filter((r:any)=>String(r?.timeframe || '').toUpperCase() === String(requestedTf).toUpperCase());
           const latestRange = caseRanges[caseRanges.length - 1];
           if (latestRange) {
-            if (!hasLocalExplicitHigh && Number(latestRange.range_high)) setRangeHigh(String(Number(latestRange.range_high).toFixed(2)));
-            if (!hasLocalExplicitLow && Number(latestRange.range_low)) setRangeLow(String(Number(latestRange.range_low).toFixed(2)));
+            if (!hasLocalExplicitHigh && Number(latestRange.range_high)) setRangeByTf(prev => ({ ...prev, [requestedTf]: { high:String(Number(latestRange.range_high).toFixed(2)), low:prev[requestedTf]?.low || '' } }));
+            if (!hasLocalExplicitLow && Number(latestRange.range_low)) setRangeByTf(prev => ({ ...prev, [requestedTf]: { high:prev[requestedTf]?.high || '', low:String(Number(latestRange.range_low).toFixed(2)) } }));
             const ms = [latestRange.range_high_time, latestRange.range_low_time, latestRange.active_from_time, latestRange.inactive_from_time].filter(Boolean).map((x:string)=>new Date(x).getTime()).filter(Number.isFinite);
-            if (ms.length >= 2 && (!rangeWindowByTf[timeframe]?.start || !rangeWindowByTf[timeframe]?.end)) {
-              setRangeWindowByTf(prev=>({ ...prev, [timeframe]: { start:new Date(Math.min(...ms)).toISOString(), end:new Date(Math.max(...ms)).toISOString() }}));
+            if (ms.length >= 2 && (!rangeWindowByTf[requestedTf]?.start || !rangeWindowByTf[requestedTf]?.end)) {
+              setRangeWindowByTf(prev=>({ ...prev, [requestedTf]: { start:new Date(Math.min(...ms)).toISOString(), end:new Date(Math.max(...ms)).toISOString() }}));
             }
           } else if ((!hasLocalExplicitHigh || !hasLocalExplicitLow) && caseEvents.length) {
-            syncRangeFromEvents(caseEvents, false);
+            syncRangeFromEvents(caseEvents, false, requestedTf);
           }
-          return;
+          return true;
         }
       }
 
       const [rangeRes, eventsRes] = await Promise.all([
-        fetch(`${BASE_URL}/api/v1/map/range?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&range_key=active`).then(r=>r.json()).catch(()=>null),
-        fetch(`${BASE_URL}/api/v1/map/events?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=2000`).then(r=>r.json()).catch(()=>null)
+        fetch(`${BASE_URL}/api/v1/map/range?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(requestedTf)}&range_key=active`).then(r=>r.json()).catch(()=>null),
+        fetch(`${BASE_URL}/api/v1/map/events?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(requestedTf)}&limit=2000`).then(r=>r.json()).catch(()=>null)
       ]);
+      if (!isCurrentLoad()) { cameraLog('map memory ignored as stale', { requestId, requestedTf, activeTf:activeTimeframeRef.current }); return false; }
 
       if (rangeRes?.ok && rangeRes.range) {
         const rg = rangeRes.range;
-        if (!hasLocalExplicitHigh && Number(rg.range_high)) setRangeHigh(String(Number(rg.range_high).toFixed(2)));
-        if (!hasLocalExplicitLow && Number(rg.range_low)) setRangeLow(String(Number(rg.range_low).toFixed(2)));
+        if (!hasLocalExplicitHigh && Number(rg.range_high)) setRangeByTf(prev => ({ ...prev, [requestedTf]: { high:String(Number(rg.range_high).toFixed(2)), low:prev[requestedTf]?.low || '' } }));
+        if (!hasLocalExplicitLow && Number(rg.range_low)) setRangeByTf(prev => ({ ...prev, [requestedTf]: { high:prev[requestedTf]?.high || '', low:String(Number(rg.range_low).toFixed(2)) } }));
         const startCandidates = [rg.range_high_time, rg.range_low_time].filter(Boolean).map((x:string)=>new Date(x).getTime()).filter(Number.isFinite);
-        if (startCandidates.length >= 2 && (!rangeWindowByTf[timeframe]?.start || !rangeWindowByTf[timeframe]?.end)) {
-          setRangeWindowByTf(prev=>({ ...prev, [timeframe]: { start:new Date(Math.min(...startCandidates)).toISOString(), end:new Date(Math.max(...startCandidates)).toISOString() }}));
+        if (startCandidates.length >= 2 && (!rangeWindowByTf[requestedTf]?.start || !rangeWindowByTf[requestedTf]?.end)) {
+          setRangeWindowByTf(prev=>({ ...prev, [requestedTf]: { start:new Date(Math.min(...startCandidates)).toISOString(), end:new Date(Math.max(...startCandidates)).toISOString() }}));
         }
       }
 
@@ -1755,31 +1881,115 @@ function MapStudio({ symbol }: { symbol:string }) {
           candle_low: e.candle_low === null || e.candle_low === undefined ? undefined : Number(e.candle_low),
           candle_close: e.candle_close === null || e.candle_close === undefined ? undefined : Number(e.candle_close),
         })).filter((e:any)=>e.event_type && Number.isFinite(e.price));
-        setEventsForTf(loaded);
-        if (!hasLocalExplicitHigh || !hasLocalExplicitLow) syncRangeFromEvents(loaded, false);
+        setEventsByTf(prev => ({ ...prev, [requestedTf]: loaded }));
+        if (!hasLocalExplicitHigh || !hasLocalExplicitLow) syncRangeFromEvents(loaded, false, requestedTf);
       }
+      return true;
     } catch {
       // Map memory failing should never block candle display. That would be dramatic and unhelpful.
+      return false;
     }
   };
 
-  const loadCandles = async () => {
-    setLoading(true); setMessage('Loading candles from backend...');
+  const resolveLoadCameraIntent = (requestedTf:string, fallbackTime?:string|null) => {
+    const pending = pendingCameraIntentRef.current;
+    if (pending.intent && pending.intent !== 'NONE') return pending;
+    if (cameraMode === 'LOCKED') return { intent:'RESTORE_LOCKED' as CameraIntent, targetTime:fallbackTime, reason:'locked-load' };
+    if (cameraMode === 'CASE') return { intent:'CASE' as CameraIntent, targetTime:fallbackTime, reason:'case-load' };
+    if (cameraMode === 'REPLAY') return { intent:'REPLAY' as CameraIntent, targetTime:fallbackTime, reason:'replay-load' };
+    return { intent:'PRESERVE_OR_NEAREST_TIME' as CameraIntent, targetTime:fallbackTime, reason:`${requestedTf}-load` };
+  };
+
+  const applyCameraCommand = (intent:CameraIntent, targetTime?:string|null, reason?:string, scaleFactor?:number) => {
+    cameraLog('camera intent applied', { intent, targetTime, reason, scaleFactor });
+    setCameraCommand(prev => ({ intent, targetTime: targetTime || null, reason, scaleFactor, token: prev.token + 1 }));
+  };
+
+  const fitRangeView = () => {
+    if (!rhAnchor.price || !rlAnchor.price) { setMessage('Set Range High and Range Low before Fit Range.'); return; }
+    applyCameraCommand('RANGE', null, 'fit-range');
+  };
+
+  const fitReplayView = () => {
+    const targetTime = selectedCandle?.time || replayCandle?.time || candleReplayCursorTime || null;
+    if (!targetTime) { setMessage('No selected/replay candle to fit.'); return; }
+    applyCameraCommand('REPLAY', targetTime, 'fit-replay');
+  };
+
+  const fitCaseView = () => {
+    const targetTime = activeCaseLedger?.start || rangeWindow.start || selectedCandle?.time || replayCandle?.time || null;
+    applyCameraCommand('CASE', targetTime, 'fit-case');
+  };
+
+  const fitAllView = () => applyCameraCommand('FIT_ALL', null, 'fit-all');
+
+  const lockCurrentView = () => {
+    const dom = visibleCameraDomainRef.current;
+    if (!dom || !dom.start || !dom.end || !Number.isFinite(dom.priceLow) || !Number.isFinite(dom.priceHigh) || dom.priceHigh <= dom.priceLow) {
+      setMessage('Cannot lock view yet: no valid visible camera domain.');
+      return;
+    }
+    setCameraDomainByCaseTf(prev => ({ ...prev, [cameraKey]: { start:dom.start, end:dom.end } }));
+    setCameraPriceDomainByCaseTf(prev => ({ ...prev, [cameraKey]: { low:dom.priceLow, high:dom.priceHigh } }));
+    setCameraMode('LOCKED');
+    applyCameraCommand('RESTORE_LOCKED', null, 'lock-view');
+    setMessage(`Locked view for ${timeframe}: ${shortTime(dom.start, timeframe)} → ${shortTime(dom.end, timeframe)}`);
+  };
+
+  const loadCandles = async (requestedTf = timeframe) => {
+    const targetTf = String(requestedTf || timeframe).toUpperCase();
+    const requestId = candleLoadSeqRef.current + 1;
+    candleLoadSeqRef.current = requestId;
+    const preservedTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
+    const pendingIntent = resolveLoadCameraIntent(targetTf, preservedTime);
+    const isCurrentLoad = () => requestId === candleLoadSeqRef.current && activeTimeframeRef.current === targetTf;
+    cameraLog('candle load start', { requestId, targetTf, intent:pendingIntent.intent, targetTime:pendingIntent.targetTime });
+    setLoading(true); setMessage(`Loading ${targetTf} candles from backend...`);
     try {
-      const r = await fetch(`${BASE_URL}/api/v1/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}&limit=12000`).then(x=>x.json());
+      const r = await fetch(`${BASE_URL}/api/v1/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(targetTf)}&limit=12000`).then(x=>x.json());
+      if (!isCurrentLoad()) { cameraLog('candle load ignored as stale', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
       if (!r.ok) throw new Error(r.error || 'Backend returned no candles');
       const parsed = (r.candles || [])
         .map((c:any)=>({ ...c, open:Number(c.open), high:Number(c.high), low:Number(c.low), close:Number(c.close), volume:Number(c.volume||0) }))
         .filter((c:Candle)=>Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close));
+      if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after parse', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
       setCandles(parsed);
-      if (parsed.length) setCandleReplayIndex(parsed.length - 1);
+      if (!parsed.length) {
+        setCandleReplayIndex(0);
+        setSelectedCandle(null);
+        setSelectedCandlePoint(null);
+        pendingCameraIntentRef.current = { intent:'NONE' };
+        setMessage(`No ${targetTf} candles returned.`);
+        cameraLog('candle load empty', { requestId, targetTf });
+        return;
+      }
+      const targetTime = pendingIntent.targetTime || preservedTime;
+      const nearestIdx = targetTime ? candleIndexNearest(parsed, targetTime) : parsed.length - 1;
+      const safeIdx = clamp(nearestIdx, 0, parsed.length - 1);
+      const nearest = parsed[safeIdx];
+      setCandleReplayIndex(safeIdx);
+      if (targetTime && nearest) {
+        setSelectedCandle(nearest);
+        setSelectedCandlePoint({ price: Number(nearest.close.toFixed(2)) });
+        if (candleReplayMode || pendingIntent.intent === 'REPLAY') setCandleReplayCursorTime(nearest.time);
+        cameraLog('selected/replay nearest-candle mapping', { requestId, targetTf, targetTime, nearestTime:nearest.time, safeIdx });
+      }
       // v086.13: no more automatic last-120-candle default range.
       // Fibs should appear only from explicit Set M/W/D High/Low or hydrated ledger anchors.
-      await loadMapMemory();
-      setMessage(`Loaded ${parsed.length} ${timeframe} candles + backend map memory. Click Candle, mark structure, save your brain.`);
-      setTimeout(()=>setJumpToken(x=>x+1), 80);
-    } catch(e:any) { setMessage(`Load failed: ${e?.message || e}`); }
-    finally { setLoading(false); }
+      await loadMapMemory(targetTf, requestId);
+      if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after memory', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
+      const commandTargetTime = pendingIntent.targetTime || targetTime || nearest?.time || null;
+      applyCameraCommand(pendingIntent.intent === 'NONE' ? 'PRESERVE_OR_NEAREST_TIME' : pendingIntent.intent, commandTargetTime, pendingIntent.reason || 'confirmed-candle-load');
+      pendingCameraIntentRef.current = { intent:'NONE' };
+      setMessage(`Loaded ${parsed.length} ${targetTf} candles + backend map memory.`);
+      cameraLog('candle load applied', { requestId, targetTf, intent:pendingIntent.intent, commandTargetTime });
+    } catch(e:any) {
+      if (!isCurrentLoad()) { cameraLog('candle load error ignored as stale', { requestId, targetTf, error:e?.message || e }); return; }
+      setMessage(`Load ${targetTf} failed: ${e?.message || e}`);
+    }
+    finally {
+      if (isCurrentLoad()) setLoading(false);
+    }
   };
 
   const importCommon = async () => {
@@ -1981,27 +2191,85 @@ function MapStudio({ symbol }: { symbol:string }) {
     return Number.isFinite(n) ? n : null;
   };
 
+  const sortCaseRows = (rows:any[]) => [...safeArray<any>(rows)].sort((a:any,b:any) => {
+    const timeOf = (x:any) => {
+      const raw = x?.updated_at || x?.created_at || x?.updated_at_utc_ms || x?.created_at_utc_ms || 0;
+      const n = Number(raw);
+      if (Number.isFinite(n) && n > 100000000000) return n;
+      const ms = new Date(String(raw || '')).getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    };
+    return timeOf(b) - timeOf(a) || String(b?.id || '').localeCompare(String(a?.id || ''));
+  });
+
+  const rawCaseRecentRow = (caseId:string, rawCase?:any) => {
+    const tf = String(rawCase?.base_timeframe || caseTimeframe || timeframe || 'W1').toUpperCase();
+    const scope = timeframeToScope(tf);
+    const name = String(rawCase?.case_name || seedName || activeCaseLabel || `${symbol}_${tf}_Raw_Case`).replace(/\s+·\s+[a-f0-9-]+$/i, '');
+    const now = new Date().toISOString();
+    return {
+      id: caseId,
+      raw_case_id: caseId,
+      is_raw_mapping_case: true,
+      seed_name: name,
+      symbol: rawCase?.symbol || symbol,
+      replay_timeframe: tf,
+      case_timeframe: tf,
+      case_scope: scope,
+      replay_candle_time: activeReplayCandle?.time || candleReplayCursorTime || now,
+      created_at: rawCase?.created_at_utc_ms ? new Date(Number(rawCase.created_at_utc_ms)).toISOString() : now,
+      updated_at: rawCase?.updated_at_utc_ms ? new Date(Number(rawCase.updated_at_utc_ms)).toISOString() : now,
+      raw_case: rawCase || null,
+    };
+  };
+
+  const mergeRecentCases = (rows:any[], extra?:any) => {
+    const merged = new globalThis.Map<string, any>();
+    for (const row of safeArray<any>(rows)) {
+      const key = String(row?.raw_case_id || row?.id || '');
+      if (key) merged.set(key, row);
+    }
+    if (extra) {
+      const key = String(extra?.raw_case_id || extra?.id || '');
+      if (key) merged.set(key, { ...(merged.get(key) || {}), ...extra });
+    }
+    const activeRaw = rawActiveCaseId ? rawCaseRecentRow(String(rawActiveCaseId)) : null;
+    if (activeRaw) {
+      const key = String(activeRaw.raw_case_id);
+      merged.set(key, { ...(merged.get(key) || {}), ...activeRaw });
+    }
+    return sortCaseRows(Array.from(merged.values()));
+  };
+
+  const caseMatchesContext = (idea:any) => {
+    const isActive = String(idea?.raw_case_id || idea?.id || '') === String(activeCaseDisplayId || '');
+    if (isActive) return true;
+    if (String(idea?.symbol || symbol).toUpperCase() !== String(symbol).toUpperCase()) return false;
+    const tf = String(idea?.case_timeframe || idea?.replay_timeframe || idea?.raw_case?.base_timeframe || '').toUpperCase();
+    const scope = String(idea?.case_scope || (tf ? timeframeToScope(tf) : '') || '').toUpperCase();
+    return !tf || tf === String(caseTimeframe).toUpperCase() || scope === String(caseScope).toUpperCase();
+  };
+
   const ensureRawCase = async () => {
     if (rawActiveCaseId) return String(rawActiveCaseId);
     try {
+      const caseName = String(seedName || activeCaseLabel || `${symbol}_${caseTimeframe}_Raw_Case`).trim() || `${symbol}_${caseTimeframe}_Raw_Case`;
       const payload = {
         symbol,
-        case_name: String(seedName || activeCaseLabel || `${symbol}_${caseTimeframe}_Raw_Case`).trim() || `${symbol}_${caseTimeframe}_Raw_Case`,
+        case_name: caseName,
         base_timeframe: caseTimeframe || timeframe || 'W1',
         price_scale_default: String(symbol).toUpperCase().includes('XAU') ? 100 : 100000,
-        notes: seedNotes || 'Created from Electron v087.29c raw keylogger mode'
+        notes: seedNotes || 'Created from Electron raw mapping contract',
       };
-      const r = await fetch(`${BASE_URL}/api/v1/raw-mapping/cases`, {
-        method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
-      }).then(x=>x.json()).catch((e)=>({ ok:false, error:String(e) }));
-      if (!r?.ok && !r?.success) throw new Error(r?.error || r?.detail || 'Raw case create failed');
-      const id = String(r?.case?.case_id || r?.case_id || r?.id || '');
+      const r = await createRawCase(BASE_URL, payload);
+      const id = String(r?.case?.case_id || r?.case_id || '');
       if (!id) throw new Error('Raw case create returned no case_id');
       setRawActiveCaseId(id);
       setActiveCaseId(null);
-      setActiveCaseLabel(`${payload.case_name} · ${id.slice(0,8)}`);
+      setActiveCaseLabel(`${caseName} · ${id.slice(0, 8)}`);
+      setSeedIdeas(prev => mergeRecentCases(prev, rawCaseRecentRow(id, r?.case)));
       return id;
-    } catch (err:any) {
+    } catch (err: any) {
       setMessage(`Raw case create failed: ${err?.message || err}`);
       return null;
     }
@@ -2052,16 +2320,16 @@ function MapStudio({ symbol }: { symbol:string }) {
     return;
   };
 
-  const syncRangeFromEvents = (nextEvents:MapEvent[], persist:boolean = true) => {
+  const syncRangeFromEvents = (nextEvents:MapEvent[], persist:boolean = true, targetTf = timeframe) => {
     const source = safeArray<MapEvent>(nextEvents);
     const lastRangeHigh = latestRangeHighEvent(source);
     const lastRangeLow = latestRangeLowEvent(source);
 
     setRangeByTf(prev => ({
       ...prev,
-      [timeframe]: {
-        high: lastRangeHigh ? String(Number(lastRangeHigh.price).toFixed(2)) : (prev[timeframe]?.high || ''),
-        low: lastRangeLow ? String(Number(lastRangeLow.price).toFixed(2)) : (prev[timeframe]?.low || '')
+      [targetTf]: {
+        high: lastRangeHigh ? String(Number(lastRangeHigh.price).toFixed(2)) : (prev[targetTf]?.high || ''),
+        low: lastRangeLow ? String(Number(lastRangeLow.price).toFixed(2)) : (prev[targetTf]?.low || '')
       }
     }));
 
@@ -2071,14 +2339,14 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (ms.length >= 2) {
         setRangeWindowByTf(prev => ({
           ...prev,
-          [timeframe]: {
+          [targetTf]: {
             start: new Date(Math.min(...ms)).toISOString(),
             end: new Date(Math.max(...ms)).toISOString()
           }
         }));
       }
     } else {
-      setRangeWindowByTf(prev => ({ ...prev, [timeframe]: {} }));
+      setRangeWindowByTf(prev => ({ ...prev, [targetTf]: {} }));
     }
     if (persist) saveActiveRange(source);
   };
@@ -2199,6 +2467,399 @@ function MapStudio({ symbol }: { symbol:string }) {
     });
   };
 
+  const saveRawMarker = async (side: 'HIGH' | 'LOW' | 'REF', candle: Candle) => {
+    if (rawMarkSaving) return;
+    setRawMarkSaving(true);
+
+    const localType = side === 'HIGH' ? 'RANGE_HIGH' : side === 'LOW' ? 'RANGE_LOW' : 'SET_ANCHOR_REF';
+    const displayMarkerId = markerIdForCandle(candle, localType);
+    const eventId = crypto.randomUUID();
+
+    try {
+      const caseId = rawActiveCaseId || await ensureRawCase();
+      if (!caseId) throw new Error('No raw case id. Save or create a raw case first.');
+
+      const price = side === 'HIGH' ? candle.high : side === 'LOW' ? candle.low : candle.close;
+      const candleIdx = candles.findIndex(c => c.time === candle.time);
+      const payload = buildRawPayloadJson({
+        event_id: eventId,
+        case_id: caseId,
+        symbol,
+        timeframe,
+        candle_time_utc_ms: rawCandleTimeMs(candle.time),
+        candle_index: candleIdx >= 0 ? candleIdx : null,
+        price: Number(price.toFixed(2)),
+        event_type: 'SET_ANCHOR',
+        semantic_side: side,
+        source: 'manual',
+        notes: side === 'REF' ? 'Set REF anchor' : `Set ${side} anchor`,
+        extra_payload: {
+          display_marker_id: displayMarkerId,
+          candle_role: side,
+          candle_open: candle.open,
+          candle_high: candle.high,
+          candle_low: candle.low,
+          candle_close: candle.close,
+          electron_version: 'v087.30_raw_mapping_contract',
+        },
+      });
+
+      await saveRawEvent(BASE_URL, payload);
+
+      const replaceType = side === 'HIGH' ? 'RANGE_HIGH' : side === 'LOW' ? 'RANGE_LOW' : 'SET_ANCHOR_REF';
+      const ev: MapEvent = {
+        id: displayMarkerId,
+        raw_event_id: eventId,
+        event_type: localType,
+        event_name: side === 'REF' ? 'Set REF' : localType,
+        time: candle.time,
+        price: Number(price.toFixed(2)),
+        notes: '',
+        source: 'manual',
+        candle_open: candle.open,
+        candle_high: candle.high,
+        candle_low: candle.low,
+        candle_close: candle.close,
+        meta_json: { raw_event_id: eventId, display_marker_id: displayMarkerId, candle_role: side },
+      };
+      upsertMarkerIntoEvents(ev, replaceType);
+
+      if (side === 'HIGH') {
+        const nextHigh = String(Number(candle.high).toFixed(2));
+        setRangeHigh(nextHigh);
+        setRangeByTf(prev => ({ ...prev, [timeframe]: { high: nextHigh, low: prev[timeframe]?.low || '' } }));
+        mergeRangeWindowTime(candle.time);
+      }
+      if (side === 'LOW') {
+        const nextLow = String(Number(candle.low).toFixed(2));
+        setRangeLow(nextLow);
+        setRangeByTf(prev => ({ ...prev, [timeframe]: { high: prev[timeframe]?.high || '', low: nextLow } }));
+        mergeRangeWindowTime(candle.time);
+      }
+
+      setSessionEventIds(prev => {
+        const next = new Set(prev);
+        next.add(eventId);
+        return next;
+      });
+      setMessage(`Saved SET_ANCHOR ${side} at ${Number(price).toFixed(2)} · ${shortTime(candle.time, timeframe)}`);
+    } catch (err: any) {
+      setMessage(`Raw marker save failed: ${err?.message || err}`);
+      throw err;
+    } finally {
+      setRawMarkSaving(false);
+    }
+  };
+
+  const selectedParentRange = useMemo(() => {
+    return safeArray<StructuralRange>(structuralRanges).find(r => String(r.range_id || r.id) === String(selectedParentRangeId)) || null;
+  }, [structuralRanges, selectedParentRangeId]);
+
+  useEffect(() => {
+    if (structureLayer === 'WEEKLY') setSourceTimeframe('W1');
+    if (structureLayer === 'DAILY') setSourceTimeframe('D1');
+    if (structureLayer === 'INTRADAY' && !['H1','H4','H8'].includes(String(sourceTimeframe).toUpperCase())) setSourceTimeframe('H1');
+  }, [structureLayer]);
+
+  const structuralFetchJson = async (url:string, options?:RequestInit) => {
+    const res = await fetch(url, options);
+    const data = await res.json().catch(()=>({ ok:false, error:`Invalid backend response ${res.status}` }));
+    if (!res.ok || data?.ok === false) throw new Error(data?.error || data?.detail || `Backend request failed ${res.status}`);
+    return data;
+  };
+
+  const refreshStructuralRanges = async () => {
+    const params = new URLSearchParams({ symbol });
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) {
+      setStructuralRanges([]);
+      setSelectedParentRangeId('');
+      setMessage('Create or select a mapping case before loading structural ranges.');
+      return;
+    }
+    appendMappingCaseParams(params, mappingCase);
+    if (structureLayer === 'DAILY') {
+      params.set('structure_layer', 'WEEKLY');
+      params.set('source_timeframe', 'W1');
+    } else if (structureLayer === 'INTRADAY') {
+      params.set('structure_layer', 'DAILY');
+      params.set('source_timeframe', 'D1');
+    } else {
+      params.set('structure_layer', structureLayer);
+      params.set('source_timeframe', sourceTimeframe);
+    }
+    try {
+      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/ranges?${params.toString()}`);
+      const rows = safeArray<StructuralRange>(data.ranges);
+      setStructuralRanges(rows);
+      if ((structureLayer === 'DAILY' || structureLayer === 'INTRADAY') && rows.length && !rows.some(r => String(r.range_id || r.id) === String(selectedParentRangeId))) {
+        setSelectedParentRangeId(String(rows[0].range_id || rows[0].id || ''));
+      }
+    } catch (err:any) {
+      setMessage(`Load structural ranges failed: ${err?.message || err}`);
+    }
+  };
+
+  const refreshHierarchyAudit = async () => {
+    const params = new URLSearchParams({ symbol });
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) {
+      setHierarchyAudit(null);
+      setMessage('Create or select a mapping case before refreshing audit.');
+      return null;
+    }
+    appendMappingCaseParams(params, mappingCase);
+    try {
+      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/hierarchy-audit?${params.toString()}`);
+      setHierarchyAudit(data);
+      const s = data?.summary || {};
+      const hasErrors = Number(s.invalid_parent_links || 0) > 0 || Number(s.ranges_missing_rh_rl || 0) > 0 || Number(s.bos_events_missing_bh_bl || 0) > 0;
+      const hasWarn = Number(s.orphan_daily_ranges || 0) > 0 || Number(s.orphan_intraday_ranges || 0) > 0;
+      setMessage(`Hierarchy audit ${hasErrors ? 'FAIL' : hasWarn ? 'WARN' : 'PASS'} · W ${s.weekly_ranges || 0} / D ${s.daily_ranges || 0} / linked ${s.daily_ranges_linked_to_weekly || 0}`);
+      return data;
+    } catch (err:any) {
+      setMessage(`Hierarchy audit failed: ${err?.message || err}`);
+      return null;
+    }
+  };
+
+  useEffect(() => {
+    if (rightDeckTab === 'mark' && markWorkspaceMode === 'htf') refreshStructuralRanges();
+  }, [rightDeckTab, markWorkspaceMode, structureLayer, sourceTimeframe, symbol, activeCaseId, rawActiveCaseId]);
+
+  const setStructuralPoint = (kind:'RH'|'RL'|'BH'|'BL') => {
+    const candle = selectedCandle || replayCandle;
+    if (!candle) { setMessage('Select a candle first, then set RH/RL/BH/BL.'); return; }
+    const price = kind === 'RL' || kind === 'BL' ? candle.low : candle.high;
+    const next = { price: Number(price).toFixed(2), time: candle.time, candle };
+    if (kind === 'RH') {
+      setRhAnchor(next);
+      setRangeHigh(next.price);
+      setRangeWindowByTf(prev => {
+        const window = timesToWindow([rlAnchor.time, candle.time]);
+        return { ...prev, [timeframe]: { ...(prev[timeframe] || {}), ...(window || { start:candle.time, end:candle.time }) }};
+      });
+      setStructuralRangeDraftDirty(true);
+    }
+    if (kind === 'RL') {
+      setRlAnchor(next);
+      setRangeLow(next.price);
+      setRangeWindowByTf(prev => {
+        const window = timesToWindow([rhAnchor.time, candle.time]);
+        return { ...prev, [timeframe]: { ...(prev[timeframe] || {}), ...(window || { start:candle.time, end:candle.time }) }};
+      });
+      setStructuralRangeDraftDirty(true);
+    }
+    if (kind === 'BH') {
+      setBhAnchor(next);
+      setStructuralBosDraftDirty(true);
+    }
+    if (kind === 'BL') {
+      setBlAnchor(next);
+      setStructuralBosDraftDirty(true);
+    }
+    const label = kind === 'RH' ? 'Range High' : kind === 'RL' ? 'Range Low' : kind === 'BH' ? 'Break High' : 'Break Low';
+    const viewNote = kind === 'RH' || kind === 'RL' ? 'visible fib range updated; not saved yet' : 'draft marker only; fib range unchanged';
+    setMessage(`Set ${label} ${next.price} · ${shortTime(candle.time, timeframe)} (${viewNote})`);
+  };
+
+  const structuralWindow = () => {
+    const times = [rhAnchor.time, rlAnchor.time].filter(Boolean).map(t => new Date(t).getTime()).filter(Number.isFinite);
+    if (!times.length) return { start:'', end:'', duration:null as number|null };
+    const start = new Date(Math.min(...times)).toISOString();
+    const end = new Date(Math.max(...times)).toISOString();
+    return { start, end, duration: Math.round(Math.abs(Math.max(...times) - Math.min(...times)) / 60000) };
+  };
+
+  const saveStructuralRange = async () => {
+    if (structuralSaving) return;
+    if (structureLayer === 'INTRADAY' && String(sourceTimeframe).toUpperCase() === 'H8') {
+      setMessage('H8 source timeframe is selectable for planning, but backend rendering/storage normalisation is TODO before saving H8.');
+      return;
+    }
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving a range.'); return; }
+    if (!rhAnchor.price || !rlAnchor.price) { setMessage('Set Range High and Range Low before saving a structural range.'); return; }
+    if (structureLayer === 'DAILY' && !selectedParentRangeId) {
+      const ok = window.confirm('No Weekly parent selected. Save this Daily range as ORPHAN?');
+      if (!ok) return;
+    }
+    setStructuralSaving(true);
+    try {
+      const win = structuralWindow();
+      const payload = {
+        case_id: mappingCase.case_id,
+        raw_case_id: mappingCase.raw_case_id,
+        case_ref: mappingCase.case_ref,
+        symbol,
+        structure_layer: structureLayer,
+        chart_timeframe: timeframe,
+        source_timeframe: sourceTimeframe,
+        parent_range_id: structureLayer === 'WEEKLY' ? null : (selectedParentRangeId || null),
+        range_high_price: Number(rhAnchor.price),
+        range_low_price: Number(rlAnchor.price),
+        range_high_time: rhAnchor.time || null,
+        range_low_time: rlAnchor.time || null,
+        range_start_time: win.start || null,
+        range_end_time: win.end || null,
+        duration_minutes: win.duration,
+        status: 'active',
+        meta_json: { phase:'electron_phase3_structural_mapping', proof_target:'WEEKLY_DAILY' },
+      };
+      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/range`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const id = String(data.range_id || data.id || data.range?.range_id || data.range?.id || '');
+      setActiveStructuralRangeId(id);
+      setStructuralRangeDraftDirty(false);
+      setMessage(`Saved ${structureLayer} range #${id || '?'} · ${data.parent_link_status || data.range?.parent_link_status || 'status pending'}`);
+      await refreshStructuralRanges();
+      await refreshHierarchyAudit();
+    } catch (err:any) {
+      setMessage(`Range save failed: ${err?.message || err}`);
+    } finally {
+      setStructuralSaving(false);
+    }
+  };
+
+  const saveStructuralBos = async (direction:'UP'|'DOWN') => {
+    if (structuralSaving) return;
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving BOS.'); return; }
+    const anchor = direction === 'UP' ? bhAnchor : blAnchor;
+    if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'BH' : 'BL'} before saving BOS_${direction}.`); return; }
+    setStructuralSaving(true);
+    try {
+      const candle = anchor.candle || selectedCandle || replayCandle;
+      const payload = {
+        event_id: crypto.randomUUID(),
+        case_id: mappingCase.case_id,
+        raw_case_id: mappingCase.raw_case_id,
+        case_ref: mappingCase.case_ref,
+        symbol,
+        structure_layer: structureLayer,
+        chart_timeframe: timeframe,
+        source_timeframe: sourceTimeframe,
+        active_range_id: activeStructuralRangeId || null,
+        parent_range_id: structureLayer === 'WEEKLY' ? null : (selectedParentRangeId || null),
+        event_type: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
+        structural_event: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
+        break_level_type: direction === 'UP' ? 'BH' : 'BL',
+        break_level_price: Number(anchor.price),
+        break_level_time: anchor.time || null,
+        event_time: anchor.time || candle?.time || new Date().toISOString(),
+        event_price: Number(anchor.price),
+        candle_time: candle?.time || anchor.time || null,
+        candle_open: candle?.open ?? null,
+        candle_high: candle?.high ?? null,
+        candle_low: candle?.low ?? null,
+        candle_close: candle?.close ?? null,
+        direction,
+        meta_json: { phase:'electron_phase3_structural_mapping' },
+      };
+      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      setStructuralBosDraftDirty(false);
+      setMessage(`Saved BOS_${direction} event ${data.event_id || ''}`);
+      await refreshHierarchyAudit();
+    } catch (err:any) {
+      setMessage(`BOS_${direction} save failed: ${err?.message || err}`);
+    } finally {
+      setStructuralSaving(false);
+    }
+  };
+
+  const downloadJsonFile = (payload:any, filename:string) => {
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url), 500);
+  };
+
+  const fetchCurrentMappingSnapshot = async () => {
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) {
+      setMessage('Create or select a mapping case before exporting mapping JSON.');
+      return null;
+    }
+    const baseParams = appendMappingCaseParams(new URLSearchParams({ symbol, limit:'5000' }), mappingCase);
+    const [rangesData, treeData, auditData] = await Promise.all([
+      structuralFetchJson(`${BASE_URL}/api/v1/map/ranges?${baseParams.toString()}`),
+      structuralFetchJson(`${BASE_URL}/api/v1/map/range-tree?${appendMappingCaseParams(new URLSearchParams({ symbol }), mappingCase).toString()}`),
+      structuralFetchJson(`${BASE_URL}/api/v1/map/hierarchy-audit?${appendMappingCaseParams(new URLSearchParams({ symbol }), mappingCase).toString()}`),
+    ]);
+    let eventsData:any = null;
+    let eventsTodo:string|null = null;
+    if (mappingCase.case_id !== null) {
+      eventsData = await structuralFetchJson(`${BASE_URL}/api/v1/map/events?${new URLSearchParams({ symbol, timeframe, case_id:String(mappingCase.case_id), limit:'5000' }).toString()}`);
+    } else {
+      eventsTodo = 'Saved structural event fetch by raw_case_id/case_ref is not exposed through the existing Electron-safe GET /api/v1/map/events endpoint yet.';
+    }
+    return { mappingCase, rangesData, treeData, auditData, eventsData, eventsTodo };
+  };
+
+  const exportAuditJson = async () => {
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before exporting audit JSON.'); return; }
+    const audit = hierarchyAudit || await refreshHierarchyAudit();
+    if (!audit) return;
+    downloadJsonFile({
+      generated_at: new Date().toISOString(),
+      symbol,
+      timeframe,
+      structure_layer: structureLayer,
+      source_timeframe: sourceTimeframe,
+      active_case_ref: mappingCase,
+      hierarchy_audit: audit,
+      note: 'Audit export reads backend state only; it does not save drafts.',
+    }, `hierarchy_audit_${String(symbol)}_${String(mappingCase.case_ref || 'case').replace(/[^a-zA-Z0-9_-]+/g,'_')}.json`);
+    setMessage('Exported hierarchy audit JSON. Export does not save drafts.');
+  };
+
+  const exportCurrentMappingJson = async () => {
+    try {
+      const snapshot = await fetchCurrentMappingSnapshot();
+      if (!snapshot) return;
+      const payload = {
+        generated_at: new Date().toISOString(),
+        symbol,
+        timeframe,
+        structure_layer: structureLayer,
+        source_timeframe: sourceTimeframe,
+        active_case_ref: snapshot.mappingCase,
+        current_case_container: activeMappingCaseContainer,
+        draft_anchors: {
+          RH: rhAnchor,
+          RL: rlAnchor,
+          BH: bhAnchor,
+          BL: blAnchor,
+        },
+        saved_structural_ranges: snapshot.rangesData,
+        saved_structural_events: snapshot.eventsData,
+        saved_structural_events_todo: snapshot.eventsTodo,
+        range_tree: snapshot.treeData,
+        hierarchy_audit: snapshot.auditData,
+        chart_context: {
+          selected_candle: selectedCandle,
+          replay_candle: replayCandle,
+          replay_index: effectiveReplayIndex,
+          replay_time: candleReplayCursorTime,
+          camera_mode: cameraMode,
+          parent_range_id: selectedParentRangeId || null,
+          active_structural_range_id: activeStructuralRangeId || null,
+        },
+        note: 'Current Mapping export writes a JSON file only; it does not save RH/RL/BH/BL drafts.',
+      };
+      downloadJsonFile(payload, `current_mapping_${String(symbol)}_${String(snapshot.mappingCase.case_ref || 'case').replace(/[^a-zA-Z0-9_-]+/g,'_')}.json`);
+      setHierarchyAudit(snapshot.auditData);
+      setMessage('Exported current mapping JSON. Export does not save drafts.');
+    } catch (err:any) {
+      setMessage(`Current mapping export failed: ${err?.message || err}`);
+    }
+  };
+
   const addTypedEventFromCandle = async (candle:Candle, type:string, priceMode:'high'|'low'|'close'='close', customName?:string) => {
     const price = priceMode === 'high' ? candle.high : priceMode === 'low' ? candle.low : candle.close;
     const activeLow = parseNum(rangeByTf[timeframe]?.low || rangeLow);
@@ -2271,10 +2932,9 @@ function MapStudio({ symbol }: { symbol:string }) {
     setCandleMenu(null);
     if (!opts?.keepSelection) setSelectedCandle(candle);
     if (role === 'NONE') { clearSelectedCandleEvents(); return; }
-    if (role === 'RANGE_HIGH') { setRangeHigh(String(Number(candle.high.toFixed(2)))); mergeRangeWindowTime(candle.time); return upsertCandleEvent(candle, 'RANGE_HIGH', 'high', 'RANGE_HIGH', 'RANGE_HIGH'); }
-    if (role === 'RANGE_LOW') { setRangeLow(String(Number(candle.low.toFixed(2)))); mergeRangeWindowTime(candle.time); return upsertCandleEvent(candle, 'RANGE_LOW', 'low', 'RANGE_LOW', 'RANGE_LOW'); }
-    if (role === 'REF_HIGH_TAKEN') return addTypedEventFromCandle(candle, 'REF_HIGH_TAKEN', 'high');
-    if (role === 'REF_LOW_TAKEN') return addTypedEventFromCandle(candle, 'REF_LOW_TAKEN', 'low');
+    if (role === 'RANGE_HIGH') return saveRawMarker('HIGH', candle);
+    if (role === 'RANGE_LOW') return saveRawMarker('LOW', candle);
+    if (role === 'REF_HIGH_TAKEN' || role === 'REF_LOW_TAKEN') return saveRawMarker('REF', candle);
     if (role === 'INTERNAL_SWEEP_HIGH') return addTypedEventFromCandle(candle, 'INTERNAL_SWEEP_HIGH', 'high');
     if (role === 'INTERNAL_SWEEP_LOW') return addTypedEventFromCandle(candle, 'INTERNAL_SWEEP_LOW', 'low');
     if (role === 'EXTERNAL_SWEEP_HIGH') return addTypedEventFromCandle(candle, 'EXTERNAL_SWEEP_HIGH', 'high');
@@ -2522,6 +3182,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (!rawId) throw new Error('No raw case id returned');
       const savedMsg = `Raw ${scopeLabel(caseScope)} case ready: ${rawId.slice(0,8)}.`;
       setCaseSavedNotice(savedMsg);
+      await loadSeedIdeas();
+      setSeedIdeas(prev => mergeRecentCases(prev, rawCaseRecentRow(rawId)));
       setMessage(`${savedMsg} Case Save now creates/uses raw_mapping_cases only. It does not send old bundled map events.`);
       setTimeout(()=>setCaseSavedNotice(''), 6000);
     } catch (err:any) {
@@ -2534,8 +3196,8 @@ function MapStudio({ symbol }: { symbol:string }) {
   const loadSeedIdeas = async () => {
     try {
       const data = await fetch(`${BASE_URL}/api/v1/mos/seed-ideas?symbol=${encodeURIComponent(symbol)}&limit=12`).then(r=>r.json());
-      setSeedIdeas(Array.isArray(data?.ideas) ? data.ideas : []);
-    } catch { setSeedIdeas([]); }
+      setSeedIdeas(mergeRecentCases(Array.isArray(data?.ideas) ? data.ideas : []));
+    } catch { setSeedIdeas(mergeRecentCases([])); }
   };
 
 
@@ -2579,16 +3241,46 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const switchTimeframePreserveCase = (nextTf:string) => {
     const tf = String(nextTf || timeframe).toUpperCase();
+    const targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
+    const intent:CameraIntent = cameraMode === 'LOCKED'
+      ? 'RESTORE_LOCKED'
+      : cameraMode === 'CASE'
+        ? 'CASE'
+        : cameraMode === 'REPLAY'
+          ? 'REPLAY'
+          : 'PRESERVE_OR_NEAREST_TIME';
+    cameraLog('timeframe switch start', { from:timeframe, to:tf, intent, targetTime });
+    pendingCameraIntentRef.current = { intent, targetTime, reason:`timeframe-switch:${timeframe}->${tf}` };
     const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
     if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
+    activeTimeframeRef.current = tf;
     setTimeframe(tf);
-    if (w.start && cameraMode !== 'LOCKED') setJumpDate(String(w.start).slice(0,10));
-    if (cameraMode !== 'LOCKED') setTimeout(()=>setFitToken(x=>x+1), 120);
   };
 
   const openSavedCase = async (idea:any, preferredTf?:string) => {
     if (!idea?.id) return;
+    if (idea?.is_raw_mapping_case || idea?.raw_case_id) {
+      const rawId = String(idea.raw_case_id || idea.id || '');
+      if (!rawId) return;
+      const nextTf = String(preferredTf || idea.case_timeframe || idea.replay_timeframe || idea?.raw_case?.base_timeframe || caseTimeframe || timeframe).toUpperCase();
+      const nextScope = String(idea.case_scope || timeframeToScope(nextTf) || caseScope).toUpperCase() as CaseScope;
+      setRawActiveCaseId(rawId);
+      setActiveCaseId(null);
+      setActiveCaseLabel(`${idea.seed_name || 'Raw Case'} · ${rawId.slice(0, 8)}`);
+      setSeedName(idea.seed_name || seedName);
+      setSeedNotes(idea.notes || '');
+      setCaseScope(nextScope);
+      setSeedAnchors((prev:any)=>({ ...prev, case_scope: nextScope, case_timeframe: nextTf }));
+      setHistoryMarkMode('ACTIVE_CASE');
+      pendingCameraIntentRef.current = { intent: cameraMode === 'LOCKED' ? 'RESTORE_LOCKED' : 'PRESERVE_OR_NEAREST_TIME', targetTime: idea.replay_candle_time || selectedCandle?.time || candleReplayCursorTime || null, reason:'open-raw-case' };
+      activeTimeframeRef.current = nextTf;
+      setTimeframe(nextTf);
+      setSeedIdeas(prev => mergeRecentCases(prev, rawCaseRecentRow(rawId, idea.raw_case)));
+      setMessage(`Opened raw Case ${rawId.slice(0,8)}. Raw H/L/REF markers will save to this active ledger.`);
+      return;
+    }
     const id = Number(idea.id);
+    setRawActiveCaseId('');
     setActiveCaseId(id);
     setActiveCaseLabel(`#${id} ${idea.seed_name || 'Case'}`);
     setSeedName(idea.seed_name || seedName);
@@ -2604,7 +3296,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (high || low) setRangeByTf(prev => ({ ...prev, [nextTf]: { high: String(high || prev[nextTf]?.high || ''), low: String(low || prev[nextTf]?.low || '') } }));
     if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [nextTf]: { ...(prev[nextTf] || {}), start: w.start || prev[nextTf]?.start || '', end: w.end || prev[nextTf]?.end || '' } }));
     setHistoryMarkMode('ACTIVE_CASE');
-    if (w.start) setJumpDate(String(w.start).slice(0,10));
+    pendingCameraIntentRef.current = { intent: cameraMode === 'LOCKED' ? 'RESTORE_LOCKED' : 'CASE', targetTime: w.start || idea.replay_candle_time || selectedCandle?.time || candleReplayCursorTime || null, reason:'open-saved-case' };
+    activeTimeframeRef.current = nextTf;
     setTimeframe(nextTf);
     try {
       const payload = await fetch(`${BASE_URL}/api/v1/mos/seed-idea/${id}/payload`).then(r=>r.json());
@@ -2641,16 +3334,27 @@ function MapStudio({ symbol }: { symbol:string }) {
         }
       }
     } catch { /* payload is helpful but not mandatory */ }
-    if (cameraMode !== 'LOCKED') setTimeout(()=>setFitToken(x=>x+1), 180);
     setMessage(`Opened Case #${id}. Restored ${nextTf} workspace and case camera ${w.start ? String(w.start).slice(0,10) : 'start?'} → ${w.end ? String(w.end).slice(0,10) : 'end?'}. Switch W1/D1 and the camera stays in this case window.`);
   };
+
+  const recentCaseIdeas = useMemo(() => {
+    const matching = sortCaseRows(safeArray<any>(seedIdeas)).filter(caseMatchesContext);
+    const visible = matching.slice(0, 8);
+    const activeKey = String(activeCaseDisplayId || '');
+    if (!activeKey) return visible;
+    const hasActive = visible.some((x:any) => String(x?.raw_case_id || x?.id || '') === activeKey);
+    if (hasActive) return visible;
+    const activeRow = matching.find((x:any) => String(x?.raw_case_id || x?.id || '') === activeKey)
+      || (rawActiveCaseId ? rawCaseRecentRow(String(rawActiveCaseId)) : null);
+    return activeRow ? [...visible, activeRow] : visible;
+  }, [seedIdeas, activeCaseDisplayId, rawActiveCaseId, symbol, caseTimeframe, caseScope, timeframe, seedName, activeCaseLabel, activeReplayCandle?.time, candleReplayCursorTime]);
 
   useEffect(()=>{ loadSeedIdeas(); }, [symbol]);
 
   useEffect(()=>{
     if (!candles.length) return;
     if (candleReplayCursorTime) {
-      const idx = candleIndexAtOrBefore(candles, candleReplayCursorTime);
+      const idx = candleIndexNearest(candles, candleReplayCursorTime);
       if (idx !== candleReplayIndex) setCandleReplayIndex(idx);
     }
   }, [candles, candleReplayCursorTime]);
@@ -2769,7 +3473,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(()=>{ loadCandles(); }, [symbol, timeframe]);
+  useEffect(()=>{ loadCandles(timeframe); }, [symbol, timeframe]);
 
   return <div className={`mapStudioShell d3MapStudio ${chartFullscreen ? 'chartFullscreenActive' : ''}`}>
     <div className="panelHeader mapStudioHeader">
@@ -2788,6 +3492,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       <button className={chartFullscreen?'active':''} onClick={()=>setChartFullscreen(v=>!v)}>{chartFullscreen ? 'Exit Full' : 'Full Chart'}</button>
       <select className="cameraModeSelect" value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)} title="Camera mode"><option value="AUTO">Auto cam</option><option value="LOCKED">Locked cam</option><option value="CASE">Case cam</option><option value="REPLAY">Replay cam</option></select>
       <div className="scaleNudges"><button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}x</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button><button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}x</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button><button onClick={resetCameraScale}>Reset</button></div>
+      <div className="scaleNudges fitNudges"><button onClick={fitRangeView}>Fit Range</button><button onClick={fitReplayView}>Fit Replay</button><button onClick={fitCaseView}>Fit Case</button><button onClick={fitAllView}>Fit All</button><button onClick={lockCurrentView}>Lock View</button></div>
       <span className="loadedPill compactStatus">{candles.length ? `${candles.length} ${timeframe}` : 'No candles'}</span>
       <label className="historyMarksControl" title="Filter stored chart marks without deleting ledger records">History
         <select value={historyMarkMode} onChange={e=>setHistoryMarkMode(e.target.value)}>
@@ -2803,7 +3508,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       <details className="toolsMenu"><summary>Tools ▾</summary><div className="toolsMenuPanel">
         <button onClick={importCommon} disabled={loading}><Database size={18}/> Import EA CSV</button>
         <button onClick={()=>setJumpToken(x=>x+1)}>Jump latest</button>
-        <button onClick={()=>setFitToken(x=>x+1)}>Fit all</button>
+        <button onClick={fitAllView}>Fit all</button>
         <button onClick={()=>loadGps(gpsMode)}>Refresh GPS</button>
         <button className={gpsMode==='mock'?'active':''} onClick={()=>setGpsMode('mock')}>GPS Mock</button>
         <span className="loadedPill">Backend memory ON</span>
@@ -2840,11 +3545,20 @@ function MapStudio({ symbol }: { symbol:string }) {
           <b>{activeParentRangeOverlay[0]?.timeframe} parent</b>
           <span>{activeParentRangeOverlay.map(x=>`${x.kind.toUpperCase()} ${Number(x.price).toFixed(2)}`).join(' · ')}</span>
         </div>}
-        {chartFullscreen && <div className="quickAnchorBar">
-          <button onClick={()=>selectedCandle ? markCandleRole('RANGE_HIGH', selectedCandle) : replayCandle && markCandleRole('RANGE_HIGH', replayCandle)}>Set H</button>
-          <button onClick={()=>selectedCandle ? markCandleRole('RANGE_LOW', selectedCandle) : replayCandle && markCandleRole('RANGE_LOW', replayCandle)}>Set L</button>
-          <button onClick={()=>setToolMode('select')}>Select</button>
-          <button onClick={()=>setToolMode('inspect')}>Scrub</button>
+        {chartFullscreen && <div className="quickAnchorBar" aria-label="Quick structural mapping controls">
+          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('RH')} title="Set structural Range High from selected/replay candle high"><b>Range High</b><span>RH</span></button>
+          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('RL')} title="Set structural Range Low from selected/replay candle low"><b>Range Low</b><span>RL</span></button>
+          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('BH')} title="Set structural Break High from selected/replay candle high"><b>Break High</b><span>BH</span></button>
+          <button className="structuralQuickBtn" disabled={!selectedCandle && !replayCandle} onClick={()=>setStructuralPoint('BL')} title="Set structural Break Low from selected/replay candle low"><b>Break Low</b><span>BL</span></button>
+          <span className="quickAnchorDivider" />
+          <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
+          <button className="quickSaveBtn primary" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : 'Save Range'}</button>
+          <button className="quickSaveBtn" onClick={refreshHierarchyAudit}>Refresh Audit</button>
+          <button className="quickSaveBtn" onClick={exportCurrentMappingJson}>Export JSON</button>
+          <span className={`quickDraftStatus ${structuralRangeDraftDirty || structuralBosDraftDirty ? 'dirty' : 'saved'}`}>{structuralRangeDraftDirty || structuralBosDraftDirty ? 'Unsaved draft' : 'Draft clean'}</span>
+          <span className="quickAnchorDivider" title="TODO: add fullscreen Save BOS_UP, Save BOS_DOWN, and Refresh Audit actions after this compact row is validated." />
+          <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')}>Select</button>
+          <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')}>Scrub</button>
           <button onClick={()=>setChartFullscreen(false)}>Exit</button>
         </div>}
         {chartFullscreen && <div className="fullscreenTfDock" aria-label="Fullscreen timeframe controls">
@@ -2855,6 +3569,13 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button>
           <button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button>
           <button onClick={resetCameraScale}>Reset</button>
+        </div>}
+        {chartFullscreen && <div className="fullscreenFitDock" aria-label="Fullscreen fit controls">
+          <button onClick={fitRangeView}>Fit Range</button>
+          <button onClick={fitReplayView}>Fit Replay</button>
+          <button onClick={fitCaseView}>Fit Case</button>
+          <button onClick={fitAllView}>Fit All</button>
+          <button onClick={lockCurrentView}>Lock View</button>
         </div>}
         {chartFullscreen && <div className="fullscreenReplayDock" aria-label="Fullscreen replay controls">
           <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0}>◀</button>
@@ -2873,6 +3594,10 @@ function MapStudio({ symbol }: { symbol:string }) {
           rangeStart={rangeWindow.start}
           rangeEnd={rangeWindow.end}
           hasRange={hasRange}
+          caseStart={activeCaseLedger?.start || ''}
+          caseEnd={activeCaseLedger?.end || ''}
+          caseHigh={activeCaseLedger?.high || ''}
+          caseLow={activeCaseLedger?.low || ''}
           parentOverlays={activeParentRangeOverlay}
           events={visibleEvents}
           selectedCandleTime={selectedCandle?.time || null}
@@ -2896,11 +3621,14 @@ function MapStudio({ symbol }: { symbol:string }) {
             setMessage(`Selected ${shortTime(payload.candle.time, timeframe)} · anchor ${payload.price.toFixed(2)}. Choose meaning from Mark tab.`);
           }}
           cameraMode={cameraMode}
+          cameraCommand={cameraCommand}
           lockedCameraDomain={lockedCameraDomain}
+          lockedPriceDomain={cameraPriceDomainByCaseTf[cameraKey] || null}
           cameraKey={cameraKey}
           candleWidthScale={candleWidthScale}
           priceZoomScale={priceZoomScale}
           onCameraDomainChange={(dom)=>{ if (cameraMode === 'LOCKED') setCameraDomainByCaseTf(prev=>({ ...prev, [cameraKey]: dom })); }}
+          onVisibleDomainChange={(dom)=>{ visibleCameraDomainRef.current = dom; }}
           onRangeChange={({high, low, start, end})=>{
             if (typeof high === 'number' && Number.isFinite(high)) setRangeHigh(String(Number(high.toFixed(2))));
             if (typeof low === 'number' && Number.isFinite(low)) setRangeLow(String(Number(low.toFixed(2))));
@@ -2991,33 +3719,91 @@ function MapStudio({ symbol }: { symbol:string }) {
         </>}
         {rightDeckTab === 'mark' && <div className="rightTabPanel markTabPanel markPanelModern markWorkspaceV0879">
           <div className="markWorkspaceModeTabs">
-            <button className={markWorkspaceMode==='htf'?'active':''} onClick={()=>setMarkWorkspaceMode('htf')}>HTF Engine</button>
+            <button className={markWorkspaceMode==='htf'?'active':''} onClick={()=>setMarkWorkspaceMode('htf')}>Structural Map</button>
             <button className={markWorkspaceMode==='manual'?'active':''} onClick={()=>setMarkWorkspaceMode('manual')}>Manual Events</button>
             <button className={markWorkspaceMode==='case'?'active':''} onClick={()=>setMarkWorkspaceMode('case')}>Case Save</button>
           </div>
 
           {markWorkspaceMode === 'htf' && <div className="markModePane htfEnginePane">
-            <div className="markPanelTitleRow"><div><h3>Structure Engine</h3><p className="mutedSmall">BOS up/down only. Autosaves clean structure. Sweeps/retraces/phases belong to analytics later.</p></div></div>
+            <div className="markPanelTitleRow"><div><h3>Structural Weekly/Daily Mapping</h3><p className="mutedSmall">Store RH/RL ranges and BH/BL BOS events only. No sweeps, profiles, objectives, or strategy fields here.</p></div></div>
             <div className="markSelectedCard wide">
               <b>Selected Candle</b>
-              <span>{selectedCandle ? `${shortTime(selectedCandle.time, timeframe)} · O ${selectedCandle.open.toFixed(2)} · H ${selectedCandle.high.toFixed(2)} · L ${selectedCandle.low.toFixed(2)} · C ${selectedCandle.close.toFixed(2)}` : 'Click a candle to let the HTF engine inspect it.'}</span>
+              <span>{selectedCandle ? `${shortTime(selectedCandle.time, timeframe)} · O ${selectedCandle.open.toFixed(2)} · H ${selectedCandle.high.toFixed(2)} · L ${selectedCandle.low.toFixed(2)} · C ${selectedCandle.close.toFixed(2)}` : 'Click a candle to capture RH/RL/BH/BL.'}</span>
             </div>
+
             <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>Living Range State</b><span>{hasRange ? `${timeframe} · ${htfSemiAuto.state?.status || 'watching'}` : 'range not set'}</span></div>
+              <div className="htfLiteHeader"><b>Mapping Scope</b><span>{structureLayer} · source {sourceTimeframe} · chart {timeframe}</span></div>
+              <div className="markModeStrip compact">
+                {(['WEEKLY','DAILY','INTRADAY'] as StructureLayer[]).map(layer=><button key={layer} className={structureLayer===layer?'active':''} onClick={()=>setStructureLayer(layer)}>{layer}{layer==='INTRADAY' ? ' · storage-ready' : ''}</button>)}
+              </div>
+              <label className="toolbarStoryInput">Source TF
+                <select value={sourceTimeframe} onChange={e=>setSourceTimeframe(e.target.value)}>
+                  <option value="W1">W1</option>
+                  <option value="D1">D1</option>
+                  <option value="H1">H1</option>
+                  <option value="H4">H4</option>
+                  <option value="H8">H8</option>
+                </select>
+              </label>
+              {structureLayer === 'WEEKLY' && <div className="caseBadge">Weekly root range. No parent required.</div>}
+              {structureLayer === 'DAILY' && <div className="compilerPreviewCard">
+                <b>Weekly Parent</b>
+                <label>Parent range
+                  <select value={selectedParentRangeId} onChange={e=>setSelectedParentRangeId(e.target.value)}>
+                    <option value="">No Weekly parent selected</option>
+                    {structuralRanges.map((r:any)=><option key={r.range_id || r.id} value={String(r.range_id || r.id)}>#{r.range_id || r.id} · RH {r.range_high_price || r.range_high || '?'} / RL {r.range_low_price || r.range_low || '?'}</option>)}
+                  </select>
+                </label>
+                {selectedParentRange ? <div><span>Selected</span><strong>#{selectedParentRange.range_id || selectedParentRange.id} · RH {selectedParentRange.range_high_price || '—'} / RL {selectedParentRange.range_low_price || '—'}</strong><em>{selectedParentRange.range_start_time ? `${shortTime(selectedParentRange.range_start_time, 'W1')} → ${shortTime(selectedParentRange.range_end_time, 'W1')}` : 'no saved window'}</em></div> : <div><span>Status</span><strong>No Weekly parent selected</strong><em>Daily range will be saved as ORPHAN after confirmation.</em></div>}
+              </div>}
+              {structureLayer === 'INTRADAY' && <div className="caseBadge">Intraday storage is visible for schema proof only. Full Intraday workflow and H8 rendering are TODO.</div>}
+              <button className="gpsSaveBtn secondary" onClick={refreshStructuralRanges}>Refresh Parents/Ranges</button>
+            </div>
+
+            <div className="htfStateLiteCard">
+              <div className="htfLiteHeader"><b>RH / RL / BH / BL</b><span>server-confirmed saves only</span></div>
               <div className="htfLiteGrid compactStateGrid">
-                <div><span>Location</span><strong>{htfSemiAuto.state?.location || '—'}</strong><em>{fmtPctOrDash(htfSemiAuto.state?.close_pct)}</em></div>
-                <div><span>Range</span><strong>{hasRange ? `${low.toFixed(2)} → ${high.toFixed(2)}` : 'Set H/L'}</strong><em>official anchors</em></div>
-                <div><span>Candles</span><strong>{htfSemiAuto.state?.candle_count || 0}</strong><em>range count</em></div>
-                <div><span>Next Watch</span><strong>{htfSemiAuto.state?.next_watch || '—'}</strong><em>{isHTFTimeframe(timeframe) ? 'HTF only' : 'not HTF'}</em></div>
+                <div><span>RH</span><strong>{rhAnchor.price || 'not set'}</strong><em>{rhAnchor.time ? shortTime(rhAnchor.time, timeframe) : 'Range High'}</em></div>
+                <div><span>RL</span><strong>{rlAnchor.price || 'not set'}</strong><em>{rlAnchor.time ? shortTime(rlAnchor.time, timeframe) : 'Range Low'}</em></div>
+                <div><span>BH</span><strong>{bhAnchor.price || 'not set'}</strong><em>{bhAnchor.time ? shortTime(bhAnchor.time, timeframe) : 'Break High'}</em></div>
+                <div><span>BL</span><strong>{blAnchor.price || 'not set'}</strong><em>{blAnchor.time ? shortTime(blAnchor.time, timeframe) : 'Break Low'}</em></div>
+              </div>
+              <div className="caseActionRow">
+                <button onClick={()=>setStructuralPoint('RH')} disabled={!selectedCandle && !replayCandle}>Range High</button>
+                <button onClick={()=>setStructuralPoint('RL')} disabled={!selectedCandle && !replayCandle}>Range Low</button>
+                <button onClick={()=>setStructuralPoint('BH')} disabled={!selectedCandle && !replayCandle}>Break High</button>
+                <button onClick={()=>setStructuralPoint('BL')} disabled={!selectedCandle && !replayCandle}>Break Low</button>
               </div>
             </div>
+
             <div className="htfCandidateBox fullWidth compactBosOnlyBox">
-              <div className="htfLiteHeader"><b>BOS Autosave</b><span>{htfVisibleCandidates.length ? 'pending/checking' : 'watching'}</span></div>
-              <div className="htfCandidateState"><span>{hasRange ? 'Only BOS_UP / BOS_DOWN is detected and autosaved.' : 'Set range H/L first.'}</span><em>No PDH/PDL sweep, retrace, profile or phase prompts. Finally, less button farming.</em></div>
+              <div className="htfLiteHeader"><b>Save Structural Facts</b><span>{activeStructuralRangeId ? `active range #${activeStructuralRangeId}` : 'range id set after save'}</span></div>
+              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. BOS_UP requires BH. BOS_DOWN requires BL.</span><em>Create/Update Case saves the container only. Draft clicks do not auto-save.</em></div>
+              <div className="caseActionRow">
+                <button className="gpsSaveBtn" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : 'Save Range'}</button>
+                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('UP')} disabled={structuralSaving || !bhAnchor.price}>Save BOS_UP</button>
+                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('DOWN')} disabled={structuralSaving || !blAnchor.price}>Save BOS_DOWN</button>
+              </div>
             </div>
-            <div className="htfPaneFooter">
-              <button className="clearQueueBtn" onClick={()=>{ htfVisibleCandidates.forEach(c=>rejectHTFCandidate(c)); }} disabled={!htfVisibleCandidates.length}>Reject All</button>
-              <button className="saveNarrativeBtn" onClick={()=>saveHTFStateSnapshot({ manual_snapshot:true, saved_from:'HTF_ENGINE_PANE' })} disabled={!hasRange}>Save State</button>
+
+            <div className="htfStateLiteCard">
+              <div className="htfLiteHeader"><b>Hierarchy Audit</b><span>{hierarchyAudit ? 'loaded' : 'not loaded'}</span></div>
+              <div className="htfLiteGrid compactStateGrid">
+                <div><span>Weekly</span><strong>{hierarchyAudit?.summary?.weekly_ranges ?? '—'}</strong><em>ranges</em></div>
+                <div><span>Daily</span><strong>{hierarchyAudit?.summary?.daily_ranges ?? '—'}</strong><em>ranges</em></div>
+                <div><span>D → W</span><strong>{hierarchyAudit?.summary?.daily_ranges_linked_to_weekly ?? '—'}</strong><em>linked</em></div>
+                <div><span>Orphan D</span><strong>{hierarchyAudit?.summary?.orphan_daily_ranges ?? '—'}</strong><em>warnings</em></div>
+                <div><span>Invalid</span><strong>{hierarchyAudit?.summary?.invalid_parent_links ?? '—'}</strong><em>parent links</em></div>
+                <div><span>Missing RH/RL</span><strong>{hierarchyAudit?.summary?.ranges_missing_rh_rl ?? '—'}</strong><em>errors</em></div>
+                <div><span>BOS BH/BL</span><strong>{hierarchyAudit?.summary?.bos_events_missing_bh_bl ?? '—'}</strong><em>missing</em></div>
+                <div><span>Status</span><strong>{hierarchyAudit ? ((hierarchyAudit.errors || []).length ? 'FAIL' : (hierarchyAudit.warnings || []).length ? 'WARN' : 'PASS') : '—'}</strong><em>backend audit</em></div>
+              </div>
+              <div className="htfCandidateState"><span>Audit reads DB; it does not save.</span><em>Export writes a JSON file only; it does not save drafts.</em></div>
+              <div className="caseActionRow">
+                <button className="gpsSaveBtn secondary" onClick={refreshHierarchyAudit}>Refresh Audit</button>
+                <button className="gpsSaveBtn secondary" onClick={exportAuditJson}>Export Audit JSON</button>
+                <button className="gpsSaveBtn secondary" onClick={exportCurrentMappingJson}>Export Current Mapping JSON</button>
+              </div>
             </div>
           </div>}
 
@@ -3058,11 +3844,10 @@ function MapStudio({ symbol }: { symbol:string }) {
           </div>}
 
           {markWorkspaceMode === 'case' && <div className="markModePane caseQuickPane">
-            <div className="caseQuickHeader"><div><h3>Case Save</h3><p className="mutedSmall">Save the container/bookmark. Event bundles and HTF states remain the actual brain food.</p></div></div>
+            <div className="caseQuickHeader"><div><h3>Case Save</h3><p className="mutedSmall">Update Case saves the container only. Use Save Range for RH/RL.</p></div></div>
             <div className="activeCaseCard"><span>Active Case</span><b>{activeCaseDisplayId ? activeCaseLabel || `#${activeCaseDisplayId}` : 'None selected'}</b><button onClick={resetActiveCase} disabled={!activeCaseDisplayId}>Clear Active</button></div>
             <div className="caseActionRow">
-              <button className="gpsSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : activeCaseId ? `Update Case #${activeCaseId}` : `Save ${scopeLabel(caseScope)} Case`}</button>
-              <button className="gpsSaveBtn secondary" onClick={()=>saveSeedIdea(true)} disabled={caseSaving}>{caseSaving ? 'Saving...' : 'Save As New'}</button>
+              <button className="gpsSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
               <button className="gpsSaveBtn danger" onClick={deleteActiveCase} disabled={!activeCaseId}>Delete Active</button>
             </div>
             {caseSavedNotice && <div className="caseSavedNotice">✓ {caseSavedNotice}</div>}
@@ -3096,7 +3881,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         </div>}
         {rightDeckTab === 'seed' && <div className="rightTabPanel seedTabPanel">
         <div className="seedIdeaPanel sideSeedPanel">
-      <div className="seedHeader caseManagerHeader"><div><b>Case Manager</b><span>Independent timeframe case wrapper. Event bundles remain the truth; Case is a bookmark/container.</span></div></div>
+      <div className="seedHeader caseManagerHeader"><div><b>Case Manager</b><span>Update Case saves the container only. Use Save Range for RH/RL.</span></div></div>
       <div className="activeCaseCard"><span>Active Case</span><b>{activeCaseDisplayId ? activeCaseLabel || `#${activeCaseDisplayId}` : 'None selected'}</b><button onClick={resetActiveCase} disabled={!activeCaseDisplayId}>Clear Active</button></div>
       {activeCaseRecord && <div className="caseLedgerDetail">
         <div className="caseLedgerHeader"><b>Case Ledger Preview</b><span>{activeCaseLedger.scope} · {activeCaseLedger.timeframe} · {activeCaseLedger.rows.length} linked event{activeCaseLedger.rows.length===1?'':'s'}</span></div><div className="caseActionRow miniAuditRow"><button className="gpsSaveBtn secondary" onClick={exportActiveCaseAuditJson}>Export Case JSON</button></div>
@@ -3120,8 +3905,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         {activeCaseLedger.rows.length > 40 && <div className="caseLedgerMore">Showing first 40. Event Ledger panel has the full raw list. Because apparently candles breed.</div>}
       </div>}
       <div className="caseActionRow">
-        <button className="gpsSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : activeCaseId ? `Update Case #${activeCaseId}` : `Save ${scopeLabel(caseScope)} Case`}</button>
-        <button className="gpsSaveBtn secondary" onClick={()=>saveSeedIdea(true)} disabled={caseSaving}>{caseSaving ? 'Saving...' : 'Save As New'}</button>
+        <button className="gpsSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
         <button className="gpsSaveBtn danger" onClick={deleteActiveCase} disabled={!activeCaseId}>Delete Active</button>
         <button className="gpsSaveBtn danger" onClick={clearAllCases}>Clear Cases</button>
         <details className="dangerZoneDetails"><summary>Danger Zone</summary><div className="dangerZoneBox"><b>Wipe Mapping Research Data</b><span>Deletes cases, map events, HTF snapshots, objectives, ranges and route memory for this symbol. Raw candles stay. Hidden here because one tired click should not become a data funeral.</span><button className="gpsSaveBtn danger" onClick={resetResearchMappingDb}>Danger: Wipe Mapping Research Data</button></div></details>
@@ -3149,7 +3933,12 @@ function MapStudio({ symbol }: { symbol:string }) {
       </div>
       <div className="caseLinkHint">Linking later uses date containment: Micro → Intraday → Daily → Weekly → Macro. No daily range is required to save a Macro or Weekly case.</div>
       <label className="seedNotes">Notes<textarea value={seedNotes} onChange={e=>setSeedNotes(e.target.value)} placeholder="What this case shows, what was marked, and what the expected/actual path was." /></label>
-      {seedIdeas.length > 0 && <div className="seedIdeaList"><b>Recent cases</b>{seedIdeas.slice(0,8).map((x:any)=><button key={x.id} className={Number(activeCaseId)===Number(x.id)?'active':''} onClick={()=>openSavedCase(x)}>#{x.id} {x.seed_name} · {shortTime(x.replay_candle_time, x.replay_timeframe)}</button>)}</div>}
+      {recentCaseIdeas.length > 0 && <div className="seedIdeaList"><b>Recent cases</b>{recentCaseIdeas.map((x:any)=>{
+        const caseKey = String(x.raw_case_id || x.id || '');
+        const isActive = caseKey === String(activeCaseDisplayId || '');
+        const label = x.is_raw_mapping_case ? `Raw ${caseKey.slice(0,8)}` : `#${x.id}`;
+        return <button key={caseKey} className={isActive?'active':''} onClick={()=>openSavedCase(x)}>{label} {x.seed_name} · {shortTime(x.replay_candle_time, x.case_timeframe || x.replay_timeframe)}</button>;
+      })}</div>}
     </div>
 
 
@@ -3180,6 +3969,10 @@ type D3CandleMapProps = {
   rangeStart?:string;
   rangeEnd?:string;
   hasRange:boolean;
+  caseStart?:string;
+  caseEnd?:string;
+  caseHigh?:string|number;
+  caseLow?:string|number;
   parentOverlays?:ParentRangeOverlayLine[];
   events:MapEvent[];
   selectedCandleTime?:string|null;
@@ -3199,11 +3992,14 @@ type D3CandleMapProps = {
   onFinishEventDrag:(ev:MapEvent)=>void;
   onRangeChange?:(patch:{high?:number; low?:number; start?:string; end?:string})=>void;
   cameraMode?:'AUTO'|'LOCKED'|'CASE'|'REPLAY';
+  cameraCommand?:CameraCommand;
   lockedCameraDomain?:{start:string;end:string}|null;
+  lockedPriceDomain?:{low:number;high:number}|null;
   candleWidthScale?:number;
   priceZoomScale?:number;
   cameraKey?:string;
   onCameraDomainChange?:(domain:{start:string;end:string})=>void;
+  onVisibleDomainChange?:(domain:VisibleCameraDomain)=>void;
 };
 
 function D3CandleMap(props:D3CandleMapProps) {
@@ -3213,6 +4009,7 @@ function D3CandleMap(props:D3CandleMapProps) {
   const yZoomRef = useRef(1);
   const yDragSnapRef = useRef<{ startY:number; startPan:number } | null>(null);
   const lastYDomainRef = useRef<[number, number] | null>(null);
+  const lastYBaseRef = useRef<{baseLo:number;baseHi:number;innerH:number}|null>(null);
   const latestProps = useRef(props);
   latestProps.current = props;
   const cursorRafRef = useRef<number | null>(null);
@@ -3287,13 +4084,15 @@ function D3CandleMap(props:D3CandleMapProps) {
     const pad = Math.max((yHi-yLo)*0.18, 1);
     const baseLo = yLo - pad;
     const baseHi = yHi + pad;
-    const zoomY = Math.max(0.25, Math.min(32, (yZoomRef.current || 1) * Math.max(0.35, Math.min(4, Number(p.priceZoomScale || 1)))));
+    lastYBaseRef.current = { baseLo, baseHi, innerH };
+    const zoomY = Math.max(0.25, Math.min(32, (yZoomRef.current || 1)));
     const baseSpan = Math.max(1e-9, baseHi - baseLo);
     const span = baseSpan / zoomY;
     const pricePerPx = span / Math.max(1, innerH);
     const center = ((baseLo + baseHi) / 2) + ((yPanPxRef.current || 0) * pricePerPx);
     const yDomain: [number, number] = [center - span/2, center + span/2];
     if (v.length) lastYDomainRef.current = yDomain;
+    p.onVisibleDomainChange?.({ start:domain[0].toISOString(), end:domain[1].toISOString(), priceLow:yDomain[0], priceHigh:yDomain[1] });
     const y = d3.scaleLinear().domain(yDomain).range([margin.top+innerH, margin.top]).nice();
 
     const plot = svg.append('g').attr('class','plot');
@@ -3618,6 +4417,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       .extent([[margin.left,margin.top],[margin.left+innerW,margin.top+innerH]])
       .on('zoom', zoomed);
     svg.call(zoom as any);
+    (svgEl as any).__zoom = transformRef.current;
     svg.on('wheel.priceZoom', null);
   };
 
@@ -3665,7 +4465,11 @@ Date: ${shortTime(d.time,p.timeframe)}`);
   }, [props.jumpLatestToken]);
 
   useEffect(()=>{
-    if (props.cameraMode === 'LOCKED' && props.lockedCameraDomain?.start && props.lockedCameraDomain?.end && !props.fitAllToken && !props.goDate) return;
+    const command = props.cameraCommand;
+    const hasCommand = !!command && command.token > 0 && command.intent !== 'NONE';
+    const hasManualFit = props.fitAllToken > 0 || !!props.goDate;
+    if (!hasCommand && !hasManualFit) return;
+    if (props.cameraMode === 'LOCKED' && props.lockedCameraDomain?.start && props.lockedCameraDomain?.end && !hasCommand && !hasManualFit) return;
     const rawData = props.candles || [];
     const cutMs = props.replayCutTime ? new Date(String(props.replayCutTime)).getTime() : null;
     const data = cutMs && Number.isFinite(cutMs) ? rawData.filter((d:any)=>new Date(d.time).getTime() <= cutMs) : rawData;
@@ -3684,31 +4488,119 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     const dateDomainSource = data.length ? data : rawData;
     const dates = dateDomainSource.map(d=>new Date(d.time));
     const x0 = d3.scaleTime().domain(d3.extent(dates) as [Date,Date]).range([margin.left, margin.left+innerW]);
-    const startRaw = props.rangeStart || props.goDate;
-    const endRaw = props.rangeEnd || '';
-    const start = startRaw ? new Date(String(startRaw)) : null;
-    const end = endRaw ? new Date(String(endRaw)) : null;
-    const validStart = !!start && Number.isFinite(start.getTime());
-    const validEnd = !!end && Number.isFinite(end.getTime()) && validStart && end!.getTime() > start!.getTime();
-    if (validStart) {
-      let a = x0(start as Date);
-      let b = validEnd ? x0(end as Date) : a + innerW * 0.35;
-      if (!Number.isFinite(a) || !Number.isFinite(b) || Math.abs(b-a) < 10) {
-        transformRef.current = d3.zoomIdentity;
-      } else {
-        const span = Math.max(10, Math.abs(b-a));
-        const k = Math.max(1, Math.min(160, (innerW * 0.82) / span));
-        const leftTarget = margin.left + innerW * 0.08;
-        const tx = leftTarget - k * Math.min(a,b);
-        transformRef.current = d3.zoomIdentity.translate(tx,0).scale(k);
-      }
-    } else {
+    const fitLatest = () => {
+      const bars = Math.min(120, data.length);
+      const k = Math.max(1, data.length / Math.max(1, bars));
+      const targetRight = margin.left + innerW * 0.78;
+      const tx = targetRight - k * (margin.left + innerW);
+      transformRef.current = d3.zoomIdentity.translate(tx,0).scale(k);
+    };
+    const fitAll = () => {
       transformRef.current = d3.zoomIdentity;
+      yPanPxRef.current = 0;
+      yZoomRef.current = 1;
+      return true;
+    };
+    const fitWindow = (startRaw?:string|null, endRaw?:string|null, singleSpan = 0.35) => {
+      const start = startRaw ? new Date(String(startRaw)) : null;
+      const end = endRaw ? new Date(String(endRaw)) : null;
+      const validStart = !!start && Number.isFinite(start.getTime());
+      const validEnd = !!end && Number.isFinite(end.getTime()) && validStart && end!.getTime() > start!.getTime();
+      if (!validStart) return false;
+      const a = x0(start as Date);
+      const b = validEnd ? x0(end as Date) : a + innerW * singleSpan;
+      if (!Number.isFinite(a) || !Number.isFinite(b) || Math.abs(b-a) < 10) {
+        return false;
+      }
+      const span = Math.max(10, Math.abs(b-a));
+      const k = Math.max(1, Math.min(160, (innerW * 0.82) / span));
+      const leftTarget = margin.left + innerW * 0.08;
+      const tx = leftTarget - k * Math.min(a,b);
+      transformRef.current = d3.zoomIdentity.translate(tx,0).scale(k);
+      return true;
+    };
+    const visibleTimeCenter = () => {
+      const dom = transformRef.current.rescaleX(x0).domain();
+      const mid = (dom[0].getTime() + dom[1].getTime()) / 2;
+      return Number.isFinite(mid) ? new Date(mid) : null;
+    };
+    const applyHorizontalStretch = (factor:number) => {
+      const currentCenter = command?.targetTime ? new Date(String(command.targetTime)) : visibleTimeCenter();
+      if (!currentCenter || !Number.isFinite(currentCenter.getTime())) return false;
+      const maxK = Math.max(120, data.length / 8);
+      const currentK = Number(transformRef.current?.k || 1);
+      const nextK = Math.max(0.35, Math.min(maxK, currentK * (Number(factor) || 1)));
+      const centerPx = margin.left + innerW / 2;
+      const centerBasePx = x0(currentCenter);
+      if (!Number.isFinite(centerBasePx)) return false;
+      transformRef.current = d3.zoomIdentity.translate(centerPx - nextK * centerBasePx, 0).scale(nextK);
+      return true;
+    };
+    const applyPriceDomain = (lowRaw:any, highRaw:any, padRatio = 0.14) => {
+      const low = Number(lowRaw);
+      const high = Number(highRaw);
+      const base = lastYBaseRef.current;
+      if (!base || !Number.isFinite(low) || !Number.isFinite(high) || high <= low) return false;
+      const desiredPad = Math.max((high - low) * padRatio, 1);
+      const desiredLow = low - desiredPad;
+      const desiredHigh = high + desiredPad;
+      const desiredSpan = Math.max(1e-9, desiredHigh - desiredLow);
+      const desiredCenter = (desiredLow + desiredHigh) / 2;
+      const baseSpan = Math.max(1e-9, base.baseHi - base.baseLo);
+      const baseCenter = (base.baseLo + base.baseHi) / 2;
+      const nextZoom = Math.max(0.25, Math.min(32, baseSpan / desiredSpan));
+      const pricePerPx = desiredSpan / Math.max(1, base.innerH);
+      yZoomRef.current = nextZoom;
+      yPanPxRef.current = (desiredCenter - baseCenter) / pricePerPx;
+      return true;
+    };
+    const applyVerticalStretch = (factor:number) => {
+      const base = lastYBaseRef.current;
+      const current = lastYDomainRef.current;
+      if (!base || !current) return false;
+      const currentCenter = (current[0] + current[1]) / 2;
+      const nextZoom = Math.max(0.25, Math.min(32, (Number(yZoomRef.current) || 1) * (Number(factor) || 1)));
+      const baseSpan = Math.max(1e-9, base.baseHi - base.baseLo);
+      const span = baseSpan / nextZoom;
+      const pricePerPx = span / Math.max(1, base.innerH);
+      const baseCenter = (base.baseLo + base.baseHi) / 2;
+      yZoomRef.current = nextZoom;
+      yPanPxRef.current = (currentCenter - baseCenter) / pricePerPx;
+      return true;
+    };
+    const fitLocked = () => {
+      if (!props.lockedCameraDomain?.start || !props.lockedCameraDomain?.end) return false;
+      const ok = fitWindow(props.lockedCameraDomain.start, props.lockedCameraDomain.end);
+      if (props.lockedPriceDomain) applyPriceDomain(props.lockedPriceDomain.low, props.lockedPriceDomain.high, 0);
+      return ok;
+    };
+    const intent = hasCommand ? command!.intent : (props.goDate ? 'PRESERVE_OR_NEAREST_TIME' : 'LATEST');
+    const targetTime = hasCommand ? command!.targetTime : props.goDate;
+    let applied = false;
+    if (intent === 'HORIZONTAL_STRETCH') applied = applyHorizontalStretch(command?.scaleFactor || 1) || true;
+    if (intent === 'VERTICAL_STRETCH') applied = applyVerticalStretch(command?.scaleFactor || 1) || true;
+    if (intent === 'RESTORE_LOCKED') applied = fitLocked();
+    if (!applied && intent === 'CASE') {
+      applied = fitWindow(props.caseStart || props.rangeStart, props.caseEnd || props.rangeEnd);
+      applyPriceDomain(props.caseLow || props.rangeLow, props.caseHigh || props.rangeHigh);
     }
-    yPanPxRef.current = 0;
-    yZoomRef.current = 1;
+    if (!applied && intent === 'RANGE') {
+      applied = fitWindow(props.rangeStart, props.rangeEnd);
+      applyPriceDomain(props.rangeLow, props.rangeHigh);
+    }
+    if (!applied && (intent === 'REPLAY' || intent === 'PRESERVE_OR_NEAREST_TIME' || intent === 'RESTORE_LOCKED')) applied = fitWindow(targetTime || props.goDate, null);
+    if (!applied && intent === 'LATEST') { fitLatest(); applied = true; }
+    if (!applied && intent === 'FIT_ALL') applied = fitAll();
+    if (!applied) {
+      fitLatest();
+    } else {
+      if (intent === 'LATEST') {
+        yPanPxRef.current = 0;
+        yZoomRef.current = 1;
+      }
+    }
     draw();
-  }, [props.fitAllToken, props.goDate, props.rangeStart, props.rangeEnd, props.candles.length, props.cameraMode]);
+  }, [props.fitAllToken, props.goDate, props.cameraCommand?.token]);
 
   return <svg ref={svgRef} className="d3CandleSvg" />;
 }

@@ -4397,6 +4397,26 @@ def map_event_save(payload: dict[str, Any] = Body(...)):
     return market_memory.save_map_event(payload)
 
 
+@app.post("/api/v1/map/structural-event")
+def map_structural_event_save(response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    result = market_memory.save_structural_map_event(payload)
+    response.status_code = int(result.get("status") or (201 if result.get("ok") and not result.get("duplicate") else 200 if result.get("ok") else 400))
+    return result
+
+
+@app.patch("/api/v1/map/structural-event/{event_id}")
+def map_structural_event_patch(event_id: str, response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    result = market_memory.patch_structural_map_event(event_id, payload or {})
+    response.status_code = int(result.get("status") or (200 if result.get("ok") else 400))
+    return result
+
+
 @app.get("/api/v1/map/events")
 def map_events_get(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 1000, case_id: int | None = None):
     if market_memory is None:
@@ -4425,6 +4445,16 @@ def map_range_upsert(payload: dict[str, Any] = Body(...)):
     return market_memory.upsert_map_range(payload)
 
 
+@app.patch("/api/v1/map/range/{range_id}")
+def map_range_patch(range_id: int, response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    result = market_memory.patch_map_range(range_id, payload or {})
+    response.status_code = int(result.get("status") or (200 if result.get("ok") else 400))
+    return result
+
+
 @app.get("/api/v1/map/range")
 def map_range_get(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: str = "active"):
     if market_memory is None:
@@ -4440,17 +4470,34 @@ def map_range_delete(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: s
 
 
 @app.get("/api/v1/map/ranges")
-def map_ranges_list(symbol: str = "XAUUSD", timeframe: str | None = None, case_id: int | None = None, limit: int = 1000):
+def map_ranges_list(symbol: str = "XAUUSD", timeframe: str | None = None, case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, structure_layer: str | None = None, source_timeframe: str | None = None, parent_range_id: int | None = None, limit: int = 1000):
     if market_memory is None:
         return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
-    return market_memory.list_map_ranges(symbol=symbol, timeframe=timeframe, case_id=case_id, limit=limit)
+    return market_memory.list_map_ranges(symbol=symbol, timeframe=timeframe, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, structure_layer=structure_layer, source_timeframe=source_timeframe, parent_range_id=parent_range_id, limit=limit)
 
 
 @app.get("/api/v1/map/range-tree")
-def map_range_tree(symbol: str = "XAUUSD", case_id: int | None = None, parent_timeframe: str = "W1", child_timeframe: str = "D1"):
+def map_range_tree(symbol: str = "XAUUSD", case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, parent_timeframe: str = "W1", child_timeframe: str = "D1", parent_layer: str | None = None, child_layer: str | None = None):
     if market_memory is None:
         return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
-    return market_memory.get_range_tree(symbol=symbol, case_id=case_id, parent_timeframe=parent_timeframe, child_timeframe=child_timeframe)
+    return market_memory.get_range_tree(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, parent_timeframe=parent_timeframe, child_timeframe=child_timeframe, parent_layer=parent_layer, child_layer=child_layer)
+
+
+@app.post("/api/v1/map/range/reparent")
+def map_range_reparent(response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    result = market_memory.reparent_map_range(int((payload or {}).get("child_range_id") or (payload or {}).get("range_id") or 0), (payload or {}).get("parent_range_id"))
+    response.status_code = int(result.get("status") or (200 if result.get("ok") else 400))
+    return result
+
+
+@app.get("/api/v1/map/hierarchy-audit")
+def map_hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None):
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    return market_memory.hierarchy_audit(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref)
 
 
 @app.post("/api/v1/htf/state")
