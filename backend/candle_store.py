@@ -712,7 +712,7 @@ def init_db() -> None:
 
 def normalise_timeframe(tf: str) -> str:
     val = (tf or "D1").strip().upper()
-    aliases = {"MN": "MN1", "MONTHLY": "MN1", "WEEKLY": "W1", "DAILY": "D1", "4H": "H4", "1H": "H1", "15M": "M15", "5M": "M5"}
+    aliases = {"MN": "MN1", "MONTHLY": "MN1", "MACRO": "MN1", "WEEKLY": "W1", "DAILY": "D1", "4H": "H4", "1H": "H1", "15M": "M15", "5M": "M5"}
     val = aliases.get(val, val)
     if val not in TIMEFRAMES:
         raise ValueError(f"Unsupported timeframe: {tf}")
@@ -904,11 +904,13 @@ def _parent_timeframe_for(tf: str) -> str | None:
     return order[i - 1] if i > 0 else None
 
 
-STRUCTURE_LAYER_ORDER = ["WEEKLY", "DAILY", "INTRADAY", "MICRO"]
+STRUCTURE_LAYER_ORDER = ["MACRO", "WEEKLY", "DAILY", "INTRADAY", "MICRO"]
 
 
 def _structure_layer_for_timeframe(tf: str | None) -> str:
     t = normalise_timeframe(tf or "D1")
+    if t == "MN1":
+        return "MACRO"
     if t == "W1":
         return "WEEKLY"
     if t == "D1":
@@ -922,12 +924,22 @@ def _structure_layer_for_timeframe(tf: str | None) -> str:
 
 def _source_timeframe_for_layer(layer: str | None) -> str:
     l = str(layer or "").upper()
-    return {"WEEKLY": "W1", "DAILY": "D1", "INTRADAY": "H1", "MICRO": "M15"}.get(l, "D1")
+    return {
+        "MACRO": "MN1",
+        "WEEKLY": "W1",
+        "DAILY": "D1",
+        "INTRADAY": "H1",
+        "MICRO": "M15",
+    }.get(l, "D1")
 
 
 def _normalise_structure_layer(value: Any, fallback_timeframe: str | None = None) -> str:
     raw = str(value or "").strip().upper()
     aliases = {
+        "MN1": "MACRO",
+        "MN": "MACRO",
+        "MONTHLY": "MACRO",
+        "MACRO": "MACRO",
         "W1": "WEEKLY",
         "WEEK": "WEEKLY",
         "D1": "DAILY",
@@ -945,8 +957,10 @@ def _normalise_structure_layer(value: Any, fallback_timeframe: str | None = None
 
 def _expected_parent_layer(layer: str) -> str | None:
     l = _normalise_structure_layer(layer)
-    if l == "WEEKLY":
+    if l == "MACRO":
         return None
+    if l == "WEEKLY":
+        return "MACRO"
     if l == "DAILY":
         return "WEEKLY"
     if l == "INTRADAY":
@@ -954,6 +968,73 @@ def _expected_parent_layer(layer: str) -> str | None:
     if l == "MICRO":
         return "INTRADAY"
     return None
+
+
+def _parse_time_ms(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return int(value)
+        s = str(value).strip()
+        if s.isdigit():
+            return int(s)
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception:
+        return None
+
+
+def _range_time_window(row: sqlite3.Row | dict[str, Any]) -> tuple[int | None, int | None]:
+    d = _row_dict(row)
+    start_candidates = [
+        d.get("active_from_time"),
+        d.get("range_start_time"),
+        d.get("range_high_time"),
+        d.get("range_low_time"),
+        d.get("created_at"),
+    ]
+    end_candidates = [
+        d.get("inactive_from_time"),
+        d.get("range_end_time"),
+        d.get("break_high_time"),
+        d.get("break_low_time"),
+        d.get("updated_at"),
+    ]
+    starts = [x for x in (_parse_time_ms(v) for v in start_candidates) if x is not None]
+    ends = [x for x in (_parse_time_ms(v) for v in end_candidates) if x is not None]
+    start = min(starts) if starts else None
+    end = max(ends) if ends else None
+    if start is not None and end is not None and end < start:
+        start, end = end, start
+    return start, end
+
+
+def _child_time_window_valid_for_parent(
+    child: sqlite3.Row | dict[str, Any],
+    parent: sqlite3.Row | dict[str, Any],
+) -> tuple[bool, str | None]:
+    p_start, p_end = _range_time_window(parent)
+    c_start, c_end = _range_time_window(child)
+    if p_start is None and p_end is None:
+        return True, None
+    if c_start is None and c_end is None:
+        return True, None
+    if p_start is not None and c_start is not None and c_start < p_start:
+        return False, "child range starts before parent active window"
+    if p_end is not None and c_end is not None and c_end > p_end:
+        return False, "child range ends after parent inactive window"
+    if p_start is not None and c_end is not None and c_end < p_start:
+        return False, "child range ends before parent window starts"
+    if p_end is not None and c_start is not None and c_start > p_end:
+        return False, "child range starts after parent window ends"
+    if p_start is not None and c_start is not None and p_end is not None and c_end is not None:
+        overlaps = c_start <= p_end and c_end >= p_start
+        if not overlaps:
+            return False, "child time window does not overlap parent time window"
+    return True, None
 
 
 def _row_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -1016,7 +1097,11 @@ def _validate_parent_link(
         return "INVALID_PARENT", ["parent_range_id is not an integer"], None
 
     if parent_id is None:
-        return ("VALID" if layer == "WEEKLY" else "ORPHAN"), [], None
+        if layer == "MACRO":
+            return "VALID", [], None
+        return "ORPHAN", [], None
+    if layer == "MACRO":
+        return "NEEDS_REVIEW", ["MACRO range should not have parent_range_id"], None
     if child_id is not None and int(child_id) == parent_id:
         return "INVALID_PARENT", ["range cannot be its own parent"], None
 
@@ -1041,10 +1126,16 @@ def _validate_parent_link(
     parent_layer = _range_layer(parent)
     if expected_parent and parent_layer != expected_parent:
         return "INVALID_PARENT", [f"{layer} parent must be {expected_parent}, got {parent_layer}"], parent
-    if not expected_parent:
-        return "NEEDS_REVIEW", ["root layer should not normally have parent_range_id"], parent
     if child_id is not None and _has_parent_cycle(conn, int(child_id), parent_id):
         return "INVALID_PARENT", ["parent link would create a circular chain"], parent
+
+    child_row = None
+    if child_id is not None:
+        child_row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(child_id),)).fetchone()
+    if child_row is not None:
+        overlap_ok, time_warning = _child_time_window_valid_for_parent(child_row, parent)
+        if not overlap_ok:
+            return "NEEDS_REVIEW", [time_warning or "child time window is outside parent window"], parent
 
     return "VALID", [], parent
 
@@ -1937,7 +2028,7 @@ def list_map_ranges(symbol: str = "XAUUSD", timeframe: str | None = None, case_i
 
 
 def get_range_tree(symbol: str = "XAUUSD", case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, parent_timeframe: str = "W1", child_timeframe: str = "D1", parent_layer: str | None = None, child_layer: str | None = None) -> dict[str, Any]:
-    """Return parent->child structural range hierarchy for Weekly/Daily simultaneous mapping."""
+    """Return parent->child structural range hierarchy for adjacent structure layers."""
     init_db()
     parent_tf = normalise_timeframe(parent_timeframe)
     child_tf = normalise_timeframe(child_timeframe)
@@ -2030,12 +2121,19 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
         events = [dict(r) for r in conn.execute(f"SELECT * FROM map_events WHERE {where} ORDER BY id ASC", args).fetchall() if not _event_is_undone(r)]
 
         counts_by_layer = {layer: 0 for layer in STRUCTURE_LAYER_ORDER}
+        orphan_weekly: list[dict[str, Any]] = []
         orphan_daily: list[dict[str, Any]] = []
         orphan_intraday: list[dict[str, Any]] = []
         invalid_parent_links: list[dict[str, Any]] = []
+        needs_parent_review: list[dict[str, Any]] = []
         missing_rh_rl: list[dict[str, Any]] = []
+        weekly_linked_macro = 0
         daily_linked_weekly = 0
         intraday_linked_daily = 0
+        macro_exists_in_case = any(
+            _normalise_structure_layer(r.get("structure_layer"), r.get("source_timeframe")) == "MACRO"
+            for r in ranges
+        )
 
         for r in ranges:
             layer = _normalise_structure_layer(r.get("structure_layer"), r.get("source_timeframe"))
@@ -2051,18 +2149,29 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
                 parent_range_id=r.get("parent_range_id"),
             )
             r["parent_link_status"] = status
+            if warnings:
+                r["parent_link_warnings"] = warnings
+            if layer == "WEEKLY" and status == "ORPHAN":
+                orphan_weekly.append(r)
             if layer == "DAILY" and status == "ORPHAN":
                 orphan_daily.append(r)
             if layer == "INTRADAY" and status == "ORPHAN":
                 orphan_intraday.append(r)
             if status == "INVALID_PARENT":
                 invalid_parent_links.append({"range": r, "warnings": warnings})
+            if status == "NEEDS_REVIEW":
+                needs_parent_review.append({"range": r, "warnings": warnings})
+            if layer == "WEEKLY" and status == "VALID" and parent is not None and _range_layer(parent) == "MACRO":
+                weekly_linked_macro += 1
             if layer == "DAILY" and status == "VALID" and parent is not None and _range_layer(parent) == "WEEKLY":
                 daily_linked_weekly += 1
             if layer == "INTRADAY" and status == "VALID" and parent is not None and _range_layer(parent) == "DAILY":
                 intraday_linked_daily += 1
             if _range_price(r, "HIGH") in (None, 0) or _range_price(r, "LOW") in (None, 0):
                 missing_rh_rl.append(r)
+
+        orphan_weekly_without_macro_parent = orphan_weekly if macro_exists_in_case else []
+        legacy_weekly_root_ranges = orphan_weekly if not macro_exists_in_case else []
 
         bos_missing_bh_bl = []
         events_without_active_range = []
@@ -2076,12 +2185,37 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
             if ev.get("active_range_id") in (None, "") and bos_type in {"BOS_UP", "BOS_DOWN"}:
                 events_without_active_range.append(ev)
 
-    tree = get_range_tree(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, parent_timeframe="W1", child_timeframe="D1")
+    macro_weekly_tree = get_range_tree(
+        symbol=symbol,
+        case_id=case_id,
+        raw_case_id=raw_case_id,
+        case_ref=case_ref,
+        parent_timeframe="MN1",
+        child_timeframe="W1",
+        parent_layer="MACRO",
+        child_layer="WEEKLY",
+    )
+    weekly_daily_tree = get_range_tree(
+        symbol=symbol,
+        case_id=case_id,
+        raw_case_id=raw_case_id,
+        case_ref=case_ref,
+        parent_timeframe="W1",
+        child_timeframe="D1",
+        parent_layer="WEEKLY",
+        child_layer="DAILY",
+    )
     warnings = []
+    if orphan_weekly_without_macro_parent:
+        warnings.append({"code": "ORPHAN_WEEKLY_WITHOUT_MACRO_PARENT", "count": len(orphan_weekly_without_macro_parent)})
+    if legacy_weekly_root_ranges:
+        warnings.append({"code": "LEGACY_WEEKLY_ROOT_RANGES", "count": len(legacy_weekly_root_ranges), "note": "Weekly ranges without Macro parent in a case with no Macro ranges yet"})
     if orphan_daily:
         warnings.append({"code": "ORPHAN_DAILY_RANGES", "count": len(orphan_daily)})
     if orphan_intraday:
         warnings.append({"code": "ORPHAN_INTRADAY_RANGES", "count": len(orphan_intraday)})
+    if needs_parent_review:
+        warnings.append({"code": "RANGES_NEEDING_PARENT_REVIEW", "count": len(needs_parent_review)})
     errors = []
     if invalid_parent_links:
         errors.append({"code": "INVALID_PARENT_LINKS", "count": len(invalid_parent_links)})
@@ -2096,32 +2230,48 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
         "case_id": case_id,
         "raw_case_id": raw_case_id,
         "case_ref": case_ref,
+        "structure_layer_order": STRUCTURE_LAYER_ORDER,
         "summary": {
             "total_ranges": len(ranges),
             "ranges_by_structure_layer": counts_by_layer,
+            "macro_ranges": counts_by_layer.get("MACRO", 0),
             "weekly_ranges": counts_by_layer.get("WEEKLY", 0),
             "daily_ranges": counts_by_layer.get("DAILY", 0),
             "intraday_ranges": counts_by_layer.get("INTRADAY", 0),
+            "micro_ranges": counts_by_layer.get("MICRO", 0),
+            "weekly_ranges_linked_to_macro": weekly_linked_macro,
             "daily_ranges_linked_to_weekly": daily_linked_weekly,
             "intraday_ranges_linked_to_daily": intraday_linked_daily,
+            "orphan_weekly_ranges": len(orphan_weekly),
+            "orphan_weekly_without_macro_parent": len(orphan_weekly_without_macro_parent),
+            "legacy_weekly_root_ranges": len(legacy_weekly_root_ranges),
             "orphan_daily_ranges": len(orphan_daily),
             "orphan_intraday_ranges": len(orphan_intraday),
             "invalid_parent_links": len(invalid_parent_links),
+            "ranges_needing_parent_review": len(needs_parent_review),
             "ranges_missing_rh_rl": len(missing_rh_rl),
             "bos_events_missing_bh_bl": len(bos_missing_bh_bl),
             "events_not_linked_to_active_range_id": len(events_without_active_range),
+            "macro_context_expected": macro_exists_in_case,
         },
         "errors": errors,
         "warnings": warnings,
         "incomplete": {
+            "orphan_weekly_ranges": orphan_weekly,
+            "orphan_weekly_without_macro_parent": orphan_weekly_without_macro_parent,
+            "legacy_weekly_root_ranges": legacy_weekly_root_ranges,
             "orphan_daily_ranges": orphan_daily,
             "orphan_intraday_ranges": orphan_intraday,
+            "ranges_needing_parent_review": needs_parent_review,
             "events_not_linked_to_active_range_id": events_without_active_range,
         },
         "invalid_parent_links": invalid_parent_links,
+        "ranges_needing_parent_review": needs_parent_review,
         "ranges_missing_rh_rl": missing_rh_rl,
         "bos_events_missing_bh_bl": bos_missing_bh_bl,
-        "range_tree": tree,
+        "macro_weekly_tree": macro_weekly_tree,
+        "weekly_daily_tree": weekly_daily_tree,
+        "range_tree": weekly_daily_tree,
     }
 
 
