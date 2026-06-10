@@ -424,6 +424,60 @@ function chartStructureForTimeframeStatic(tfRaw:string) {
   if (tf === 'M15' || tf === 'M5') return { structure_layer:'MICRO' as StructureLayer, source_timeframe: tf };
   return { structure_layer:'WEEKLY' as StructureLayer, source_timeframe:tf };
 }
+
+type SavedRangeChartLine = {
+  rangeId: string;
+  structureLayer: StructureLayer;
+  status: string;
+  high: number;
+  low: number;
+  start?: string | null;
+  end?: string | null;
+  isActive?: boolean;
+};
+
+type DraftRangeChartLine = {
+  high: number;
+  low: number;
+  structureLayer: StructureLayer;
+  visible: boolean;
+};
+
+function collectParentContextChain(startRangeId: string, allRanges: any[]): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  let currentId = startRangeId ? String(startRangeId) : '';
+  while (currentId) {
+    if (seen.has(currentId)) break;
+    seen.add(currentId);
+    ids.push(currentId);
+    const row = allRanges.find((r:any) => String(r.range_id || r.id) === currentId);
+    if (!row) break;
+    const parentId = row.parent_range_id;
+    if (parentId === null || parentId === undefined || String(parentId) === '') break;
+    currentId = String(parentId);
+  }
+  return ids;
+}
+
+function structuralRangeToChartLine(r: any, activeStructuralRangeId: string): SavedRangeChartLine | null {
+  const hi = Number(r.range_high_price ?? r.range_high);
+  const lo = Number(r.range_low_price ?? r.range_low);
+  const rangeId = String(r.range_id || r.id || '');
+  const layer = normalizeStructureLayer(r.structure_layer || r.layer);
+  if (!rangeId || !layer || !Number.isFinite(hi) || !Number.isFinite(lo) || hi <= lo) return null;
+  return {
+    rangeId,
+    structureLayer: layer,
+    status: String(r.status || 'ACTIVE').toUpperCase(),
+    high: hi,
+    low: lo,
+    start: r.range_start_time || r.range_high_time || null,
+    end: r.range_end_time || r.range_low_time || null,
+    isActive: rangeId === String(activeStructuralRangeId),
+  };
+}
+
 type StructuralAnchor = { price:string; time:string; candle?:Candle|null };
 type StructuralRange = {
   range_id?:number|string;
@@ -1766,6 +1820,71 @@ function MapStudio({ symbol }: { symbol:string }) {
   const low = parseNum(rangeLow);
   const high = parseNum(rangeHigh);
   const hasRange = Number.isFinite(low) && Number.isFinite(high) && high > low;
+
+  const chartSavedRangeOverlays = useMemo<SavedRangeChartLine[]>(() => {
+    const allRanges = safeArray<any>(savedStructuralRanges);
+    const rangeById = new Map(allRanges.map((r:any) => [String(r.range_id || r.id), r]));
+    const overlayIds = new Set<string>();
+    const overlays: SavedRangeChartLine[] = [];
+    const pushRange = (r: any) => {
+      const id = String(r?.range_id || r?.id || '');
+      if (!id || overlayIds.has(id)) return;
+      const line = structuralRangeToChartLine(r, activeStructuralRangeId);
+      if (!line) return;
+      overlayIds.add(id);
+      overlays.push(line);
+    };
+
+    // Current mapping layer: all saved ranges for this case/layer.
+    for (const r of allRanges) {
+      const layer = normalizeStructureLayer(r.structure_layer || r.layer);
+      if (layer !== structureLayer) continue;
+      const chartTf = String(r.chart_timeframe || '').toUpperCase();
+      if (chartTf && chartTf !== String(timeframe).toUpperCase()) continue;
+      pushRange(r);
+    }
+
+    // Selected parent chain: immediate parent + ancestors only.
+    if (selectedParentRangeId) {
+      for (const id of collectParentContextChain(String(selectedParentRangeId), allRanges)) {
+        const row = rangeById.get(id);
+        if (row) pushRange(row);
+      }
+    }
+
+    // Active range parent chain when it differs from the dropdown selection.
+    if (activeStructuralRangeId) {
+      const activeRange = rangeById.get(String(activeStructuralRangeId));
+      const activeParentId = activeRange?.parent_range_id;
+      if (activeParentId !== null && activeParentId !== undefined && String(activeParentId) !== '') {
+        for (const id of collectParentContextChain(String(activeParentId), allRanges)) {
+          const row = rangeById.get(id);
+          if (row) pushRange(row);
+        }
+      }
+    }
+
+    return overlays;
+  }, [savedStructuralRanges, timeframe, structureLayer, selectedParentRangeId, activeStructuralRangeId]);
+
+  const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
+    const draftHigh = parseNum(rhAnchor.price);
+    const draftLow = parseNum(rlAnchor.price);
+    if (!Number.isFinite(draftHigh) || !Number.isFinite(draftLow) || draftHigh <= draftLow) return null;
+    const activeRange = activeStructuralRangeId
+      ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId))
+      : null;
+    const savedHigh = parseNum(activeRange?.range_high_price ?? activeRange?.range_high);
+    const savedLow = parseNum(activeRange?.range_low_price ?? activeRange?.range_low);
+    const matchesSaved = !!activeRange && savedHigh === draftHigh && savedLow === draftLow && !structuralRangeDraftDirty;
+    if (matchesSaved) return null;
+    return {
+      high: draftHigh,
+      low: draftLow,
+      structureLayer: structureLayer,
+      visible: true,
+    };
+  }, [rhAnchor.price, rlAnchor.price, structureLayer, activeStructuralRangeId, savedStructuralRanges, structuralRangeDraftDirty]);
 
   const htfSemiAuto = useMemo(() => analyseHTFSemiAuto({
     timeframe,
@@ -4339,7 +4458,10 @@ function MapStudio({ symbol }: { symbol:string }) {
           caseEnd={activeCaseLedger?.end || ''}
           caseHigh={activeCaseLedger?.high || ''}
           caseLow={activeCaseLedger?.low || ''}
-          parentOverlays={activeParentRangeOverlay}
+          parentOverlays={[]}
+          savedRangeOverlays={chartSavedRangeOverlays}
+          draftRangeOverlay={chartDraftRangeOverlay}
+          showFibOverlays={false}
           events={visibleEvents}
           selectedCandleTime={selectedCandle?.time || null}
           selectedCandlePrice={selectedCandlePoint?.price ?? null}
@@ -4749,6 +4871,27 @@ function MapStudio({ symbol }: { symbol:string }) {
 
 type ParentRangeOverlayLine = { timeframe:string; kind:'high'|'low'; price:number; label:string; rangeId?:string|number|null; direction?:string; start?:string; end?:string; };
 
+function structureLayerLineColor(layer: StructureLayer): string {
+  const map: Record<StructureLayer, string> = {
+    MACRO: '#a855f7',
+    WEEKLY: '#ef4444',
+    DAILY: '#22c55e',
+    INTRADAY: '#3b82f6',
+    MICRO: '#facc15',
+  };
+  return map[layer] || '#94a3b8';
+}
+
+function savedRangeLineStyle(status: string) {
+  const s = String(status || 'ACTIVE').toUpperCase();
+  if (s === 'BROKEN' || s === 'ABANDONED') return { opacity: 0.38, dash: '8 6', width: 1.4 };
+  return { opacity: 0.92, dash: '', width: 2.2 };
+}
+
+function draftRangeLineStyle() {
+  return { opacity: 0.55, dash: '4 6', width: 1.6 };
+}
+
 type D3CandleMapProps = {
   candles:Candle[];
   replayCutTime?:string|null;
@@ -4763,6 +4906,9 @@ type D3CandleMapProps = {
   caseHigh?:string|number;
   caseLow?:string|number;
   parentOverlays?:ParentRangeOverlayLine[];
+  savedRangeOverlays?:SavedRangeChartLine[];
+  draftRangeOverlay?:DraftRangeChartLine|null;
+  showFibOverlays?:boolean;
   events:MapEvent[];
   selectedCandleTime?:string|null;
   selectedCandlePrice?:number|null;
@@ -4864,12 +5010,22 @@ function D3CandleMap(props:D3CandleMapProps) {
     const visibleHi = d3.max(v, d=>d.high) ?? hiData;
     const visibleLo = d3.min(v, d=>d.low) ?? loData;
     const parentOverlayPrices = safeArray<any>(p.parentOverlays || []).map((x:any)=>Number(x.price)).filter(Number.isFinite);
+    const savedOverlayPrices = safeArray<SavedRangeChartLine>(p.savedRangeOverlays || []).flatMap((r)=>[r.high, r.low]).filter(Number.isFinite);
+    const draftOverlayPrices = p.draftRangeOverlay?.visible ? [p.draftRangeOverlay.high, p.draftRangeOverlay.low].filter(Number.isFinite) : [];
     const parentHi = parentOverlayPrices.length ? Math.max(...parentOverlayPrices) : undefined;
     const parentLo = parentOverlayPrices.length ? Math.min(...parentOverlayPrices) : undefined;
+    const savedHi = savedOverlayPrices.length ? Math.max(...savedOverlayPrices) : undefined;
+    const savedLo = savedOverlayPrices.length ? Math.min(...savedOverlayPrices) : undefined;
     let yHi = hiData, yLo = loData;
     if (p.hasRange && p.scaleMode === 'range' && v.length) { yHi = Math.max(p.rangeHigh, visibleHi); yLo = Math.min(p.rangeLow, visibleLo); }
     if (Number.isFinite(parentHi as any)) yHi = Math.max(yHi, Number(parentHi));
     if (Number.isFinite(parentLo as any)) yLo = Math.min(yLo, Number(parentLo));
+    if (Number.isFinite(savedHi as any)) yHi = Math.max(yHi, Number(savedHi));
+    if (Number.isFinite(savedLo as any)) yLo = Math.min(yLo, Number(savedLo));
+    if (draftOverlayPrices.length) {
+      yHi = Math.max(yHi, ...draftOverlayPrices);
+      yLo = Math.min(yLo, ...draftOverlayPrices);
+    }
     const pad = Math.max((yHi-yLo)*0.18, 1);
     const baseLo = yLo - pad;
     const baseHi = yHi + pad;
@@ -4891,34 +5047,68 @@ function D3CandleMap(props:D3CandleMapProps) {
     grid.selectAll('text.ytick').data(y.ticks(7)).join('text')
       .attr('x', 10).attr('y', d=>y(d)+4).attr('fill','rgba(226,232,240,.65)').attr('font-size',13).text(d=>Number(d).toFixed(2));
 
-    // v087.23b: faint parent high/low overlays across lower timeframe maps.
-    // No parent fibs/zones here. Stats can calculate premium/discount later; mapping only needs the container H/L.
-    const parentLines = safeArray<ParentRangeOverlayLine>(p.parentOverlays || [])
-      .filter((ln:any)=>Number.isFinite(Number(ln.price)));
-    if (parentLines.length) {
-      const pg = plot.append('g').attr('class','parentRangeOverlay').attr('pointer-events','none');
-      pg.selectAll('line.parentLine').data(parentLines).join('line')
-        .attr('class','parentLine')
+    const drawRangeLineLabels = (container:any, rows:any[]) => {
+      const labels = container.selectAll('g.rangeLineLabel').data(rows).join('g')
+        .attr('class','rangeLineLabel')
+        .attr('transform',(d:any)=>`translate(${margin.left + 8},${y(Number(d.price)) - (d.kind === 'high' ? 14 : -4)})`);
+      labels.append('rect')
+        .attr('width', (d:any)=>Math.max(92, d.label.length * 6.2))
+        .attr('height', 18).attr('rx', 6)
+        .attr('fill','rgba(2,6,23,.74)')
+        .attr('stroke', (d:any)=>d.color)
+        .attr('stroke-opacity', 0.45);
+      labels.append('text')
+        .attr('x', 8).attr('y', 13)
+        .attr('fill', (d:any)=>d.color)
+        .attr('font-size', 10)
+        .attr('font-weight', 900)
+        .text((d:any)=>d.label);
+    };
+
+    const savedRanges = safeArray<SavedRangeChartLine>(p.savedRangeOverlays || []);
+    if (savedRanges.length) {
+      const sg = plot.append('g').attr('class','savedRangeLines').attr('pointer-events','none');
+      const savedRows = savedRanges.flatMap((r) => {
+        const style = savedRangeLineStyle(r.status);
+        const color = structureLayerLineColor(r.structureLayer);
+        return [
+          { kind:'high' as const, price:r.high, label:`#${r.rangeId} ${r.structureLayer} RH`, color, style, rangeId:r.rangeId },
+          { kind:'low' as const, price:r.low, label:`#${r.rangeId} ${r.structureLayer} RL`, color, style, rangeId:r.rangeId },
+        ];
+      });
+      sg.selectAll('line.savedRangeLine').data(savedRows).join('line')
+        .attr('class','savedRangeLine')
         .attr('x1', margin.left)
         .attr('x2', margin.left + innerW)
         .attr('y1', (d:any)=>y(Number(d.price)))
         .attr('y2', (d:any)=>y(Number(d.price)))
-        .attr('stroke', (d:any)=>d.kind === 'high' ? 'rgba(148,163,184,.42)' : 'rgba(148,163,184,.34)')
-        .attr('stroke-width', 1.25)
-        .attr('stroke-dasharray', '10 10');
-      const labels = pg.selectAll('g.parentLabel').data(parentLines).join('g')
-        .attr('class','parentLabel')
-        .attr('transform',(d:any)=>`translate(${margin.left + 10},${y(Number(d.price))-13})`);
-      labels.append('rect')
-        .attr('width', 150).attr('height', 22).attr('rx', 8)
-        .attr('fill','rgba(2,6,23,.70)')
-        .attr('stroke','rgba(148,163,184,.25)');
-      labels.append('text')
-        .attr('x', 9).attr('y', 15)
-        .attr('fill','rgba(226,232,240,.82)')
-        .attr('font-size', 10)
-        .attr('font-weight', 900)
-        .text((d:any)=>`${d.label} ${Number(d.price).toFixed(2)}`);
+        .attr('stroke', (d:any)=>d.color)
+        .attr('stroke-opacity', (d:any)=>d.style.opacity)
+        .attr('stroke-width', (d:any)=>d.style.width)
+        .attr('stroke-dasharray', (d:any)=>d.style.dash || null);
+      drawRangeLineLabels(sg, savedRows);
+    }
+
+    if (p.draftRangeOverlay?.visible) {
+      const draft = p.draftRangeOverlay;
+      const draftStyle = draftRangeLineStyle();
+      const draftColor = structureLayerLineColor(draft.structureLayer);
+      const dg = plot.append('g').attr('class','draftRangeLines').attr('pointer-events','none');
+      const draftRows = [
+        { kind:'high' as const, price:draft.high, label:`Draft ${draft.structureLayer} RH`, color:draftColor, style:draftStyle },
+        { kind:'low' as const, price:draft.low, label:`Draft ${draft.structureLayer} RL`, color:draftColor, style:draftStyle },
+      ];
+      dg.selectAll('line.draftRangeLine').data(draftRows).join('line')
+        .attr('class','draftRangeLine')
+        .attr('x1', margin.left)
+        .attr('x2', margin.left + innerW)
+        .attr('y1', (d:any)=>y(Number(d.price)))
+        .attr('y2', (d:any)=>y(Number(d.price)))
+        .attr('stroke', draftColor)
+        .attr('stroke-opacity', draftStyle.opacity)
+        .attr('stroke-width', draftStyle.width)
+        .attr('stroke-dasharray', draftStyle.dash);
+      drawRangeLineLabels(dg, draftRows);
     }
 
     const baseCandleW = innerW / Math.max(8, v.length || 8) * 0.58;
@@ -4935,13 +5125,9 @@ function D3CandleMap(props:D3CandleMapProps) {
         .text('Replay cursor is outside the current camera view. Pan left/right or click Latest.');
     }
 
-    if (p.hasRange) {
+    if (p.showFibOverlays && p.hasRange) {
       const fibs = [-25,0,25,50,75,100,125];
       const fib = plot.append('g').attr('class','fibs');
-
-      // Box the fib overlay around a selectable active range window.
-      // Start/end can be dragged horizontally. H/L can be dragged vertically.
-      // This makes fibs a real map object instead of decorative chart wallpaper.
       const closestHigh = renderData.reduce((best:any, c:any) => Math.abs(c.high - p.rangeHigh) < Math.abs(best.high - p.rangeHigh) ? c : best, renderData[0]);
       const closestLow = renderData.reduce((best:any, c:any) => Math.abs(c.low - p.rangeLow) < Math.abs(best.low - p.rangeLow) ? c : best, renderData[0]);
       const startTime = p.rangeStart || closestHigh.time;
@@ -4954,7 +5140,6 @@ function D3CandleMap(props:D3CandleMapProps) {
       const boxX0 = Math.max(margin.left, rawX0 - boxPad);
       const boxX1 = Math.min(margin.left + innerW, rawX1 + boxPad);
       const boxVisible = Number.isFinite(boxX0) && Number.isFinite(boxX1) && boxX1 > boxX0 + 10;
-
       const y0 = y(p.rangeHigh), y1 = y(p.rangeLow);
       if (Number.isFinite(y0) && Number.isFinite(y1) && boxVisible) {
         fib.append('rect')
@@ -4964,20 +5149,8 @@ function D3CandleMap(props:D3CandleMapProps) {
           .attr('stroke','rgba(255,191,47,.28)')
           .attr('stroke-width',1.3)
           .attr('stroke-dasharray','8 8')
-          .attr('pointer-events', p.toolMode === 'range' ? 'all' : 'none')
-          .attr('cursor', p.toolMode === 'range' ? 'move' : 'default')
-          .call(d3.drag<any,any>()
-            .on('drag', function(event:any){
-              if (latestProps.current.toolMode !== 'range') return;
-              const dxDate0 = zx.invert(Math.max(margin.left, Math.min(margin.left+innerW, boxX0 + event.dx)));
-              const dxDate1 = zx.invert(Math.max(margin.left, Math.min(margin.left+innerW, boxX1 + event.dx)));
-              const c0 = nearestCandle(dxDate0, renderData);
-              const c1 = nearestCandle(dxDate1, renderData);
-              latestProps.current.onRangeChange?.({ start: c0?.time || dxDate0.toISOString(), end: c1?.time || dxDate1.toISOString() });
-            }) as any);
+          .attr('pointer-events', p.toolMode === 'range' ? 'all' : 'none');
       }
-
-      // Fib guide lines only run inside the active boxed range area.
       fib.selectAll('line').data(fibs).join('line')
         .attr('x1', boxVisible ? boxX0 : margin.left)
         .attr('x2', boxVisible ? boxX1 : margin.left+innerW)
@@ -4989,54 +5162,7 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('x', (boxVisible ? boxX1 : margin.left+innerW) + 8)
         .attr('y', pct=>y(p.rangeLow + (p.rangeHigh-p.rangeLow)*(pct/100))+4)
         .attr('fill','rgba(255,223,118,.75)').attr('font-size',11).text(pct=>`${pct}%`);
-
-      // Vertical range start/end handles.
-      if (boxVisible) {
-        const sideHandles = [
-          { kind:'start', x:boxX0, label:'S' },
-          { kind:'end', x:boxX1, label:'E' }
-        ];
-        const sh = fib.selectAll('g.rangeSideHandle').data(sideHandles).join('g')
-          .attr('class','rangeSideHandle')
-          .attr('transform',(d:any)=>`translate(${d.x},${Math.min(y0,y1)})`)
-          .attr('cursor', p.toolMode === 'range' ? 'ew-resize' : 'default')
-          .attr('pointer-events', p.toolMode === 'range' ? 'all' : 'none');
-        sh.append('line').attr('y1',0).attr('y2',Math.abs(y1-y0)).attr('stroke','rgba(255,191,47,.72)').attr('stroke-width',2);
-        sh.append('rect').attr('x',-10).attr('y',-18).attr('width',20).attr('height',18).attr('rx',6).attr('fill','rgba(255,191,47,.95)').attr('stroke','#020308').attr('stroke-width',2);
-        sh.append('text').attr('y',-5).attr('text-anchor','middle').attr('font-size',10).attr('font-weight',900).attr('fill','#020308').text((d:any)=>d.label);
-        sh.call(d3.drag<any,any>()
-          .on('drag', function(event:any,d:any){
-            if (latestProps.current.toolMode !== 'range') return;
-            const px = Math.max(margin.left, Math.min(margin.left+innerW, event.x));
-            const date = zx.invert(px);
-            const c = nearestCandle(date, renderData);
-            if (d.kind === 'start') latestProps.current.onRangeChange?.({ start: c?.time || date.toISOString() });
-            if (d.kind === 'end') latestProps.current.onRangeChange?.({ end: c?.time || date.toISOString() });
-          }) as any);
-      }
-
-      // Draggable high/low fib anchors: adjust range prices directly.
-      const anchorX = Math.max(margin.left + 20, Math.min(margin.left + innerW - 20, (boxVisible ? boxX1 : margin.left+innerW) - 12));
-      const anchors = [
-        { kind:'high', price:p.rangeHigh, label:'H' },
-        { kind:'low', price:p.rangeLow, label:'L' }
-      ];
-      const anchorG = fib.selectAll('g.fibAnchor').data(anchors).join('g')
-        .attr('class','fibAnchor')
-        .attr('cursor', p.toolMode === 'range' ? 'ns-resize' : 'default')
-        .attr('pointer-events', p.toolMode === 'range' ? 'all' : 'none')
-        .attr('transform',(d:any)=>`translate(${anchorX},${y(d.price)})`);
-      anchorG.append('circle').attr('r',7).attr('fill','#ffbf2f').attr('stroke','#020308').attr('stroke-width',3);
-      anchorG.append('text').attr('x',11).attr('y',4).attr('fill','#ffdf76').attr('font-size',10).attr('font-weight',900).text((d:any)=>d.label);
-      anchorG.call(d3.drag<any,any>()
-        .on('drag', function(event,d:any){
-          if (latestProps.current.toolMode !== 'range') return;
-          const py = Math.max(margin.top, Math.min(margin.top+innerH, event.y));
-          const price = Number(y.invert(py).toFixed(2));
-          d3.select(this).attr('transform',`translate(${anchorX},${py})`);
-          if (d.kind === 'high') latestProps.current.onRangeChange?.({ high: price });
-          if (d.kind === 'low') latestProps.current.onRangeChange?.({ low: price });
-        }) as any);    }
+    }
 
     const candlesG = plot.append('g').attr('class','candles');
     candlesG.selectAll('g.candle').data(v, (d:any)=>d.time).join('g')
@@ -5233,7 +5359,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
     }
     draw();
-  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale]);
+  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, props.savedRangeOverlays, props.draftRangeOverlay, props.showFibOverlays]);
 
   useEffect(()=>{
     if (!svgRef.current || !props.candles.length) return;
