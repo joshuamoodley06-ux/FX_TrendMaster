@@ -2657,6 +2657,35 @@ function MapStudio({ symbol }: { symbol:string }) {
     });
   };
 
+  const patchActiveRangeRestored = async (rangeId: string) => {
+    return structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(rangeId)}`, {
+      method:'PATCH',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({
+        status: 'ACTIVE',
+        direction_of_break: null,
+        broken_by_event_id: null,
+        inactive_from_time: null,
+      }),
+    });
+  };
+
+  const isBosBreakQuickEventRole = (role: any) => {
+    const r = String(role || '').toUpperCase();
+    return ['BH', 'BL', 'BREAK_UP', 'BREAK_DOWN', 'BOS_UP', 'BOS_DOWN', 'BREAK_HIGH_SELECTED', 'BREAK_LOW_SELECTED'].includes(r);
+  };
+
+  const findSavedRangeRowById = (rangeId: string) => {
+    return safeArray<any>([...savedStructuralRanges, ...structuralRanges]).find(
+      (r:any) => String(r.range_id || r.id) === String(rangeId),
+    ) || null;
+  };
+
+  const rangeHasKnownChainLinks = (range: any) => {
+    if (!range) return null;
+    return !!(range.old_range_id || range.new_range_id || range.created_by_event_id);
+  };
+
   const selectedSavedRange = useMemo(() => {
     if (!activeStructuralRangeId) return null;
     return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
@@ -2929,6 +2958,50 @@ function MapStudio({ symbol }: { symbol:string }) {
           },
         }),
       });
+
+      let lifecycleRevertFailed = false;
+      let lifecycleRevertSkipped = false;
+      let lifecycleWarningMessage: string | null = null;
+      let lifecycleRevertSucceeded = false;
+      const shouldTryLifecycleRevert = isBosBreakQuickEventRole(ev.role) && ev.range_lifecycle_patched && ev.broken_range_id;
+      if (shouldTryLifecycleRevert) {
+        const rangeId = String(ev.broken_range_id);
+        const rangeRow = findSavedRangeRowById(rangeId);
+        const chainKnown = rangeHasKnownChainLinks(rangeRow);
+        if (chainKnown === null) {
+          lifecycleRevertSkipped = true;
+          lifecycleWarningMessage = `BOS undone, but range lifecycle revert skipped because chaining status is unknown for range #${rangeId}. Refresh audit.`;
+          setLastRangeLifecyclePatchWarning(lifecycleWarningMessage);
+        } else if (chainKnown) {
+          lifecycleRevertSkipped = true;
+          lifecycleWarningMessage = `BOS undone, but range #${rangeId} is chained to another range. Lifecycle revert skipped. Refresh audit.`;
+          setLastRangeLifecyclePatchWarning(lifecycleWarningMessage);
+        } else {
+          try {
+            const restoreData = await patchActiveRangeRestored(rangeId);
+            const restoredRange = restoreData?.range || {};
+            setSavedStructuralRanges(prev => prev.map((r:any) => {
+              if (String(r.range_id || r.id) !== rangeId) return r;
+              return {
+                ...r,
+                status: restoredRange.status || 'ACTIVE',
+                direction_of_break: restoredRange.direction_of_break ?? null,
+                broken_by_event_id: restoredRange.broken_by_event_id ?? null,
+                inactive_from_time: restoredRange.inactive_from_time ?? null,
+              };
+            }));
+            lifecycleRevertSucceeded = true;
+            setLastRangeLifecyclePatchWarning(null);
+            try { await refreshSavedRangesForCurrentCase(); } catch {}
+            try { await refreshHierarchyAudit(); } catch {}
+          } catch (revertErr:any) {
+            lifecycleRevertFailed = true;
+            lifecycleWarningMessage = `BOS undone, but range lifecycle revert failed. Refresh audit. ${revertErr?.message || revertErr}`;
+            setLastRangeLifecyclePatchWarning(lifecycleWarningMessage);
+          }
+        }
+      }
+
       const prev = ev.previous || {};
       if (ev.role === 'RH') {
         setRhAnchor(prev.RH || { price:'', time:'' });
@@ -2945,10 +3018,18 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (ev.role === 'BH' || ev.role === 'BREAK_UP') setBhAnchor(prev.BH || { price:'', time:'' });
       if (ev.role === 'BL' || ev.role === 'BREAK_DOWN') setBlAnchor(prev.BL || { price:'', time:'' });
       if (ev.role === 'RH' || ev.role === 'RL') setStructuralRangeDraftDirty(!!(prev.RH?.price || prev.RL?.price));
-      if (ev.role === 'BH' || ev.role === 'BL' || ev.role === 'BREAK_UP' || ev.role === 'BREAK_DOWN') setStructuralBosDraftDirty(!!(prev.BH?.price || prev.BL?.price));
-      setQuickEventHistory(prevList => prevList.filter((x:any)=>String(x.event_id) !== String(ev.event_id)));
-      setLastSavedQuickEvent(null);
-      setMessage(`Undid ${ev.role} event on ${ev.timeframe} ${shortTime(ev.candle_time, ev.timeframe)}.`);
+      if (isBosBreakQuickEventRole(ev.role)) setStructuralBosDraftDirty(!!(prev.BH?.price || prev.BL?.price));
+      const remainingHistory = quickEventHistory.filter((x:any)=>String(x.event_id) !== String(ev.event_id));
+      setQuickEventHistory(remainingHistory);
+      setLastSavedQuickEvent(remainingHistory.length ? remainingHistory[remainingHistory.length - 1] : null);
+
+      if (lifecycleRevertSucceeded) {
+        setMessage(`Break undo complete. Range ${ev.broken_range_id} restored to ACTIVE.`);
+      } else if (lifecycleRevertFailed || lifecycleRevertSkipped) {
+        setMessage(lifecycleWarningMessage || `Undid ${ev.role} event on ${ev.timeframe} ${shortTime(ev.candle_time, ev.timeframe)}.`);
+      } else {
+        setMessage(`Undid ${ev.role} event on ${ev.timeframe} ${shortTime(ev.candle_time, ev.timeframe)}.`);
+      }
     } catch (err:any) {
       setMessage(`Undo last quick event failed: ${err?.message || err}`);
     } finally {
