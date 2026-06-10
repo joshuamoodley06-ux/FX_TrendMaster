@@ -377,7 +377,53 @@ function NavItem({ icon, label, page, active, collapsed, setPage }: any) { retur
 type Candle = { symbol:string; timeframe:string; time:string; open:number; high:number; low:number; close:number; volume?:number };
 type MapEvent = { id:string; event_type:string; event_name?:string; time?:string; price:number; zone?:string; zone_percent?:number; notes?:string; candle_open?:number; candle_high?:number; candle_low?:number; candle_close?:number; source?:'map'|'seed'|'auto'|'candidate'|'manual'; primitive?:string; derived_event_code?:string; movement_rule?:string; range_status_after?:string; engine_source?:string; logic_version?:string; candidate_id?:string; confidence?:string; candidate_status?:'ACCEPTED'|'REJECTED'|'EDITED'|'CANDIDATE'; meta_json?:any; structural_event?:string; layer?:string; parent_timeframe?:string; range_id?:any; active_range_id?:any; parent_range_id?:any; old_range_id?:any; new_range_id?:any; raw_event_id?:string };
 
-type StructureLayer = 'WEEKLY'|'DAILY'|'INTRADAY'|'MICRO';
+type StructureLayer = 'MACRO'|'WEEKLY'|'DAILY'|'INTRADAY'|'MICRO';
+const STRUCTURE_LAYERS: StructureLayer[] = ['MACRO', 'WEEKLY', 'DAILY', 'INTRADAY', 'MICRO'];
+function defaultSourceTimeframeForStructureLayer(layer: StructureLayer): string {
+  return ({ MACRO:'MN1', WEEKLY:'W1', DAILY:'D1', INTRADAY:'H1', MICRO:'M15' } as Record<StructureLayer,string>)[layer] || 'D1';
+}
+function expectedParentStructureLayer(layer: StructureLayer): StructureLayer | null {
+  const idx = STRUCTURE_LAYERS.indexOf(layer);
+  return idx > 0 ? STRUCTURE_LAYERS[idx - 1] : null;
+}
+function structureLayerRequiresParentConfirmation(layer: StructureLayer): boolean {
+  return layer === 'DAILY' || layer === 'INTRADAY' || layer === 'MICRO';
+}
+function parentRangeIdForStructureLayer(layer: StructureLayer, selectedParentRangeId: string): string | null {
+  if (layer === 'MACRO') return null;
+  return selectedParentRangeId || null;
+}
+function normalizeStructureLayer(value: any): StructureLayer | null {
+  const raw = String(value || '').toUpperCase();
+  const aliases: Record<string, StructureLayer> = {
+    MN1:'MACRO', MACRO:'MACRO', W1:'WEEKLY', WEEKLY:'WEEKLY', D1:'DAILY', DAILY:'DAILY',
+    H4:'INTRADAY', H1:'INTRADAY', INTRADAY:'INTRADAY', M15:'MICRO', M5:'MICRO', MICRO:'MICRO',
+  };
+  const layer = (aliases[raw] || raw) as StructureLayer;
+  return STRUCTURE_LAYERS.includes(layer) ? layer : null;
+}
+function sourceTimeframeOptionsForLayer(layer: StructureLayer): string[] {
+  if (layer === 'MACRO') return ['MN1'];
+  if (layer === 'WEEKLY') return ['W1'];
+  if (layer === 'DAILY') return ['D1'];
+  if (layer === 'INTRADAY') return ['H1', 'H4', 'H8'];
+  return ['M15', 'M5'];
+}
+function chartLayerMismatchWarning(chartTf: string, mappingLayer: StructureLayer): string {
+  const chart = chartStructureForTimeframeStatic(chartTf);
+  if (chart.structure_layer === mappingLayer) return '';
+  return `You are viewing ${chartTf} candles but saving a ${mappingLayer} range.`;
+}
+function chartStructureForTimeframeStatic(tfRaw:string) {
+  const tf = String(tfRaw || 'D1').toUpperCase();
+  if (tf === 'MN1') return { structure_layer:'MACRO' as StructureLayer, source_timeframe:'MN1' };
+  if (tf === 'W1') return { structure_layer:'WEEKLY' as StructureLayer, source_timeframe:'W1' };
+  if (tf === 'D1') return { structure_layer:'DAILY' as StructureLayer, source_timeframe:'D1' };
+  if (tf === 'H4') return { structure_layer:'INTRADAY' as StructureLayer, source_timeframe:'H4' };
+  if (tf === 'H1') return { structure_layer:'INTRADAY' as StructureLayer, source_timeframe:'H1' };
+  if (tf === 'M15' || tf === 'M5') return { structure_layer:'MICRO' as StructureLayer, source_timeframe: tf };
+  return { structure_layer:'WEEKLY' as StructureLayer, source_timeframe:tf };
+}
 type StructuralAnchor = { price:string; time:string; candle?:Candle|null };
 type StructuralRange = {
   range_id?:number|string;
@@ -1226,6 +1272,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [quickEventHistory, setQuickEventHistory] = useState<any[]>([]);
   const [structuralRangeDraftDirty, setStructuralRangeDraftDirty] = useState(false);
   const [structuralBosDraftDirty, setStructuralBosDraftDirty] = useState(false);
+  const [lastRangeLifecyclePatchWarning, setLastRangeLifecyclePatchWarning] = useState<string | null>(null);
   const [hierarchyAudit, setHierarchyAudit] = useState<any>(null);
   const [caseScope, setCaseScope] = useState<CaseScope>(() => timeframeToScope(timeframe));
   useEffect(()=>{ setCaseScope(timeframeToScope(timeframe)); }, [timeframe]);
@@ -2560,10 +2607,15 @@ function MapStudio({ symbol }: { symbol:string }) {
     return safeArray<StructuralRange>(structuralRanges).find(r => String(r.range_id || r.id) === String(selectedParentRangeId)) || null;
   }, [structuralRanges, selectedParentRangeId]);
 
+  const parentStructureLayer = useMemo(() => expectedParentStructureLayer(structureLayer), [structureLayer]);
+
+  const macroRangesInCase = useMemo(() => {
+    return safeArray<StructuralRange>(savedStructuralRanges).filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO');
+  }, [savedStructuralRanges]);
+
   useEffect(() => {
-    if (structureLayer === 'WEEKLY') setSourceTimeframe('W1');
-    if (structureLayer === 'DAILY') setSourceTimeframe('D1');
-    if (structureLayer === 'INTRADAY' && !['H1','H4','H8'].includes(String(sourceTimeframe).toUpperCase())) setSourceTimeframe('H1');
+    const allowed = sourceTimeframeOptionsForLayer(structureLayer);
+    if (!allowed.includes(String(sourceTimeframe).toUpperCase())) setSourceTimeframe(defaultSourceTimeframeForStructureLayer(structureLayer));
   }, [structureLayer]);
 
   const structuralFetchJson = async (url:string, options?:RequestInit) => {
@@ -2573,6 +2625,38 @@ function MapStudio({ symbol }: { symbol:string }) {
     return data;
   };
 
+  const resolveStructuralEventRef = (data:any, payload:{ event_id?:string }) => {
+    const numericId = data?.id ?? data?.event?.id;
+    if (numericId !== undefined && numericId !== null && String(numericId) !== '') {
+      const parsed = Number(numericId);
+      if (Number.isFinite(parsed)) {
+        return {
+          broken_by_event_id: parsed as number,
+          event_uuid: String(data?.event_id || data?.event?.event_id || payload.event_id || ''),
+        };
+      }
+    }
+    const eventUuid = String(data?.event_id || data?.event?.event_id || payload.event_id || '');
+    if (!eventUuid) throw new Error('BOS saved but backend returned no event id for lifecycle patch.');
+    return { broken_by_event_id: eventUuid, event_uuid: eventUuid };
+  };
+
+  const patchActiveRangeBroken = async (
+    rangeId: string,
+    patch: { direction_of_break:'UP'|'DOWN'; broken_by_event_id:number|string; inactive_from_time:string },
+  ) => {
+    return structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(rangeId)}`, {
+      method:'PATCH',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({
+        status: 'BROKEN',
+        direction_of_break: patch.direction_of_break,
+        broken_by_event_id: patch.broken_by_event_id,
+        inactive_from_time: patch.inactive_from_time,
+      }),
+    });
+  };
+
   const selectedSavedRange = useMemo(() => {
     if (!activeStructuralRangeId) return null;
     return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
@@ -2580,7 +2664,12 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const savePreview = useMemo(() => {
     const mappingCase = getCurrentMappingCaseRef();
-    const parentId = structureLayer === 'WEEKLY' ? null : (selectedParentRangeId || null);
+    const parentId = parentRangeIdForStructureLayer(structureLayer, selectedParentRangeId);
+    const chartMismatch = chartLayerMismatchWarning(timeframe, structureLayer);
+    const weeklyOrphanReview = structureLayer === 'WEEKLY' && macroRangesInCase.length > 0 && !selectedParentRangeId
+      ? 'Macro ranges exist in this case but no Macro parent selected. Weekly will save as ORPHAN/review.'
+      : '';
+    const warning = [chartMismatch, weeklyOrphanReview].filter(Boolean).join(' ');
     return {
       chart_timeframe: timeframe,
       structure_layer: structureLayer,
@@ -2590,17 +2679,16 @@ function MapStudio({ symbol }: { symbol:string }) {
       case_id: mappingCase.case_id,
       hasCase: mappingCase.hasCase,
       parent_range_id: parentId,
+      parent_layer: parentStructureLayer,
       range_high_price: rhAnchor.price || null,
       range_high_time: rhAnchor.time || null,
       range_low_price: rlAnchor.price || null,
       range_low_time: rlAnchor.time || null,
       action: activeStructuralRangeId ? 'UPDATE_SELECTED_RANGE' : 'SAVE_NEW_RANGE',
       actionLabel: activeStructuralRangeId ? 'Update Selected Range' : 'Save New Range',
-      warning: String(timeframe).toUpperCase() === 'D1' && structureLayer === 'WEEKLY'
-        ? 'You are viewing D1 candles but saving a WEEKLY range.'
-        : '',
+      warning,
     };
-  }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, selectedParentRangeId, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId]);
+  }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, selectedParentRangeId, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, macroRangesInCase.length, parentStructureLayer]);
 
   const refreshSavedRangesForCurrentCase = async () => {
     const mappingCase = getCurrentMappingCaseRef();
@@ -2619,7 +2707,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
     setActiveStructuralRangeId(id);
-    setStructureLayer((String(range.structure_layer || range.layer || structureLayer).toUpperCase() as StructureLayer) || structureLayer);
+    const nextLayer = normalizeStructureLayer(range.structure_layer || range.layer) || structureLayer;
+    setStructureLayer(nextLayer);
     if (range.source_timeframe || range.timeframe) setSourceTimeframe(String(range.source_timeframe || range.timeframe).toUpperCase());
     if (range.parent_range_id !== undefined && range.parent_range_id !== null) setSelectedParentRangeId(String(range.parent_range_id));
     const high = range.range_high_price ?? range.range_high;
@@ -2649,12 +2738,10 @@ function MapStudio({ symbol }: { symbol:string }) {
       return;
     }
     appendMappingCaseParams(params, mappingCase);
-    if (structureLayer === 'DAILY') {
-      params.set('structure_layer', 'WEEKLY');
-      params.set('source_timeframe', 'W1');
-    } else if (structureLayer === 'INTRADAY') {
-      params.set('structure_layer', 'DAILY');
-      params.set('source_timeframe', 'D1');
+    const loadParentLayer = expectedParentStructureLayer(structureLayer);
+    if (loadParentLayer) {
+      params.set('structure_layer', loadParentLayer);
+      params.set('source_timeframe', defaultSourceTimeframeForStructureLayer(loadParentLayer));
     } else {
       params.set('structure_layer', structureLayer);
       params.set('source_timeframe', sourceTimeframe);
@@ -2663,7 +2750,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/ranges?${params.toString()}`);
       const rows = safeArray<StructuralRange>(data.ranges);
       setStructuralRanges(rows);
-      if ((structureLayer === 'DAILY' || structureLayer === 'INTRADAY') && rows.length && !rows.some(r => String(r.range_id || r.id) === String(selectedParentRangeId))) {
+      if (structureLayerRequiresParentConfirmation(structureLayer) && rows.length && !rows.some(r => String(r.range_id || r.id) === String(selectedParentRangeId))) {
         setSelectedParentRangeId(String(rows[0].range_id || rows[0].id || ''));
       }
     } catch (err:any) {
@@ -2686,7 +2773,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       const s = data?.summary || {};
       const hasErrors = Number(s.invalid_parent_links || 0) > 0 || Number(s.ranges_missing_rh_rl || 0) > 0 || Number(s.bos_events_missing_bh_bl || 0) > 0;
       const hasWarn = Number(s.orphan_daily_ranges || 0) > 0 || Number(s.orphan_intraday_ranges || 0) > 0;
-      setMessage(`Hierarchy audit ${hasErrors ? 'FAIL' : hasWarn ? 'WARN' : 'PASS'} · W ${s.weekly_ranges || 0} / D ${s.daily_ranges || 0} / linked ${s.daily_ranges_linked_to_weekly || 0}`);
+      setMessage(`Hierarchy audit ${hasErrors ? 'FAIL' : hasWarn ? 'WARN' : 'PASS'} · M ${s.macro_ranges || 0} / W ${s.weekly_ranges || 0} / D ${s.daily_ranges || 0} · W→M ${s.weekly_ranges_linked_to_macro || 0} · D→W ${s.daily_ranges_linked_to_weekly || 0}`);
       return data;
     } catch (err:any) {
       setMessage(`Hierarchy audit failed: ${err?.message || err}`);
@@ -2701,15 +2788,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   }, [rightDeckTab, markWorkspaceMode, structureLayer, sourceTimeframe, symbol, activeCaseId, rawActiveCaseId]);
 
-  const chartStructureForTimeframe = (tfRaw:string) => {
-    const tf = String(tfRaw || 'D1').toUpperCase();
-    if (tf === 'W1') return { structure_layer:'WEEKLY' as StructureLayer, source_timeframe:'W1' };
-    if (tf === 'D1') return { structure_layer:'DAILY' as StructureLayer, source_timeframe:'D1' };
-    if (tf === 'H4') return { structure_layer:'INTRADAY' as StructureLayer, source_timeframe:'H4' };
-    if (tf === 'H1') return { structure_layer:'INTRADAY' as StructureLayer, source_timeframe:'H1' };
-    if (tf === 'M15') return { structure_layer:'MICRO' as StructureLayer, source_timeframe:'M15' };
-    return { structure_layer:'WEEKLY' as StructureLayer, source_timeframe:tf };
-  };
+  const chartStructureForTimeframe = (tfRaw:string) => chartStructureForTimeframeStatic(tfRaw);
 
   const applyStructuralDraftPoint = (kind:'RH'|'RL'|'BH'|'BL', candle:Candle, next:{price:string; time:string; candle:Candle|null}) => {
     if (kind === 'RH') {
@@ -2781,7 +2860,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       source_timeframe: chartStructure.source_timeframe,
       structure_layer: chartStructure.structure_layer,
       active_range_id: activeStructuralRangeId || null,
-      parent_range_id: chartStructure.structure_layer === 'WEEKLY' ? null : (selectedParentRangeId || null),
+      parent_range_id: expectedParentStructureLayer(chartStructure.structure_layer) ? (selectedParentRangeId || null) : null,
       event_type: eventTypeByRole[kind],
       structural_event: eventTypeByRole[kind],
       event_time: candle.time,
@@ -2894,8 +2973,9 @@ function MapStudio({ symbol }: { symbol:string }) {
     const mappingCase = getCurrentMappingCaseRef();
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving a range.'); return; }
     if (!rhAnchor.price || !rlAnchor.price) { setMessage('Set Range High and Range Low before saving a structural range.'); return; }
-    if (structureLayer === 'DAILY' && !selectedParentRangeId) {
-      const ok = window.confirm('No Weekly parent selected. Save this Daily range as ORPHAN?');
+    if (structureLayerRequiresParentConfirmation(structureLayer) && !selectedParentRangeId) {
+      const parentLayer = expectedParentStructureLayer(structureLayer);
+      const ok = window.confirm(`No ${parentLayer} parent selected. Save this ${structureLayer} range as ORPHAN?`);
       if (!ok) return;
     }
     setStructuralSaving(true);
@@ -2912,7 +2992,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         structure_layer: structureLayer,
         chart_timeframe: timeframe,
         source_timeframe: sourceTimeframe,
-        parent_range_id: structureLayer === 'WEEKLY' ? null : (selectedParentRangeId || null),
+        parent_range_id: parentRangeIdForStructureLayer(structureLayer, selectedParentRangeId),
         range_high_price: Number(rhAnchor.price),
         range_low_price: Number(rlAnchor.price),
         range_high_time: rhAnchor.time || null,
@@ -2962,7 +3042,11 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'Break Up' : 'Break Down'} candle before saving BOS_${direction}.`); return; }
     const chartStructure = chartStructureForTimeframe(timeframe);
     if (!activeStructuralRangeId) { setMessage('Select the active range being broken before saving Break Up/Break Down.'); return; }
-    if (chartStructure.structure_layer === 'DAILY' && !selectedParentRangeId) { setMessage(`Select the Weekly parent range before saving Daily BOS_${direction}.`); return; }
+    if (structureLayerRequiresParentConfirmation(chartStructure.structure_layer) && !selectedParentRangeId) {
+      const parentLayer = expectedParentStructureLayer(chartStructure.structure_layer);
+      setMessage(`Select the ${parentLayer} parent range before saving ${chartStructure.structure_layer} BOS_${direction}.`);
+      return;
+    }
     setStructuralSaving(true);
     try {
       const candle = anchor.candle || selectedCandle || replayCandle;
@@ -2981,6 +3065,11 @@ function MapStudio({ symbol }: { symbol:string }) {
       const refTime = direction === 'UP'
         ? (activeRange?.range_high_time ?? null)
         : (activeRange?.range_low_time ?? null);
+      const activeRangeParentId = activeRange?.parent_range_id ?? null;
+      const parentRangeIdForBos = activeRangeParentId !== null && activeRangeParentId !== undefined && String(activeRangeParentId) !== ''
+        ? activeRangeParentId
+        : (expectedParentStructureLayer(chartStructure.structure_layer) ? (selectedParentRangeId || null) : null);
+      const breakInactiveTime = anchor.time || candle.time || null;
       const payload = {
         event_id: crypto.randomUUID(),
         case_id: mappingCase.case_id,
@@ -2991,7 +3080,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         chart_timeframe: timeframe,
         source_timeframe: chartStructure.source_timeframe,
         active_range_id: activeStructuralRangeId || null,
-        parent_range_id: chartStructure.structure_layer === 'WEEKLY' ? null : (selectedParentRangeId || null),
+        parent_range_id: parentRangeIdForBos,
         event_type: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
         structural_event: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
         break_level_type: direction === 'UP' ? 'BH' : 'BL',
@@ -3038,6 +3127,26 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (validationErrors.length) {
         throw new Error(`Backend saved BOS through wrong/unlinked path: ${validationErrors.join(', ')}`);
       }
+
+      const bosType = direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN';
+      let lifecyclePatchData: any = null;
+      let lifecyclePatchFailed = false;
+      try {
+        const eventRef = resolveStructuralEventRef(data, payload);
+        if (!breakInactiveTime) throw new Error('Break candle time missing; cannot patch range lifecycle.');
+        lifecyclePatchData = await patchActiveRangeBroken(String(activeStructuralRangeId), {
+          direction_of_break: direction,
+          broken_by_event_id: eventRef.broken_by_event_id,
+          inactive_from_time: String(breakInactiveTime),
+        });
+        setLastRangeLifecyclePatchWarning(null);
+      } catch (patchErr:any) {
+        lifecyclePatchFailed = true;
+        const patchMessage = `BOS saved, but range lifecycle patch failed. Refresh audit. ${patchErr?.message || patchErr}`;
+        setLastRangeLifecyclePatchWarning(patchMessage);
+        setMessage(patchMessage);
+      }
+
       const nextBreakAnchor = { price:String(anchor.price), time:String(anchor.time || candle.time), candle };
       const previous = {
         RH: rhAnchor,
@@ -3061,14 +3170,32 @@ function MapStudio({ symbol }: { symbol:string }) {
           event_price: Number(anchor.price),
           previous,
           payload,
+          range_lifecycle_patched: !!lifecyclePatchData,
+          broken_range_id: lifecyclePatchData ? activeStructuralRangeId : null,
           saved_at: new Date().toISOString(),
         };
         setLastSavedQuickEvent(saved);
         setQuickEventHistory(prev => [...prev, saved].slice(-50));
       }
       setStructuralBosDraftDirty(false);
-      setMessage(`Saved ${direction === 'UP' ? 'Break Up' : 'Break Down'} as formal BOS_${direction} ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${chartStructure.structure_layer}/${chartStructure.source_timeframe} · active range #${activeStructuralRangeId} · ref ${refPrice ?? 'derived later'}`);
-      await refreshHierarchyAudit();
+      if (lifecyclePatchData) {
+        const patchedRange = lifecyclePatchData?.range || {};
+        setSavedStructuralRanges(prev => prev.map((r:any) => {
+          if (String(r.range_id || r.id) !== String(activeStructuralRangeId)) return r;
+          return {
+            ...r,
+            status: patchedRange.status || 'BROKEN',
+            direction_of_break: patchedRange.direction_of_break || direction,
+            broken_by_event_id: patchedRange.broken_by_event_id ?? data.id ?? data.event?.id ?? null,
+            inactive_from_time: patchedRange.inactive_from_time || breakInactiveTime,
+          };
+        }));
+        setMessage(`${bosType} saved. Range ${activeStructuralRangeId} marked BROKEN.`);
+        try { await refreshSavedRangesForCurrentCase(); } catch {}
+      } else if (!lifecyclePatchFailed) {
+        setMessage(`Saved ${direction === 'UP' ? 'Break Up' : 'Break Down'} as formal ${bosType} ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${chartStructure.structure_layer}/${chartStructure.source_timeframe} · active range #${activeStructuralRangeId} · ref ${refPrice ?? 'derived later'}`);
+      }
+      try { await refreshHierarchyAudit(); } catch {}
     } catch (err:any) {
       setMessage(`BOS_${direction} save failed: ${err?.message || err}`);
     } finally {
@@ -4066,7 +4193,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           </div>
 
           {markWorkspaceMode === 'htf' && <div className="markModePane htfEnginePane">
-            <div className="markPanelTitleRow"><div><h3>Structural Weekly/Daily Mapping</h3><p className="mutedSmall">Store RH/RL ranges and BH/BL BOS events only. No sweeps, profiles, objectives, or strategy fields here.</p></div></div>
+            <div className="markPanelTitleRow"><div><h3>Structural HTF Mapping</h3><p className="mutedSmall">MACRO → WEEKLY → DAILY → INTRADAY. Store RH/RL ranges and Break Up/Down BOS events only.</p></div></div>
             <div className="markSelectedCard wide">
               <b>Selected Candle</b>
               <span>{selectedCandle ? `${shortTime(selectedCandle.time, timeframe)} · O ${selectedCandle.open.toFixed(2)} · H ${selectedCandle.high.toFixed(2)} · L ${selectedCandle.low.toFixed(2)} · C ${selectedCandle.close.toFixed(2)}` : 'Click a candle to capture RH/RL/BH/BL.'}</span>
@@ -4075,29 +4202,27 @@ function MapStudio({ symbol }: { symbol:string }) {
             <div className="htfStateLiteCard">
               <div className="htfLiteHeader"><b>Mapping Scope</b><span>{structureLayer} · source {sourceTimeframe} · chart {timeframe}</span></div>
               <div className="markModeStrip compact">
-                {(['WEEKLY','DAILY','INTRADAY'] as StructureLayer[]).map(layer=><button key={layer} className={structureLayer===layer?'active':''} onClick={()=>setStructureLayer(layer)}>{layer}{layer==='INTRADAY' ? ' · storage-ready' : ''}</button>)}
+                {STRUCTURE_LAYERS.map(layer=><button key={layer} className={structureLayer===layer?'active':''} onClick={()=>{ setSelectedParentRangeId(''); setStructureLayer(layer); }}>{layer}{layer==='MICRO' ? ' · later' : ''}</button>)}
               </div>
               <label className="toolbarStoryInput">Source TF
                 <select value={sourceTimeframe} onChange={e=>setSourceTimeframe(e.target.value)}>
-                  <option value="W1">W1</option>
-                  <option value="D1">D1</option>
-                  <option value="H1">H1</option>
-                  <option value="H4">H4</option>
-                  <option value="H8">H8</option>
+                  {sourceTimeframeOptionsForLayer(structureLayer).map(tf=><option key={tf} value={tf}>{tf}</option>)}
                 </select>
               </label>
-              {structureLayer === 'WEEKLY' && <div className="caseBadge">Weekly root range. No parent required.</div>}
-              {structureLayer === 'DAILY' && <div className="compilerPreviewCard">
-                <b>Weekly Parent</b>
+              {structureLayer === 'MACRO' && <div className="caseBadge">Macro root range. No parent required.</div>}
+              {parentStructureLayer && <div className="compilerPreviewCard">
+                <b>{parentStructureLayer} Parent</b>
                 <label>Parent range
                   <select value={selectedParentRangeId} onChange={e=>setSelectedParentRangeId(e.target.value)}>
-                    <option value="">No Weekly parent selected</option>
-                    {structuralRanges.map((r:any)=><option key={r.range_id || r.id} value={String(r.range_id || r.id)}>#{r.range_id || r.id} · RH {r.range_high_price || r.range_high || '?'} / RL {r.range_low_price || r.range_low || '?'}</option>)}
+                    <option value="">{structureLayer === 'WEEKLY' ? `No ${parentStructureLayer} parent (optional)` : `No ${parentStructureLayer} parent selected`}</option>
+                    {structuralRanges.map((r:any)=><option key={r.range_id || r.id} value={String(r.range_id || r.id)}>#{r.range_id || r.id} · {r.structure_layer || r.layer || parentStructureLayer} · RH {r.range_high_price || r.range_high || '?'} / RL {r.range_low_price || r.range_low || '?'}</option>)}
                   </select>
                 </label>
-                {selectedParentRange ? <div><span>Selected</span><strong>#{selectedParentRange.range_id || selectedParentRange.id} · RH {selectedParentRange.range_high_price || '—'} / RL {selectedParentRange.range_low_price || '—'}</strong><em>{selectedParentRange.range_start_time ? `${shortTime(selectedParentRange.range_start_time, 'W1')} → ${shortTime(selectedParentRange.range_end_time, 'W1')}` : 'no saved window'}</em></div> : <div><span>Status</span><strong>No Weekly parent selected</strong><em>Daily range will be saved as ORPHAN after confirmation.</em></div>}
+                {structureLayer === 'WEEKLY' && macroRangesInCase.length > 0 && !selectedParentRangeId && <div className="caseBadge warningBadge">Macro exists in case · Weekly will save without Macro parent (orphan/review).</div>}
+                {selectedParentRange ? <div><span>Selected</span><strong>#{selectedParentRange.range_id || selectedParentRange.id} · RH {selectedParentRange.range_high_price || '—'} / RL {selectedParentRange.range_low_price || '—'}</strong><em>{selectedParentRange.parent_link_status ? `link ${selectedParentRange.parent_link_status}` : 'parent link pending'}{selectedParentRange.range_start_time ? ` · ${shortTime(selectedParentRange.range_start_time, sourceTimeframe)} → ${shortTime(selectedParentRange.range_end_time, sourceTimeframe)}` : ''}</em></div> : structureLayer === 'WEEKLY' ? <div><span>Status</span><strong>No Macro parent selected</strong><em>Weekly can save as root/orphan. Link Macro parent when available.</em></div> : <div><span>Status</span><strong>No {parentStructureLayer} parent selected</strong><em>{structureLayer} range will be saved as ORPHAN after confirmation.</em></div>}
               </div>}
-              {structureLayer === 'INTRADAY' && <div className="caseBadge">Intraday storage is visible for schema proof only. Full Intraday workflow and H8 rendering are TODO.</div>}
+              {structureLayer === 'INTRADAY' && <div className="caseBadge">Intraday mapping is storage-ready. H8 rendering remains TODO.</div>}
+              {structureLayer === 'MICRO' && <div className="caseBadge">Micro layer is selectable for storage proof. Full workflow comes later.</div>}
               <button className="gpsSaveBtn secondary" onClick={refreshStructuralRanges}>Refresh Parents/Ranges</button>
             </div>
 
@@ -4116,9 +4241,10 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <button onClick={()=>setStructuralPoint('BL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
                 <button className="gpsSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
               </div>
+              {lastRangeLifecyclePatchWarning && <div className="caseBadge warningBadge">{lastRangeLifecyclePatchWarning}</div>}
               <div className="htfCandidateState">
-                <span>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} · ${lastSavedQuickEvent.structure_layer}/${lastSavedQuickEvent.source_timeframe} · ${String(lastSavedQuickEvent.event_id).slice(0,8)}` : 'No quick event saved this session.'}</span>
-                <em>Break Up/Down save formal BOS events immediately. REF levels are derived from active range RH/RL.</em>
+                <span>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} · ${lastSavedQuickEvent.structure_layer}/${lastSavedQuickEvent.source_timeframe} · ${String(lastSavedQuickEvent.event_id).slice(0,8)}${lastSavedQuickEvent.range_lifecycle_patched ? ` · range #${lastSavedQuickEvent.broken_range_id} BROKEN` : ''}` : 'No quick event saved this session.'}</span>
+                <em>Break Up/Down save formal BOS events, then PATCH the active range as BROKEN. REF levels are derived from active range RH/RL.</em>
               </div>
             </div>
 
@@ -4130,7 +4256,7 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <div><span>Will Save</span><strong>{savePreview.structure_layer}</strong><em>{savePreview.actionLabel}</em></div>
                 <div><span>Source TF</span><strong>{savePreview.source_timeframe}</strong><em>structural truth</em></div>
                 <div><span>Case Ref</span><strong>{savePreview.case_ref || 'no case'}</strong><em>{savePreview.raw_case_id || savePreview.case_id || 'missing'}</em></div>
-                <div><span>Parent</span><strong>{savePreview.parent_range_id || 'none'}</strong><em>{structureLayer === 'DAILY' ? 'Weekly parent' : 'root range'}</em></div>
+                <div><span>Parent</span><strong>{savePreview.parent_range_id || 'none'}</strong><em>{savePreview.parent_layer ? `${savePreview.parent_layer} parent` : 'root range'}</em></div>
                 <div><span>RH</span><strong>{savePreview.range_high_price || 'not set'}</strong><em>{savePreview.range_high_time ? shortTime(savePreview.range_high_time, timeframe) : 'draft'}</em></div>
                 <div><span>RL</span><strong>{savePreview.range_low_price || 'not set'}</strong><em>{savePreview.range_low_time ? shortTime(savePreview.range_low_time, timeframe) : 'draft'}</em></div>
                 <div><span>Selected</span><strong>{activeStructuralRangeId || 'new'}</strong><em>{selectedSavedRange ? 'will update' : 'will create'}</em></div>
@@ -4169,7 +4295,10 @@ function MapStudio({ symbol }: { symbol:string }) {
             <div className="htfStateLiteCard">
               <div className="htfLiteHeader"><b>Hierarchy Audit</b><span>{hierarchyAudit ? 'loaded' : 'not loaded'}</span></div>
               <div className="htfLiteGrid compactStateGrid">
+                <div><span>Macro</span><strong>{hierarchyAudit?.summary?.macro_ranges ?? '—'}</strong><em>ranges</em></div>
                 <div><span>Weekly</span><strong>{hierarchyAudit?.summary?.weekly_ranges ?? '—'}</strong><em>ranges</em></div>
+                <div><span>W → M</span><strong>{hierarchyAudit?.summary?.weekly_ranges_linked_to_macro ?? '—'}</strong><em>linked</em></div>
+                <div><span>Orphan W</span><strong>{hierarchyAudit?.summary?.orphan_weekly_without_macro_parent ?? hierarchyAudit?.summary?.orphan_weekly_ranges ?? '—'}</strong><em>review</em></div>
                 <div><span>Daily</span><strong>{hierarchyAudit?.summary?.daily_ranges ?? '—'}</strong><em>ranges</em></div>
                 <div><span>D → W</span><strong>{hierarchyAudit?.summary?.daily_ranges_linked_to_weekly ?? '—'}</strong><em>linked</em></div>
                 <div><span>Orphan D</span><strong>{hierarchyAudit?.summary?.orphan_daily_ranges ?? '—'}</strong><em>warnings</em></div>
