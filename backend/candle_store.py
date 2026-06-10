@@ -1203,6 +1203,354 @@ def _normalise_bos_event_type(event_type: str | None, structural_event: str | No
     return t
 
 
+ALLOWED_RANGE_STATUSES = {"ACTIVE", "BROKEN", "ABANDONED", "NEEDS_REVIEW"}
+
+
+def _normalize_range_status(value: Any) -> str | None:
+    raw = _optional_text(value)
+    if raw is None:
+        return None
+    normalized = raw.upper()
+    if normalized == "ARCHIVED":
+        return "ARCHIVED"
+    if normalized in ALLOWED_RANGE_STATUSES:
+        return normalized
+    return "NEEDS_REVIEW"
+
+
+def _range_status_is_broken(status: Any) -> bool:
+    return _normalize_range_status(status) == "BROKEN"
+
+
+def _range_part_of_chain(row: sqlite3.Row | dict[str, Any]) -> bool:
+    d = _row_dict(row)
+    return any(d.get(field) not in (None, "") for field in ("old_range_id", "created_by_event_id", "new_range_id"))
+
+
+def _resolve_map_event(conn: sqlite3.Connection, event_ref: Any) -> sqlite3.Row | None:
+    if event_ref in (None, ""):
+        return None
+    ref = str(event_ref).strip()
+    event_int = _optional_int(event_ref)
+    return conn.execute(
+        "SELECT * FROM map_events WHERE event_id=? OR client_event_id=? OR id=? LIMIT 1",
+        (ref, ref, event_int if event_int is not None else -1),
+    ).fetchone()
+
+
+def _map_event_storage_id(event_row: sqlite3.Row | None) -> int | None:
+    if event_row is None:
+        return None
+    try:
+        return int(event_row["id"])
+    except Exception:
+        return None
+
+
+def _validate_bos_event_reference(
+    conn: sqlite3.Connection,
+    event_ref: Any,
+    *,
+    symbol: str,
+    case_id: Any,
+    raw_case_id: Any,
+    case_ref: Any,
+    direction_of_break: Any = None,
+) -> tuple[str, list[str], sqlite3.Row | None, int | None]:
+    warnings: list[str] = []
+    if event_ref in (None, ""):
+        return "NEEDS_REVIEW", ["event reference missing"], None, None
+
+    event_row = _resolve_map_event(conn, event_ref)
+    if event_row is None:
+        return "NEEDS_REVIEW", [f"event reference {event_ref} does not exist"], None, None
+
+    bos_type = _normalise_bos_event_type(event_row["event_type"], event_row["structural_event"] if "structural_event" in event_row.keys() else None)
+    if bos_type not in {"BOS_UP", "BOS_DOWN"}:
+        warnings.append(f"event {event_ref} is not a BOS event")
+        return "NEEDS_REVIEW", warnings, event_row, _map_event_storage_id(event_row)
+
+    event_keys = set(event_row.keys())
+    if str(event_row["symbol"]) != str(symbol):
+        warnings.append("BOS event symbol does not match range symbol")
+    event_case_id = event_row["case_id"] if "case_id" in event_keys else None
+    event_raw_case_id = event_row["raw_case_id"] if "raw_case_id" in event_keys else None
+    event_case_ref = event_row["case_ref"] if "case_ref" in event_keys else None
+    if case_id not in (None, "") and event_case_id not in (None, "") and str(event_case_id) != str(case_id):
+        warnings.append("BOS event case_id does not match range case_id")
+    if raw_case_id not in (None, "") and event_raw_case_id not in (None, "") and str(event_raw_case_id) != str(raw_case_id):
+        warnings.append("BOS event raw_case_id does not match range raw_case_id")
+    if case_ref not in (None, "") and event_case_ref not in (None, "") and str(event_case_ref) != str(case_ref):
+        warnings.append("BOS event case_ref does not match range case_ref")
+
+    if direction_of_break not in (None, ""):
+        expected_dir = "UP" if bos_type == "BOS_UP" else "DOWN"
+        if str(direction_of_break).upper() != expected_dir:
+            warnings.append(f"direction_of_break {direction_of_break} does not match BOS event {bos_type}")
+
+    status = "NEEDS_REVIEW" if warnings else "VALID"
+    return status, warnings, event_row, _map_event_storage_id(event_row)
+
+
+def _has_old_range_chain_cycle(conn: sqlite3.Connection, range_id: int, old_range_id: int) -> bool:
+    seen = {int(range_id)}
+    current: int | None = int(old_range_id)
+    while current is not None:
+        if current in seen:
+            return True
+        seen.add(current)
+        row = conn.execute("SELECT old_range_id FROM map_ranges WHERE id=?", (current,)).fetchone()
+        if row is None or row["old_range_id"] in (None, ""):
+            return False
+        try:
+            current = int(row["old_range_id"])
+        except Exception:
+            return False
+    return False
+
+
+def _has_new_range_chain_cycle(conn: sqlite3.Connection, range_id: int, new_range_id: int) -> bool:
+    seen = {int(range_id)}
+    current: int | None = int(new_range_id)
+    while current is not None:
+        if current in seen:
+            return True
+        seen.add(current)
+        row = conn.execute("SELECT new_range_id FROM map_ranges WHERE id=?", (current,)).fetchone()
+        if row is None or row["new_range_id"] in (None, ""):
+            return False
+        try:
+            current = int(row["new_range_id"])
+        except Exception:
+            return False
+    return False
+
+
+def _validate_range_chain_fields(
+    conn: sqlite3.Connection,
+    range_id: int | None,
+    payload: dict[str, Any],
+    merged: dict[str, Any],
+    *,
+    symbol: str,
+    case_id: Any,
+    raw_case_id: Any,
+    case_ref: Any,
+) -> tuple[str, list[str], dict[str, Any]]:
+    warnings: list[str] = []
+    resolved: dict[str, Any] = {}
+    chain_status = "VALID"
+    chain_fields = ("old_range_id", "new_range_id", "created_by_event_id", "active_from_time")
+    if not any(field in payload for field in chain_fields):
+        return chain_status, warnings, resolved
+
+    old_range_id = payload.get("old_range_id") if "old_range_id" in payload else merged.get("old_range_id")
+    new_range_id = payload.get("new_range_id") if "new_range_id" in payload else merged.get("new_range_id")
+    created_by_event_id = payload.get("created_by_event_id") if "created_by_event_id" in payload else merged.get("created_by_event_id")
+
+    if range_id is not None:
+        rid = int(range_id)
+        if "old_range_id" in payload and old_range_id not in (None, ""):
+            try:
+                old_id = int(old_range_id)
+            except Exception:
+                return "INVALID_CHAIN", ["old_range_id must be an integer"], resolved
+            if old_id == rid:
+                return "INVALID_CHAIN", ["old_range_id cannot equal current range_id"], resolved
+            old_row = conn.execute("SELECT id FROM map_ranges WHERE id=?", (old_id,)).fetchone()
+            if old_row is None:
+                warnings.append(f"old_range_id {old_id} does not exist")
+                chain_status = "NEEDS_REVIEW"
+            elif _has_old_range_chain_cycle(conn, rid, old_id):
+                return "INVALID_CHAIN", ["circular old_range_id chain"], resolved
+            resolved["old_range_id"] = old_id
+
+        if "new_range_id" in payload and new_range_id not in (None, ""):
+            try:
+                new_id = int(new_range_id)
+            except Exception:
+                return "INVALID_CHAIN", ["new_range_id must be an integer"], resolved
+            if new_id == rid:
+                return "INVALID_CHAIN", ["new_range_id cannot equal current range_id"], resolved
+            new_row = conn.execute("SELECT id FROM map_ranges WHERE id=?", (new_id,)).fetchone()
+            if new_row is None:
+                warnings.append(f"new_range_id {new_id} does not exist")
+                chain_status = "NEEDS_REVIEW"
+            elif _has_new_range_chain_cycle(conn, rid, new_id):
+                return "INVALID_CHAIN", ["circular new_range_id chain"], resolved
+            resolved["new_range_id"] = new_id
+
+    if "created_by_event_id" in payload and created_by_event_id not in (None, ""):
+        ev_status, ev_warnings, _ev_row, storage_id = _validate_bos_event_reference(
+            conn,
+            created_by_event_id,
+            symbol=symbol,
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+        )
+        warnings.extend(ev_warnings)
+        if ev_status == "NEEDS_REVIEW":
+            chain_status = "NEEDS_REVIEW"
+        if storage_id is not None:
+            resolved["created_by_event_id"] = storage_id
+        else:
+            maybe_int = _optional_int(created_by_event_id)
+            if maybe_int is not None:
+                resolved["created_by_event_id"] = maybe_int
+    elif "old_range_id" in payload and old_range_id not in (None, ""):
+        warnings.append("old_range_id supplied without created_by_event_id")
+        chain_status = "NEEDS_REVIEW"
+
+    if "active_from_time" in payload:
+        resolved["active_from_time"] = _optional_text(payload.get("active_from_time"))
+
+    return chain_status, warnings, resolved
+
+
+def _validate_range_lifecycle_fields(
+    conn: sqlite3.Connection,
+    payload: dict[str, Any],
+    merged: dict[str, Any],
+    *,
+    symbol: str,
+    case_id: Any,
+    raw_case_id: Any,
+    case_ref: Any,
+) -> tuple[str, list[str], dict[str, Any]]:
+    warnings: list[str] = []
+    resolved: dict[str, Any] = {}
+    lifecycle_status = "VALID"
+    lifecycle_fields = ("status", "direction_of_break", "broken_by_event_id", "inactive_from_time")
+    if not any(field in payload for field in lifecycle_fields):
+        return lifecycle_status, warnings, resolved
+
+    if "status" in payload:
+        status = _normalize_range_status(payload.get("status"))
+        if status:
+            resolved["status"] = status
+
+    effective_status = resolved.get("status") or _normalize_range_status(merged.get("status"))
+    if effective_status != "BROKEN":
+        return lifecycle_status, warnings, resolved
+
+    direction = payload.get("direction_of_break") if "direction_of_break" in payload else merged.get("direction_of_break")
+    broken_ref = payload.get("broken_by_event_id") if "broken_by_event_id" in payload else merged.get("broken_by_event_id")
+    inactive = payload.get("inactive_from_time") if "inactive_from_time" in payload else merged.get("inactive_from_time")
+
+    if direction in (None, ""):
+        warnings.append("BROKEN range missing direction_of_break")
+        lifecycle_status = "NEEDS_REVIEW"
+    else:
+        dir_up = str(direction).upper()
+        if dir_up not in {"UP", "DOWN"}:
+            warnings.append("direction_of_break must be UP or DOWN")
+            lifecycle_status = "NEEDS_REVIEW"
+        elif "direction_of_break" in payload:
+            resolved["direction_of_break"] = dir_up
+
+    if inactive in (None, ""):
+        warnings.append("BROKEN range missing inactive_from_time")
+        lifecycle_status = "NEEDS_REVIEW"
+    elif "inactive_from_time" in payload:
+        resolved["inactive_from_time"] = _optional_text(inactive)
+
+    if broken_ref in (None, ""):
+        warnings.append("BROKEN range missing broken_by_event_id")
+        lifecycle_status = "NEEDS_REVIEW"
+    elif "broken_by_event_id" in payload:
+        ev_status, ev_warnings, _ev_row, storage_id = _validate_bos_event_reference(
+            conn,
+            broken_ref,
+            symbol=symbol,
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+            direction_of_break=resolved.get("direction_of_break") or direction,
+        )
+        warnings.extend(ev_warnings)
+        if ev_status == "NEEDS_REVIEW":
+            lifecycle_status = "NEEDS_REVIEW"
+        if storage_id is not None:
+            resolved["broken_by_event_id"] = storage_id
+        else:
+            maybe_int = _optional_int(broken_ref)
+            if maybe_int is not None:
+                resolved["broken_by_event_id"] = maybe_int
+
+    return lifecycle_status, warnings, resolved
+
+
+def _audit_range_lifecycle_and_chain(
+    conn: sqlite3.Connection,
+    row: dict[str, Any],
+) -> dict[str, list[str]]:
+    issues: dict[str, list[str]] = {
+        "broken_missing_broken_by_event_id": [],
+        "broken_missing_inactive_from_time": [],
+        "chain_missing_created_by_event_id": [],
+        "invalid_old_range_id": [],
+        "invalid_created_by_event_id": [],
+        "lifecycle_needs_review": [],
+    }
+    range_id = int(row.get("range_id") or row.get("id"))
+    symbol = str(row.get("symbol") or "XAUUSD")
+    case_id = row.get("case_id")
+    raw_case_id = row.get("raw_case_id")
+    case_ref = row.get("case_ref")
+    is_broken = _range_status_is_broken(row.get("status"))
+    in_chain = _range_part_of_chain(row)
+
+    if is_broken:
+        if row.get("broken_by_event_id") in (None, ""):
+            issues["broken_missing_broken_by_event_id"].append("missing broken_by_event_id")
+        else:
+            ev_status, ev_warnings, _ev_row, _storage_id = _validate_bos_event_reference(
+                conn,
+                row.get("broken_by_event_id"),
+                symbol=symbol,
+                case_id=case_id,
+                raw_case_id=raw_case_id,
+                case_ref=case_ref,
+                direction_of_break=row.get("direction_of_break"),
+            )
+            if ev_status == "NEEDS_REVIEW":
+                issues["lifecycle_needs_review"].extend(ev_warnings)
+        if row.get("inactive_from_time") in (None, ""):
+            issues["broken_missing_inactive_from_time"].append("missing inactive_from_time")
+        if row.get("direction_of_break") in (None, ""):
+            issues["lifecycle_needs_review"].append("missing direction_of_break")
+
+    if in_chain or row.get("old_range_id") not in (None, ""):
+        if row.get("old_range_id") not in (None, ""):
+            try:
+                old_id = int(row.get("old_range_id"))
+            except Exception:
+                issues["invalid_old_range_id"].append("old_range_id is not an integer")
+            else:
+                if old_id == range_id:
+                    issues["invalid_old_range_id"].append("old_range_id equals current range_id")
+                elif conn.execute("SELECT id FROM map_ranges WHERE id=?", (old_id,)).fetchone() is None:
+                    issues["invalid_old_range_id"].append(f"old_range_id {old_id} does not exist")
+                elif _has_old_range_chain_cycle(conn, range_id, old_id):
+                    issues["invalid_old_range_id"].append("circular old_range_id chain")
+        if row.get("old_range_id") not in (None, "") and row.get("created_by_event_id") in (None, ""):
+            issues["chain_missing_created_by_event_id"].append("old_range_id without created_by_event_id")
+        if row.get("created_by_event_id") not in (None, ""):
+            ev_status, ev_warnings, _ev_row, _storage_id = _validate_bos_event_reference(
+                conn,
+                row.get("created_by_event_id"),
+                symbol=symbol,
+                case_id=case_id,
+                raw_case_id=raw_case_id,
+                case_ref=case_ref,
+            )
+            if ev_status == "NEEDS_REVIEW":
+                issues["invalid_created_by_event_id"].extend(ev_warnings)
+
+    return issues
+
+
 def _find_active_range_id(conn: sqlite3.Connection, symbol: str, timeframe: str, case_id: int | None) -> int | None:
     clauses = ["symbol=?", "timeframe=?", "status!='archived'"]
     params: list[Any] = [symbol, timeframe]
@@ -1818,6 +2166,39 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
         if parent_link_status == "INVALID_PARENT":
             return {"ok": False, "status": 400, "error": "Invalid parent_range_id", "warnings": validation_warnings, "parent_link_status": parent_link_status}
 
+        merged_payload = {**(dict(existing) if existing else {}), **payload}
+        lifecycle_status, lifecycle_warnings, lifecycle_resolved = _validate_range_lifecycle_fields(
+            conn,
+            payload,
+            merged_payload,
+            symbol=symbol,
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+        )
+        chain_status, chain_warnings, chain_resolved = _validate_range_chain_fields(
+            conn,
+            child_id,
+            payload,
+            merged_payload,
+            symbol=symbol,
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+        )
+        if chain_status == "INVALID_CHAIN":
+            return {
+                "ok": False,
+                "status": 400,
+                "error": "Invalid range chain fields",
+                "warnings": validation_warnings + lifecycle_warnings + chain_warnings,
+                "parent_link_status": parent_link_status,
+                "chain_validation_status": chain_status,
+            }
+        combined_warnings = validation_warnings + lifecycle_warnings + chain_warnings
+        for key, value in {**lifecycle_resolved, **chain_resolved}.items():
+            payload[key] = value
+
         if existing:
             conn.execute(
                 """
@@ -1888,7 +2269,17 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
             )
             conn.commit()
             row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (existing["id"],)).fetchone()
-            return {"ok": True, "id": existing["id"], "range_id": existing["id"], "updated": True, "parent_link_status": parent_link_status, "warnings": validation_warnings, "range": _range_row_to_dict(row)}
+            return {
+                "ok": True,
+                "id": existing["id"],
+                "range_id": existing["id"],
+                "updated": True,
+                "parent_link_status": parent_link_status,
+                "lifecycle_validation_status": lifecycle_status,
+                "chain_validation_status": chain_status,
+                "warnings": combined_warnings,
+                "range": _range_row_to_dict(row),
+            }
 
         # map_ranges columns range_high/range_low are NOT NULL from the earlier prototype.
         # If only one anchor exists, store 0 for missing side and let frontend replace it later.
@@ -1950,7 +2341,17 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
         )
         conn.commit()
         row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (cur.lastrowid,)).fetchone()
-        return {"ok": True, "id": cur.lastrowid, "range_id": cur.lastrowid, "created": True, "parent_link_status": parent_link_status, "warnings": validation_warnings, "range": _range_row_to_dict(row)}
+        return {
+            "ok": True,
+            "id": cur.lastrowid,
+            "range_id": cur.lastrowid,
+            "created": True,
+            "parent_link_status": parent_link_status,
+            "lifecycle_validation_status": lifecycle_status,
+            "chain_validation_status": chain_status,
+            "warnings": combined_warnings,
+            "range": _range_row_to_dict(row),
+        }
 
 
 def get_map_range(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: str = "active") -> dict[str, Any]:
@@ -2127,6 +2528,12 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
         invalid_parent_links: list[dict[str, Any]] = []
         needs_parent_review: list[dict[str, Any]] = []
         missing_rh_rl: list[dict[str, Any]] = []
+        broken_missing_broken_by_event_id: list[dict[str, Any]] = []
+        broken_missing_inactive_from_time: list[dict[str, Any]] = []
+        chain_missing_created_by_event_id: list[dict[str, Any]] = []
+        invalid_old_range_id_rows: list[dict[str, Any]] = []
+        invalid_created_by_event_id_rows: list[dict[str, Any]] = []
+        lifecycle_needs_review: list[dict[str, Any]] = []
         weekly_linked_macro = 0
         daily_linked_weekly = 0
         intraday_linked_daily = 0
@@ -2169,6 +2576,20 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
                 intraday_linked_daily += 1
             if _range_price(r, "HIGH") in (None, 0) or _range_price(r, "LOW") in (None, 0):
                 missing_rh_rl.append(r)
+
+            lifecycle_issues = _audit_range_lifecycle_and_chain(conn, r)
+            if lifecycle_issues.get("broken_missing_broken_by_event_id"):
+                broken_missing_broken_by_event_id.append({"range": r, "issues": lifecycle_issues["broken_missing_broken_by_event_id"]})
+            if lifecycle_issues.get("broken_missing_inactive_from_time"):
+                broken_missing_inactive_from_time.append({"range": r, "issues": lifecycle_issues["broken_missing_inactive_from_time"]})
+            if lifecycle_issues.get("chain_missing_created_by_event_id"):
+                chain_missing_created_by_event_id.append({"range": r, "issues": lifecycle_issues["chain_missing_created_by_event_id"]})
+            if lifecycle_issues.get("invalid_old_range_id"):
+                invalid_old_range_id_rows.append({"range": r, "issues": lifecycle_issues["invalid_old_range_id"]})
+            if lifecycle_issues.get("invalid_created_by_event_id"):
+                invalid_created_by_event_id_rows.append({"range": r, "issues": lifecycle_issues["invalid_created_by_event_id"]})
+            if lifecycle_issues.get("lifecycle_needs_review"):
+                lifecycle_needs_review.append({"range": r, "issues": lifecycle_issues["lifecycle_needs_review"]})
 
         orphan_weekly_without_macro_parent = orphan_weekly if macro_exists_in_case else []
         legacy_weekly_root_ranges = orphan_weekly if not macro_exists_in_case else []
@@ -2216,6 +2637,18 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
         warnings.append({"code": "ORPHAN_INTRADAY_RANGES", "count": len(orphan_intraday)})
     if needs_parent_review:
         warnings.append({"code": "RANGES_NEEDING_PARENT_REVIEW", "count": len(needs_parent_review)})
+    if broken_missing_broken_by_event_id:
+        warnings.append({"code": "BROKEN_RANGES_MISSING_BROKEN_BY_EVENT_ID", "count": len(broken_missing_broken_by_event_id)})
+    if broken_missing_inactive_from_time:
+        warnings.append({"code": "BROKEN_RANGES_MISSING_INACTIVE_FROM_TIME", "count": len(broken_missing_inactive_from_time)})
+    if chain_missing_created_by_event_id:
+        warnings.append({"code": "CHAIN_RANGES_MISSING_CREATED_BY_EVENT_ID", "count": len(chain_missing_created_by_event_id)})
+    if invalid_old_range_id_rows:
+        warnings.append({"code": "INVALID_OLD_RANGE_ID", "count": len(invalid_old_range_id_rows)})
+    if invalid_created_by_event_id_rows:
+        warnings.append({"code": "INVALID_CREATED_BY_EVENT_ID", "count": len(invalid_created_by_event_id_rows)})
+    if lifecycle_needs_review:
+        warnings.append({"code": "LIFECYCLE_NEEDS_REVIEW", "count": len(lifecycle_needs_review)})
     errors = []
     if invalid_parent_links:
         errors.append({"code": "INVALID_PARENT_LINKS", "count": len(invalid_parent_links)})
@@ -2253,6 +2686,12 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
             "bos_events_missing_bh_bl": len(bos_missing_bh_bl),
             "events_not_linked_to_active_range_id": len(events_without_active_range),
             "macro_context_expected": macro_exists_in_case,
+            "broken_ranges_missing_broken_by_event_id": len(broken_missing_broken_by_event_id),
+            "broken_ranges_missing_inactive_from_time": len(broken_missing_inactive_from_time),
+            "chain_ranges_missing_created_by_event_id": len(chain_missing_created_by_event_id),
+            "invalid_old_range_id": len(invalid_old_range_id_rows),
+            "invalid_created_by_event_id": len(invalid_created_by_event_id_rows),
+            "lifecycle_needs_review": len(lifecycle_needs_review),
         },
         "errors": errors,
         "warnings": warnings,
@@ -2263,6 +2702,12 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
             "orphan_daily_ranges": orphan_daily,
             "orphan_intraday_ranges": orphan_intraday,
             "ranges_needing_parent_review": needs_parent_review,
+            "broken_ranges_missing_broken_by_event_id": broken_missing_broken_by_event_id,
+            "broken_ranges_missing_inactive_from_time": broken_missing_inactive_from_time,
+            "chain_ranges_missing_created_by_event_id": chain_missing_created_by_event_id,
+            "invalid_old_range_id": invalid_old_range_id_rows,
+            "invalid_created_by_event_id": invalid_created_by_event_id_rows,
+            "lifecycle_needs_review": lifecycle_needs_review,
             "events_not_linked_to_active_range_id": events_without_active_range,
         },
         "invalid_parent_links": invalid_parent_links,
@@ -2300,28 +2745,81 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         if status == "INVALID_PARENT":
             return {"ok": False, "status": 400, "error": "Invalid parent_range_id", "warnings": warnings, "parent_link_status": status}
 
+        lifecycle_status, lifecycle_warnings, lifecycle_resolved = _validate_range_lifecycle_fields(
+            conn,
+            payload or {},
+            merged,
+            symbol=str(merged.get("symbol") or existing_d.get("symbol")),
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+        )
+        chain_status, chain_warnings, chain_resolved = _validate_range_chain_fields(
+            conn,
+            int(range_id),
+            payload or {},
+            merged,
+            symbol=str(merged.get("symbol") or existing_d.get("symbol")),
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+        )
+        if chain_status == "INVALID_CHAIN":
+            return {
+                "ok": False,
+                "status": 400,
+                "error": "Invalid range chain fields",
+                "warnings": warnings + lifecycle_warnings + chain_warnings,
+                "parent_link_status": status,
+                "chain_validation_status": chain_status,
+            }
+        combined_warnings = warnings + lifecycle_warnings + chain_warnings
+
         updates: dict[str, Any] = {"updated_at": now, "parent_link_status": status}
         if parent is not None:
             updates["parent_timeframe"] = _range_source_timeframe(parent)
             updates["parent_case_id"] = parent["case_id"] if "case_id" in parent.keys() else None
+        updates.update(lifecycle_resolved)
+        updates.update(chain_resolved)
 
         float_fields = {"range_high_price", "range_low_price", "break_high_price", "break_low_price"}
         text_fields = {
             "range_high_time", "range_low_time", "break_high_time", "break_low_time", "structure_layer",
-            "chart_timeframe", "source_timeframe", "status", "direction_of_break", "case_ref", "raw_case_id",
+            "chart_timeframe", "source_timeframe", "direction_of_break", "case_ref", "raw_case_id",
+            "inactive_from_time", "active_from_time",
         }
-        int_fields = {"parent_range_id", "case_id"}
+        int_fields = {"parent_range_id", "case_id", "old_range_id", "new_range_id", "broken_by_event_id", "created_by_event_id"}
         passthrough_fields = {"meta_json"}
 
         for field in float_fields:
             if field in payload:
                 updates[field] = parse_float(payload.get(field), None)
         for field in text_fields:
-            if field in payload:
+            if field in payload and field not in lifecycle_resolved and field not in chain_resolved:
                 updates[field] = _optional_text(payload.get(field))
         for field in int_fields:
-            if field in payload:
-                updates[field] = _optional_int(payload.get(field))
+            if field in payload and field not in lifecycle_resolved and field not in chain_resolved:
+                if field in {"broken_by_event_id", "created_by_event_id"}:
+                    _ev_status, _ev_warnings, _ev_row, storage_id = _validate_bos_event_reference(
+                        conn,
+                        payload.get(field),
+                        symbol=str(merged.get("symbol") or existing_d.get("symbol")),
+                        case_id=case_id,
+                        raw_case_id=raw_case_id,
+                        case_ref=case_ref,
+                        direction_of_break=payload.get("direction_of_break") or merged.get("direction_of_break"),
+                    )
+                    combined_warnings.extend(_ev_warnings)
+                    if storage_id is not None:
+                        updates[field] = storage_id
+                    else:
+                        updates[field] = _optional_int(payload.get(field))
+                else:
+                    updates[field] = _optional_int(payload.get(field))
+        if "status" in payload and "status" not in lifecycle_resolved:
+            normalized_status = _normalize_range_status(payload.get("status"))
+            if normalized_status:
+                updates["status"] = normalized_status
         if "case_id" in payload and updates.get("case_id") is None and payload.get("case_id") not in (None, "") and "raw_case_id" not in payload:
             updates["raw_case_id"] = _optional_text(payload.get("case_id"))
         if "case_ref" not in payload and ("case_id" in payload or "raw_case_id" in payload):
@@ -2346,7 +2844,16 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         conn.execute(f"UPDATE map_ranges SET {set_sql} WHERE id=?", args)
         conn.commit()
         row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(range_id),)).fetchone()
-    return {"ok": True, "range_id": int(range_id), "updated": True, "parent_link_status": status, "warnings": warnings, "range": _range_row_to_dict(row)}
+    return {
+        "ok": True,
+        "range_id": int(range_id),
+        "updated": True,
+        "parent_link_status": status,
+        "lifecycle_validation_status": lifecycle_status,
+        "chain_validation_status": chain_status,
+        "warnings": combined_warnings,
+        "range": _range_row_to_dict(row),
+    }
 
 
 def patch_structural_map_event(event_id: str, payload: dict[str, Any]) -> dict[str, Any]:
