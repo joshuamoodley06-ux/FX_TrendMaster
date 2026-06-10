@@ -2686,6 +2686,70 @@ function MapStudio({ symbol }: { symbol:string }) {
     return !!(range.old_range_id || range.new_range_id || range.created_by_event_id);
   };
 
+  const isStructuralRangeBrokenStatus = (status: any) => String(status || '').toUpperCase() === 'BROKEN';
+
+  const findBreakEventForBrokenRange = (rangeId: string) => {
+    const id = String(rangeId);
+    if (
+      lastSavedQuickEvent?.range_lifecycle_patched &&
+      String(lastSavedQuickEvent.broken_range_id) === id &&
+      isBosBreakQuickEventRole(lastSavedQuickEvent.role)
+    ) {
+      return lastSavedQuickEvent;
+    }
+    for (let i = quickEventHistory.length - 1; i >= 0; i--) {
+      const ev = quickEventHistory[i];
+      if (isBosBreakQuickEventRole(ev?.role) && ev?.range_lifecycle_patched && String(ev.broken_range_id) === id) {
+        return ev;
+      }
+    }
+    return null;
+  };
+
+  const resolveCreatedByEventIdForChain = (brokenRange: any, breakEvent: any) => {
+    const fromRange = brokenRange?.broken_by_event_id;
+    if (fromRange !== null && fromRange !== undefined && String(fromRange) !== '') {
+      const parsed = Number(fromRange);
+      return Number.isFinite(parsed) ? parsed : fromRange;
+    }
+    const dbId = breakEvent?.db_id;
+    if (dbId !== null && dbId !== undefined && String(dbId) !== '') {
+      const parsed = Number(dbId);
+      return Number.isFinite(parsed) ? parsed : dbId;
+    }
+    return breakEvent?.event_id || null;
+  };
+
+  const resolveParentRangeIdForNextRange = (brokenRange: any) => {
+    const brokenParentId = brokenRange?.parent_range_id ?? null;
+    const brokenParentStr = brokenParentId !== null && brokenParentId !== undefined && String(brokenParentId) !== ''
+      ? String(brokenParentId)
+      : '';
+    const selectedStr = String(selectedParentRangeId || '');
+    const explicitChange = !!selectedStr && selectedStr !== brokenParentStr;
+    if (explicitChange) return parentRangeIdForStructureLayer(structureLayer, selectedParentRangeId);
+    if (brokenParentStr) return brokenParentId;
+    return parentRangeIdForStructureLayer(structureLayer, selectedParentRangeId);
+  };
+
+  const clearStructuralRangeDraft = () => {
+    setRhAnchor({ price:'', time:'', candle:null });
+    setRlAnchor({ price:'', time:'', candle:null });
+    setRangeHigh('');
+    setRangeLow('');
+    setRangeByTf((prev:any) => ({ ...prev, [timeframe]: { high:'', low:'' } }));
+    setRangeWindowByTf((prev:any) => ({ ...prev, [timeframe]: { start:'', end:'' } }));
+    setStructuralRangeDraftDirty(false);
+  };
+
+  const patchOldRangeNewRangeId = async (oldRangeId: string, newRangeId: string) => {
+    return structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(oldRangeId)}`, {
+      method:'PATCH',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify({ new_range_id: Number(newRangeId) }),
+    });
+  };
+
   const selectedSavedRange = useMemo(() => {
     if (!activeStructuralRangeId) return null;
     return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
@@ -2718,6 +2782,38 @@ function MapStudio({ symbol }: { symbol:string }) {
       warning,
     };
   }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, selectedParentRangeId, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, macroRangesInCase.length, parentStructureLayer]);
+
+  const saveNextRangeEligible = useMemo(() => {
+    if (!activeStructuralRangeId) {
+      return { eligible:false, reason:'Select the broken range as active first.', oldRangeId:null as string|null, parentRangeId:null as string|number|null, createdByEventId:null as string|number|null };
+    }
+    const brokenRange = selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId);
+    const statusBroken = brokenRange && isStructuralRangeBrokenStatus(brokenRange.status);
+    const breakEvent = findBreakEventForBrokenRange(activeStructuralRangeId);
+    const lastBreakPatched = !!breakEvent;
+    if (!statusBroken && !lastBreakPatched) {
+      return { eligible:false, reason:'Active range must be BROKEN before Save Next Range.', oldRangeId:String(activeStructuralRangeId), parentRangeId:null, createdByEventId:null };
+    }
+    if (brokenRange?.new_range_id) {
+      return { eligible:false, reason:`Range #${activeStructuralRangeId} already chained to #${brokenRange.new_range_id}.`, oldRangeId:String(activeStructuralRangeId), parentRangeId:null, createdByEventId:null };
+    }
+    if (!rhAnchor.price || !rlAnchor.price) {
+      return { eligible:false, reason:'Set new RH and RL after retrace before Save Next Range.', oldRangeId:String(activeStructuralRangeId), parentRangeId:null, createdByEventId:null };
+    }
+    const createdByEventId = resolveCreatedByEventIdForChain(brokenRange, breakEvent);
+    if (!createdByEventId) {
+      return { eligible:false, reason:'BOS event reference missing for chain. Break the range again or refresh audit.', oldRangeId:String(activeStructuralRangeId), parentRangeId:null, createdByEventId:null };
+    }
+    return {
+      eligible:true,
+      reason:'',
+      oldRangeId:String(activeStructuralRangeId),
+      parentRangeId:resolveParentRangeIdForNextRange(brokenRange),
+      createdByEventId,
+      brokenRange,
+      breakEvent,
+    };
+  }, [activeStructuralRangeId, selectedSavedRange, savedStructuralRanges, structuralRanges, lastSavedQuickEvent, quickEventHistory, rhAnchor.price, rlAnchor.price, selectedParentRangeId, structureLayer]);
 
   const refreshSavedRangesForCurrentCase = async () => {
     const mappingCase = getCurrentMappingCaseRef();
@@ -3106,6 +3202,101 @@ function MapStudio({ symbol }: { symbol:string }) {
       try { await refreshHierarchyAudit(); } catch {}
     } catch (err:any) {
       setMessage(`Range save failed: ${err?.message || err}`);
+    } finally {
+      setStructuralSaving(false);
+    }
+  };
+
+  const saveNextStructuralRange = async () => {
+    if (structuralSaving) return;
+    if (!saveNextRangeEligible.eligible) {
+      setMessage(saveNextRangeEligible.reason || 'Save Next Range is not available yet.');
+      return;
+    }
+    if (structureLayer === 'INTRADAY' && String(sourceTimeframe).toUpperCase() === 'H8') {
+      setMessage('H8 source timeframe is selectable for planning, but backend rendering/storage normalisation is TODO before saving H8.');
+      return;
+    }
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving the next range.'); return; }
+    const oldRangeId = String(saveNextRangeEligible.oldRangeId || activeStructuralRangeId);
+    const createdByEventId = saveNextRangeEligible.createdByEventId;
+    const parentRangeId = saveNextRangeEligible.parentRangeId;
+    if (!createdByEventId) { setMessage('BOS event reference missing for chain. Break the range again or refresh audit.'); return; }
+    if (structureLayerRequiresParentConfirmation(structureLayer) && !parentRangeId) {
+      const parentLayer = expectedParentStructureLayer(structureLayer);
+      const ok = window.confirm(`No ${parentLayer} parent selected. Save this chained ${structureLayer} range as ORPHAN?`);
+      if (!ok) return;
+    }
+    setStructuralSaving(true);
+    try {
+      const win = structuralWindow();
+      const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
+      const activeFromTime = win.start || rhAnchor.time || rlAnchor.time || null;
+      const payload = {
+        range_key: `${safeCaseKey}_${structureLayer}_${sourceTimeframe}_next_${oldRangeId}_${Date.now()}`,
+        case_id: mappingCase.case_id,
+        raw_case_id: mappingCase.raw_case_id,
+        case_ref: mappingCase.case_ref,
+        symbol,
+        structure_layer: structureLayer,
+        chart_timeframe: timeframe,
+        source_timeframe: sourceTimeframe,
+        parent_range_id: parentRangeId,
+        old_range_id: Number(oldRangeId),
+        created_by_event_id: createdByEventId,
+        range_high_price: Number(rhAnchor.price),
+        range_low_price: Number(rlAnchor.price),
+        range_high_time: rhAnchor.time || null,
+        range_low_time: rlAnchor.time || null,
+        range_start_time: win.start || null,
+        range_end_time: win.end || null,
+        duration_minutes: win.duration,
+        status: 'ACTIVE',
+        active_from_time: activeFromTime,
+        meta_json: { phase:'electron_phase3c_range_chain', chain_from_range_id: oldRangeId, chain_from_bos_event_id: createdByEventId },
+      };
+      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/range`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const newRangeId = String(data.range_id || data.id || data.range?.range_id || data.range?.id || '');
+      if (!newRangeId) throw new Error('Next range saved but backend returned no range id.');
+
+      let chainLinkFailed = false;
+      try {
+        const linkData = await patchOldRangeNewRangeId(oldRangeId, newRangeId);
+        const linkedRange = linkData?.range || {};
+        setSavedStructuralRanges(prev => prev.map((r:any) => {
+          if (String(r.range_id || r.id) !== oldRangeId) return r;
+          return { ...r, new_range_id: linkedRange.new_range_id ?? Number(newRangeId) };
+        }));
+      } catch (linkErr:any) {
+        chainLinkFailed = true;
+        setMessage(`Next range saved as #${newRangeId}, but linking old range #${oldRangeId} failed. Refresh audit. ${linkErr?.message || linkErr}`);
+      }
+
+      setActiveStructuralRangeId(newRangeId);
+      clearStructuralRangeDraft();
+      const confirmation = {
+        range_id: newRangeId,
+        mode: 'chained_next' as const,
+        structure_layer: data.range?.structure_layer || structureLayer,
+        source_timeframe: data.range?.source_timeframe || sourceTimeframe,
+        parent_range_id: data.range?.parent_range_id ?? parentRangeId,
+        old_range_id: data.range?.old_range_id ?? Number(oldRangeId),
+        created_by_event_id: data.range?.created_by_event_id ?? createdByEventId,
+        raw_case_id: data.range?.raw_case_id || mappingCase.raw_case_id,
+        case_ref: data.range?.case_ref || mappingCase.case_ref,
+        range_high_price: data.range?.range_high_price ?? payload.range_high_price,
+        range_low_price: data.range?.range_low_price ?? payload.range_low_price,
+      };
+      setLastSavedRangeConfirmation(confirmation);
+      if (!chainLinkFailed) {
+        setMessage(`Next range saved. Range ${oldRangeId} → BOS ${createdByEventId} → Range ${newRangeId}.`);
+      }
+      try { await refreshSavedRangesForCurrentCase(); } catch {}
+      try { await refreshStructuralRanges(); } catch {}
+      try { await refreshHierarchyAudit(); } catch {}
+    } catch (err:any) {
+      setMessage(`Save Next Range failed: ${err?.message || err}`);
     } finally {
       setStructuralSaving(false);
     }
@@ -4100,6 +4291,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           <span className="quickAnchorDivider" />
           <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
           <button className="quickSaveBtn primary" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
+          <button className="quickSaveBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? 'Saving...' : 'Save Next Range'}</button>
           <button className="quickSaveBtn" onClick={refreshHierarchyAudit}>Refresh Audit</button>
           <button className="quickSaveBtn" onClick={exportCurrentMappingJson}>Export JSON</button>
           <button className="quickSaveBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
@@ -4325,7 +4517,7 @@ function MapStudio({ symbol }: { symbol:string }) {
               {lastRangeLifecyclePatchWarning && <div className="caseBadge warningBadge">{lastRangeLifecyclePatchWarning}</div>}
               <div className="htfCandidateState">
                 <span>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} · ${lastSavedQuickEvent.structure_layer}/${lastSavedQuickEvent.source_timeframe} · ${String(lastSavedQuickEvent.event_id).slice(0,8)}${lastSavedQuickEvent.range_lifecycle_patched ? ` · range #${lastSavedQuickEvent.broken_range_id} BROKEN` : ''}` : 'No quick event saved this session.'}</span>
-                <em>Break Up/Down save formal BOS events, then PATCH the active range as BROKEN. REF levels are derived from active range RH/RL.</em>
+                <em>Break Up/Down save formal BOS events, then PATCH the active range as BROKEN. After retrace, set new RH/RL and click Save Next Range to chain Range → BOS → Range.</em>
               </div>
             </div>
 
@@ -4341,14 +4533,21 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <div><span>RH</span><strong>{savePreview.range_high_price || 'not set'}</strong><em>{savePreview.range_high_time ? shortTime(savePreview.range_high_time, timeframe) : 'draft'}</em></div>
                 <div><span>RL</span><strong>{savePreview.range_low_price || 'not set'}</strong><em>{savePreview.range_low_time ? shortTime(savePreview.range_low_time, timeframe) : 'draft'}</em></div>
                 <div><span>Selected</span><strong>{activeStructuralRangeId || 'new'}</strong><em>{selectedSavedRange ? 'will update' : 'will create'}</em></div>
+                {saveNextRangeEligible.eligible && <>
+                  <div><span>Chain From</span><strong>#{saveNextRangeEligible.oldRangeId}</strong><em>broken range</em></div>
+                  <div><span>BOS Event</span><strong>{String(saveNextRangeEligible.createdByEventId)}</strong><em>created_by_event_id</em></div>
+                  <div><span>Next Parent</span><strong>{saveNextRangeEligible.parentRangeId || 'none'}</strong><em>inherits unless changed</em></div>
+                </>}
               </div>
+              {!saveNextRangeEligible.eligible && saveNextRangeEligible.oldRangeId && activeStructuralRangeId && <div className="caseBadge">{saveNextRangeEligible.reason}</div>}
             </div>
 
             <div className="htfCandidateBox fullWidth compactBosOnlyBox">
               <div className="htfLiteHeader"><b>Save Structural Facts</b><span>{activeStructuralRangeId ? `active range #${activeStructuralRangeId}` : 'range id set after save'}</span></div>
-              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. Break Up/Down buttons save formal BOS events.</span><em>REF HIGH/LOW is derived from active range RH/RL. Parent Break remains separate for Weekly boundary updates.</em></div>
+              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. Break Up/Down buttons save formal BOS events. Save Next Range chains after a BOS break.</span><em>REF HIGH/LOW is derived from active range RH/RL. Parent Break remains separate for Weekly boundary updates.</em></div>
               <div className="caseActionRow">
                 <button className="gpsSaveBtn" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
+                <button className="gpsSaveBtn secondary" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? 'Saving...' : 'Save Next Range'}</button>
                 <button className="gpsSaveBtn secondary" onClick={()=>{ setActiveStructuralRangeId(''); setLastSavedRangeConfirmation(null); setMessage('New range mode selected. Next Save Range will create a new saved range.'); }}>Start New Range</button>
                 <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('UP', { quickButton:true })} disabled={structuralSaving || (!selectedCandle && !replayCandle)}>Break Up</button>
                 <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('DOWN', { quickButton:true })} disabled={structuralSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
@@ -4367,8 +4566,8 @@ function MapStudio({ symbol }: { symbol:string }) {
                 {!savedStructuralRanges.length && <div className="caseLedgerEmpty">No saved structural ranges for this active case yet.</div>}
                 {savedStructuralRanges.slice(0, 24).map((r:any)=><button key={r.range_id || r.id} className={String(r.range_id || r.id) === String(activeStructuralRangeId) ? 'active' : ''} onClick={()=>selectSavedStructuralRange(r)}>
                   <b>#{r.range_id || r.id}</b>
-                  <span>{r.structure_layer || r.layer || '?'} · RH {r.range_high_price ?? r.range_high ?? '—'} / RL {r.range_low_price ?? r.range_low ?? '—'}</span>
-                  <em>parent {r.parent_range_id || 'none'} · {r.parent_link_status || 'status pending'}</em>
+                  <span>{r.structure_layer || r.layer || '?'} · RH {r.range_high_price ?? r.range_high ?? '—'} / RL {r.range_low_price ?? r.range_low ?? '—'} · {String(r.status || 'active').toUpperCase()}</span>
+                  <em>parent {r.parent_range_id || 'none'}{r.old_range_id ? ` · old #${r.old_range_id}` : ''}{r.new_range_id ? ` · next #${r.new_range_id}` : ''} · {r.parent_link_status || 'status pending'}</em>
                 </button>)}
               </div>
             </div>
