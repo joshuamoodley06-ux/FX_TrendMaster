@@ -2745,6 +2745,8 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const setStructuralPoint = async (kind:'RH'|'RL'|'BH'|'BL') => {
     if (quickEventSaving) return;
+    if (kind === 'BH') { await saveStructuralBos('UP', { quickButton:true }); return; }
+    if (kind === 'BL') { await saveStructuralBos('DOWN', { quickButton:true }); return; }
     const candle = selectedCandle || replayCandle;
     if (!candle) { setMessage('Select a candle first, then set RH/RL/BH/BL.'); return; }
     const mappingCase = getCurrentMappingCaseRef();
@@ -2863,10 +2865,10 @@ function MapStudio({ symbol }: { symbol:string }) {
         else setRangeLow(prev.RL?.price || '');
         setRangeWindowByTf((p:any)=>({ ...p, [ev.timeframe]: prev.window || {} }));
       }
-      if (ev.role === 'BH') setBhAnchor(prev.BH || { price:'', time:'' });
-      if (ev.role === 'BL') setBlAnchor(prev.BL || { price:'', time:'' });
+      if (ev.role === 'BH' || ev.role === 'BREAK_UP') setBhAnchor(prev.BH || { price:'', time:'' });
+      if (ev.role === 'BL' || ev.role === 'BREAK_DOWN') setBlAnchor(prev.BL || { price:'', time:'' });
       if (ev.role === 'RH' || ev.role === 'RL') setStructuralRangeDraftDirty(!!(prev.RH?.price || prev.RL?.price));
-      if (ev.role === 'BH' || ev.role === 'BL') setStructuralBosDraftDirty(!!(prev.BH?.price || prev.BL?.price));
+      if (ev.role === 'BH' || ev.role === 'BL' || ev.role === 'BREAK_UP' || ev.role === 'BREAK_DOWN') setStructuralBosDraftDirty(!!(prev.BH?.price || prev.BL?.price));
       setQuickEventHistory(prevList => prevList.filter((x:any)=>String(x.event_id) !== String(ev.event_id)));
       setLastSavedQuickEvent(null);
       setMessage(`Undid ${ev.role} event on ${ev.timeframe} ${shortTime(ev.candle_time, ev.timeframe)}.`);
@@ -2950,25 +2952,37 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const saveStructuralBos = async (direction:'UP'|'DOWN') => {
+  const saveStructuralBos = async (direction:'UP'|'DOWN', options?:{ quickButton?:boolean }) => {
     if (structuralSaving) return;
     const mappingCase = getCurrentMappingCaseRef();
-    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving BOS.'); return; }
-    const anchor = direction === 'UP' ? bhAnchor : blAnchor;
-    if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'BH' : 'BL'} before saving BOS_${direction}.`); return; }
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving Break Up/Break Down.'); return; }
+    const candle = selectedCandle || replayCandle;
+    const quickAnchor = candle && options?.quickButton
+      ? { price: Number(direction === 'UP' ? candle.high : candle.low).toFixed(2), time: candle.time, candle }
+      : null;
+    const anchor = quickAnchor || (direction === 'UP' ? bhAnchor : blAnchor);
+    if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'Break Up' : 'Break Down'} candle before saving BOS_${direction}.`); return; }
     const chartStructure = chartStructureForTimeframe(timeframe);
-    if (!activeStructuralRangeId) { setMessage(`Select or save the active ${chartStructure.structure_layer} range before saving BOS_${direction}.`); return; }
+    if (!activeStructuralRangeId) { setMessage('Select the active range being broken before saving Break Up/Break Down.'); return; }
     if (chartStructure.structure_layer === 'DAILY' && !selectedParentRangeId) { setMessage(`Select the Weekly parent range before saving Daily BOS_${direction}.`); return; }
     setStructuralSaving(true);
     try {
       const candle = anchor.candle || selectedCandle || replayCandle;
       if (!candle) { throw new Error(`Select a candle or set ${direction === 'UP' ? 'BH' : 'BL'} from a candle before saving BOS_${direction}.`); }
-      const sourceBreakRole = direction === 'UP' ? 'BH' : 'BL';
+      const sourceBreakRole = direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN';
+      const legacyBreakRole = direction === 'UP' ? 'BH' : 'BL';
       const sourceBreakEvent = [...quickEventHistory].reverse().find((ev:any) =>
-        ev?.role === sourceBreakRole &&
+        [sourceBreakRole, legacyBreakRole].includes(String(ev?.role || '')) &&
         String(ev?.candle_time || '') === String(anchor.time || candle.time || '') &&
         String(ev?.source_timeframe || '') === String(chartStructure.source_timeframe)
-      ) || (lastSavedQuickEvent?.role === sourceBreakRole ? lastSavedQuickEvent : null);
+      ) || ([sourceBreakRole, legacyBreakRole].includes(String(lastSavedQuickEvent?.role || '')) ? lastSavedQuickEvent : null);
+      const activeRange = selectedSavedRange || safeArray<any>(savedStructuralRanges).find((r:any)=>String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
+      const refPrice = direction === 'UP'
+        ? (activeRange?.range_high_price ?? activeRange?.range_high ?? null)
+        : (activeRange?.range_low_price ?? activeRange?.range_low ?? null);
+      const refTime = direction === 'UP'
+        ? (activeRange?.range_high_time ?? null)
+        : (activeRange?.range_low_time ?? null);
       const payload = {
         event_id: crypto.randomUUID(),
         case_id: mappingCase.case_id,
@@ -2995,11 +3009,19 @@ function MapStudio({ symbol }: { symbol:string }) {
         direction,
         meta_json: {
           phase:'electron_phase3_structural_mapping',
-          role: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
+          role: direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN',
           formal_bos: true,
           formal_bos_event: true,
-          quick_marker_role_source: direction === 'UP' ? 'BH' : 'BL',
+          quick_button: !!options?.quickButton,
+          chart_timeframe_wins: true,
+          quick_marker_role_source: direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN',
           created_from_break_marker_event_id: sourceBreakEvent?.event_id || null,
+          ref_source: direction === 'UP' ? 'active_range.range_high_price' : 'active_range.range_low_price',
+          ref_price: refPrice,
+          ref_time: refTime,
+          ref_derivation: direction === 'UP'
+            ? 'BOS_UP reference is derived from active_range.range_high_price'
+            : 'BOS_DOWN reference is derived from active_range.range_low_price',
           parent_break_not_updated: true,
           parent_break_note: 'Weekly parent BH/BL is updated only by the later Parent Break action.',
         },
@@ -3018,8 +3040,36 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (validationErrors.length) {
         throw new Error(`Backend saved BOS through wrong/unlinked path: ${validationErrors.join(', ')}`);
       }
+      const nextBreakAnchor = { price:String(anchor.price), time:String(anchor.time || candle.time), candle };
+      const previous = {
+        RH: rhAnchor,
+        RL: rlAnchor,
+        BH: bhAnchor,
+        BL: blAnchor,
+        range: rangeByTf[timeframe] || null,
+        window: rangeWindowByTf[timeframe] || null,
+      };
+      if (direction === 'UP') setBhAnchor(nextBreakAnchor);
+      if (direction === 'DOWN') setBlAnchor(nextBreakAnchor);
+      if (options?.quickButton) {
+        const saved = {
+          role: direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN',
+          event_id: data.event_id || data.event?.event_id || payload.event_id,
+          db_id: data.id || data.event?.id || null,
+          timeframe,
+          structure_layer: chartStructure.structure_layer,
+          source_timeframe: chartStructure.source_timeframe,
+          candle_time: candle.time,
+          event_price: Number(anchor.price),
+          previous,
+          payload,
+          saved_at: new Date().toISOString(),
+        };
+        setLastSavedQuickEvent(saved);
+        setQuickEventHistory(prev => [...prev, saved].slice(-50));
+      }
       setStructuralBosDraftDirty(false);
-      setMessage(`Saved formal BOS_${direction} event ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${chartStructure.structure_layer}/${chartStructure.source_timeframe} · active range #${activeStructuralRangeId} · parent ${payload.parent_range_id || 'none'}`);
+      setMessage(`Saved ${direction === 'UP' ? 'Break Up' : 'Break Down'} as formal BOS_${direction} ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${chartStructure.structure_layer}/${chartStructure.source_timeframe} · active range #${activeStructuralRangeId} · ref ${refPrice ?? 'derived later'}`);
       await refreshHierarchyAudit();
     } catch (err:any) {
       setMessage(`BOS_${direction} save failed: ${err?.message || err}`);
@@ -3057,7 +3107,21 @@ function MapStudio({ symbol }: { symbol:string }) {
     const eventParams = appendMappingCaseParams(new URLSearchParams({ symbol, limit:'5000' }), mappingCase);
     const eventsData = await structuralFetchJson(`${BASE_URL}/api/v1/map/events?${eventParams.toString()}`);
     const savedEvents = safeArray<any>(eventsData.events);
-    const formalBosEvents = savedEvents.filter((ev:any)=>['BOS_UP','BOS_DOWN'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()));
+    const rangesById = new globalThis.Map<string, any>();
+    refreshedSavedRanges.forEach((r:any)=>rangesById.set(String(r.range_id || r.id || ''), r));
+    const formalBosEvents = savedEvents
+      .filter((ev:any)=>['BOS_UP','BOS_DOWN'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()))
+      .map((ev:any) => {
+        const range = rangesById.get(String(ev.active_range_id || ''));
+        const isUp = String(ev.event_type || ev.structural_event || '').toUpperCase() === 'BOS_UP';
+        return {
+          ...ev,
+          derived_ref_price: range ? (isUp ? (range.range_high_price ?? range.range_high ?? null) : (range.range_low_price ?? range.range_low ?? null)) : null,
+          derived_ref_time: range ? (isUp ? (range.range_high_time ?? null) : (range.range_low_time ?? null)) : null,
+          derived_ref_source: isUp ? 'active_range.range_high_price' : 'active_range.range_low_price',
+          ref_derivation: isUp ? 'BOS_UP reference is derived from active_range.range_high_price' : 'BOS_DOWN reference is derived from active_range.range_low_price',
+        };
+      });
     const quickMarkerEvents = savedEvents.filter((ev:any)=>['RANGE_HIGH_SELECTED','RANGE_LOW_SELECTED','BREAK_HIGH_SELECTED','BREAK_LOW_SELECTED'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()));
     const eventsTodo = null;
     return { mappingCase, rangesData, refreshedSavedRanges, treeData, auditData, eventsData, formalBosEvents, quickMarkerEvents, eventsTodo };
@@ -3816,8 +3880,8 @@ function MapStudio({ symbol }: { symbol:string }) {
         {chartFullscreen && <div className="quickAnchorBar" aria-label="Quick structural mapping controls">
           <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RH')} title="Save RH event and set structural Range High from selected/replay candle high"><b>Range High</b><span>RH</span></button>
           <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RL')} title="Save RL event and set structural Range Low from selected/replay candle low"><b>Range Low</b><span>RL</span></button>
-          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BH')} title="Save BH event and set structural Break High from selected/replay candle high"><b>Break High</b><span>BH</span></button>
-          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BL')} title="Save BL event and set structural Break Low from selected/replay candle low"><b>Break Low</b><span>BL</span></button>
+          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BH')} title="Save formal BOS_UP from selected/replay candle high"><b>Break Up</b><span>BOS↑</span></button>
+          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BL')} title="Save formal BOS_DOWN from selected/replay candle low"><b>Break Down</b><span>BOS↓</span></button>
           <span className="quickAnchorDivider" />
           <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
           <button className="quickSaveBtn primary" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
@@ -3826,7 +3890,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button className="quickSaveBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
           <span className={`quickDraftStatus ${structuralRangeDraftDirty || structuralBosDraftDirty ? 'dirty' : 'saved'}`}>{structuralRangeDraftDirty || structuralBosDraftDirty ? 'Unsaved draft' : 'Draft clean'}</span>
           <span className={`quickDraftStatus ${lastSavedQuickEvent ? 'saved' : ''}`}>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} ${lastSavedQuickEvent.source_timeframe} ${String(lastSavedQuickEvent.event_id).slice(0,8)}` : 'No quick event saved'}</span>
-          <span className="quickAnchorDivider" title="TODO: add fullscreen Save BOS_UP, Save BOS_DOWN, and Refresh Audit actions after this compact row is validated." />
+          <span className="quickAnchorDivider" title="Break Up/Down save formal BOS events immediately; Parent Break remains a later explicit action." />
           <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')}>Select</button>
           <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')}>Scrub</button>
           <button onClick={()=>setChartFullscreen(false)}>Exit</button>
@@ -4031,23 +4095,23 @@ function MapStudio({ symbol }: { symbol:string }) {
             </div>
 
             <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>RH / RL / BH / BL</b><span>BH/BL = mark break candle</span></div>
+              <div className="htfLiteHeader"><b>RH / RL / Break Up / Break Down</b><span>Break Up/Down = formal BOS</span></div>
               <div className="htfLiteGrid compactStateGrid">
                 <div><span>RH</span><strong>{rhAnchor.price || 'not set'}</strong><em>{rhAnchor.time ? shortTime(rhAnchor.time, timeframe) : 'Range High'}</em></div>
                 <div><span>RL</span><strong>{rlAnchor.price || 'not set'}</strong><em>{rlAnchor.time ? shortTime(rlAnchor.time, timeframe) : 'Range Low'}</em></div>
-                <div><span>BH</span><strong>{bhAnchor.price || 'not set'}</strong><em>{bhAnchor.time ? shortTime(bhAnchor.time, timeframe) : 'Break High'}</em></div>
-                <div><span>BL</span><strong>{blAnchor.price || 'not set'}</strong><em>{blAnchor.time ? shortTime(blAnchor.time, timeframe) : 'Break Low'}</em></div>
+                <div><span>Break Up</span><strong>{bhAnchor.price || 'not set'}</strong><em>{bhAnchor.time ? shortTime(bhAnchor.time, timeframe) : 'BOS_UP candle high'}</em></div>
+                <div><span>Break Down</span><strong>{blAnchor.price || 'not set'}</strong><em>{blAnchor.time ? shortTime(blAnchor.time, timeframe) : 'BOS_DOWN candle low'}</em></div>
               </div>
               <div className="caseActionRow">
                 <button onClick={()=>setStructuralPoint('RH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range High</button>
                 <button onClick={()=>setStructuralPoint('RL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range Low</button>
-                <button onClick={()=>setStructuralPoint('BH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break High</button>
-                <button onClick={()=>setStructuralPoint('BL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Low</button>
+                <button onClick={()=>setStructuralPoint('BH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Up</button>
+                <button onClick={()=>setStructuralPoint('BL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
                 <button className="gpsSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
               </div>
               <div className="htfCandidateState">
                 <span>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} · ${lastSavedQuickEvent.structure_layer}/${lastSavedQuickEvent.source_timeframe} · ${String(lastSavedQuickEvent.event_id).slice(0,8)}` : 'No quick event saved this session.'}</span>
-                <em>Quick buttons save marker event records only. Save BOS_UP / BOS_DOWN saves formal structure events.</em>
+                <em>Break Up/Down save formal BOS events immediately. REF levels are derived from active range RH/RL.</em>
               </div>
             </div>
 
@@ -4068,12 +4132,12 @@ function MapStudio({ symbol }: { symbol:string }) {
 
             <div className="htfCandidateBox fullWidth compactBosOnlyBox">
               <div className="htfLiteHeader"><b>Save Structural Facts</b><span>{activeStructuralRangeId ? `active range #${activeStructuralRangeId}` : 'range id set after save'}</span></div>
-              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. Save BOS_UP / BOS_DOWN = save formal structure event.</span><em>Parent Break = update Weekly BH/BL only when Weekly RH/RL is breached. Draft clicks do not auto-save ranges or parent breaks.</em></div>
+              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. Break Up/Down buttons save formal BOS events.</span><em>REF HIGH/LOW is derived from active range RH/RL. Parent Break remains separate for Weekly boundary updates.</em></div>
               <div className="caseActionRow">
                 <button className="gpsSaveBtn" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
                 <button className="gpsSaveBtn secondary" onClick={()=>{ setActiveStructuralRangeId(''); setLastSavedRangeConfirmation(null); setMessage('New range mode selected. Next Save Range will create a new saved range.'); }}>Start New Range</button>
-                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('UP')} disabled={structuralSaving || !bhAnchor.price}>Save BOS_UP</button>
-                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('DOWN')} disabled={structuralSaving || !blAnchor.price}>Save BOS_DOWN</button>
+                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('UP', { quickButton:true })} disabled={structuralSaving || (!selectedCandle && !replayCandle)}>Break Up</button>
+                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('DOWN', { quickButton:true })} disabled={structuralSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
               </div>
               {lastSavedRangeConfirmation && <div className="caseBadge">
                 Saved confirmation: #{lastSavedRangeConfirmation.range_id || '?'} · {lastSavedRangeConfirmation.structure_layer} · {lastSavedRangeConfirmation.source_timeframe} · parent {lastSavedRangeConfirmation.parent_range_id || 'none'} · raw {lastSavedRangeConfirmation.raw_case_id || 'none'} · {lastSavedRangeConfirmation.case_ref || 'no case_ref'} · RH {lastSavedRangeConfirmation.range_high_price} / RL {lastSavedRangeConfirmation.range_low_price}
