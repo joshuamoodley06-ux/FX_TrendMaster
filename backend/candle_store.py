@@ -1524,33 +1524,45 @@ def save_structural_map_event(payload: dict[str, Any]) -> dict[str, Any]:
     return {"ok": True, "id": cur.lastrowid, "event_id": event_id, "event": _event_row_to_dict(row)}
 
 
-def get_map_events(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 1000, case_id: int | None = None) -> dict[str, Any]:
+def get_map_events(symbol: str = "XAUUSD", timeframe: str | None = None, limit: int = 1000, case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, structure_layer: str | None = None, source_timeframe: str | None = None, active_range_id: int | None = None, parent_range_id: int | None = None, event_type: str | None = None) -> dict[str, Any]:
     init_db()
-    tf = normalise_timeframe(timeframe)
     limit = max(1, min(int(limit or 1000), 5000))
+    clauses = ["symbol=?"]
+    args: list[Any] = [symbol]
+    tf = normalise_timeframe(timeframe) if timeframe else None
+    if tf:
+        clauses.append("timeframe=?")
+        args.append(tf)
+    if case_id is not None:
+        clauses.append("case_id=?")
+        args.append(int(case_id))
+    if raw_case_id:
+        clauses.append("raw_case_id=?")
+        args.append(str(raw_case_id))
+    if case_ref:
+        clauses.append("case_ref=?")
+        args.append(str(case_ref))
+    if structure_layer:
+        clauses.append("COALESCE(structure_layer, layer)=?")
+        args.append(_normalise_structure_layer(structure_layer, source_timeframe or timeframe or "D1"))
+    if source_timeframe:
+        clauses.append("COALESCE(source_timeframe, timeframe)=?")
+        args.append(normalise_timeframe(source_timeframe))
+    if active_range_id is not None:
+        clauses.append("active_range_id=?")
+        args.append(int(active_range_id))
+    if parent_range_id is not None:
+        clauses.append("parent_range_id=?")
+        args.append(int(parent_range_id))
+    if event_type:
+        clauses.append("event_type=?")
+        args.append(str(event_type).upper())
+    sql = f"SELECT * FROM map_events WHERE {' AND '.join(clauses)} ORDER BY COALESCE(event_time, time, created_at) ASC, id ASC LIMIT ?"
+    args.append(limit)
     with connect() as conn:
-        if case_id is not None:
-            rows = conn.execute(
-                """
-                SELECT * FROM map_events
-                WHERE symbol=? AND timeframe=? AND case_id=?
-                ORDER BY COALESCE(time, created_at) ASC, id ASC
-                LIMIT ?
-                """,
-                (symbol, tf, int(case_id), limit),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT * FROM map_events
-                WHERE symbol=? AND timeframe=?
-                ORDER BY COALESCE(time, created_at) ASC, id ASC
-                LIMIT ?
-                """,
-                (symbol, tf, limit),
-            ).fetchall()
+        rows = conn.execute(sql, args).fetchall()
     events = [_event_row_to_dict(r) for r in rows if not _event_is_undone(r)]
-    return {"ok": True, "symbol": symbol, "timeframe": tf, "case_id": case_id, "count": len(events), "events": events}
+    return {"ok": True, "symbol": symbol, "timeframe": tf, "case_id": case_id, "raw_case_id": raw_case_id, "case_ref": case_ref, "structure_layer": structure_layer, "source_timeframe": source_timeframe, "active_range_id": active_range_id, "parent_range_id": parent_range_id, "event_type": event_type, "count": len(events), "events": events}
 
 
 
@@ -2047,7 +2059,7 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
                 expected = "BH" if event_type == "BOS_UP" else "BL"
                 if str(ev.get("break_level_type") or "").upper() != expected or ev.get("break_level_price") in (None, ""):
                     bos_missing_bh_bl.append(ev)
-            if ev.get("active_range_id") in (None, "") and event_type in ALLOWED_STRUCTURAL_EVENT_TYPES:
+            if ev.get("active_range_id") in (None, "") and event_type in {"BOS_UP", "BOS_DOWN"}:
                 events_without_active_range.append(ev)
 
     tree = get_range_tree(symbol=symbol, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, parent_timeframe="W1", child_timeframe="D1")

@@ -4418,10 +4418,10 @@ def map_structural_event_patch(event_id: str, response: Response, payload: dict[
 
 
 @app.get("/api/v1/map/events")
-def map_events_get(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 1000, case_id: int | None = None):
+def map_events_get(symbol: str = "XAUUSD", timeframe: str | None = None, limit: int = 1000, case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, structure_layer: str | None = None, source_timeframe: str | None = None, active_range_id: int | None = None, parent_range_id: int | None = None, event_type: str | None = None):
     if market_memory is None:
         return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
-    return market_memory.get_map_events(symbol=symbol, timeframe=timeframe, limit=limit, case_id=case_id)
+    return market_memory.get_map_events(symbol=symbol, timeframe=timeframe, limit=limit, case_id=case_id, raw_case_id=raw_case_id, case_ref=case_ref, structure_layer=structure_layer, source_timeframe=source_timeframe, active_range_id=active_range_id, parent_range_id=parent_range_id, event_type=event_type)
 
 
 @app.delete("/api/v1/map/event/{event_id}")

@@ -2956,6 +2956,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving BOS.'); return; }
     const anchor = direction === 'UP' ? bhAnchor : blAnchor;
     if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'BH' : 'BL'} before saving BOS_${direction}.`); return; }
+    const chartStructure = chartStructureForTimeframe(timeframe);
+    if (!activeStructuralRangeId) { setMessage(`Select or save the active ${chartStructure.structure_layer} range before saving BOS_${direction}.`); return; }
     setStructuralSaving(true);
     try {
       const candle = anchor.candle || selectedCandle || replayCandle;
@@ -2965,11 +2967,11 @@ function MapStudio({ symbol }: { symbol:string }) {
         raw_case_id: mappingCase.raw_case_id,
         case_ref: mappingCase.case_ref,
         symbol,
-        structure_layer: structureLayer,
+        structure_layer: chartStructure.structure_layer,
         chart_timeframe: timeframe,
-        source_timeframe: sourceTimeframe,
+        source_timeframe: chartStructure.source_timeframe,
         active_range_id: activeStructuralRangeId || null,
-        parent_range_id: structureLayer === 'WEEKLY' ? null : (selectedParentRangeId || null),
+        parent_range_id: chartStructure.structure_layer === 'WEEKLY' ? null : (selectedParentRangeId || null),
         event_type: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
         structural_event: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
         break_level_type: direction === 'UP' ? 'BH' : 'BL',
@@ -2983,11 +2985,17 @@ function MapStudio({ symbol }: { symbol:string }) {
         candle_low: candle?.low ?? null,
         candle_close: candle?.close ?? null,
         direction,
-        meta_json: { phase:'electron_phase3_structural_mapping' },
+        meta_json: {
+          phase:'electron_phase3_structural_mapping',
+          formal_bos_event: true,
+          quick_marker_role_source: direction === 'UP' ? 'BH' : 'BL',
+          parent_break_not_updated: true,
+          parent_break_note: 'Weekly parent BH/BL is updated only by the later Parent Break action.',
+        },
       };
       const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       setStructuralBosDraftDirty(false);
-      setMessage(`Saved BOS_${direction} event ${data.event_id || ''}`);
+      setMessage(`Saved formal BOS_${direction} event ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${chartStructure.structure_layer}/${chartStructure.source_timeframe} · active range #${activeStructuralRangeId} · parent ${payload.parent_range_id || 'none'}`);
       await refreshHierarchyAudit();
     } catch (err:any) {
       setMessage(`BOS_${direction} save failed: ${err?.message || err}`);
@@ -3022,14 +3030,13 @@ function MapStudio({ symbol }: { symbol:string }) {
     ]);
     const refreshedSavedRanges = safeArray<StructuralRange>(rangesData.ranges);
     setSavedStructuralRanges(refreshedSavedRanges);
-    let eventsData:any = null;
-    let eventsTodo:string|null = null;
-    if (mappingCase.case_id !== null) {
-      eventsData = await structuralFetchJson(`${BASE_URL}/api/v1/map/events?${new URLSearchParams({ symbol, timeframe, case_id:String(mappingCase.case_id), limit:'5000' }).toString()}`);
-    } else {
-      eventsTodo = 'Saved structural event fetch by raw_case_id/case_ref is not exposed through the existing Electron-safe GET /api/v1/map/events endpoint yet.';
-    }
-    return { mappingCase, rangesData, refreshedSavedRanges, treeData, auditData, eventsData, eventsTodo };
+    const eventParams = appendMappingCaseParams(new URLSearchParams({ symbol, limit:'5000' }), mappingCase);
+    const eventsData = await structuralFetchJson(`${BASE_URL}/api/v1/map/events?${eventParams.toString()}`);
+    const savedEvents = safeArray<any>(eventsData.events);
+    const formalBosEvents = savedEvents.filter((ev:any)=>['BOS_UP','BOS_DOWN'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()));
+    const quickMarkerEvents = savedEvents.filter((ev:any)=>['RANGE_HIGH_SELECTED','RANGE_LOW_SELECTED','BREAK_HIGH_SELECTED','BREAK_LOW_SELECTED'].includes(String(ev.event_type || ev.structural_event || '').toUpperCase()));
+    const eventsTodo = null;
+    return { mappingCase, rangesData, refreshedSavedRanges, treeData, auditData, eventsData, formalBosEvents, quickMarkerEvents, eventsTodo };
   };
 
   const exportAuditJson = async () => {
@@ -3072,6 +3079,8 @@ function MapStudio({ symbol }: { symbol:string }) {
         saved_ranges_for_current_case: snapshot.refreshedSavedRanges,
         saved_structural_events: snapshot.eventsData,
         saved_structural_events_todo: snapshot.eventsTodo,
+        formal_bos_events: snapshot.formalBosEvents,
+        quick_marker_events: snapshot.quickMarkerEvents,
         last_saved_quick_event: lastSavedQuickEvent,
         quick_events_tracked_this_session: quickEventHistory,
         range_tree: snapshot.treeData,
@@ -3998,7 +4007,7 @@ function MapStudio({ symbol }: { symbol:string }) {
             </div>
 
             <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>RH / RL / BH / BL</b><span>server-confirmed saves only</span></div>
+              <div className="htfLiteHeader"><b>RH / RL / BH / BL</b><span>BH/BL = mark break candle</span></div>
               <div className="htfLiteGrid compactStateGrid">
                 <div><span>RH</span><strong>{rhAnchor.price || 'not set'}</strong><em>{rhAnchor.time ? shortTime(rhAnchor.time, timeframe) : 'Range High'}</em></div>
                 <div><span>RL</span><strong>{rlAnchor.price || 'not set'}</strong><em>{rlAnchor.time ? shortTime(rlAnchor.time, timeframe) : 'Range Low'}</em></div>
@@ -4014,7 +4023,7 @@ function MapStudio({ symbol }: { symbol:string }) {
               </div>
               <div className="htfCandidateState">
                 <span>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} · ${lastSavedQuickEvent.structure_layer}/${lastSavedQuickEvent.source_timeframe} · ${String(lastSavedQuickEvent.event_id).slice(0,8)}` : 'No quick event saved this session.'}</span>
-                <em>Quick buttons save event ledger records only. Save Range remains separate.</em>
+                <em>Quick buttons save marker event records only. Save BOS_UP / BOS_DOWN saves formal structure events.</em>
               </div>
             </div>
 
@@ -4035,7 +4044,7 @@ function MapStudio({ symbol }: { symbol:string }) {
 
             <div className="htfCandidateBox fullWidth compactBosOnlyBox">
               <div className="htfLiteHeader"><b>Save Structural Facts</b><span>{activeStructuralRangeId ? `active range #${activeStructuralRangeId}` : 'range id set after save'}</span></div>
-              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. BOS_UP requires BH. BOS_DOWN requires BL.</span><em>Create/Update Case saves the container only. Draft clicks do not auto-save.</em></div>
+              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. Save BOS_UP / BOS_DOWN = save formal structure event.</span><em>Parent Break = update Weekly BH/BL only when Weekly RH/RL is breached. Draft clicks do not auto-save ranges or parent breaks.</em></div>
               <div className="caseActionRow">
                 <button className="gpsSaveBtn" onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
                 <button className="gpsSaveBtn secondary" onClick={()=>{ setActiveStructuralRangeId(''); setLastSavedRangeConfirmation(null); setMessage('New range mode selected. Next Save Range will create a new saved range.'); }}>Start New Range</button>
