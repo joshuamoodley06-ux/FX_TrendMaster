@@ -403,13 +403,19 @@ function normalizeStructureLayer(value: any): StructureLayer | null {
   return STRUCTURE_LAYERS.includes(layer) ? layer : null;
 }
 function sourceTimeframeOptionsForLayer(layer: StructureLayer): string[] {
-  if (layer === 'MACRO') return ['MN1'];
+  if (layer === 'MACRO') return ['MN1', 'W1'];
   if (layer === 'WEEKLY') return ['W1'];
   if (layer === 'DAILY') return ['D1'];
   if (layer === 'INTRADAY') return ['H1', 'H4', 'H8'];
   return ['M15', 'M5'];
 }
-function chartLayerMismatchWarning(chartTf: string, mappingLayer: StructureLayer): string {
+function chartLayerMismatchWarning(chartTf: string, mappingLayer: StructureLayer, sourceTimeframe?: string): string {
+  const chartTfUpper = String(chartTf || '').toUpperCase();
+  const sourceTfUpper = String(sourceTimeframe || '').toUpperCase();
+  if (mappingLayer === 'MACRO') {
+    const macroSources = sourceTimeframeOptionsForLayer('MACRO');
+    if (macroSources.includes(sourceTfUpper) && chartTfUpper === sourceTfUpper) return '';
+  }
   const chart = chartStructureForTimeframeStatic(chartTf);
   if (chart.structure_layer === mappingLayer) return '';
   return `You are viewing ${chartTf} candles but saving a ${mappingLayer} range.`;
@@ -1823,7 +1829,9 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const chartSavedRangeOverlays = useMemo<SavedRangeChartLine[]>(() => {
     const allRanges = safeArray<any>(savedStructuralRanges);
-    const rangeById = new Map(allRanges.map((r:any) => [String(r.range_id || r.id), r]));
+    const rangeById: Record<string, any> = Object.fromEntries(
+      allRanges.map((r:any) => [String(r.range_id || r.id), r]),
+    );
     const overlayIds = new Set<string>();
     const overlays: SavedRangeChartLine[] = [];
     const pushRange = (r: any) => {
@@ -1847,18 +1855,18 @@ function MapStudio({ symbol }: { symbol:string }) {
     // Selected parent chain: immediate parent + ancestors only.
     if (selectedParentRangeId) {
       for (const id of collectParentContextChain(String(selectedParentRangeId), allRanges)) {
-        const row = rangeById.get(id);
+        const row = rangeById[id];
         if (row) pushRange(row);
       }
     }
 
     // Active range parent chain when it differs from the dropdown selection.
     if (activeStructuralRangeId) {
-      const activeRange = rangeById.get(String(activeStructuralRangeId));
+      const activeRange = rangeById[String(activeStructuralRangeId)];
       const activeParentId = activeRange?.parent_range_id;
       if (activeParentId !== null && activeParentId !== undefined && String(activeParentId) !== '') {
         for (const id of collectParentContextChain(String(activeParentId), allRanges)) {
-          const row = rangeById.get(id);
+          const row = rangeById[id];
           if (row) pushRange(row);
         }
       }
@@ -2877,15 +2885,24 @@ function MapStudio({ symbol }: { symbol:string }) {
   const savePreview = useMemo(() => {
     const mappingCase = getCurrentMappingCaseRef();
     const parentId = parentRangeIdForStructureLayer(structureLayer, selectedParentRangeId);
-    const chartMismatch = chartLayerMismatchWarning(timeframe, structureLayer);
+    const chartMismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
     const weeklyOrphanReview = structureLayer === 'WEEKLY' && macroRangesInCase.length > 0 && !selectedParentRangeId
       ? 'Macro ranges exist in this case but no Macro parent selected. Weekly will save as ORPHAN/review.'
       : '';
+    const macroW1ValidNote = structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1' && String(timeframe).toUpperCase() === 'W1'
+      ? 'Macro structural layer from W1 source — valid. Saves as MACRO / W1 with chart_timeframe W1.'
+      : structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1'
+        ? `Macro layer from W1 source — valid. chart_timeframe will record as ${timeframe}.`
+        : '';
     const warning = [chartMismatch, weeklyOrphanReview].filter(Boolean).join(' ');
     return {
       chart_timeframe: timeframe,
       structure_layer: structureLayer,
       source_timeframe: sourceTimeframe,
+      source_timeframe_note: structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1'
+        ? 'Macro layer · W1 structural source'
+        : 'structural truth',
+      preview_note: macroW1ValidNote,
       case_ref: mappingCase.case_ref,
       raw_case_id: mappingCase.raw_case_id,
       case_id: mappingCase.case_id,
@@ -4646,10 +4663,11 @@ function MapStudio({ symbol }: { symbol:string }) {
             <div className="htfStateLiteCard">
               <div className="htfLiteHeader"><b>Save Preview</b><span>{savePreview.actionLabel}</span></div>
               {savePreview.warning && <div className="caseBadge warningBadge">{savePreview.warning}</div>}
+              {savePreview.preview_note && <div className="caseBadge">{savePreview.preview_note}</div>}
               <div className="htfLiteGrid compactStateGrid">
                 <div><span>Chart TF</span><strong>{savePreview.chart_timeframe}</strong><em>view only</em></div>
                 <div><span>Will Save</span><strong>{savePreview.structure_layer}</strong><em>{savePreview.actionLabel}</em></div>
-                <div><span>Source TF</span><strong>{savePreview.source_timeframe}</strong><em>structural truth</em></div>
+                <div><span>Source TF</span><strong>{savePreview.source_timeframe}</strong><em>{savePreview.source_timeframe_note || 'structural truth'}</em></div>
                 <div><span>Case Ref</span><strong>{savePreview.case_ref || 'no case'}</strong><em>{savePreview.raw_case_id || savePreview.case_id || 'missing'}</em></div>
                 <div><span>Parent</span><strong>{savePreview.parent_range_id || 'none'}</strong><em>{savePreview.parent_layer ? `${savePreview.parent_layer} parent` : 'root range'}</em></div>
                 <div><span>RH</span><strong>{savePreview.range_high_price || 'not set'}</strong><em>{savePreview.range_high_time ? shortTime(savePreview.range_high_time, timeframe) : 'draft'}</em></div>
