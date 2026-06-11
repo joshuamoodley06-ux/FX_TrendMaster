@@ -403,35 +403,257 @@ function parentLayerCandidates(layer: StructureLayer, savedRanges: any[]): any[]
   return safeArray(savedRanges).filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === parentLayer);
 }
 
+type ParentResolveMode =
+  | 'none'
+  | 'manual'
+  | 'date_containment'
+  | 'single_candidate'
+  | 'multiple_matches'
+  | 'no_match';
+
+type ParentResolveResult = {
+  parentId: string | null;
+  error: string | null;
+  autoSelected: boolean;
+  mode: ParentResolveMode;
+  matchIds: string[];
+  orphanWarning: string | null;
+};
+
+function parseStructuralTimeMs(value: any): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  const raw = String(value).trim();
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  }
+  const ms = new Date(raw.replace(' ', 'T')).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function childDraftAnchorTimesMs(childSpan?: {
+  range_high_time?: string | null;
+  range_low_time?: string | null;
+  active_from_time?: string | null;
+  range_start_time?: string | null;
+  range_end_time?: string | null;
+}): number[] {
+  const values = [
+    childSpan?.range_high_time,
+    childSpan?.range_low_time,
+    childSpan?.active_from_time,
+    childSpan?.range_start_time,
+    childSpan?.range_end_time,
+  ];
+  return values.map(parseStructuralTimeMs).filter((x): x is number => x !== null);
+}
+
+function parentLifecycleStartMs(parent: any): number | null {
+  const values = [parent?.active_from_time, parent?.range_start_time].map(parseStructuralTimeMs).filter((x): x is number => x !== null);
+  return values.length ? Math.min(...values) : null;
+}
+
+function parentLifecycleEndMs(parent: any): number | null {
+  const status = String(parent?.status || 'ACTIVE').toUpperCase();
+  if (!['BROKEN', 'ABANDONED', 'ARCHIVED'].includes(status)) return null;
+  return parseStructuralTimeMs(parent?.inactive_from_time);
+}
+
+function parentContainsChildByLifecycle(parent: any, childTimesMs: number[]): boolean {
+  if (!childTimesMs.length) return true;
+  const pStart = parentLifecycleStartMs(parent);
+  const pEnd = parentLifecycleEndMs(parent);
+  const cMin = Math.min(...childTimesMs);
+  const cMax = Math.max(...childTimesMs);
+  if (pStart !== null && cMin < pStart) return false;
+  if (pEnd !== null && cMax > pEnd) return false;
+  return true;
+}
+
+function rangeLabelStartDate(range: any): string {
+  const values = [range?.range_high_time, range?.range_low_time, range?.active_from_time, range?.range_start_time];
+  const ms = values.map(parseStructuralTimeMs).filter((x): x is number => x !== null);
+  if (!ms.length) return '?';
+  return new Date(Math.min(...ms)).toISOString().slice(0, 10);
+}
+
+function rangeLabelEndDate(range: any): string {
+  const status = String(range?.status || 'ACTIVE').toUpperCase();
+  if (status === 'ACTIVE') return 'ACTIVE';
+  if (['BROKEN', 'ABANDONED', 'ARCHIVED'].includes(status) && range?.inactive_from_time) {
+    const ms = parseStructuralTimeMs(range.inactive_from_time);
+    if (ms !== null) return new Date(ms).toISOString().slice(0, 10);
+  }
+  const values = [range?.range_high_time, range?.range_low_time, range?.range_end_time];
+  const ms = values.map(parseStructuralTimeMs).filter((x): x is number => x !== null);
+  if (!ms.length) return status === 'ACTIVE' ? 'ACTIVE' : '?';
+  return new Date(Math.max(...ms)).toISOString().slice(0, 10);
+}
+
+function rangeStatusDirectionLabel(range: any): string {
+  const status = String(range?.status || 'ACTIVE').toUpperCase();
+  const dir = String(range?.direction_of_break || '').toUpperCase();
+  if (status === 'BROKEN' && (dir === 'UP' || dir === 'DOWN')) return `BROKEN ${dir}`;
+  if (status === 'ACTIVE') return 'ACTIVE';
+  return status;
+}
+
+function formatStructuralRangeOptionLabel(range: any): string {
+  const id = range?.range_id || range?.id || '?';
+  const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const start = rangeLabelStartDate(range);
+  const end = rangeLabelEndDate(range);
+  const statusPart = rangeStatusDirectionLabel(range);
+  const low = range?.range_low_price ?? range?.range_low ?? '?';
+  const high = range?.range_high_price ?? range?.range_high ?? '?';
+  const lowN = Number(low);
+  const highN = Number(high);
+  const pricePart = Number.isFinite(lowN) && Number.isFinite(highN)
+    ? `${lowN.toFixed(2)} → ${highN.toFixed(2)}`
+    : `${low} → ${high}`;
+  return `#${id} ${layer} | ${start} → ${end} | ${statusPart} | ${pricePart}`;
+}
+
+function formatStructuralRangeDisplayLines(range: any, savedRanges: any[]): { line1: string; line2: string; parentLine?: string } {
+  const id = range?.range_id || range?.id || '?';
+  const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const start = rangeLabelStartDate(range);
+  const end = rangeLabelEndDate(range);
+  const statusPart = rangeStatusDirectionLabel(range);
+  const low = Number(range?.range_low_price ?? range?.range_low);
+  const high = Number(range?.range_high_price ?? range?.range_high);
+  const pricePart = Number.isFinite(low) && Number.isFinite(high)
+    ? `${low.toFixed(2)} → ${high.toFixed(2)}`
+    : '—';
+  const line1 = `#${id} ${layer} | ${start} → ${end} | ${statusPart}`;
+  const line2 = pricePart;
+  let parentLine: string | undefined;
+  const parentId = range?.parent_range_id;
+  if (parentId !== null && parentId !== undefined && String(parentId) !== '') {
+    const parent = safeArray(savedRanges).find((r:any) => String(r.range_id || r.id) === String(parentId));
+    const parentLayer = parent ? (normalizeStructureLayer(parent.structure_layer || parent.layer) || 'Parent') : 'Parent';
+    parentLine = `Parent: ${parentLayer} #${parentId}`;
+  }
+  return { line1, line2, parentLine };
+}
+
+function parentLinkModeLabel(mode: ParentResolveMode, manualPickerOpen: boolean): string {
+  if (manualPickerOpen) return 'Manual parent selected';
+  if (mode === 'date_containment') return 'Auto-linked by date containment';
+  if (mode === 'single_candidate') return 'Auto-linked by date containment';
+  if (mode === 'manual') return 'Manual parent selected';
+  if (mode === 'multiple_matches') return 'Multiple possible parents, select manually';
+  if (mode === 'no_match') return 'No parent found';
+  return 'No parent required';
+}
+
+function structuralRangeDateFields(
+  rhTime: string,
+  rlTime: string,
+  options?: { activeFromTime?: string | null },
+) {
+  const rhMs = parseStructuralTimeMs(rhTime);
+  const rlMs = parseStructuralTimeMs(rlTime);
+  const spanMs = [rhMs, rlMs].filter((x): x is number => x !== null);
+  const start = spanMs.length ? new Date(Math.min(...spanMs)).toISOString() : null;
+  const end = spanMs.length ? new Date(Math.max(...spanMs)).toISOString() : null;
+  return {
+    range_high_time: rhTime || null,
+    range_low_time: rlTime || null,
+    range_start_time: start,
+    range_end_time: end,
+    active_from_time: options?.activeFromTime || start,
+  };
+}
+
 function resolveParentRangeIdForSave(
   layer: StructureLayer,
   selectedParentRangeId: string,
   savedRanges: any[],
-): { parentId: string | null; error: string | null; autoSelected: boolean } {
+  childSpan?: {
+    range_high_time?: string | null;
+    range_low_time?: string | null;
+    active_from_time?: string | null;
+    range_start_time?: string | null;
+    range_end_time?: string | null;
+  },
+): ParentResolveResult {
   const parentLayer = expectedParentStructureLayer(layer);
-  if (!parentLayer) return { parentId: null, error: null, autoSelected: false };
+  if (!parentLayer) {
+    return { parentId: null, error: null, autoSelected: false, mode: 'none', matchIds: [], orphanWarning: null };
+  }
 
   const candidates = parentLayerCandidates(layer, savedRanges);
-  if (!candidates.length) return { parentId: null, error: null, autoSelected: false };
+  if (!candidates.length) {
+    const orphanWarning = layer === 'WEEKLY'
+      ? null
+      : `No ${parentLayer} ranges in case. ${layer} will save as orphan.`;
+    return { parentId: null, error: null, autoSelected: false, mode: 'no_match', matchIds: [], orphanWarning };
+  }
 
   if (selectedParentRangeId && candidates.some((r:any) => String(r.range_id || r.id) === String(selectedParentRangeId))) {
-    return { parentId: String(selectedParentRangeId), error: null, autoSelected: false };
+    return {
+      parentId: String(selectedParentRangeId),
+      error: null,
+      autoSelected: false,
+      mode: 'manual',
+      matchIds: [String(selectedParentRangeId)],
+      orphanWarning: null,
+    };
   }
 
-  if (candidates.length === 1) {
-    return { parentId: String(candidates[0].range_id || candidates[0].id), error: null, autoSelected: true };
+  const childTimesMs = childDraftAnchorTimesMs(childSpan);
+  const dateMatches = childTimesMs.length
+    ? candidates.filter((p:any) => parentContainsChildByLifecycle(p, childTimesMs))
+    : [];
+
+  if (childTimesMs.length && dateMatches.length === 1) {
+    const id = String(dateMatches[0].range_id || dateMatches[0].id);
+    return { parentId: id, error: null, autoSelected: true, mode: 'date_containment', matchIds: [id], orphanWarning: null };
   }
 
-  const blockMessages: Partial<Record<StructureLayer, string>> = {
-    WEEKLY: 'Select Macro parent before saving Weekly range.',
-    DAILY: 'Select Weekly parent before saving Daily range.',
-    INTRADAY: 'Select Daily parent before saving Intraday range.',
-    MICRO: 'Select Intraday parent before saving Micro range.',
-  };
+  if (childTimesMs.length && dateMatches.length > 1) {
+    return {
+      parentId: null,
+      error: `Multiple ${parentLayer} parents match this date span. Select parent manually.`,
+      autoSelected: false,
+      mode: 'multiple_matches',
+      matchIds: dateMatches.map((r:any) => String(r.range_id || r.id)),
+      orphanWarning: null,
+    };
+  }
+
+  if (childTimesMs.length && dateMatches.length === 0) {
+    const orphanWarning = layer === 'WEEKLY'
+      ? `No ${parentLayer} parent contains this date span. Weekly may save as orphan.`
+      : `No ${parentLayer} parent contains this date span. ${layer} orphan requires confirmation.`;
+    return { parentId: null, error: null, autoSelected: false, mode: 'no_match', matchIds: [], orphanWarning };
+  }
+
+  if (!childTimesMs.length && candidates.length === 1) {
+    const id = String(candidates[0].range_id || candidates[0].id);
+    return { parentId: id, error: null, autoSelected: true, mode: 'single_candidate', matchIds: [id], orphanWarning: null };
+  }
+
+  if (!childTimesMs.length && candidates.length > 1) {
+    return {
+      parentId: null,
+      error: `Set RH/RL dates or select ${parentLayer} parent before saving ${layer} range.`,
+      autoSelected: false,
+      mode: 'multiple_matches',
+      matchIds: candidates.map((r:any) => String(r.range_id || r.id)),
+      orphanWarning: null,
+    };
+  }
+
   return {
     parentId: null,
-    error: blockMessages[layer] || `Select ${parentLayer} parent before saving ${layer} range.`,
+    error: `Select ${parentLayer} parent before saving ${layer} range.`,
     autoSelected: false,
+    mode: 'multiple_matches',
+    matchIds: candidates.map((r:any) => String(r.range_id || r.id)),
+    orphanWarning: null,
   };
 }
 
@@ -1386,6 +1608,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [savedStructuralRanges, setSavedStructuralRanges] = useState<StructuralRange[]>([]);
   const [lastSavedRangeConfirmation, setLastSavedRangeConfirmation] = useState<any>(null);
   const [selectedParentRangeId, setSelectedParentRangeId] = useLocalStorage<string>('fx_tm_selected_parent_range_id_phase3', '');
+  const [showManualParentPicker, setShowManualParentPicker] = useState(false);
   const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
   const [rhAnchor, setRhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [rlAnchor, setRlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
@@ -2785,10 +3008,6 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const selectedParentRange = useMemo(() => {
-    return safeArray<StructuralRange>(structuralRanges).find(r => String(r.range_id || r.id) === String(selectedParentRangeId)) || null;
-  }, [structuralRanges, selectedParentRangeId]);
-
   const parentStructureLayer = useMemo(() => expectedParentStructureLayer(structureLayer), [structureLayer]);
 
   const macroRangesInCase = useMemo(() => {
@@ -2811,10 +3030,14 @@ function MapStudio({ symbol }: { symbol:string }) {
   }, [structureLayer, activeStructuralRangeId, savedStructuralRanges]);
 
   useEffect(() => {
-    if (parentCandidatesForScope.length === 1 && !selectedParentRangeId) {
-      setSelectedParentRangeId(String(parentCandidatesForScope[0].range_id || parentCandidatesForScope[0].id || ''));
+    if (structureLayer === 'MACRO') return;
+    const childSpan = { range_high_time: rhAnchor.time, range_low_time: rlAnchor.time };
+    const resolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childSpan);
+    if (showManualParentPicker) return;
+    if (resolve.autoSelected && resolve.parentId && String(resolve.parentId) !== String(selectedParentRangeId)) {
+      setSelectedParentRangeId(String(resolve.parentId));
     }
-  }, [parentCandidatesForScope, selectedParentRangeId]);
+  }, [structureLayer, rhAnchor.time, rlAnchor.time, savedStructuralRanges, selectedParentRangeId, showManualParentPicker]);
 
   useEffect(() => {
     const allowed = sourceTimeframeOptionsForLayer(structureLayer);
@@ -2958,9 +3181,48 @@ function MapStudio({ symbol }: { symbol:string }) {
     return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
   }, [savedStructuralRanges, activeStructuralRangeId]);
 
+  const childDraftSpan = useMemo(() => ({
+    range_high_time: rhAnchor.time || null,
+    range_low_time: rlAnchor.time || null,
+  }), [rhAnchor.time, rlAnchor.time]);
+
+  const parentLinkResolve = useMemo(
+    () => resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan),
+    [structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan],
+  );
+
+  const resolvedParentRange = useMemo(() => {
+    const pid = parentLinkResolve.parentId;
+    if (!pid) return null;
+    return safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(pid)) || null;
+  }, [parentLinkResolve.parentId, savedStructuralRanges]);
+
+  const parentLinkContextLabel = useMemo(() => {
+    if (structureLayer === 'MACRO') return null;
+    const mode = parentLinkModeLabel(parentLinkResolve.mode, showManualParentPicker);
+    if (!resolvedParentRange) {
+      return {
+        mappingLine: `Mapping: ${structureLayer} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
+        parentLine: `Parent: none · ${parentLinkResolve.orphanWarning || mode}`,
+        mode,
+      };
+    }
+    return {
+      mappingLine: `Mapping: ${structureLayer} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
+      parentLine: `Parent: ${formatStructuralRangeOptionLabel(resolvedParentRange)}`,
+      mode,
+    };
+  }, [structureLayer, sourceTimeframe, timeframe, parentLinkResolve, resolvedParentRange, showManualParentPicker]);
+
+  const showParentSelector = structureLayer !== 'MACRO' && (
+    showManualParentPicker
+    || parentLinkResolve.mode === 'multiple_matches'
+    || (parentLinkResolve.mode === 'no_match' && parentCandidatesForScope.length > 0)
+  );
+
   const savePreview = useMemo(() => {
     const mappingCase = getCurrentMappingCaseRef();
-    const parentResolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges);
+    const parentResolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan);
     const parentId = parentResolve.parentId;
     const chartMismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
     const macroW1ValidNote = structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1' && String(timeframe).toUpperCase() === 'W1'
@@ -2968,7 +3230,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       : structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1'
         ? `Macro layer from W1 source — valid. chart_timeframe will record as ${timeframe}.`
         : '';
-    const warning = [chartMismatch, parentResolve.error].filter(Boolean).join(' ');
+    const warning = [chartMismatch, parentResolve.error, parentResolve.orphanWarning].filter(Boolean).join(' ');
     const activeRangeLayer = selectedSavedRange
       ? normalizeStructureLayer(selectedSavedRange.structure_layer || selectedSavedRange.layer)
       : null;
@@ -2991,6 +3253,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       hasCase: mappingCase.hasCase,
       parent_range_id: parentId,
       parent_layer: parentStructureLayer,
+      parent_link_mode: parentResolve.mode,
       range_high_price: rhAnchor.price || null,
       range_high_time: rhAnchor.time || null,
       range_low_price: rlAnchor.price || null,
@@ -3000,7 +3263,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       selectedIsBroken,
       warning,
     };
-  }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, selectedParentRangeId, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, savedStructuralRanges, parentStructureLayer, selectedSavedRange]);
+  }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, selectedParentRangeId, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, savedStructuralRanges, parentStructureLayer, selectedSavedRange, childDraftSpan]);
 
   const saveNextRangeEligible = useMemo(() => {
     if (!activeStructuralRangeId) {
@@ -3213,7 +3476,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     };
     const eventId = crypto.randomUUID();
     const parentForEvent = expectedParentStructureLayer(structureLayer)
-      ? (resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges).parentId || selectedParentRangeId || null)
+      ? (resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan).parentId || selectedParentRangeId || null)
       : null;
     const payload:any = {
       event_id: eventId,
@@ -3368,11 +3631,31 @@ function MapStudio({ symbol }: { symbol:string }) {
   };
 
   const structuralWindow = () => {
-    const times = [rhAnchor.time, rlAnchor.time].filter(Boolean).map(t => new Date(t).getTime()).filter(Number.isFinite);
-    if (!times.length) return { start:'', end:'', duration:null as number|null };
-    const start = new Date(Math.min(...times)).toISOString();
-    const end = new Date(Math.max(...times)).toISOString();
-    return { start, end, duration: Math.round(Math.abs(Math.max(...times) - Math.min(...times)) / 60000) };
+    const dateFields = structuralRangeDateFields(rhAnchor.time, rlAnchor.time);
+    const rhMs = parseStructuralTimeMs(rhAnchor.time);
+    const rlMs = parseStructuralTimeMs(rlAnchor.time);
+    const spanMs = [rhMs, rlMs].filter((x): x is number => x !== null);
+    const duration = spanMs.length
+      ? Math.round(Math.abs(Math.max(...spanMs) - Math.min(...spanMs)) / 60000)
+      : null;
+    return { ...dateFields, duration };
+  };
+
+  const confirmOrphanSaveIfNeeded = (layer: StructureLayer, parentResolve: ParentResolveResult): boolean => {
+    if (parentResolve.parentId) return true;
+    if (layer === 'MACRO') return true;
+    if (layer === 'WEEKLY') {
+      if (parentResolve.orphanWarning && macroRangesInCase.length > 0) {
+        return window.confirm(`${parentResolve.orphanWarning}\n\nSave Weekly range without Macro parent?`);
+      }
+      return true;
+    }
+    if (structureLayerRequiresParentConfirmation(layer)) {
+      return window.confirm(
+        `${parentResolve.orphanWarning || `No matching parent found. Save ${layer} range as orphan?`}\n\nOrphan child ranges may fail audit review.`,
+      );
+    }
+    return true;
   };
 
   const saveStructuralRange = async () => {
@@ -3401,13 +3684,21 @@ function MapStudio({ symbol }: { symbol:string }) {
       const ok = window.confirm('This edits the broken range itself. Use Save Next Range for the next range.');
       if (!ok) return;
     }
-    const parentResolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges);
+    const parentResolve = resolveParentRangeIdForSave(
+      structureLayer,
+      selectedParentRangeId,
+      savedStructuralRanges,
+      { range_high_time: rhAnchor.time, range_low_time: rlAnchor.time },
+    );
     if (parentResolve.error) {
       setMessage(parentResolve.error);
+      setShowManualParentPicker(true);
       return;
     }
+    if (!confirmOrphanSaveIfNeeded(structureLayer, parentResolve)) return;
     if (parentResolve.autoSelected && parentResolve.parentId) {
       setSelectedParentRangeId(String(parentResolve.parentId));
+      setShowManualParentPicker(false);
     }
     setStructuralSaving(true);
     try {
@@ -3423,13 +3714,14 @@ function MapStudio({ symbol }: { symbol:string }) {
         parent_range_id: parentResolve.parentId,
         range_high_price: Number(rhAnchor.price),
         range_low_price: Number(rlAnchor.price),
-        range_high_time: rhAnchor.time || null,
-        range_low_time: rlAnchor.time || null,
-        range_start_time: win.start || null,
-        range_end_time: win.end || null,
+        range_high_time: win.range_high_time,
+        range_low_time: win.range_low_time,
+        range_start_time: win.range_start_time,
+        range_end_time: win.range_end_time,
+        active_from_time: win.active_from_time,
         duration_minutes: win.duration,
         ...activeStructuralRangeStatusFields(),
-        meta_json: { phase:'electron_phase3_structural_mapping', proof_target:'WEEKLY_DAILY' },
+        meta_json: { phase:'electron_phase3_structural_mapping', proof_target:'WEEKLY_DAILY', parent_link_mode: parentResolve.mode },
       };
       const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/range`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       const id = String(data.range_id || data.id || data.range?.range_id || data.range?.id || '');
@@ -3478,7 +3770,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     try {
       const win = structuralWindow();
       const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
-      const activeFromTime = win.start || rhAnchor.time || rlAnchor.time || null;
+      const activeFromTime = win.active_from_time || win.range_start_time || rhAnchor.time || rlAnchor.time || null;
       const payload = {
         range_key: `${safeCaseKey}_${structureLayer}_${sourceTimeframe}_next_${oldRangeId}_${Date.now()}`,
         case_id: mappingCase.case_id,
@@ -3491,10 +3783,10 @@ function MapStudio({ symbol }: { symbol:string }) {
         created_by_event_id: createdByEventId,
         range_high_price: Number(rhAnchor.price),
         range_low_price: Number(rlAnchor.price),
-        range_high_time: rhAnchor.time || null,
-        range_low_time: rlAnchor.time || null,
-        range_start_time: win.start || null,
-        range_end_time: win.end || null,
+        range_high_time: win.range_high_time,
+        range_low_time: win.range_low_time,
+        range_start_time: win.range_start_time,
+        range_end_time: win.range_end_time,
         duration_minutes: win.duration,
         ...activeStructuralRangeStatusFields(),
         active_from_time: activeFromTime,
@@ -3591,7 +3883,12 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     const activeRangeParentId = activeRange?.parent_range_id ?? null;
     const hasActiveRangeParent = activeRangeParentId !== null && activeRangeParentId !== undefined && String(activeRangeParentId) !== '';
-    const parentResolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges);
+    const parentResolve = resolveParentRangeIdForSave(
+      structureLayer,
+      selectedParentRangeId,
+      savedStructuralRanges,
+      { range_high_time: rhAnchor.time, range_low_time: rlAnchor.time },
+    );
     if (!hasActiveRangeParent && parentResolve.error) {
       setMessage(parentResolve.error);
       return;
@@ -4502,6 +4799,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     const prevParentLayer = expectedParentStructureLayer(structureLayer);
     const nextParentLayer = expectedParentStructureLayer(layer);
     if (prevParentLayer !== nextParentLayer) setSelectedParentRangeId('');
+    setShowManualParentPicker(false);
     setStructureLayer(layer);
     setSourceTimeframe(defaultSourceTimeframeForStructureLayer(layer));
   };
@@ -4525,13 +4823,26 @@ function MapStudio({ symbol }: { symbol:string }) {
           {sourceTimeframeOptionsForLayer(structureLayer).map(tf => <option key={tf} value={tf}>{tf}</option>)}
         </select>
       </label>
-      {parentStructureLayer && parentCandidatesForScope.length > 0 && (
+      {parentStructureLayer && parentLinkContextLabel && (
+        <div className="structuralParentContext" title="Resolved parent for next save">
+          <div className="parentContextMapping">{parentLinkContextLabel.mappingLine}</div>
+          <div className="parentContextParent">{parentLinkContextLabel.parentLine}</div>
+          <div className="parentContextMode">Mode: {parentLinkContextLabel.mode}</div>
+          <button type="button" className="parentContextChangeBtn" onClick={() => setShowManualParentPicker(v => !v)}>
+            {showManualParentPicker ? 'Hide Parent List' : 'Change Parent'}
+          </button>
+        </div>
+      )}
+      {showParentSelector && parentStructureLayer && (
         <label className="ribbonParentTf" title={`${parentStructureLayer} parent for ${structureLayer}`}>
-          <select value={selectedParentRangeId} onChange={e => setSelectedParentRangeId(e.target.value)}>
-            <option value="">{parentCandidatesForScope.length > 1 ? `${parentStructureLayer}?` : 'Orphan'}</option>
-            {parentCandidatesForScope.map((r:any) => (
+          <select value={selectedParentRangeId} onChange={e => { setSelectedParentRangeId(e.target.value); setShowManualParentPicker(true); }}>
+            <option value="">Select {parentStructureLayer} parent…</option>
+            {(parentLinkResolve.matchIds.length
+              ? parentCandidatesForScope.filter((r:any) => parentLinkResolve.matchIds.includes(String(r.range_id || r.id)))
+              : parentCandidatesForScope
+            ).map((r:any) => (
               <option key={r.range_id || r.id} value={String(r.range_id || r.id)}>
-                #{r.range_id || r.id} · RH {r.range_high_price ?? r.range_high ?? '?'}
+                {formatStructuralRangeOptionLabel(r)}
               </option>
             ))}
           </select>
@@ -4822,7 +5133,7 @@ function MapStudio({ symbol }: { symbol:string }) {
             <div className="htfStateLiteCard">
               <div className="htfLiteHeader"><b>Mapping Scope</b><span>{structureLayer} · source {sourceTimeframe} · chart {timeframe}</span></div>
               <div className="markModeStrip compact">
-                {STRUCTURE_LAYERS.map(layer=><button key={layer} className={structureLayer===layer?'active':''} onClick={()=>{ setSelectedParentRangeId(''); setStructureLayer(layer); }}>{layer}{layer==='MICRO' ? ' · later' : ''}</button>)}
+                {STRUCTURE_LAYERS.map(layer=><button key={layer} className={structureLayer===layer?'active':''} onClick={()=>selectStructureLayer(layer)}>{layer}{layer==='MICRO' ? ' · later' : ''}</button>)}
               </div>
               <label className="toolbarStoryInput">Source TF
                 <select value={sourceTimeframe} onChange={e=>setSourceTimeframe(e.target.value)}>
@@ -4830,16 +5141,30 @@ function MapStudio({ symbol }: { symbol:string }) {
                 </select>
               </label>
               {structureLayer === 'MACRO' && <div className="caseBadge">Macro root range. No parent required.</div>}
-              {parentStructureLayer && <div className="compilerPreviewCard">
+              {parentStructureLayer && parentLinkContextLabel && <div className="structuralParentContext compilerPreviewCard">
+                <div className="parentContextMapping"><b>Mapping scope</b><span>{parentLinkContextLabel.mappingLine}</span></div>
+                <div className="parentContextParent"><b>Parent</b><span>{parentLinkContextLabel.parentLine}</span></div>
+                <div className="parentContextMode"><b>Mode</b><span>{parentLinkContextLabel.mode}</span></div>
+                <button type="button" className="gpsSaveBtn secondary parentContextChangeBtn" onClick={() => setShowManualParentPicker(v => !v)}>
+                  {showManualParentPicker ? 'Hide Parent List' : 'Change Parent'}
+                </button>
+              </div>}
+              {showParentSelector && parentStructureLayer && <div className="compilerPreviewCard">
                 <b>{parentStructureLayer} Parent</b>
                 <label>Parent range
-                  <select value={selectedParentRangeId} onChange={e=>setSelectedParentRangeId(e.target.value)}>
-                    <option value="">{structureLayer === 'WEEKLY' ? `No ${parentStructureLayer} parent (optional)` : `No ${parentStructureLayer} parent selected`}</option>
-                    {structuralRanges.map((r:any)=><option key={r.range_id || r.id} value={String(r.range_id || r.id)}>#{r.range_id || r.id} · {r.structure_layer || r.layer || parentStructureLayer} · RH {r.range_high_price || r.range_high || '?'} / RL {r.range_low_price || r.range_low || '?'}</option>)}
+                  <select value={selectedParentRangeId} onChange={e => { setSelectedParentRangeId(e.target.value); setShowManualParentPicker(true); }}>
+                    <option value="">{structureLayer === 'WEEKLY' ? `No ${parentStructureLayer} parent (optional)` : `Select ${parentStructureLayer} parent`}</option>
+                    {(parentLinkResolve.matchIds.length
+                      ? parentCandidatesForScope.filter((r:any) => parentLinkResolve.matchIds.includes(String(r.range_id || r.id)))
+                      : parentCandidatesForScope
+                    ).map((r:any) => (
+                      <option key={r.range_id || r.id} value={String(r.range_id || r.id)}>{formatStructuralRangeOptionLabel(r)}</option>
+                    ))}
                   </select>
                 </label>
                 {structureLayer === 'WEEKLY' && macroRangesInCase.length > 0 && !selectedParentRangeId && <div className="caseBadge warningBadge">Macro exists in case · Weekly will save without Macro parent (orphan/review).</div>}
-                {selectedParentRange ? <div><span>Selected</span><strong>#{selectedParentRange.range_id || selectedParentRange.id} · RH {selectedParentRange.range_high_price || '—'} / RL {selectedParentRange.range_low_price || '—'}</strong><em>{selectedParentRange.parent_link_status ? `link ${selectedParentRange.parent_link_status}` : 'parent link pending'}{selectedParentRange.range_start_time ? ` · ${shortTime(selectedParentRange.range_start_time, sourceTimeframe)} → ${shortTime(selectedParentRange.range_end_time, sourceTimeframe)}` : ''}</em></div> : structureLayer === 'WEEKLY' ? <div><span>Status</span><strong>No Macro parent selected</strong><em>Weekly can save as root/orphan. Link Macro parent when available.</em></div> : <div><span>Status</span><strong>No {parentStructureLayer} parent selected</strong><em>{structureLayer} range will be saved as ORPHAN after confirmation.</em></div>}
+                {parentLinkResolve.error && <div className="caseBadge warningBadge">{parentLinkResolve.error}</div>}
+                {parentLinkResolve.orphanWarning && !parentLinkResolve.error && <div className="caseBadge warningBadge">{parentLinkResolve.orphanWarning}</div>}
               </div>}
               {structureLayer === 'INTRADAY' && <div className="caseBadge">Intraday mapping is storage-ready. H8 rendering remains TODO.</div>}
               {structureLayer === 'MICRO' && <div className="caseBadge">Micro layer is selectable for storage proof. Full workflow comes later.</div>}
@@ -4877,7 +5202,7 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <div><span>Will Save</span><strong>{savePreview.structure_layer}</strong><em>{savePreview.actionLabel}</em></div>
                 <div><span>Source TF</span><strong>{savePreview.source_timeframe}</strong><em>{savePreview.source_timeframe_note || 'structural truth'}</em></div>
                 <div><span>Case Ref</span><strong>{savePreview.case_ref || 'no case'}</strong><em>{savePreview.raw_case_id || savePreview.case_id || 'missing'}</em></div>
-                <div><span>Parent</span><strong>{savePreview.parent_range_id || 'none'}</strong><em>{savePreview.parent_layer ? `${savePreview.parent_layer} parent` : 'root range'}</em></div>
+                <div><span>Parent</span><strong>{savePreview.parent_range_id ? `#${savePreview.parent_range_id}` : 'none'}</strong><em>{savePreview.parent_layer ? `${savePreview.parent_layer} · ${savePreview.parent_link_mode || 'pending'}` : 'root range'}</em></div>
                 <div><span>RH</span><strong>{savePreview.range_high_price || 'not set'}</strong><em>{savePreview.range_high_time ? shortTime(savePreview.range_high_time, timeframe) : 'draft'}</em></div>
                 <div><span>RL</span><strong>{savePreview.range_low_price || 'not set'}</strong><em>{savePreview.range_low_time ? shortTime(savePreview.range_low_time, timeframe) : 'draft'}</em></div>
                 <div><span>Selected</span><strong>{activeStructuralRangeId || 'new'}</strong><em>{selectedSavedRange ? 'will update' : 'will create'}</em></div>
@@ -4912,11 +5237,16 @@ function MapStudio({ symbol }: { symbol:string }) {
               </div>
               <div className="caseLedgerRows">
                 {!savedStructuralRanges.length && <div className="caseLedgerEmpty">No saved structural ranges for this active case yet.</div>}
-                {savedStructuralRanges.slice(0, 24).map((r:any)=><button key={r.range_id || r.id} className={String(r.range_id || r.id) === String(activeStructuralRangeId) ? 'active' : ''} onClick={()=>selectSavedStructuralRange(r)}>
-                  <b>#{r.range_id || r.id}</b>
-                  <span>{r.structure_layer || r.layer || '?'} · RH {r.range_high_price ?? r.range_high ?? '—'} / RL {r.range_low_price ?? r.range_low ?? '—'} · {String(r.status || 'active').toUpperCase()}</span>
-                  <em>parent {r.parent_range_id || 'none'}{r.old_range_id ? ` · old #${r.old_range_id}` : ''}{r.new_range_id ? ` · next #${r.new_range_id}` : ''} · {r.parent_link_status || 'status pending'}</em>
-                </button>)}
+                {savedStructuralRanges.slice(0, 24).map((r:any) => {
+                  const display = formatStructuralRangeDisplayLines(r, savedStructuralRanges);
+                  return (
+                    <button key={r.range_id || r.id} className={String(r.range_id || r.id) === String(activeStructuralRangeId) ? 'active' : ''} onClick={()=>selectSavedStructuralRange(r)}>
+                      <b>{display.line1}</b>
+                      <span>{display.line2}{display.parentLine ? ` · ${display.parentLine}` : ''}</span>
+                      <em>{r.old_range_id ? `old #${r.old_range_id}` : ''}{r.new_range_id ? `${r.old_range_id ? ' · ' : ''}next #${r.new_range_id}` : ''}{r.parent_link_status ? ` · ${r.parent_link_status}` : ''}</em>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 

@@ -2890,6 +2890,60 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   color:#fde68a;
   font-weight:700;
 }
+.structuralParentContext{
+  flex-basis:100%;
+  display:grid;
+  gap:4px;
+  padding:6px 8px;
+  border-radius:10px;
+  background:rgba(15,23,42,.55);
+  border:1px solid rgba(148,163,184,.22);
+  font-size:11px;
+  line-height:1.35;
+}
+.structuralParentContext .parentContextMapping,
+.structuralParentContext .parentContextParent,
+.structuralParentContext .parentContextMode{
+  color:var(--muted);
+}
+.structuralParentContext .parentContextParent{
+  color:#dbeafe;
+  font-weight:700;
+  word-break:break-word;
+}
+.structuralParentContext .parentContextMode{
+  color:#93c5fd;
+}
+.structuralParentContext .parentContextChangeBtn,
+.parentContextChangeBtn{
+  justify-self:start;
+  margin-top:2px;
+  padding:4px 8px;
+  border-radius:8px;
+  border:1px solid rgba(148,163,184,.35);
+  background:rgba(30,41,59,.85);
+  color:#e2e8f0;
+  font-size:11px;
+  font-weight:700;
+  cursor:pointer;
+}
+.structuralParentContext .parentContextChangeBtn:hover,
+.parentContextChangeBtn:hover{
+  border-color:rgba(96,165,250,.55);
+  color:#fff;
+}
+.structuralMappingRibbon.ribbonCompact .structuralParentContext{
+  font-size:10px;
+  padding:4px 6px;
+}
+.htfStateLiteCard .structuralParentContext{
+  margin-top:8px;
+}
+.htfStateLiteCard .structuralParentContext b{
+  display:inline-block;
+  min-width:52px;
+  margin-right:6px;
+}
 .fullscreenTfDock{
   position:absolute;
   top:10px;
