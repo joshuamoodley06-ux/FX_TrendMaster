@@ -538,6 +538,86 @@ function formatStructuralRangeDisplayLines(range: any, savedRanges: any[]): { li
   return { line1, line2, parentLine };
 }
 
+function formatHierarchyTreeRowLabel(range: any): string {
+  const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const id = range?.range_id || range?.id || '?';
+  const start = rangeLabelStartDate(range);
+  const end = rangeLabelEndDate(range);
+  const statusPart = rangeStatusDirectionLabel(range);
+  const high = Number(range?.range_high_price ?? range?.range_high);
+  const low = Number(range?.range_low_price ?? range?.range_low);
+  const rh = Number.isFinite(high) ? high.toFixed(2) : '?';
+  const rl = Number.isFinite(low) ? low.toFixed(2) : '?';
+  return `${layer} #${id} | ${start} → ${end} | ${statusPart} | RH ${rh} / RL ${rl}`;
+}
+
+type CaseHierarchyTreeNode = { range: any; depth: number; children: CaseHierarchyTreeNode[] };
+
+function compareRangesByStartDate(a: any, b: any): number {
+  const aMs = parseStructuralTimeMs(rangeLabelStartDate(a) === '?' ? null : rangeLabelStartDate(a)) ?? 0;
+  const bMs = parseStructuralTimeMs(rangeLabelStartDate(b) === '?' ? null : rangeLabelStartDate(b)) ?? 0;
+  return aMs - bMs || String(a?.range_id || a?.id).localeCompare(String(b?.range_id || b?.id));
+}
+
+function buildCaseHierarchyForest(ranges: any[]): { roots: CaseHierarchyTreeNode[]; orphans: any[] } {
+  const nodes = safeArray(ranges);
+  const byId = new Map(nodes.map((r:any) => [String(r.range_id || r.id), r]));
+  const macroRanges = nodes.filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO');
+  const hasMacro = macroRanges.length > 0;
+  const visited = new Set<string>();
+
+  const buildTree = (r: any, depth: number): CaseHierarchyTreeNode => {
+    const id = String(r.range_id || r.id);
+    visited.add(id);
+    const children = nodes
+      .filter((c:any) => String(c.parent_range_id || '') === id)
+      .sort(compareRangesByStartDate)
+      .map((c:any) => buildTree(c, depth + 1));
+    return { range: r, depth, children };
+  };
+
+  const rootCandidates = hasMacro
+    ? macroRanges
+    : nodes.filter((r:any) => {
+        const pid = r.parent_range_id;
+        return pid === null || pid === undefined || String(pid) === '' || !byId.has(String(pid));
+      });
+
+  const roots = rootCandidates.sort(compareRangesByStartDate).map((r:any) => buildTree(r, 0));
+  const orphans = nodes.filter((r:any) => !visited.has(String(r.range_id || r.id))).sort(compareRangesByStartDate);
+  return { roots, orphans };
+}
+
+function collectHierarchyPathIds(selectedId: string, allRanges: any[]): string[] {
+  return collectParentContextChain(selectedId, allRanges).reverse();
+}
+
+function collectDirectChildRangeIds(selectedId: string, allRanges: any[]): string[] {
+  return allRanges
+    .filter((r:any) => String(r.parent_range_id || '') === String(selectedId))
+    .map((r:any) => String(r.range_id || r.id));
+}
+
+function collectSiblingRangeIds(selectedId: string, allRanges: any[]): string[] {
+  const row = allRanges.find((r:any) => String(r.range_id || r.id) === String(selectedId));
+  if (!row) return [];
+  const parentId = row.parent_range_id;
+  if (parentId === null || parentId === undefined || String(parentId) === '') {
+    const layer = normalizeStructureLayer(row.structure_layer || row.layer);
+    return allRanges
+      .filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === layer && String(r.range_id || r.id) !== String(selectedId))
+      .map((r:any) => String(r.range_id || r.id));
+  }
+  return allRanges
+    .filter((r:any) => String(r.parent_range_id || '') === String(parentId) && String(r.range_id || r.id) !== String(selectedId))
+    .map((r:any) => String(r.range_id || r.id));
+}
+
+function countRangeDescendants(rangeId: string, allRanges: any[]): number {
+  const direct = allRanges.filter((r:any) => String(r.parent_range_id || '') === String(rangeId));
+  return direct.length + direct.reduce((sum, child) => sum + countRangeDescendants(String(child.range_id || child.id), allRanges), 0);
+}
+
 function parentLinkModeLabel(mode: ParentResolveMode, manualPickerOpen: boolean): string {
   if (manualPickerOpen) return 'Manual parent selected';
   if (mode === 'date_containment') return 'Auto-linked by date containment';
@@ -1623,6 +1703,11 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [chainDraftMode, setChainDraftMode] = useState(false);
   const [autoChainSave, setAutoChainSave] = useLocalStorage<boolean>('fx_tm_auto_chain_save_v1', true);
   const autoChainSaveAttemptRef = useRef<string>('');
+  const [hierarchyPathOnly, setHierarchyPathOnly] = useLocalStorage<boolean>('fx_tm_hierarchy_path_only_v1', true);
+  const [hierarchyShowSiblings, setHierarchyShowSiblings] = useLocalStorage<boolean>('fx_tm_hierarchy_show_siblings_v1', false);
+  const [hierarchyShowChildren, setHierarchyShowChildren] = useLocalStorage<boolean>('fx_tm_hierarchy_show_children_v1', false);
+  const [hierarchyShowAll, setHierarchyShowAll] = useLocalStorage<boolean>('fx_tm_hierarchy_show_all_v1', false);
+  const [caseMetadataOpen, setCaseMetadataOpen] = useState(false);
   const [hierarchyAudit, setHierarchyAudit] = useState<any>(null);
   const [caseScope, setCaseScope] = useState<CaseScope>(() => timeframeToScope(timeframe));
   useEffect(()=>{ setCaseScope(timeframeToScope(timeframe)); }, [timeframe]);
@@ -2121,37 +2206,58 @@ function MapStudio({ symbol }: { symbol:string }) {
     const allRanges = safeArray<any>(savedStructuralRanges);
     const overlayIds = new Set<string>();
     const overlays: SavedRangeChartLine[] = [];
-    const currentLayerRank = structureLayerRank(structureLayer);
+    const selectedId = String(activeStructuralRangeId || '');
 
-    const pushRange = (r: any, opts?: { isParentContext?: boolean }) => {
+    const pushRange = (r: any, opts?: { isParentContext?: boolean; isActive?: boolean }) => {
       const id = String(r?.range_id || r?.id || '');
       if (!id || overlayIds.has(id)) return;
-      const line = structuralRangeToChartLine(r, activeStructuralRangeId, opts);
+      const line = structuralRangeToChartLine(r, activeStructuralRangeId, {
+        isParentContext: opts?.isParentContext,
+      });
       if (!line) return;
+      if (opts?.isActive) line.isActive = true;
       overlayIds.add(id);
       overlays.push(line);
     };
 
+    if (hierarchyShowAll) {
+      for (const r of allRanges) {
+        pushRange(r, { isActive: String(r.range_id || r.id) === selectedId });
+      }
+      return overlays;
+    }
+
+    if (selectedId && hierarchyPathOnly) {
+      for (const id of collectHierarchyPathIds(selectedId, allRanges)) {
+        const r = allRanges.find((x:any) => String(x.range_id || x.id) === id);
+        if (r) pushRange(r, { isParentContext: id !== selectedId, isActive: id === selectedId });
+      }
+      if (hierarchyShowSiblings) {
+        for (const sid of collectSiblingRangeIds(selectedId, allRanges)) {
+          const r = allRanges.find((x:any) => String(x.range_id || x.id) === sid);
+          if (r) pushRange(r, { isParentContext: true });
+        }
+      }
+      if (hierarchyShowChildren) {
+        for (const cid of collectDirectChildRangeIds(selectedId, allRanges)) {
+          const r = allRanges.find((x:any) => String(x.range_id || x.id) === cid);
+          if (r) pushRange(r);
+        }
+      }
+      return overlays;
+    }
+
+    const currentLayerRank = structureLayerRank(structureLayer);
     for (const r of allRanges) {
       const layer = normalizeStructureLayer(r.structure_layer || r.layer);
       if (!layer) continue;
       const rank = structureLayerRank(layer);
       if (rank < 0) continue;
-
-      if (rank === currentLayerRank) {
-        // Current mapping layer: show all saved ranges regardless of chart TF.
-        pushRange(r);
-        continue;
-      }
-
-      if (rank < currentLayerRank) {
-        // Higher layers (Macro/Weekly/Daily) stay visible as light context on lower charts.
-        pushRange(r, { isParentContext: true });
-      }
+      if (rank === currentLayerRank) pushRange(r, { isActive: String(r.range_id || r.id) === selectedId });
+      else if (rank < currentLayerRank) pushRange(r, { isParentContext: true });
     }
-
     return overlays;
-  }, [savedStructuralRanges, structureLayer, activeStructuralRangeId]);
+  }, [savedStructuralRanges, structureLayer, activeStructuralRangeId, hierarchyPathOnly, hierarchyShowSiblings, hierarchyShowChildren, hierarchyShowAll]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
     const draftHigh = parseNum(rhAnchor.price);
@@ -3345,6 +3451,116 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`Selected saved range #${id}. Save Range button is now Update Selected Range.`);
   };
 
+  const caseHierarchyForest = useMemo(
+    () => buildCaseHierarchyForest(savedStructuralRanges),
+    [savedStructuralRanges],
+  );
+
+  const jumpToStructuralRange = (range: any) => {
+    const start = range?.range_start_time || range?.range_high_time || range?.active_from_time;
+    const chartTf = String(range?.chart_timeframe || range?.source_timeframe || range?.timeframe || timeframe).toUpperCase();
+    if (chartTf !== String(timeframe).toUpperCase()) {
+      switchTimeframePreserveCase(chartTf);
+    }
+    selectSavedStructuralRange(range);
+    if (start) {
+      setJumpDate(String(start).slice(0, 10));
+      setCandleReplayFrameByTime(String(start));
+      setFitToken(x => x + 1);
+      setMessage(`Jumped to ${formatHierarchyTreeRowLabel(range)}`);
+    } else {
+      setMessage(`Selected ${formatHierarchyTreeRowLabel(range)}`);
+    }
+  };
+
+  const editStructuralRangeFromTree = (range: any) => {
+    selectSavedStructuralRange(range);
+    setRightDeckTab('mark');
+    setMarkWorkspaceMode('htf');
+    setWorkspacePanelOpen(true);
+    setMessage(`Editing range #${range?.range_id || range?.id} in Structural Map.`);
+  };
+
+  const relinkStructuralRange = async (range: any) => {
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return;
+    const layer = normalizeStructureLayer(range.structure_layer || range.layer);
+    const parentLayer = layer ? expectedParentStructureLayer(layer) : null;
+    if (!layer || !parentLayer) return;
+    const candidates = parentLayerCandidates(layer, savedStructuralRanges);
+    const hint = candidates.slice(0, 8).map(formatStructuralRangeOptionLabel).join('\n');
+    const raw = window.prompt(
+      `Relink #${id} ${layer} to ${parentLayer} parent id.\n\nCandidates:\n${hint || '(none)'}\n\nEnter parent range id or leave empty for orphan:`,
+      String(range?.parent_range_id || ''),
+    );
+    if (raw === null) return;
+    const trimmed = raw.trim();
+    const parentId = trimmed ? Number(trimmed) : null;
+    if (trimmed && !Number.isFinite(parentId)) {
+      setMessage('Parent id must be a number.');
+      return;
+    }
+    try {
+      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/reparent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ child_range_id: Number(id), parent_range_id: parentId }),
+      });
+      await refreshSavedRangesForCurrentCase();
+      try { await refreshHierarchyAudit(); } catch {}
+      setMessage(`Relinked #${id} → parent ${parentId ?? 'none'}.`);
+    } catch (err: any) {
+      setMessage(`Relink failed: ${err?.message || err}`);
+    }
+  };
+
+  const archiveStructuralRange = async (range: any) => {
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return;
+    const childCount = countRangeDescendants(id, savedStructuralRanges);
+    const ok = window.confirm(
+      childCount > 0
+        ? `Range #${id} has ${childCount} child range(s) linked below it.\n\nArchive this range anyway?`
+        : `Archive range #${id}?`,
+    );
+    if (!ok) return;
+    try {
+      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ABANDONED' }),
+      });
+      if (String(activeStructuralRangeId) === id) setActiveStructuralRangeId('');
+      await refreshSavedRangesForCurrentCase();
+      try { await refreshHierarchyAudit(); } catch {}
+      setMessage(`Archived range #${id}.`);
+    } catch (err: any) {
+      setMessage(`Archive failed: ${err?.message || err}`);
+    }
+  };
+
+  const renderHierarchyTreeNodes = (nodes: CaseHierarchyTreeNode[]): React.ReactNode => nodes.flatMap((node) => {
+    const range = node.range;
+    const id = String(range?.range_id || range?.id || '');
+    const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || 'WEEKLY';
+    const isActive = id === String(activeStructuralRangeId);
+    return [
+      <div key={id} className={`hierarchyTreeRow ${isActive ? 'active' : ''}`} style={{ paddingLeft: `${8 + node.depth * 14}px` }}>
+        <button type="button" className="hierarchyTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
+          {node.depth > 0 && <span className="hierarchyTreeBranch">└── </span>}
+          <span className={`hierarchyTreeLabel hierarchyLayer-${layer.toLowerCase()}`}>{formatHierarchyTreeRowLabel(range)}</span>
+        </button>
+        <div className="hierarchyTreeActions">
+          <button type="button" title="Jump to range" onClick={() => jumpToStructuralRange(range)}>Jump</button>
+          <button type="button" title="Edit in Structural Map" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
+          <button type="button" title="Relink parent" onClick={() => void relinkStructuralRange(range)}>Relink</button>
+          <button type="button" className="dangerTiny" title="Archive range" onClick={() => void archiveStructuralRange(range)}>Archive</button>
+        </div>
+      </div>,
+      ...renderHierarchyTreeNodes(node.children),
+    ];
+  });
+
   const refreshStructuralRanges = async () => {
     const params = new URLSearchParams({ symbol });
     const mappingCase = getCurrentMappingCaseRef();
@@ -3401,6 +3617,12 @@ function MapStudio({ symbol }: { symbol:string }) {
       return null;
     }
   };
+
+  useEffect(() => {
+    if (rightDeckTab === 'seed') {
+      refreshSavedRangesForCurrentCase().catch(() => {});
+    }
+  }, [rightDeckTab, activeCaseId, rawActiveCaseId]);
 
   useEffect(() => {
     if (rightDeckTab === 'mark' && markWorkspaceMode === 'htf') {
@@ -5347,68 +5569,105 @@ function MapStudio({ symbol }: { symbol:string }) {
           </div>}
         </div>}
         {rightDeckTab === 'seed' && <div className="rightTabPanel seedTabPanel">
-        <div className="seedIdeaPanel sideSeedPanel">
-      <div className="seedHeader caseManagerHeader"><div><b>Case Manager</b><span>Update Case saves the container only. Use Save Range for RH/RL.</span></div></div>
-      <div className="activeCaseCard"><span>Active Case</span><b>{activeCaseDisplayId ? activeCaseLabel || `#${activeCaseDisplayId}` : 'None selected'}</b><button onClick={resetActiveCase} disabled={!activeCaseDisplayId}>Clear Active</button></div>
-      {activeCaseRecord && <div className="caseLedgerDetail">
-        <div className="caseLedgerHeader"><b>Case Ledger Preview</b><span>{activeCaseLedger.scope} · {activeCaseLedger.timeframe} · {activeCaseLedger.rows.length} linked event{activeCaseLedger.rows.length===1?'':'s'}</span></div><div className="caseActionRow miniAuditRow"><button className="gpsSaveBtn secondary" onClick={exportActiveCaseAuditJson}>Export Case JSON</button></div>
-        <div className="caseLedgerMeta">
-          <div><span>High</span><b>{activeCaseLedger.high || 'not saved'}</b>{activeCaseLedger.highSource && <em>{activeCaseLedger.highSource}</em>}</div>
-          <div><span>Low</span><b>{activeCaseLedger.low || 'not saved'}</b>{activeCaseLedger.lowSource && <em>{activeCaseLedger.lowSource}</em>}</div>
-          <div><span>Window</span><b>{activeCaseLedger.hasWindow ? `${shortTime(activeCaseLedger.start, String(activeCaseLedger.timeframe))} → ${shortTime(activeCaseLedger.end, String(activeCaseLedger.timeframe))}` : 'no date window saved'}</b>{activeCaseLedger.windowSource && <em>{activeCaseLedger.windowSource}</em>}</div>
-        </div>
-        <div className="candidateAuditCard">
-          <div><span>Accepted HTF</span><b>{activeCaseCandidateAudit.accepted.length}</b></div>
-          <div><span>Rejected candidates</span><b>{activeCaseCandidateAudit.rejected.length}</b></div>
-          <div><span>Edited</span><b>{activeCaseCandidateAudit.edited.length}</b></div>
-        </div>
-        {activeCaseCandidateAudit.rejected.length > 0 && <div className="rejectedAuditList"><b>Rejected Candidate Audit</b>{activeCaseCandidateAudit.rejected.slice(0,6).map((ev:any, idx:number)=><button key={ev.id || `rej_${idx}`} onClick={()=>jumpToCaseLedgerEvent(ev)}><span>{eventMeta(ev)?.original_label || ev.event_name || 'Rejected candidate'}</span><em>{shortTime(ev.time, String(activeCaseLedger.timeframe))} · {Number(ev.price).toFixed(2)}</em></button>)}</div>}
-        <div className="caseLedgerRows">
-          {activeCaseLedger.rows.length === 0 && <div className="caseLedgerEmpty">No event rows linked to this case window yet. Case is a container; Save Bundle rows are still the truth.</div>}
-          {activeCaseLedger.rows.slice(0,40).map((ev:any, idx:number)=><button key={ev.id || `${ev.event_type}_${idx}`} onClick={()=>jumpToCaseLedgerEvent(ev)}>
-            <b>#{idx + 1}</b><span>{ev._label}</span><em>{shortTime(ev.time, String(activeCaseLedger.timeframe))} · {Number(ev.price).toFixed(2)}</em>
-          </button>)}
-        </div>
-        {activeCaseLedger.rows.length > 40 && <div className="caseLedgerMore">Showing first 40. Event Ledger panel has the full raw list. Because apparently candles breed.</div>}
-      </div>}
-      <div className="caseActionRow">
-        <button className="gpsSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
-        <button className="gpsSaveBtn danger" onClick={deleteActiveCase} disabled={!activeCaseId}>Delete Active</button>
-        <button className="gpsSaveBtn danger" onClick={clearAllCases}>Clear Cases</button>
-        <details className="dangerZoneDetails"><summary>Danger Zone</summary><div className="dangerZoneBox"><b>Wipe Mapping Research Data</b><span>Deletes cases, map events, HTF snapshots, objectives, ranges and route memory for this symbol. Raw candles stay. Hidden here because one tired click should not become a data funeral.</span><button className="gpsSaveBtn danger" onClick={resetResearchMappingDb}>Danger: Wipe Mapping Research Data</button></div></details>
+        <div className="seedIdeaPanel sideSeedPanel caseManagerCompact">
+      <div className="seedHeader caseManagerHeader compactCaseHeader">
+        <div><b>Case Manager</b><span>Active case · hierarchy · navigation</span></div>
       </div>
+
+      <div className="activeCaseCard compactActiveCase">
+        <div className="activeCaseMain">
+          <span>Active Case</span>
+          <b>{activeCaseDisplayId ? activeCaseLabel || `#${activeCaseDisplayId}` : 'None selected'}</b>
+        </div>
+        <div className="caseManagerToolbar">
+          <button type="button" className="caseToolbarBtn" onClick={resetActiveCase} disabled={!activeCaseDisplayId}>Clear Active</button>
+          <button type="button" className="caseToolbarBtn primary" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? '…' : (getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case')}</button>
+        </div>
+      </div>
+
+      <div className="caseHierarchySection">
+        <div className="caseHierarchyHeader">
+          <b>Case Hierarchy</b>
+          <span>{savedStructuralRanges.length} range{savedStructuralRanges.length === 1 ? '' : 's'}</span>
+        </div>
+        <div className="hierarchyChartFilters">
+          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyPathOnly && !hierarchyShowAll} disabled={hierarchyShowAll} onChange={e => setHierarchyPathOnly(e.target.checked)} /> Path only</label>
+          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowSiblings} disabled={hierarchyShowAll} onChange={e => setHierarchyShowSiblings(e.target.checked)} /> Siblings</label>
+          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowChildren} disabled={hierarchyShowAll} onChange={e => setHierarchyShowChildren(e.target.checked)} /> Children</label>
+          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowAll} onChange={e => setHierarchyShowAll(e.target.checked)} /> Show all</label>
+        </div>
+        <div className="hierarchyTreeScroll">
+          {!savedStructuralRanges.length && <div className="caseLedgerEmpty">No saved structural ranges for this case yet.</div>}
+          {!!caseHierarchyForest.roots.length && renderHierarchyTreeNodes(caseHierarchyForest.roots)}
+          {!!caseHierarchyForest.orphans.length && <>
+            <div className="hierarchyOrphanHeader">Unlinked / Orphans</div>
+            {caseHierarchyForest.orphans.map((range:any) => {
+              const id = String(range.range_id || range.id);
+              const layer = normalizeStructureLayer(range.structure_layer || range.layer) || 'WEEKLY';
+              return (
+                <div key={`orphan-${id}`} className={`hierarchyTreeRow orphan ${id === String(activeStructuralRangeId) ? 'active' : ''}`}>
+                  <button type="button" className="hierarchyTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
+                    <span className={`hierarchyTreeLabel hierarchyLayer-${layer.toLowerCase()}`}>{formatHierarchyTreeRowLabel(range)}</span>
+                  </button>
+                  <div className="hierarchyTreeActions">
+                    <button type="button" onClick={() => jumpToStructuralRange(range)}>Jump</button>
+                    <button type="button" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
+                    <button type="button" onClick={() => void relinkStructuralRange(range)}>Relink</button>
+                    <button type="button" className="dangerTiny" onClick={() => void archiveStructuralRange(range)}>Archive</button>
+                  </div>
+                </div>
+              );
+            })}
+          </>}
+        </div>
+        <div className="caseManagerToolbar mini">
+          <button type="button" className="caseToolbarBtn" onClick={() => refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`))}>Refresh Tree</button>
+          <button type="button" className="caseToolbarBtn" onClick={refreshHierarchyAudit}>Refresh Audit</button>
+        </div>
+      </div>
+
       {caseSavedNotice && <div className="caseSavedNotice">✓ {caseSavedNotice}</div>}
-      <div className="caseScopeStrip">
-        {(['MACRO','WEEKLY','DAILY','INTRADAY','MICRO'] as CaseScope[]).map(scope=><button key={scope} className={caseScope===scope?'active':''} onClick={()=>setCaseScope(scope)}>{scopeLabel(scope)}</button>)}
-      </div>
-      <div className="seedGrid">
-        <label>Case Name<input value={seedName} onChange={e=>setSeedName(e.target.value)} /></label>
-        <label>Case Timeframe<input readOnly value={`${scopeLabel(caseScope)} · ${caseTimeframe}`} /></label>
-        <label>Replay Candle<input readOnly value={activeReplayCandle ? `${shortTime(activeReplayCandle.time, timeframe)} · C ${activeReplayCandle.close.toFixed(2)}` : 'No candle selected'} /></label>
-        <label>Case High<input value={caseHigh || ''} onChange={e=>setSeedAnchors((p:any)=>({...p, case_high:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} /></label>
-        <label>Case Low<input value={caseLow || ''} onChange={e=>setSeedAnchors((p:any)=>({...p, case_low:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} /></label>
-        <label>Events in TF<input readOnly value={`Raw ledger mode · old map events ignored`} /></label>
-        <label>Window Start<input value={caseWindowStartDisplay} onChange={e=>setSeedAnchors((p:any)=>({...p, range_start_date:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} placeholder="anchor-derived" /></label>
-        <label>Window End<input value={caseWindowEndDisplay} onChange={e=>setSeedAnchors((p:any)=>({...p, range_end_date:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} placeholder="anchor-derived" /></label>
-      </div>
-      <div className="seedAnchorBtns">
-        <button onClick={autoFillCaseAnchors}>Auto-fill All HTF Marks</button>
-        <button onClick={()=>captureCaseAnchor('high')}>Use Candle High as Case H</button>
-        <button onClick={()=>captureCaseAnchor('low')}>Use Candle Low as Case L</button>
-        <button onClick={buildCaseNameFromWindow}>Name From Window</button>
-        <button onClick={buildYtdCaseName}>Name YTD</button>
-      </div>
-      <div className="caseLinkHint">Linking later uses date containment: Micro → Intraday → Daily → Weekly → Macro. No daily range is required to save a Macro or Weekly case.</div>
-      <label className="seedNotes">Notes<textarea value={seedNotes} onChange={e=>setSeedNotes(e.target.value)} placeholder="What this case shows, what was marked, and what the expected/actual path was." /></label>
-      {recentCaseIdeas.length > 0 && <div className="seedIdeaList"><b>Recent cases</b>{recentCaseIdeas.map((x:any)=>{
-        const caseKey = String(x.raw_case_id || x.id || '');
-        const isActive = caseKey === String(activeCaseDisplayId || '');
-        const label = x.is_raw_mapping_case ? `Raw ${caseKey.slice(0,8)}` : `#${x.id}`;
-        return <button key={caseKey} className={isActive?'active':''} onClick={()=>openSavedCase(x)}>{label} {x.seed_name} · {shortTime(x.replay_candle_time, x.case_timeframe || x.replay_timeframe)}</button>;
-      })}</div>}
+
+      <details className="caseMetadataDetails" open={caseMetadataOpen} onToggle={e => setCaseMetadataOpen((e.target as HTMLDetailsElement).open)}>
+        <summary>Case Metadata</summary>
+        <div className="caseScopeStrip compactScopeStrip">
+          {(['MACRO','WEEKLY','DAILY','INTRADAY','MICRO'] as CaseScope[]).map(scope=><button key={scope} type="button" className={caseScope===scope?'active':''} onClick={()=>setCaseScope(scope)}>{scopeLabel(scope)}</button>)}
+        </div>
+        <div className="seedGrid compactSeedGrid">
+          <label>Case Name<input value={seedName} onChange={e=>setSeedName(e.target.value)} /></label>
+          <label>Case Timeframe<input readOnly value={`${scopeLabel(caseScope)} · ${caseTimeframe}`} /></label>
+          <label>Replay Candle<input readOnly value={activeReplayCandle ? `${shortTime(activeReplayCandle.time, timeframe)} · C ${activeReplayCandle.close.toFixed(2)}` : 'No candle selected'} /></label>
+          <label>Case High<input value={caseHigh || ''} onChange={e=>setSeedAnchors((p:any)=>({...p, case_high:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} /></label>
+          <label>Case Low<input value={caseLow || ''} onChange={e=>setSeedAnchors((p:any)=>({...p, case_low:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} /></label>
+          <label>Window Start<input value={caseWindowStartDisplay} onChange={e=>setSeedAnchors((p:any)=>({...p, range_start_date:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} placeholder="anchor-derived" /></label>
+          <label>Window End<input value={caseWindowEndDisplay} onChange={e=>setSeedAnchors((p:any)=>({...p, range_end_date:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} placeholder="anchor-derived" /></label>
+        </div>
+        <div className="seedAnchorBtns compactAnchorBtns">
+          <button type="button" onClick={autoFillCaseAnchors}>Auto-fill HTF</button>
+          <button type="button" onClick={()=>captureCaseAnchor('high')}>Case H</button>
+          <button type="button" onClick={()=>captureCaseAnchor('low')}>Case L</button>
+          <button type="button" onClick={buildCaseNameFromWindow}>Name Window</button>
+          <button type="button" onClick={buildYtdCaseName}>Name YTD</button>
+        </div>
+        <label className="seedNotes">Notes<textarea value={seedNotes} onChange={e=>setSeedNotes(e.target.value)} placeholder="What this case shows, what was marked, and what the expected/actual path was." /></label>
+        {recentCaseIdeas.length > 0 && <div className="seedIdeaList compactCaseList"><b>Recent cases</b>{recentCaseIdeas.map((x:any)=>{
+          const caseKey = String(x.raw_case_id || x.id || '');
+          const isActive = caseKey === String(activeCaseDisplayId || '');
+          const label = x.is_raw_mapping_case ? `Raw ${caseKey.slice(0,8)}` : `#${x.id}`;
+          return <button key={caseKey} type="button" className={isActive?'active':''} onClick={()=>openSavedCase(x)}>{label} {x.seed_name} · {shortTime(x.replay_candle_time, x.case_timeframe || x.replay_timeframe)}</button>;
+        })}</div>}
+      </details>
+
+      <details className="dangerZoneDetails">
+        <summary>Danger Zone</summary>
+        <div className="dangerZoneBox">
+          <button type="button" className="caseToolbarBtn danger" onClick={deleteActiveCase} disabled={!activeCaseId}>Delete Active Case</button>
+          <button type="button" className="caseToolbarBtn danger" onClick={clearAllCases}>Clear All Cases</button>
+          <span>Wipe Mapping Research Data deletes cases, map events, HTF snapshots, objectives, ranges and route memory for this symbol. Raw candles stay.</span>
+          <button type="button" className="caseToolbarBtn danger" onClick={resetResearchMappingDb}>Wipe Mapping Research Data</button>
+        </div>
+      </details>
     </div>
-
-
         </div>}
       </div>
     </div>

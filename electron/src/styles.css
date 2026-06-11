@@ -2249,6 +2249,142 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .ledgerRowButton span{font-weight:1000;font-size:12px;text-transform:uppercase;}
 .ledgerRowButton em{grid-column:2;color:#94a3b8;font-size:11px;font-style:normal;font-family:ui-monospace,Menlo,monospace;}
 .caseManagerHeader{margin-bottom:8px;}
+.caseManagerCompact .compactCaseHeader span{font-size:11px;}
+.caseManagerCompact .compactActiveCase{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
+  padding:8px 10px;margin-bottom:10px;
+}
+.caseManagerCompact .activeCaseMain{display:grid;gap:2px;min-width:0;flex:1;}
+.caseManagerToolbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}
+.caseManagerToolbar.mini{margin-top:8px;}
+.caseToolbarBtn{
+  border:1px solid rgba(148,163,184,.24);
+  background:rgba(15,23,42,.88);
+  color:#cbd5e1;
+  border-radius:8px;
+  padding:5px 9px;
+  font-size:11px;
+  font-weight:800;
+  cursor:pointer;
+  line-height:1.2;
+}
+.caseToolbarBtn.primary{
+  border-color:rgba(59,130,246,.55);
+  background:rgba(37,99,235,.22);
+  color:#dbeafe;
+}
+.caseToolbarBtn.danger{
+  border-color:rgba(248,113,113,.45);
+  background:rgba(127,29,29,.28);
+  color:#fecaca;
+}
+.caseToolbarBtn:disabled{opacity:.4;cursor:not-allowed;}
+.caseHierarchySection{
+  border:1px solid rgba(148,163,184,.18);
+  background:rgba(8,16,28,.72);
+  border-radius:12px;
+  padding:10px;
+  margin-bottom:10px;
+}
+.caseHierarchyHeader{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin-bottom:8px;
+}
+.caseHierarchyHeader b{color:#e2e8f0;font-size:12px;text-transform:uppercase;letter-spacing:.06em;}
+.caseHierarchyHeader span{color:#94a3b8;font-size:11px;font-weight:700;}
+.hierarchyChartFilters{
+  display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;
+}
+.hierarchyFilterChip{
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 7px;border-radius:999px;
+  border:1px solid rgba(148,163,184,.18);
+  background:rgba(15,23,42,.75);
+  color:#94a3b8;font-size:10px;font-weight:700;cursor:pointer;
+}
+.hierarchyFilterChip input{accent-color:#60a5fa;}
+.hierarchyTreeScroll{
+  max-height:min(42vh,360px);
+  overflow:auto;
+  display:grid;gap:4px;
+  padding-right:2px;
+}
+.hierarchyTreeRow{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  gap:4px;align-items:center;
+  border:1px solid rgba(148,163,184,.12);
+  border-radius:8px;
+  background:rgba(2,6,23,.45);
+  padding:3px 4px 3px 0;
+}
+.hierarchyTreeRow.active{
+  border-color:rgba(96,165,250,.55);
+  background:rgba(30,58,138,.22);
+}
+.hierarchyTreeRow.orphan{border-style:dashed;}
+.hierarchyTreeRowMain{
+  display:flex;align-items:flex-start;gap:2px;
+  border:none;background:transparent;color:inherit;
+  text-align:left;cursor:pointer;padding:4px 6px;min-width:0;
+}
+.hierarchyTreeBranch{color:#64748b;font-family:ui-monospace,Menlo,monospace;font-size:10px;flex:0 0 auto;}
+.hierarchyTreeLabel{
+  font-size:10px;line-height:1.35;font-weight:700;
+  font-family:ui-monospace,Menlo,monospace;
+  word-break:break-word;
+}
+.hierarchyLayer-macro{color:#c084fc;}
+.hierarchyLayer-weekly{color:#f87171;}
+.hierarchyLayer-daily{color:#4ade80;}
+.hierarchyLayer-intraday{color:#60a5fa;}
+.hierarchyLayer-micro{color:#facc15;}
+.hierarchyTreeActions{display:flex;flex-wrap:wrap;gap:3px;justify-content:flex-end;padding-right:4px;}
+.hierarchyTreeActions button{
+  border:1px solid rgba(148,163,184,.2);
+  background:rgba(15,23,42,.85);
+  color:#cbd5e1;
+  border-radius:6px;
+  padding:2px 6px;
+  font-size:9px;
+  font-weight:800;
+  cursor:pointer;
+}
+.hierarchyTreeActions button.dangerTiny{
+  border-color:rgba(248,113,113,.35);
+  color:#fecaca;
+}
+.hierarchyOrphanHeader{
+  margin:8px 0 4px;
+  color:#fbbf24;
+  font-size:10px;
+  font-weight:800;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+}
+.caseMetadataDetails{
+  border:1px solid rgba(148,163,184,.14);
+  border-radius:10px;
+  padding:8px 10px;
+  margin-bottom:8px;
+  background:rgba(8,16,28,.45);
+}
+.caseMetadataDetails summary{
+  cursor:pointer;
+  color:#94a3b8;
+  font-size:11px;
+  font-weight:800;
+}
+.compactScopeStrip{margin:8px 0;}
+.compactScopeStrip button{padding:5px 4px;font-size:10px;}
+.compactSeedGrid{grid-template-columns:1fr !important;gap:8px !important;}
+.compactAnchorBtns{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+.compactAnchorBtns button{
+  padding:5px 8px;font-size:10px;font-weight:700;
+  border-radius:8px;border:1px solid rgba(148,163,184,.18);
+  background:rgba(15,23,42,.82);color:#cbd5e1;cursor:pointer;
+}
+.compactCaseList button{font-size:11px;padding:6px 8px;}
 .activeCaseCard{
   display:grid;
   grid-template-columns:82px 1fr auto;
