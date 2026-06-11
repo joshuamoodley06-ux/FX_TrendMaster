@@ -2667,13 +2667,13 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .parentRangeMiniBar button{display:none !important;}
 .mapStudioShell.chartFullscreenActive .parentRangeMiniBar{
-  left:12px !important;
-  top:56px !important;
+  left:8px !important;
+  top:44px !important;
   bottom:auto !important;
-  max-width:420px !important;
-  transform:scale(.88);
+  max-width:360px !important;
+  transform:scale(.82);
   transform-origin:left top;
-  opacity:.72 !important;
+  opacity:.68 !important;
 }
 .mapStudioShell.chartFullscreenActive .quickAnchorBar{
   left:12px !important;
@@ -2681,18 +2681,73 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .mapStudioShell.chartFullscreenActive .structuralMappingDock{
   position:absolute !important;
-  left:12px !important;
-  top:10px !important;
+  left:8px !important;
+  top:8px !important;
   z-index:10002 !important;
   display:flex !important;
   flex-direction:column !important;
   gap:6px !important;
   max-width:min(820px,72vw) !important;
 }
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact{
+  gap:3px !important;
+  max-width:min(640px,68vw) !important;
+  padding:4px 6px !important;
+  border-radius:10px !important;
+  background:rgba(2,6,23,.88) !important;
+  border:1px solid rgba(148,163,184,.2) !important;
+  backdrop-filter:blur(8px) !important;
+}
 .mapStudioShell.chartFullscreenActive .structuralMappingDock .quickAnchorBar{
   position:static !important;
   left:auto !important;
   top:auto !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .structuralMappingRibbon,
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar{
+  background:transparent !important;
+  border:none !important;
+  padding:0 !important;
+  box-shadow:none !important;
+  backdrop-filter:none !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar{
+  gap:3px !important;
+  max-width:none !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar button{
+  min-height:22px !important;
+  padding:1px 6px !important;
+  font-size:9px !important;
+  border-radius:6px !important;
+  font-weight:800 !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar .structuralQuickBtn.chipBtn{
+  min-width:0 !important;
+  width:26px !important;
+  padding:1px 0 !important;
+  justify-content:center !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar .structuralQuickBtn.chipBtn span{
+  min-width:0 !important;
+  width:auto !important;
+  height:auto !important;
+  background:transparent !important;
+  font-size:9px !important;
+  letter-spacing:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar .structuralQuickBtn.chipBtn b{
+  display:none !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickDraftStatus{
+  min-height:20px !important;
+  padding:0 5px !important;
+  font-size:8px !important;
+  border-radius:6px !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorDivider{
+  height:14px !important;
+  margin:0 1px !important;
 }
 .structuralMappingRibbon{
   display:flex;
@@ -2705,6 +2760,91 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   border:1px solid rgba(148,163,184,.22);
   font-size:11px;
   backdrop-filter:blur(10px);
+}
+.structuralMappingRibbon.ribbonCompact{
+  flex-wrap:nowrap;
+  gap:4px;
+  padding:0;
+  border:none;
+  background:transparent;
+  font-size:9px;
+}
+.structuralMappingRibbon .ribbonScopeChips{
+  display:inline-flex;
+  align-items:center;
+  gap:2px;
+}
+.structuralMappingRibbon .scopeChip{
+  min-width:22px;
+  height:22px;
+  padding:0 5px;
+  border-radius:6px;
+  border:1px solid rgba(148,163,184,.24);
+  background:#07111d;
+  color:#cbd5e1;
+  font-size:9px;
+  font-weight:900;
+  cursor:pointer;
+  line-height:1;
+}
+.structuralMappingRibbon .scopeChip.active{
+  border-color:rgba(255,191,47,.72);
+  color:#05111f;
+  background:linear-gradient(180deg,#ffe07a,#ffbf2f);
+}
+.structuralMappingRibbon.ribbonCompact .ribbonSourceTf{
+  display:inline-flex;
+  align-items:center;
+  margin:0;
+  font-size:9px;
+  color:#64748b;
+}
+.structuralMappingRibbon.ribbonCompact .ribbonSourceTf select{
+  height:22px;
+  min-width:42px;
+  margin-left:2px;
+  padding:0 4px;
+  font-size:9px;
+  border-radius:6px;
+  border:1px solid rgba(148,163,184,.24);
+  background:#07111d;
+  color:#e2e8f0;
+}
+.structuralMappingRibbon.ribbonCompact .ribbonParentTf{
+  display:inline-flex;
+  align-items:center;
+  font-size:9px;
+  color:#64748b;
+}
+.structuralMappingRibbon.ribbonCompact .ribbonParentTf select{
+  height:22px;
+  min-width:52px;
+  max-width:88px;
+  margin-left:2px;
+  padding:0 4px;
+  font-size:9px;
+  border-radius:6px;
+  border:1px solid rgba(168,85,247,.35);
+  background:#07111d;
+  color:#e9d5ff;
+}
+.structuralMappingRibbon.ribbonCompact .ribbonStatus{
+  font-size:9px;
+  color:#64748b;
+  white-space:nowrap;
+}
+.structuralMappingRibbon.ribbonCompact .ribbonChainToggle{
+  min-height:22px;
+  padding:1px 6px;
+  font-size:9px;
+  border-radius:6px;
+}
+.structuralMappingRibbon.ribbonCompact .chainDraftBanner{
+  flex-basis:100%;
+  padding:2px 6px;
+  font-size:9px;
+  border-radius:6px;
+  line-height:1.2;
 }
 .structuralMappingRibbon.ribbonInline{
   margin-bottom:8px;
