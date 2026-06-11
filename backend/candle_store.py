@@ -1429,6 +1429,18 @@ def _validate_range_lifecycle_fields(
         status = _normalize_range_status(payload.get("status"))
         if status:
             resolved["status"] = status
+            if status == "ACTIVE":
+                resolved["broken_by_event_id"] = None
+                resolved["direction_of_break"] = None
+                resolved["inactive_from_time"] = None
+                return lifecycle_status, warnings, resolved
+
+    effective_status = resolved.get("status") or _normalize_range_status(merged.get("status"))
+    if effective_status == "ACTIVE" and "status" in payload:
+        resolved["broken_by_event_id"] = None
+        resolved["direction_of_break"] = None
+        resolved["inactive_from_time"] = None
+        return lifecycle_status, warnings, resolved
 
     effective_status = resolved.get("status") or _normalize_range_status(merged.get("status"))
     if effective_status != "BROKEN":
@@ -2267,6 +2279,11 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     existing["id"],
                 ),
             )
+            if lifecycle_resolved.get("status") == "ACTIVE" or _normalize_range_status(payload.get("status")) == "ACTIVE":
+                conn.execute(
+                    "UPDATE map_ranges SET broken_by_event_id=NULL, direction_of_break=NULL, inactive_from_time=NULL WHERE id=?",
+                    (existing["id"],),
+                )
             conn.commit()
             row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (existing["id"],)).fetchone()
             return {

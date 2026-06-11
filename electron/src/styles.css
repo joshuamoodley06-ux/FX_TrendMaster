@@ -2679,6 +2679,77 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   left:12px !important;
   top:10px !important;
 }
+.mapStudioShell.chartFullscreenActive .structuralMappingDock{
+  position:absolute !important;
+  left:12px !important;
+  top:10px !important;
+  z-index:10002 !important;
+  display:flex !important;
+  flex-direction:column !important;
+  gap:6px !important;
+  max-width:min(820px,72vw) !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock .quickAnchorBar{
+  position:static !important;
+  left:auto !important;
+  top:auto !important;
+}
+.structuralMappingRibbon{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:8px;
+  padding:6px 8px;
+  border-radius:12px;
+  background:rgba(2,6,23,.78);
+  border:1px solid rgba(148,163,184,.22);
+  font-size:11px;
+  backdrop-filter:blur(10px);
+}
+.structuralMappingRibbon.ribbonInline{
+  margin-bottom:8px;
+}
+.structuralMappingRibbon .ribbonScopeRow{
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.structuralMappingRibbon .ribbonLabel{
+  font-weight:900;
+  color:#94a3b8;
+  text-transform:uppercase;
+  font-size:10px;
+}
+.structuralMappingRibbon .ribbonStatus{
+  color:#cbd5e1;
+  white-space:nowrap;
+}
+.structuralMappingRibbon .ribbonSourceTf select{
+  margin-left:4px;
+}
+.structuralMappingRibbon .ribbonChainToggle{
+  min-height:28px;
+  padding:3px 8px;
+  border-radius:8px;
+  border:1px solid rgba(148,163,184,.26);
+  background:#07111d;
+  color:#e8eef7;
+  font-weight:800;
+  cursor:pointer;
+}
+.structuralMappingRibbon .ribbonChainToggle.active{
+  border-color:rgba(52,211,153,.55);
+  color:#6ee7b7;
+}
+.structuralMappingRibbon .chainDraftBanner{
+  flex-basis:100%;
+  padding:4px 8px;
+  border-radius:8px;
+  background:rgba(251,191,36,.15);
+  border:1px solid rgba(251,191,36,.45);
+  color:#fde68a;
+  font-weight:700;
+}
 .fullscreenTfDock{
   position:absolute;
   top:10px;
