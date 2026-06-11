@@ -379,6 +379,9 @@ type MapEvent = { id:string; event_type:string; event_name?:string; time?:string
 
 type StructureLayer = 'MACRO'|'WEEKLY'|'DAILY'|'INTRADAY'|'MICRO';
 const STRUCTURE_LAYERS: StructureLayer[] = ['MACRO', 'WEEKLY', 'DAILY', 'INTRADAY', 'MICRO'];
+const STRUCTURE_LAYER_CHIP: Record<StructureLayer, string> = {
+  MACRO: 'M', WEEKLY: 'W', DAILY: 'D', INTRADAY: 'I', MICRO: 'µ',
+};
 function defaultSourceTimeframeForStructureLayer(layer: StructureLayer): string {
   return ({ MACRO:'MN1', WEEKLY:'W1', DAILY:'D1', INTRADAY:'H1', MICRO:'M15' } as Record<StructureLayer,string>)[layer] || 'D1';
 }
@@ -439,6 +442,11 @@ function structuralMappingScopeFields(structureLayer: StructureLayer, sourceTime
     chart_timeframe: chartTimeframe,
   };
 }
+
+/** ACTIVE range saves must not emit break lifecycle fields; BOS path owns those. */
+function activeStructuralRangeStatusFields(): { status: 'ACTIVE' } {
+  return { status: 'ACTIVE' };
+}
 function normalizeStructureLayer(value: any): StructureLayer | null {
   const raw = String(value || '').toUpperCase();
   const aliases: Record<string, StructureLayer> = {
@@ -486,6 +494,7 @@ type SavedRangeChartLine = {
   start?: string | null;
   end?: string | null;
   isActive?: boolean;
+  isParentContext?: boolean;
 };
 
 type DraftRangeChartLine = {
@@ -512,7 +521,11 @@ function collectParentContextChain(startRangeId: string, allRanges: any[]): stri
   return ids;
 }
 
-function structuralRangeToChartLine(r: any, activeStructuralRangeId: string): SavedRangeChartLine | null {
+function structuralRangeToChartLine(
+  r: any,
+  activeStructuralRangeId: string,
+  opts?: { isParentContext?: boolean },
+): SavedRangeChartLine | null {
   const hi = Number(r.range_high_price ?? r.range_high);
   const lo = Number(r.range_low_price ?? r.range_low);
   const rangeId = String(r.range_id || r.id || '');
@@ -527,7 +540,12 @@ function structuralRangeToChartLine(r: any, activeStructuralRangeId: string): Sa
     start: r.range_start_time || r.range_high_time || null,
     end: r.range_end_time || r.range_low_time || null,
     isActive: rangeId === String(activeStructuralRangeId),
+    isParentContext: !!opts?.isParentContext,
   };
+}
+
+function structureLayerRank(layer: StructureLayer): number {
+  return STRUCTURE_LAYERS.indexOf(layer);
 }
 
 type StructuralAnchor = { price:string; time:string; candle?:Candle|null };
@@ -1878,51 +1896,39 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const chartSavedRangeOverlays = useMemo<SavedRangeChartLine[]>(() => {
     const allRanges = safeArray<any>(savedStructuralRanges);
-    const rangeById: Record<string, any> = Object.fromEntries(
-      allRanges.map((r:any) => [String(r.range_id || r.id), r]),
-    );
     const overlayIds = new Set<string>();
     const overlays: SavedRangeChartLine[] = [];
-    const pushRange = (r: any) => {
+    const currentLayerRank = structureLayerRank(structureLayer);
+
+    const pushRange = (r: any, opts?: { isParentContext?: boolean }) => {
       const id = String(r?.range_id || r?.id || '');
       if (!id || overlayIds.has(id)) return;
-      const line = structuralRangeToChartLine(r, activeStructuralRangeId);
+      const line = structuralRangeToChartLine(r, activeStructuralRangeId, opts);
       if (!line) return;
       overlayIds.add(id);
       overlays.push(line);
     };
 
-    // Current mapping layer: all saved ranges for this case/layer.
     for (const r of allRanges) {
       const layer = normalizeStructureLayer(r.structure_layer || r.layer);
-      if (layer !== structureLayer) continue;
-      const chartTf = String(r.chart_timeframe || '').toUpperCase();
-      if (chartTf && chartTf !== String(timeframe).toUpperCase()) continue;
-      pushRange(r);
-    }
+      if (!layer) continue;
+      const rank = structureLayerRank(layer);
+      if (rank < 0) continue;
 
-    // Selected parent chain: immediate parent + ancestors only.
-    if (selectedParentRangeId) {
-      for (const id of collectParentContextChain(String(selectedParentRangeId), allRanges)) {
-        const row = rangeById[id];
-        if (row) pushRange(row);
+      if (rank === currentLayerRank) {
+        // Current mapping layer: show all saved ranges regardless of chart TF.
+        pushRange(r);
+        continue;
       }
-    }
 
-    // Active range parent chain when it differs from the dropdown selection.
-    if (activeStructuralRangeId) {
-      const activeRange = rangeById[String(activeStructuralRangeId)];
-      const activeParentId = activeRange?.parent_range_id;
-      if (activeParentId !== null && activeParentId !== undefined && String(activeParentId) !== '') {
-        for (const id of collectParentContextChain(String(activeParentId), allRanges)) {
-          const row = rangeById[id];
-          if (row) pushRange(row);
-        }
+      if (rank < currentLayerRank) {
+        // Higher layers (Macro/Weekly/Daily) stay visible as light context on lower charts.
+        pushRange(r, { isParentContext: true });
       }
     }
 
     return overlays;
-  }, [savedStructuralRanges, timeframe, structureLayer, selectedParentRangeId, activeStructuralRangeId]);
+  }, [savedStructuralRanges, structureLayer, activeStructuralRangeId]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
     const draftHigh = parseNum(rhAnchor.price);
@@ -2789,6 +2795,27 @@ function MapStudio({ symbol }: { symbol:string }) {
     return safeArray<StructuralRange>(savedStructuralRanges).filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO');
   }, [savedStructuralRanges]);
 
+  const parentCandidatesForScope = useMemo(() => {
+    return parentLayerCandidates(structureLayer, savedStructuralRanges);
+  }, [structureLayer, savedStructuralRanges]);
+
+  useEffect(() => {
+    if (!activeStructuralRangeId) return;
+    const row = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId));
+    if (!row) return;
+    const rowLayer = normalizeStructureLayer(row.structure_layer || row.layer);
+    if (rowLayer && rowLayer !== structureLayer) {
+      setActiveStructuralRangeId('');
+      setLastSavedRangeConfirmation(null);
+    }
+  }, [structureLayer, activeStructuralRangeId, savedStructuralRanges]);
+
+  useEffect(() => {
+    if (parentCandidatesForScope.length === 1 && !selectedParentRangeId) {
+      setSelectedParentRangeId(String(parentCandidatesForScope[0].range_id || parentCandidatesForScope[0].id || ''));
+    }
+  }, [parentCandidatesForScope, selectedParentRangeId]);
+
   useEffect(() => {
     const allowed = sourceTimeframeOptionsForLayer(structureLayer);
     if (!allowed.includes(String(sourceTimeframe).toUpperCase())) setSourceTimeframe(defaultSourceTimeframeForStructureLayer(structureLayer));
@@ -2942,8 +2969,12 @@ function MapStudio({ symbol }: { symbol:string }) {
         ? `Macro layer from W1 source — valid. chart_timeframe will record as ${timeframe}.`
         : '';
     const warning = [chartMismatch, parentResolve.error].filter(Boolean).join(' ');
-    const selectedIsBroken = !!(selectedSavedRange && isStructuralRangeBrokenStatus(selectedSavedRange.status));
-    const actionLabel = activeStructuralRangeId
+    const activeRangeLayer = selectedSavedRange
+      ? normalizeStructureLayer(selectedSavedRange.structure_layer || selectedSavedRange.layer)
+      : null;
+    const isLayerMatchedUpdate = !!(activeStructuralRangeId && activeRangeLayer === structureLayer);
+    const selectedIsBroken = !!(isLayerMatchedUpdate && selectedSavedRange && isStructuralRangeBrokenStatus(selectedSavedRange.status));
+    const actionLabel = isLayerMatchedUpdate
       ? (selectedIsBroken ? 'Update Broken Range (confirm)' : 'Update Selected Range')
       : 'Save New Range';
     return {
@@ -2964,7 +2995,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       range_high_time: rhAnchor.time || null,
       range_low_price: rlAnchor.price || null,
       range_low_time: rlAnchor.time || null,
-      action: activeStructuralRangeId ? 'UPDATE_SELECTED_RANGE' : 'SAVE_NEW_RANGE',
+      action: isLayerMatchedUpdate ? 'UPDATE_SELECTED_RANGE' : 'SAVE_NEW_RANGE',
       actionLabel,
       selectedIsBroken,
       warning,
@@ -3114,6 +3145,14 @@ function MapStudio({ symbol }: { symbol:string }) {
       refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`));
     }
   }, [rightDeckTab, markWorkspaceMode, structureLayer, sourceTimeframe, symbol, activeCaseId, rawActiveCaseId]);
+
+  useEffect(() => {
+    if (!chartFullscreen && !(rightDeckTab === 'mark' && markWorkspaceMode === 'htf')) return;
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) return;
+    refreshSavedRangesForCurrentCase().catch(() => {});
+    refreshStructuralRanges().catch(() => {});
+  }, [chartFullscreen, rightDeckTab, markWorkspaceMode, symbol, activeCaseId, rawActiveCaseId, structureLayer, sourceTimeframe]);
 
   const chartStructureForTimeframe = (tfRaw:string) => chartStructureForTimeframeStatic(tfRaw);
 
@@ -3337,7 +3376,10 @@ function MapStudio({ symbol }: { symbol:string }) {
   };
 
   const saveStructuralRange = async () => {
-    if (structuralSaving) return;
+    if (structuralSaving) {
+      setMessage('Range save already in progress…');
+      return;
+    }
     if (structureLayer === 'INTRADAY' && String(sourceTimeframe).toUpperCase() === 'H8') {
       setMessage('H8 source timeframe is selectable for planning, but backend rendering/storage normalisation is TODO before saving H8.');
       return;
@@ -3345,8 +3387,16 @@ function MapStudio({ symbol }: { symbol:string }) {
     const mappingCase = getCurrentMappingCaseRef();
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving a range.'); return; }
     if (!rhAnchor.price || !rlAnchor.price) { setMessage('Set Range High and Range Low before saving a structural range.'); return; }
-    const isUpdate = !!activeStructuralRangeId;
-    const activeRangeForSave = isUpdate ? (selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId)) : null;
+    const activeRangeForSave = activeStructuralRangeId
+      ? (selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId))
+      : null;
+    const activeRangeLayer = activeRangeForSave
+      ? normalizeStructureLayer(activeRangeForSave.structure_layer || activeRangeForSave.layer)
+      : null;
+    const isUpdate = !!(activeStructuralRangeId && activeRangeLayer === structureLayer);
+    if (activeStructuralRangeId && activeRangeLayer && activeRangeLayer !== structureLayer) {
+      setMessage(`Active range #${activeStructuralRangeId} is ${activeRangeLayer}. Saving new ${structureLayer} range instead.`);
+    }
     if (isUpdate && activeRangeForSave && isStructuralRangeBrokenStatus(activeRangeForSave.status)) {
       const ok = window.confirm('This edits the broken range itself. Use Save Next Range for the next range.');
       if (!ok) return;
@@ -3378,7 +3428,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         range_start_time: win.start || null,
         range_end_time: win.end || null,
         duration_minutes: win.duration,
-        status: 'active',
+        ...activeStructuralRangeStatusFields(),
         meta_json: { phase:'electron_phase3_structural_mapping', proof_target:'WEEKLY_DAILY' },
       };
       const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/range`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
@@ -3446,11 +3496,8 @@ function MapStudio({ symbol }: { symbol:string }) {
         range_start_time: win.start || null,
         range_end_time: win.end || null,
         duration_minutes: win.duration,
-        status: 'ACTIVE',
+        ...activeStructuralRangeStatusFields(),
         active_from_time: activeFromTime,
-        broken_by_event_id: null,
-        direction_of_break: null,
-        inactive_from_time: null,
         new_range_id: null,
         meta_json: { phase:'electron_phase3c_range_chain', chain_from_range_id: oldRangeId, chain_from_bos_event_id: createdByEventId, auto_chain_save: !!options?.auto },
       };
@@ -3516,7 +3563,14 @@ function MapStudio({ symbol }: { symbol:string }) {
   }, [autoChainSave, chainDraftMode, structuralSaving, saveNextRangeEligible.eligible, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, structureLayer]);
 
   const saveStructuralBos = async (direction:'UP'|'DOWN', options?:{ quickButton?:boolean }) => {
-    if (structuralSaving) return;
+    if (structuralSaving) {
+      setMessage('Wait for the current range save to finish before saving BOS.');
+      return;
+    }
+    if (quickEventSaving) {
+      setMessage('Wait for the current quick event save to finish before saving BOS.');
+      return;
+    }
     const mappingCase = getCurrentMappingCaseRef();
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving Break Up/Break Down.'); return; }
     const candle = selectedCandle || replayCandle;
@@ -3525,7 +3579,10 @@ function MapStudio({ symbol }: { symbol:string }) {
       : null;
     const anchor = quickAnchor || (direction === 'UP' ? bhAnchor : blAnchor);
     if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'Break Up' : 'Break Down'} candle before saving BOS_${direction}.`); return; }
-    if (!activeStructuralRangeId) { setMessage('Select the active range being broken before saving Break Up/Break Down.'); return; }
+    if (!activeStructuralRangeId) {
+      setMessage(`Select a saved ${structureLayer} range as active before Break Up/Break Down. Save Range first, or click the range in the side panel.`);
+      return;
+    }
     const activeRange = selectedSavedRange || safeArray<any>(savedStructuralRanges).find((r:any)=>String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
     const activeRangeLayer = normalizeStructureLayer(activeRange?.structure_layer || activeRange?.layer);
     if (activeRangeLayer && activeRangeLayer !== structureLayer) {
@@ -3605,14 +3662,20 @@ function MapStudio({ symbol }: { symbol:string }) {
       const returned = data?.event || data || {};
       const expectedType = direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN';
       const validationErrors:string[] = [];
-      if (String(returned.event_type || '').toUpperCase() !== expectedType) validationErrors.push(`event_type=${returned.event_type || 'missing'}`);
-      if (String(returned.structural_event || '').toUpperCase() !== expectedType) validationErrors.push(`structural_event=${returned.structural_event || 'missing'}`);
-      if (String(returned.structure_layer || '').toUpperCase() !== String(structureLayer)) validationErrors.push(`structure_layer=${returned.structure_layer || 'missing'}`);
+      const returnedType = String(returned.event_type || '').toUpperCase();
+      const returnedStructural = String(returned.structural_event || returned.event_type || '').toUpperCase();
+      if (returnedType !== expectedType && returnedStructural !== expectedType) {
+        validationErrors.push(`event_type=${returned.event_type || 'missing'}`);
+      }
+      const returnedLayer = normalizeStructureLayer(returned.structure_layer || returned.layer);
+      if (returnedLayer && returnedLayer !== structureLayer) validationErrors.push(`structure_layer=${returned.structure_layer || 'missing'}`);
       if (String(returned.source_timeframe || '').toUpperCase() !== String(sourceTimeframe).toUpperCase()) validationErrors.push('source_timeframe missing/mismatch');
-      if (mappingCase.raw_case_id && String(returned.raw_case_id || '') !== String(mappingCase.raw_case_id)) validationErrors.push('raw_case_id missing/mismatch');
-      if (mappingCase.case_ref && String(returned.case_ref || '') !== String(mappingCase.case_ref)) validationErrors.push('case_ref missing/mismatch');
+      if (mappingCase.raw_case_id && returned.raw_case_id && String(returned.raw_case_id) !== String(mappingCase.raw_case_id)) validationErrors.push('raw_case_id missing/mismatch');
+      if (mappingCase.case_ref && returned.case_ref && String(returned.case_ref) !== String(mappingCase.case_ref)) validationErrors.push('case_ref missing/mismatch');
       if (String(returned.active_range_id || '') !== String(activeStructuralRangeId)) validationErrors.push('active_range_id missing/mismatch');
-      if (payload.parent_range_id && String(returned.parent_range_id || '') !== String(payload.parent_range_id)) validationErrors.push('parent_range_id missing/mismatch');
+      if (payload.parent_range_id && returned.parent_range_id != null && returned.parent_range_id !== '' && String(returned.parent_range_id) !== String(payload.parent_range_id)) {
+        validationErrors.push('parent_range_id missing/mismatch');
+      }
       if (String(returned.break_level_type || '').toUpperCase() !== String(payload.break_level_type)) validationErrors.push('break_level_type missing/mismatch');
       if (validationErrors.length) {
         throw new Error(`Backend saved BOS through wrong/unlinked path: ${validationErrors.join(', ')}`);
@@ -4436,30 +4499,59 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const showStructuralMappingRibbon = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
   const selectStructureLayer = (layer: StructureLayer) => {
-    setSelectedParentRangeId('');
+    const prevParentLayer = expectedParentStructureLayer(structureLayer);
+    const nextParentLayer = expectedParentStructureLayer(layer);
+    if (prevParentLayer !== nextParentLayer) setSelectedParentRangeId('');
     setStructureLayer(layer);
     setSourceTimeframe(defaultSourceTimeframeForStructureLayer(layer));
   };
   const structuralMappingRibbonEl = (
-    <div className={`structuralMappingRibbon ${chartFullscreen ? 'ribbonDocked' : 'ribbonInline'}`} aria-label="Structural mapping scope">
-      <div className="ribbonScopeRow">
+    <div className={`structuralMappingRibbon ${chartFullscreen ? 'ribbonDocked ribbonCompact' : 'ribbonInline'}`} aria-label="Structural mapping scope">
+      {!chartFullscreen && <div className="ribbonScopeRow">
         <span className="ribbonLabel">Scope</span>
         <div className="markModeStrip compact ribbonScopeStrip">
           {STRUCTURE_LAYERS.map(layer => (
             <button key={layer} type="button" className={structureLayer === layer ? 'active' : ''} onClick={() => selectStructureLayer(layer)}>{layer}</button>
           ))}
         </div>
-      </div>
-      <label className="ribbonSourceTf">Source TF
+      </div>}
+      {chartFullscreen && <div className="ribbonScopeStrip ribbonScopeChips" role="group" aria-label="Mapping scope">
+        {STRUCTURE_LAYERS.map(layer => (
+          <button key={layer} type="button" className={`scopeChip ${structureLayer === layer ? 'active' : ''}`} title={layer} onClick={() => selectStructureLayer(layer)}>{STRUCTURE_LAYER_CHIP[layer]}</button>
+        ))}
+      </div>}
+      <label className="ribbonSourceTf" title="Structural source timeframe">{chartFullscreen ? '' : 'Source TF '}
         <select value={sourceTimeframe} onChange={e => setSourceTimeframe(e.target.value)}>
           {sourceTimeframeOptionsForLayer(structureLayer).map(tf => <option key={tf} value={tf}>{tf}</option>)}
         </select>
       </label>
-      <span className="ribbonStatus">Status: {structureLayer} · source {sourceTimeframe} · chart {timeframe}</span>
-      <button type="button" className={`ribbonChainToggle ${autoChainSave ? 'active' : ''}`} onClick={() => setAutoChainSave(v => !v)} title="After BOS break, auto Save Next Range when RH and RL are set">Auto Chain Save: {autoChainSave ? 'ON' : 'OFF'}</button>
-      {chainDraftMode && <div className="chainDraftBanner">Range is BROKEN. Set RH/RL for the next {structureLayer} range.</div>}
+      {parentStructureLayer && parentCandidatesForScope.length > 0 && (
+        <label className="ribbonParentTf" title={`${parentStructureLayer} parent for ${structureLayer}`}>
+          <select value={selectedParentRangeId} onChange={e => setSelectedParentRangeId(e.target.value)}>
+            <option value="">{parentCandidatesForScope.length > 1 ? `${parentStructureLayer}?` : 'Orphan'}</option>
+            {parentCandidatesForScope.map((r:any) => (
+              <option key={r.range_id || r.id} value={String(r.range_id || r.id)}>
+                #{r.range_id || r.id} · RH {r.range_high_price ?? r.range_high ?? '?'}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <span className="ribbonStatus" title={`${structureLayer} · source ${sourceTimeframe} · chart ${timeframe}${activeStructuralRangeId ? ` · active #${activeStructuralRangeId}` : ''}`}>
+        {chartFullscreen
+          ? `${STRUCTURE_LAYER_CHIP[structureLayer]}/${sourceTimeframe}/${timeframe}${activeStructuralRangeId ? ` · #${activeStructuralRangeId}` : ''}`
+          : `Status: ${structureLayer} · source ${sourceTimeframe} · chart ${timeframe}${activeStructuralRangeId ? ` · active #${activeStructuralRangeId}` : ''}`}
+      </span>
+      <button type="button" className={`ribbonChainToggle ${autoChainSave ? 'active' : ''}`} onClick={() => setAutoChainSave(v => !v)} title="After BOS break, auto Save Next Range when RH and RL are set">
+        {chartFullscreen ? `Auto ${autoChainSave ? 'ON' : 'OFF'}` : `Auto Chain Save: ${autoChainSave ? 'ON' : 'OFF'}`}
+      </button>
+      {chainDraftMode && <div className="chainDraftBanner">{chartFullscreen ? `BROKEN · set RH/RL for next ${STRUCTURE_LAYER_CHIP[structureLayer]}` : `Range is BROKEN. Set RH/RL for the next ${structureLayer} range.`}</div>}
     </div>
   );
+  const compactQuickSaveLabel = savePreview.actionLabel
+    .replace('Update Broken Range (confirm)', 'Upd Broken')
+    .replace('Update Selected Range', 'Update')
+    .replace('Save New Range', 'Save');
 
   return <div className={`mapStudioShell d3MapStudio ${chartFullscreen ? 'chartFullscreenActive' : ''}`}>
     <div className="panelHeader mapStudioHeader">
@@ -4532,26 +4624,26 @@ function MapStudio({ symbol }: { symbol:string }) {
           <span>{activeParentRangeOverlay.map(x=>`${x.kind.toUpperCase()} ${Number(x.price).toFixed(2)}`).join(' · ')}</span>
         </div>}
         {!chartFullscreen && showStructuralMappingRibbon && structuralMappingRibbonEl}
-        {chartFullscreen && <div className="structuralMappingDock">
+        {chartFullscreen && <div className="structuralMappingDock compact">
           {showStructuralMappingRibbon && structuralMappingRibbonEl}
-          <div className="quickAnchorBar" aria-label="Quick structural mapping controls">
-          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RH')} title="Save RH event and set structural Range High from selected/replay candle high"><b>Range High</b><span>RH</span></button>
-          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RL')} title="Save RL event and set structural Range Low from selected/replay candle low"><b>Range Low</b><span>RL</span></button>
-          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BH')} title="Save formal BOS_UP from selected/replay candle high"><b>Break Up</b><span>BOS↑</span></button>
-          <button className="structuralQuickBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BL')} title="Save formal BOS_DOWN from selected/replay candle low"><b>Break Down</b><span>BOS↓</span></button>
+          <div className="quickAnchorBar quickAnchorBarCompact" aria-label="Quick structural mapping controls">
+          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RH')} title="Range High"><span>RH</span></button>
+          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RL')} title="Range Low"><span>RL</span></button>
+          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BH')} title="Break Up / BOS_UP"><span>↑</span></button>
+          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BL')} title="Break Down / BOS_DOWN"><span>↓</span></button>
           <span className="quickAnchorDivider" />
-          <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
-          <button className={`quickSaveBtn ${savePreview.selectedIsBroken ? '' : 'primary'}`} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
-          <button className="quickSaveBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? 'Saving...' : 'Save Next Range'}</button>
-          <button className="quickSaveBtn" onClick={refreshHierarchyAudit}>Refresh Audit</button>
-          <button className="quickSaveBtn" onClick={exportCurrentMappingJson}>Export JSON</button>
-          <button className="quickSaveBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
-          <span className={`quickDraftStatus ${structuralRangeDraftDirty || structuralBosDraftDirty ? 'dirty' : 'saved'}`}>{structuralRangeDraftDirty || structuralBosDraftDirty ? 'Unsaved draft' : 'Draft clean'}</span>
-          <span className={`quickDraftStatus ${lastSavedQuickEvent ? 'saved' : ''}`}>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} ${lastSavedQuickEvent.source_timeframe} ${String(lastSavedQuickEvent.event_id).slice(0,8)}` : 'No quick event saved'}</span>
-          <span className="quickAnchorDivider" title="Break Up/Down save formal BOS events immediately; Parent Break remains a later explicit action." />
-          <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')}>Select</button>
-          <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')}>Scrub</button>
-          <button onClick={()=>setChartFullscreen(false)}>Exit</button>
+          <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving} title="Update mapping case">{caseSaving ? '…' : getCurrentMappingCaseRef().hasCase ? 'Case' : 'New Case'}</button>
+          <button className={`quickSaveBtn ${savePreview.selectedIsBroken ? '' : 'primary'}`} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price} title={savePreview.actionLabel}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+          <button className="quickSaveBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? '…' : 'Next'}</button>
+          <button className="quickSaveBtn" onClick={refreshHierarchyAudit} title="Refresh hierarchy audit">Audit</button>
+          <button className="quickSaveBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
+          <button className="quickSaveBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving} title="Undo last quick event">Undo</button>
+          {(structuralRangeDraftDirty || structuralBosDraftDirty) && <span className="quickDraftStatus dirty" title="Unsaved draft">draft</span>}
+          {lastSavedQuickEvent && <span className="quickDraftStatus saved" title={`Last: ${lastSavedQuickEvent.role} ${lastSavedQuickEvent.source_timeframe}`}>{lastSavedQuickEvent.role}</span>}
+          <span className="quickAnchorDivider" />
+          <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')} title="Select tool">Sel</button>
+          <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')} title="Scrub replay">Scrub</button>
+          <button onClick={()=>setChartFullscreen(false)} title="Exit fullscreen">Exit</button>
         </div>
         </div>}
         {chartFullscreen && <div className="fullscreenTfDock" aria-label="Fullscreen timeframe controls">
@@ -5016,10 +5108,24 @@ function structureLayerLineColor(layer: StructureLayer): string {
   return map[layer] || '#94a3b8';
 }
 
-function savedRangeLineStyle(status: string) {
+function savedRangeLineStyle(status: string, opts?: { isParentContext?: boolean; isActive?: boolean }) {
   const s = String(status || 'ACTIVE').toUpperCase();
-  if (s === 'BROKEN' || s === 'ABANDONED') return { opacity: 0.38, dash: '8 6', width: 1.4 };
-  return { opacity: 0.92, dash: '', width: 2.2 };
+  const broken = s === 'BROKEN' || s === 'ABANDONED' || s === 'INACTIVE' || s === 'REPLACED';
+
+  if (opts?.isActive && !broken) {
+    return { opacity: 0.95, dash: '', width: 2.4 };
+  }
+  if (broken) {
+    return {
+      opacity: opts?.isParentContext ? 0.22 : 0.4,
+      dash: '5 5',
+      width: opts?.isParentContext ? 1.0 : 1.25,
+    };
+  }
+  if (opts?.isParentContext) {
+    return { opacity: 0.3, dash: '4 7', width: 1.1 };
+  }
+  return { opacity: 0.62, dash: '3 6', width: 1.5 };
 }
 
 function draftRangeLineStyle() {
@@ -5190,10 +5296,11 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('height', 18).attr('rx', 6)
         .attr('fill','rgba(2,6,23,.74)')
         .attr('stroke', (d:any)=>d.color)
-        .attr('stroke-opacity', 0.45);
+        .attr('stroke-opacity', (d:any)=> (d.style?.opacity ?? 0.5) * 0.55);
       labels.append('text')
         .attr('x', 8).attr('y', 13)
         .attr('fill', (d:any)=>d.color)
+        .attr('fill-opacity', (d:any)=> (d.style?.opacity ?? 0.5) * 0.85)
         .attr('font-size', 10)
         .attr('font-weight', 900)
         .text((d:any)=>d.label);
@@ -5203,11 +5310,12 @@ function D3CandleMap(props:D3CandleMapProps) {
     if (savedRanges.length) {
       const sg = plot.append('g').attr('class','savedRangeLines').attr('pointer-events','none');
       const savedRows = savedRanges.flatMap((r) => {
-        const style = savedRangeLineStyle(r.status);
+        const style = savedRangeLineStyle(r.status, { isParentContext: r.isParentContext, isActive: r.isActive });
         const color = structureLayerLineColor(r.structureLayer);
+        const prefix = r.isParentContext ? 'ctx ' : '';
         return [
-          { kind:'high' as const, price:r.high, label:`#${r.rangeId} ${r.structureLayer} RH`, color, style, rangeId:r.rangeId },
-          { kind:'low' as const, price:r.low, label:`#${r.rangeId} ${r.structureLayer} RL`, color, style, rangeId:r.rangeId },
+          { kind:'high' as const, price:r.high, label:`${prefix}#${r.rangeId} ${r.structureLayer} RH`, color, style, rangeId:r.rangeId },
+          { kind:'low' as const, price:r.low, label:`${prefix}#${r.rangeId} ${r.structureLayer} RL`, color, style, rangeId:r.rangeId },
         ];
       });
       sg.selectAll('line.savedRangeLine').data(savedRows).join('line')

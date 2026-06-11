@@ -1222,6 +1222,62 @@ def _range_status_is_broken(status: Any) -> bool:
     return _normalize_range_status(status) == "BROKEN"
 
 
+def _effective_range_status(
+    payload: dict[str, Any],
+    merged: dict[str, Any],
+    lifecycle_resolved: dict[str, Any] | None = None,
+) -> str:
+    resolved = lifecycle_resolved or {}
+    return (
+        resolved.get("status")
+        or _normalize_range_status(payload.get("status"))
+        or _normalize_range_status(merged.get("status"))
+        or "ACTIVE"
+    )
+
+
+def _apply_active_lifecycle_normalization(
+    payload: dict[str, Any],
+    merged: dict[str, Any],
+    lifecycle_resolved: dict[str, Any],
+) -> str:
+    """ACTIVE ranges must never retain break lifecycle fields, regardless of payload."""
+    effective_status = _effective_range_status(payload, merged, lifecycle_resolved)
+    normalized_status = _normalize_range_status(effective_status) or "ACTIVE"
+    if normalized_status == "ACTIVE":
+        payload["broken_by_event_id"] = None
+        payload["direction_of_break"] = None
+        payload["inactive_from_time"] = None
+        lifecycle_resolved["broken_by_event_id"] = None
+        lifecycle_resolved["direction_of_break"] = None
+        lifecycle_resolved["inactive_from_time"] = None
+    if "status" in payload or lifecycle_resolved.get("status") is not None:
+        payload["status"] = normalized_status
+        lifecycle_resolved["status"] = normalized_status
+    return normalized_status
+
+
+def _write_broken_by_event_id(payload: dict[str, Any], effective_status: str) -> Any:
+    if effective_status == "ACTIVE":
+        return None
+    return payload.get("broken_by_event_id")
+
+
+def _write_direction_of_break(payload: dict[str, Any], effective_status: str) -> Any:
+    if effective_status == "ACTIVE":
+        return None
+    return payload.get("direction_of_break")
+
+
+def _write_inactive_from_time(payload: dict[str, Any], effective_status: str) -> Any:
+    if effective_status == "ACTIVE":
+        return None
+    inactive = payload.get("inactive_from_time")
+    if inactive not in (None, ""):
+        return _optional_text(inactive)
+    return _optional_text(payload.get("range_end_time"))
+
+
 def _range_part_of_chain(row: sqlite3.Row | dict[str, Any]) -> bool:
     d = _row_dict(row)
     return any(d.get(field) not in (None, "") for field in ("old_range_id", "created_by_event_id", "new_range_id"))
@@ -1423,6 +1479,13 @@ def _validate_range_lifecycle_fields(
     lifecycle_status = "VALID"
     lifecycle_fields = ("status", "direction_of_break", "broken_by_event_id", "inactive_from_time")
     if not any(field in payload for field in lifecycle_fields):
+        effective_status = _normalize_range_status(merged.get("status")) or _normalize_range_status(payload.get("status"))
+        if effective_status == "ACTIVE" and any(
+            field in payload for field in ("direction_of_break", "broken_by_event_id", "inactive_from_time", "range_end_time")
+        ):
+            resolved["broken_by_event_id"] = None
+            resolved["direction_of_break"] = None
+            resolved["inactive_from_time"] = None
         return lifecycle_status, warnings, resolved
 
     if "status" in payload:
@@ -2210,6 +2273,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
         combined_warnings = validation_warnings + lifecycle_warnings + chain_warnings
         for key, value in {**lifecycle_resolved, **chain_resolved}.items():
             payload[key] = value
+        effective_status = _apply_active_lifecycle_normalization(payload, merged_payload, lifecycle_resolved)
 
         if existing:
             conn.execute(
@@ -2246,7 +2310,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     payload.get("range_start_time"),
                     payload.get("range_end_time"),
                     payload.get("duration_minutes"),
-                    payload.get("status"),
+                    effective_status,
                     parse_float(payload.get("ref_high_price"), None),
                     payload.get("ref_high_time"),
                     parse_float(payload.get("ref_low_price"), None),
@@ -2266,10 +2330,10 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     parent_timeframe,
                     parent_case_id,
                     payload.get("created_by_event_id"),
-                    payload.get("broken_by_event_id"),
-                    payload.get("direction_of_break"),
+                    _write_broken_by_event_id(payload, effective_status),
+                    _write_direction_of_break(payload, effective_status),
                     payload.get("active_from_time") or payload.get("range_start_time"),
-                    payload.get("inactive_from_time") or payload.get("range_end_time"),
+                    _write_inactive_from_time(payload, effective_status),
                     payload.get("old_range_id"),
                     payload.get("new_range_id"),
                     payload.get("structure_version") or "STRUCTURE_ONLY_V1",
@@ -2279,7 +2343,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     existing["id"],
                 ),
             )
-            if lifecycle_resolved.get("status") == "ACTIVE" or _normalize_range_status(payload.get("status")) == "ACTIVE":
+            if effective_status == "ACTIVE":
                 conn.execute(
                     "UPDATE map_ranges SET broken_by_event_id=NULL, direction_of_break=NULL, inactive_from_time=NULL WHERE id=?",
                     (existing["id"],),
@@ -2328,7 +2392,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                 payload.get("ref_low_time"),
                 payload.get("bias"),
                 payload.get("destination"),
-                payload.get("status") or "active",
+                effective_status,
                 range_key,
                 payload.get("notes"),
                 payload.get("source") or "electron",
@@ -2343,10 +2407,10 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                 parent_timeframe,
                 parent_case_id,
                 payload.get("created_by_event_id"),
-                payload.get("broken_by_event_id"),
-                payload.get("direction_of_break"),
+                _write_broken_by_event_id(payload, effective_status),
+                _write_direction_of_break(payload, effective_status),
                 payload.get("active_from_time") or payload.get("range_start_time"),
-                payload.get("inactive_from_time") or payload.get("range_end_time"),
+                _write_inactive_from_time(payload, effective_status),
                 payload.get("old_range_id"),
                 payload.get("new_range_id"),
                 payload.get("structure_version") or "STRUCTURE_ONLY_V1",
@@ -2356,6 +2420,11 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                 now,
             ),
         )
+        if effective_status == "ACTIVE":
+            conn.execute(
+                "UPDATE map_ranges SET broken_by_event_id=NULL, direction_of_break=NULL, inactive_from_time=NULL WHERE id=?",
+                (cur.lastrowid,),
+            )
         conn.commit()
         row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (cur.lastrowid,)).fetchone()
         return {
@@ -2798,6 +2867,18 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
             updates["parent_case_id"] = parent["case_id"] if "case_id" in parent.keys() else None
         updates.update(lifecycle_resolved)
         updates.update(chain_resolved)
+        effective_status = _apply_active_lifecycle_normalization(payload or {}, merged, lifecycle_resolved)
+        updates.update(
+            {
+                "broken_by_event_id": _write_broken_by_event_id({**merged, **updates}, effective_status),
+                "direction_of_break": _write_direction_of_break({**merged, **updates}, effective_status),
+                "inactive_from_time": _write_inactive_from_time({**merged, **updates}, effective_status),
+            }
+        )
+        if effective_status == "ACTIVE":
+            updates["broken_by_event_id"] = None
+            updates["direction_of_break"] = None
+            updates["inactive_from_time"] = None
 
         float_fields = {"range_high_price", "range_low_price", "break_high_price", "break_low_price"}
         text_fields = {
@@ -2813,9 +2894,13 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
                 updates[field] = parse_float(payload.get(field), None)
         for field in text_fields:
             if field in payload and field not in lifecycle_resolved and field not in chain_resolved:
+                if effective_status == "ACTIVE" and field in {"direction_of_break", "inactive_from_time"}:
+                    continue
                 updates[field] = _optional_text(payload.get(field))
         for field in int_fields:
             if field in payload and field not in lifecycle_resolved and field not in chain_resolved:
+                if effective_status == "ACTIVE" and field == "broken_by_event_id":
+                    continue
                 if field in {"broken_by_event_id", "created_by_event_id"}:
                     _ev_status, _ev_warnings, _ev_row, storage_id = _validate_bos_event_reference(
                         conn,
