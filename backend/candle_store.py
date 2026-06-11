@@ -987,21 +987,18 @@ def _parse_time_ms(value: Any) -> int | None:
         return None
 
 
-def _range_time_window(row: sqlite3.Row | dict[str, Any]) -> tuple[int | None, int | None]:
+def _boundary_span_window(row: sqlite3.Row | dict[str, Any]) -> tuple[int | None, int | None]:
+    """RH/RL anchor boundary span — not lifecycle."""
     d = _row_dict(row)
     start_candidates = [
-        d.get("active_from_time"),
         d.get("range_start_time"),
         d.get("range_high_time"),
         d.get("range_low_time"),
-        d.get("created_at"),
     ]
     end_candidates = [
-        d.get("inactive_from_time"),
         d.get("range_end_time"),
-        d.get("break_high_time"),
-        d.get("break_low_time"),
-        d.get("updated_at"),
+        d.get("range_high_time"),
+        d.get("range_low_time"),
     ]
     starts = [x for x in (_parse_time_ms(v) for v in start_candidates) if x is not None]
     ends = [x for x in (_parse_time_ms(v) for v in end_candidates) if x is not None]
@@ -1012,28 +1009,75 @@ def _range_time_window(row: sqlite3.Row | dict[str, Any]) -> tuple[int | None, i
     return start, end
 
 
-def _child_time_window_valid_for_parent(
+def _parent_lifecycle_window(row: sqlite3.Row | dict[str, Any]) -> tuple[int | None, int | None]:
+    """Lifecycle window. Upper bound only when parent is BROKEN/ABANDONED/ARCHIVED."""
+    d = _row_dict(row)
+    start_candidates = [d.get("active_from_time"), d.get("range_start_time")]
+    starts = [x for x in (_parse_time_ms(v) for v in start_candidates) if x is not None]
+    p_start = min(starts) if starts else None
+    status = _normalize_range_status(d.get("status"))
+    p_end: int | None = None
+    if status in {"BROKEN", "ABANDONED", "ARCHIVED"}:
+        p_end = _parse_time_ms(d.get("inactive_from_time"))
+    return p_start, p_end
+
+
+def _child_lifecycle_contradiction_for_parent(
     child: sqlite3.Row | dict[str, Any],
     parent: sqlite3.Row | dict[str, Any],
-) -> tuple[bool, str | None]:
-    p_start, p_end = _range_time_window(parent)
-    c_start, c_end = _range_time_window(child)
+) -> str | None:
+    """True lifecycle contradiction — invalidates parent link review status."""
+    _p_start, p_end = _parent_lifecycle_window(parent)
+    c_start, c_end = _boundary_span_window(child)
+    if p_end is None:
+        return None
+    if c_start is not None and c_start > p_end:
+        return "child range starts after parent inactive window"
+    if c_end is not None and c_end > p_end:
+        return "child range ends after parent inactive window"
+    return None
+
+
+def _child_boundary_time_informational_warnings(
+    child: sqlite3.Row | dict[str, Any],
+    parent: sqlite3.Row | dict[str, Any],
+) -> list[str]:
+    """Anchor-span timing notes only — do not change parent_link_status."""
+    warnings: list[str] = []
+    p_start, p_end = _boundary_span_window(parent)
+    c_start, c_end = _boundary_span_window(child)
     if p_start is None and p_end is None:
-        return True, None
+        return warnings
     if c_start is None and c_end is None:
-        return True, None
+        return warnings
     if p_start is not None and c_start is not None and c_start < p_start:
-        return False, "child range starts before parent active window"
+        warnings.append("child range starts before parent active window")
     if p_end is not None and c_end is not None and c_end > p_end:
-        return False, "child range ends after parent inactive window"
+        warnings.append("child range ends after parent anchor span")
     if p_start is not None and c_end is not None and c_end < p_start:
-        return False, "child range ends before parent window starts"
+        warnings.append("child range ends before parent anchor span starts")
     if p_end is not None and c_start is not None and c_start > p_end:
-        return False, "child range starts after parent window ends"
-    if p_start is not None and c_start is not None and p_end is not None and c_end is not None:
-        overlaps = c_start <= p_end and c_end >= p_start
-        if not overlaps:
-            return False, "child time window does not overlap parent time window"
+        warnings.append("child range starts after parent anchor span ends")
+    return warnings
+
+
+def _child_price_overlaps_parent(
+    child: sqlite3.Row | dict[str, Any],
+    parent: sqlite3.Row | dict[str, Any],
+    *,
+    tolerance_pct: float = 0.001,
+) -> tuple[bool, str | None]:
+    c_high = _range_price(child, "HIGH")
+    c_low = _range_price(child, "LOW")
+    p_high = _range_price(parent, "HIGH")
+    p_low = _range_price(parent, "LOW")
+    if any(v in (None, 0) for v in (c_high, c_low, p_high, p_low)):
+        return True, None
+    parent_span = max(float(p_high) - float(p_low), 0.0001)
+    tol = max(0.01, parent_span * tolerance_pct)
+    overlaps = float(c_high) >= (float(p_low) - tol) and float(c_low) <= (float(p_high) + tol)
+    if not overlaps:
+        return False, "child price range does not overlap parent price boundaries"
     return True, None
 
 
@@ -1132,12 +1176,17 @@ def _validate_parent_link(
     child_row = None
     if child_id is not None:
         child_row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(child_id),)).fetchone()
+    link_warnings: list[str] = []
     if child_row is not None:
-        overlap_ok, time_warning = _child_time_window_valid_for_parent(child_row, parent)
-        if not overlap_ok:
-            return "NEEDS_REVIEW", [time_warning or "child time window is outside parent window"], parent
+        lifecycle_issue = _child_lifecycle_contradiction_for_parent(child_row, parent)
+        if lifecycle_issue:
+            return "NEEDS_REVIEW", [lifecycle_issue], parent
+        link_warnings.extend(_child_boundary_time_informational_warnings(child_row, parent))
+        price_ok, price_warning = _child_price_overlaps_parent(child_row, parent)
+        if not price_ok and price_warning:
+            return "NEEDS_REVIEW", link_warnings + [price_warning], parent
 
-    return "VALID", [], parent
+    return "VALID", link_warnings, parent
 
 
 def _range_row_to_structural_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -2654,11 +2703,11 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
                 invalid_parent_links.append({"range": r, "warnings": warnings})
             if status == "NEEDS_REVIEW":
                 needs_parent_review.append({"range": r, "warnings": warnings})
-            if layer == "WEEKLY" and status == "VALID" and parent is not None and _range_layer(parent) == "MACRO":
+            if layer == "WEEKLY" and r.get("parent_range_id") not in (None, "") and parent is not None and _range_layer(parent) == "MACRO":
                 weekly_linked_macro += 1
-            if layer == "DAILY" and status == "VALID" and parent is not None and _range_layer(parent) == "WEEKLY":
+            if layer == "DAILY" and r.get("parent_range_id") not in (None, "") and parent is not None and _range_layer(parent) == "WEEKLY":
                 daily_linked_weekly += 1
-            if layer == "INTRADAY" and status == "VALID" and parent is not None and _range_layer(parent) == "DAILY":
+            if layer == "INTRADAY" and r.get("parent_range_id") not in (None, "") and parent is not None and _range_layer(parent) == "DAILY":
                 intraday_linked_daily += 1
             if _range_price(r, "HIGH") in (None, 0) or _range_price(r, "LOW") in (None, 0):
                 missing_rh_rl.append(r)
