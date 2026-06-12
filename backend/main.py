@@ -1,9 +1,12 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Body, Response
 from fastapi.middleware.cors import CORSMiddleware
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
+import asyncio
+import os
 import re
 import json
 from pathlib import Path
@@ -140,7 +143,47 @@ except Exception:  # pragma: no cover - runtime safety on VPS
     validate_execution_allowed = None
     record_execution_utilised = None
 
-app = FastAPI(title="Trading Gate HTF + Intraday Module")
+try:
+    import candle_sync
+except Exception as exc:  # pragma: no cover
+    candle_sync = None
+    _candle_sync_error = repr(exc)
+else:
+    _candle_sync_error = None
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """Background MT5 → market_memory sync every 15 minutes (configurable)."""
+    task: asyncio.Task | None = None
+    if candle_sync is not None and candle_sync.sync_state().get("enabled"):
+
+        async def _candle_sync_loop() -> None:
+            await asyncio.sleep(20)
+            force_start = os.environ.get("CANDLE_SYNC_BACKFILL_ON_START", "1").strip() not in {"0", "false", "False", "no"}
+            try:
+                await asyncio.to_thread(candle_sync.run_scheduled_sync, force_backfill=force_start)
+            except Exception:
+                pass
+            interval = int(candle_sync.sync_state().get("interval_sec") or 900)
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await asyncio.to_thread(candle_sync.run_scheduled_sync, force_backfill=False)
+                except Exception:
+                    pass
+
+        task = asyncio.create_task(_candle_sync_loop())
+    yield
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="Trading Gate HTF + Intraday Module", lifespan=_app_lifespan)
 
 # CORS for Electron/Vite development and local desktop cockpit access.
 # Keep this explicit instead of using "*" so the VPS does not become a public buffet.
@@ -480,6 +523,7 @@ def get_price(symbol: str = "XAUUSD"):
 
 
 TF_MAP = {
+    "MN1": mt5.TIMEFRAME_MN1,
     "M1": mt5.TIMEFRAME_M1,
     "M5": mt5.TIMEFRAME_M5,
     "M15": mt5.TIMEFRAME_M15,
@@ -490,6 +534,80 @@ TF_MAP = {
     "D1": mt5.TIMEFRAME_D1,
     "W1": mt5.TIMEFRAME_W1,
 }
+
+
+def _stored_candles_stale(tf_key: str, last_time: str | None) -> bool:
+    if not last_time:
+        return True
+    try:
+        dt = datetime.strptime(str(last_time).strip(), "%Y.%m.%d %H:%M").replace(tzinfo=timezone.utc)
+    except Exception:
+        return True
+    age_sec = max(0.0, (datetime.now(timezone.utc) - dt).total_seconds())
+    thresholds = {
+        "M5": 6 * 60,
+        "M15": 20 * 60,
+        "H1": 70 * 60,
+        "H4": 5 * 3600,
+        "D1": 26 * 3600,
+        "W1": 8 * 86400,
+        "MN1": 35 * 86400,
+    }
+    return age_sec > thresholds.get(str(tf_key or "").upper(), 3600)
+
+
+def _inline_mt5_candle_refresh(symbol: str, tf_key: str, bar_count: int = 2000) -> dict[str, Any]:
+    """Upsert recent MT5 OHLC into market_memory when candle_sync is unavailable."""
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable"}
+    sym = _normalise_symbol(symbol)
+    tf = str(tf_key or "H1").upper().strip()
+    mt5_tf = TF_MAP.get(tf)
+    if mt5_tf is None:
+        return {"ok": False, "error": f"unsupported timeframe {tf}"}
+    ok, err = _ensure_mt5_ready()
+    if not ok:
+        return {"ok": False, "error": err}
+    if not mt5.symbol_select(sym, True):
+        return {"ok": False, "error": f"MT5 symbol_select failed: {mt5.last_error()}"}
+    count = max(50, min(int(bar_count or 2000), 50000))
+    rates = mt5.copy_rates_from_pos(sym, mt5_tf, 0, count)
+    if rates is None:
+        return {"ok": False, "error": f"No MT5 candles: {mt5.last_error()}"}
+    rows = []
+    for r in rates:
+        dt = datetime.fromtimestamp(int(r["time"]), tz=timezone.utc)
+        rows.append(
+            {
+                "symbol": sym,
+                "timeframe": tf,
+                "time": dt.strftime("%Y.%m.%d %H:%M"),
+                "open": float(r["open"]),
+                "high": float(r["high"]),
+                "low": float(r["low"]),
+                "close": float(r["close"]),
+                "volume": int(r.get("tick_volume") or 0),
+            }
+        )
+    upsert = market_memory.upsert_candles(rows, source="mt5-inline")
+    return {"ok": True, "fetched_bars": len(rows), **upsert}
+
+
+def _maybe_refresh_stored_candles(symbol: str, tf_key: str, *, force: bool = False) -> None:
+    if market_memory is None:
+        return
+    try:
+        if candle_sync is not None:
+            candle_sync.ensure_fresh(symbol, tf_key, force=force)
+            return
+        snap = market_memory.get_candles(symbol=symbol, timeframe=tf_key, limit=1)
+        candles = snap.get("candles") or []
+        last_time = candles[-1].get("time") if candles else None
+        if force or _stored_candles_stale(tf_key, last_time):
+            _inline_mt5_candle_refresh(symbol, tf_key, bar_count=50000 if force else 2000)
+    except Exception:
+        pass
+
 
 @app.get("/candles")
 def get_candles(symbol: str = "XAUUSD", tf: str = "H1", limit: int = 40):
@@ -4326,10 +4444,64 @@ def candles_import_common_files(payload: dict[str, Any] = Body(default={})):
     return market_memory.import_common_files(symbol=symbol, timeframes=timeframes)
 
 
-@app.get("/api/v1/candles")
-def candles_get(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 500, start: str | None = None, end: str | None = None):
+@app.get("/api/v1/candles/status")
+def candles_status():
+    """Candle DB summary plus live MT5 sync scheduler state."""
     if market_memory is None:
         return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    out = market_memory.status()
+    if candle_sync is not None:
+        out["sync"] = candle_sync.sync_state()
+    else:
+        out["sync"] = {"ok": False, "error": "candle sync module unavailable", "detail": _candle_sync_error}
+    return out
+
+
+@app.get("/api/v1/candles/sync-status")
+def candles_sync_status():
+    if candle_sync is None:
+        return {"ok": False, "error": "candle sync module unavailable", "detail": _candle_sync_error}
+    return {"ok": True, **candle_sync.sync_state()}
+
+
+@app.post("/api/v1/candles/sync-mt5")
+def candles_sync_mt5(payload: dict[str, Any] = Body(default={})):
+    """Pull latest MT5 OHLC into market_memory.db (manual trigger)."""
+    if candle_sync is None:
+        return {"ok": False, "error": "candle sync module unavailable", "detail": _candle_sync_error}
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    body = payload or {}
+    symbols = body.get("symbols")
+    timeframes = body.get("timeframes")
+    force_backfill = bool(body.get("force_backfill") or body.get("backfill"))
+    if isinstance(symbols, str):
+        symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+    if isinstance(timeframes, str):
+        timeframes = [s.strip() for s in timeframes.split(",") if s.strip()]
+    return candle_sync.run_scheduled_sync(
+        symbols=symbols,
+        timeframes=timeframes,
+        force_backfill=force_backfill,
+    )
+
+
+@app.get("/api/v1/candles")
+def candles_get(
+    symbol: str = "XAUUSD",
+    timeframe: str = "D1",
+    limit: int = 500,
+    start: str | None = None,
+    end: str | None = None,
+    refresh: bool = False,
+):
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    tf = str(timeframe or "D1").upper().strip()
+    try:
+        _maybe_refresh_stored_candles(symbol, tf, force=refresh)
+    except Exception:
+        pass
     return market_memory.get_candles(symbol=symbol, timeframe=timeframe, limit=limit, start=start, end=end)
 
 

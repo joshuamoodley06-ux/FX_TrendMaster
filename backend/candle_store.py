@@ -6,7 +6,7 @@ import hashlib
 import uuid
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,7 @@ def _resolve_db_path() -> Path:
 
 DB_PATH = _resolve_db_path()
 def _default_common_files_path() -> Path:
-    """Return MT5 Common\Files path for the current Windows user, with env override."""
+    r"""Return MT5 Common\Files path for the current Windows user, with env override."""
     override = os.environ.get("MT5_COMMON_FILES_PATH")
     if override:
         return Path(override)
@@ -719,6 +719,31 @@ def normalise_timeframe(tf: str) -> str:
     return val
 
 
+def normalise_candle_query_time(value: str | None, *, bound: str = "exact") -> str | None:
+    """Accept ISO or dotted MT5 times for SQL range filters."""
+    if value in (None, ""):
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if "T" in raw:
+        raw = raw.replace("T", " ")
+    if raw[0:4].isdigit() and raw[4:5] == "-":
+        raw = raw.replace("-", ".")
+    # Date-only filters must include the full UTC day; MT5 rows use "YYYY.MM.DD HH:MM".
+    if bound in {"start", "end"} and len(raw) == 10 and raw[4:5] == "." and raw[7:8] == ".":
+        if bound == "start":
+            return f"{raw} 00:00"
+        # Exclusive upper bound: first minute of the next day avoids string compare bugs
+        # where "2026.06.04 ..." sorts after "2026.06.12".
+        try:
+            dt = datetime.strptime(raw, "%Y.%m.%d") + timedelta(days=1)
+            return dt.strftime("%Y.%m.%d %H:%M")
+        except Exception:
+            return f"{raw} 23:59"
+    return raw
+
+
 def parse_float(v: Any, default: float = 0.0) -> float:
     try:
         if v is None or v == "":
@@ -816,13 +841,15 @@ def get_candles(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 500,
     init_db()
     tf = normalise_timeframe(timeframe)
     limit = max(1, min(int(limit or 500), 10000))
+    start = normalise_candle_query_time(start, bound="start")
+    end = normalise_candle_query_time(end, bound="end")
     sql = "SELECT symbol,timeframe,time,open,high,low,close,volume,source FROM candles WHERE symbol=? AND timeframe=?"
     params: list[Any] = [symbol, tf]
     if start:
         sql += " AND time >= ?"
         params.append(start)
     if end:
-        sql += " AND time <= ?"
+        sql += " AND time < ?"
         params.append(end)
     sql += " ORDER BY time DESC LIMIT ?"
     params.append(limit)

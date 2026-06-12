@@ -1,20 +1,23 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, Map, RefreshCw, Save, Settings, Target, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, Map as MapIcon, RefreshCw, Save, Settings, Target, Zap } from 'lucide-react';
 import { buildRawPayloadJson, createRawCase, saveRawEvent } from './rawMapping';
 import './styles.css';
 
 const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
+const CANDLE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
+const CANDLE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const DEBUG_CAMERA = false;
 const SYMBOLS = ['XAUUSD', 'US500.cash'];
 const ZONES = ['Ext L', 'DD', 'D', 'Fair', 'P', 'DP', 'Ext H'];
 const LAYERS = ['weekly', 'daily', 'intraday'] as const;
 type LayerKey = typeof LAYERS[number];
 type Page = 'visual' | 'ideas' | 'live' | 'journal' | 'sql' | 'settings' | 'data' | 'brain' | 'historical' | 'mapstudio';
-type CameraIntent = 'LATEST' | 'FIT_ALL' | 'CASE' | 'REPLAY' | 'RANGE' | 'RESTORE_LOCKED' | 'PRESERVE_OR_NEAREST_TIME' | 'HORIZONTAL_STRETCH' | 'VERTICAL_STRETCH' | 'NONE';
-type CameraCommand = { intent: CameraIntent; token: number; targetTime?: string | null; reason?: string; scaleFactor?: number };
-type VisibleCameraDomain = { start:string; end:string; priceLow:number; priceHigh:number };
+type CameraIntent = 'LATEST' | 'FIT_ALL' | 'CASE' | 'REPLAY' | 'RANGE' | 'FIT_STRUCTURAL_RANGE' | 'RESTORE_LOCKED' | 'PRESERVE_OR_NEAREST_TIME' | 'HORIZONTAL_STRETCH' | 'VERTICAL_STRETCH' | 'NONE';
+type StructuralFitWindow = { start: string; end: string; low: number; high: number; padRatio?: number };
+type CameraCommand = { intent: CameraIntent; token: number; targetTime?: string | null; reason?: string; scaleFactor?: number; fitWindow?: StructuralFitWindow | null; priceDomain?: { low: number; high: number } | null };
+type VisibleCameraDomain = { start:string; end:string; priceLow:number; priceHigh:number; visibleBars?:number; barSpacingPx?:number };
 
 type Layer = {
   layer: string;
@@ -314,7 +317,7 @@ function App() {
       <div className="brandBlock"><div className="logoOrb">FX</div>{!collapsed && <div><h1>TrendMaster</h1><p>Electron Cockpit v0.34</p></div>}</div>
       <div className="navGroup">
         <NavItem icon={<Activity size={18}/>} label="Overview Maps" page="visual" active={page==='visual'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<Map size={18}/>} label="Map Studio" page="mapstudio" active={page==='mapstudio'} collapsed={collapsed} setPage={setPage}/>
+        <NavItem icon={<MapIcon size={18}/>} label="Map Studio" page="mapstudio" active={page==='mapstudio'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<FileText size={18}/>} label="Trade Ideas" page="ideas" active={page==='ideas'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<Target size={18}/>} label="Lifecycle Catch-Up" page="brain" active={page==='brain'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<Zap size={18}/>} label="Live Trade" page="live" active={page==='live'} collapsed={collapsed} setPage={setPage}/>
@@ -389,6 +392,74 @@ function expectedParentStructureLayer(layer: StructureLayer): StructureLayer | n
   const idx = STRUCTURE_LAYERS.indexOf(layer);
   return idx > 0 ? STRUCTURE_LAYERS[idx - 1] : null;
 }
+function expectedChildStructureLayer(layer: StructureLayer): StructureLayer | null {
+  const idx = STRUCTURE_LAYERS.indexOf(layer);
+  return idx >= 0 && idx < STRUCTURE_LAYERS.length - 1 ? STRUCTURE_LAYERS[idx + 1] : null;
+}
+function directChildCountLabel(parentLayer: StructureLayer): string | null {
+  return ({ MACRO: 'Weekly', WEEKLY: 'Daily', DAILY: 'Intraday', INTRADAY: 'Micro', MICRO: null } as Record<StructureLayer, string | null>)[parentLayer];
+}
+function rangeYearBucket(range: any): number | null {
+  const activeFrom = parseStructuralTimeMs(range?.active_from_time);
+  if (activeFrom !== null) return new Date(activeFrom).getUTCFullYear();
+  const start = parseStructuralTimeMs(range?.range_start_time);
+  if (start !== null) return new Date(start).getUTCFullYear();
+  const rh = parseStructuralTimeMs(range?.range_high_time);
+  const rl = parseStructuralTimeMs(range?.range_low_time);
+  const span = [rh, rl].filter((x): x is number => x !== null);
+  if (span.length) return new Date(Math.min(...span)).getUTCFullYear();
+  return null;
+}
+function rangeCrossYearSpanNote(range: any): string | null {
+  const times = [
+    range?.active_from_time,
+    range?.range_start_time,
+    range?.range_high_time,
+    range?.range_low_time,
+    range?.inactive_from_time,
+    range?.range_end_time,
+  ].map(parseStructuralTimeMs).filter((x): x is number => x !== null);
+  if (times.length < 2) return null;
+  const yMin = new Date(Math.min(...times)).getUTCFullYear();
+  const yMax = new Date(Math.max(...times)).getUTCFullYear();
+  return yMin !== yMax ? `spans ${yMin} → ${yMax}` : null;
+}
+function formatExplorerCompactDate(value: string): string {
+  if (!value || value === '?' || value === 'ACTIVE') return value;
+  const ms = parseStructuralTimeMs(value);
+  if (ms === null) return value.length > 10 ? value.slice(0, 10) : value;
+  const d = new Date(ms);
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return `${months[d.getUTCMonth()]} ${d.getUTCDate()} ${d.getUTCFullYear()}`;
+}
+function formatExplorerRangeSpan(range: any): string {
+  const start = formatExplorerCompactDate(rangeLabelStartDate(range));
+  const endRaw = rangeLabelEndDate(range);
+  const end = endRaw === 'ACTIVE' ? 'ACTIVE' : formatExplorerCompactDate(endRaw);
+  if (end === 'ACTIVE') return `${start} → ACTIVE`;
+  return `${start} → ${end}`;
+}
+function formatExplorerRowLines(range: any, directChildCount: number): { line1: string; line2: string; spanNote: string | null } {
+  const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const id = range?.range_id || range?.id || '?';
+  const statusPart = rangeStatusDirectionLabel(range);
+  const childLabel = directChildCountLabel(layer as StructureLayer);
+  const high = Number(range?.range_high_price ?? range?.range_high);
+  const low = Number(range?.range_low_price ?? range?.range_low);
+  const rh = Number.isFinite(high) ? high.toFixed(2) : '?';
+  const rl = Number.isFinite(low) ? low.toFixed(2) : '?';
+  return {
+    line1: childLabel ? `${layer} #${id} · ${directChildCount} ${childLabel}` : `${layer} #${id}`,
+    line2: `${formatExplorerRangeSpan(range)} | ${statusPart} · RH ${rh} / RL ${rl}`,
+    spanNote: rangeCrossYearSpanNote(range),
+  };
+}
+function filterRangesForExplorerYear(ranges: any[], yearFilter: string): any[] {
+  if (!yearFilter || yearFilter === 'all') return safeArray(ranges);
+  const year = Number(yearFilter);
+  if (!Number.isFinite(year)) return safeArray(ranges);
+  return safeArray(ranges).filter((r:any) => rangeYearBucket(r) === year);
+}
 function structureLayerRequiresParentConfirmation(layer: StructureLayer): boolean {
   return layer === 'DAILY' || layer === 'INTRADAY' || layer === 'MICRO';
 }
@@ -428,8 +499,22 @@ function parseStructuralTimeMs(value: any): number | null {
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
   }
-  const ms = new Date(raw.replace(' ', 'T')).getTime();
+  const ms = candleTimeMs(raw);
   return Number.isFinite(ms) ? ms : null;
+}
+
+function resolveEffectiveStructuralAnchorTimes(
+  rhAnchor: { price?: string; time?: string },
+  rlAnchor: { price?: string; time?: string },
+  rangeWindow?: { start?: string; end?: string } | null,
+  fallbackCandleTime?: string | null,
+): { range_high_time: string | null; range_low_time: string | null } {
+  const winStart = rangeWindow?.start ? String(rangeWindow.start) : '';
+  const winEnd = rangeWindow?.end ? String(rangeWindow.end) : '';
+  const fallback = fallbackCandleTime ? String(fallbackCandleTime) : '';
+  const rhTime = rhAnchor.time || winEnd || fallback || null;
+  const rlTime = rlAnchor.time || winStart || fallback || null;
+  return { range_high_time: rhTime, range_low_time: rlTime };
 }
 
 function childDraftAnchorTimesMs(childSpan?: {
@@ -539,6 +624,11 @@ function formatStructuralRangeDisplayLines(range: any, savedRanges: any[]): { li
 }
 
 function formatHierarchyTreeRowLabel(range: any): string {
+  const { line1, line2 } = formatHierarchyTreeRowLines(range);
+  return `${line1} | ${line2.replace(' · ', ' | ')}`;
+}
+
+function formatHierarchyTreeRowLines(range: any): { line1: string; line2: string } {
   const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
   const id = range?.range_id || range?.id || '?';
   const start = rangeLabelStartDate(range);
@@ -548,7 +638,27 @@ function formatHierarchyTreeRowLabel(range: any): string {
   const low = Number(range?.range_low_price ?? range?.range_low);
   const rh = Number.isFinite(high) ? high.toFixed(2) : '?';
   const rl = Number.isFinite(low) ? low.toFixed(2) : '?';
-  return `${layer} #${id} | ${start} → ${end} | ${statusPart} | RH ${rh} / RL ${rl}`;
+  const parentId = range?.parent_range_id;
+  const parentSuffix = parentId !== null && parentId !== undefined && String(parentId) !== ''
+    ? ` · Parent #${parentId}`
+    : '';
+  return {
+    line1: `${layer} #${id} | ${start} → ${end} | ${statusPart}`,
+    line2: `RH ${rh} / RL ${rl}${parentSuffix}`,
+  };
+}
+
+function collectHierarchyBranchIds(nodes: CaseHierarchyTreeNode[]): string[] {
+  const ids: string[] = [];
+  const walk = (list: CaseHierarchyTreeNode[]) => {
+    for (const node of list) {
+      const id = String(node.range?.range_id || node.range?.id || '');
+      if (id && node.children.length) ids.push(id);
+      walk(node.children);
+    }
+  };
+  walk(nodes);
+  return ids;
 }
 
 type CaseHierarchyTreeNode = { range: any; depth: number; children: CaseHierarchyTreeNode[] };
@@ -592,6 +702,286 @@ function collectHierarchyPathIds(selectedId: string, allRanges: any[]): string[]
   return collectParentContextChain(selectedId, allRanges).reverse();
 }
 
+/** Selected range + all ancestors up to root. */
+function getContextStack(selectedRangeId: string, ranges: any[]): Set<string> {
+  const path = new Set<string>();
+  if (!selectedRangeId) return path;
+  const byId = new Map<string, any>();
+  for (const r of ranges) {
+    const id = String(r.range_id || r.id || '');
+    if (id) byId.set(id, r);
+  }
+  let current = byId.get(String(selectedRangeId));
+  while (current) {
+    const id = String(current.range_id || current.id || '');
+    if (!id) break;
+    path.add(id);
+    const parentId = current.parent_range_id;
+    current = parentId !== null && parentId !== undefined && String(parentId) !== ''
+      ? byId.get(String(parentId))
+      : null;
+  }
+  return path;
+}
+
+function getContextStackPathIds(selectedRangeId: string, ranges: any[]): string[] {
+  if (!selectedRangeId) return [];
+  return collectHierarchyPathIds(selectedRangeId, ranges);
+}
+
+function fallbackContextPathIds(allRanges: any[]): string[] {
+  const rows = safeArray(allRanges);
+  if (!rows.length) return [];
+  const macros = rows
+    .filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO')
+    .sort(compareRangesByStartDate);
+  if (macros.length) {
+    const macro = macros[macros.length - 1];
+    return collectHierarchyPathIds(String(macro.range_id || macro.id), rows);
+  }
+  const weeklies = rows
+    .filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === 'WEEKLY')
+    .sort(compareRangesByStartDate);
+  if (weeklies.length) {
+    const weekly = weeklies[weeklies.length - 1];
+    return collectHierarchyPathIds(String(weekly.range_id || weekly.id), rows);
+  }
+  return [];
+}
+
+function structuralRangePaddingCandles(layer: StructureLayer | null): number {
+  if (layer === 'MACRO' || layer === 'WEEKLY') return 20;
+  if (layer === 'DAILY') return 15;
+  if (layer === 'INTRADAY') return 10;
+  if (layer === 'MICRO') return 8;
+  return 15;
+}
+
+function structuralRangeFitPadRatio(layer: StructureLayer | null): number {
+  if (layer === 'MACRO' || layer === 'WEEKLY') return 0.16;
+  if (layer === 'DAILY') return 0.12;
+  return 0.08;
+}
+
+function structuralRangeFitDomain(range: any, candles: Candle[]): StructuralFitWindow | null {
+  const hi = Number(range?.range_high_price ?? range?.range_high);
+  const lo = Number(range?.range_low_price ?? range?.range_low);
+  if (!Number.isFinite(hi) || !Number.isFinite(lo) || hi <= lo) return null;
+  const layer = normalizeStructureLayer(range?.structure_layer || range?.layer);
+  const status = String(range?.status || '').toUpperCase();
+  const broken = status.includes('BROKEN');
+
+  const timeCandidates = [
+    range?.range_start_time,
+    range?.active_from_time,
+    range?.range_high_time,
+    range?.range_low_time,
+  ].map(parseStructuralTimeMs).filter((x): x is number => x !== null);
+  let startMs = parseStructuralTimeMs(range?.range_start_time || range?.active_from_time || range?.range_high_time);
+  let endMs = parseStructuralTimeMs(range?.range_end_time || range?.range_low_time);
+  if (broken) {
+    const inactiveMs = parseStructuralTimeMs(range?.inactive_from_time);
+    if (inactiveMs !== null) endMs = endMs === null ? inactiveMs : Math.max(endMs, inactiveMs);
+  }
+  if (startMs === null && timeCandidates.length) startMs = Math.min(...timeCandidates);
+  if (endMs === null && timeCandidates.length) endMs = Math.max(...timeCandidates);
+  if (startMs === null) return null;
+  if (endMs === null || endMs < startMs) {
+    endMs = startMs + (layer === 'INTRADAY' || layer === 'MICRO' ? 6 * 3600 * 1000 : 7 * 24 * 3600 * 1000);
+  }
+
+  const padCandles = structuralRangePaddingCandles(layer);
+  let priceLow = lo;
+  let priceHigh = hi;
+  let startTime = new Date(startMs).toISOString();
+  let endTime = new Date(endMs).toISOString();
+
+  if (candles.length) {
+    const startIdx = candleIndexAtOrBefore(candles, startTime);
+    const endIdx = candleIndexAtOrAfter(candles, endTime);
+    const padStart = Math.max(0, startIdx - padCandles);
+    const padEnd = Math.min(candles.length - 1, endIdx + padCandles);
+    startTime = candles[padStart]?.time || startTime;
+    endTime = candles[padEnd]?.time || endTime;
+    for (let i = padStart; i <= padEnd; i++) {
+      const c = candles[i];
+      if (!c) continue;
+      priceLow = Math.min(priceLow, c.low);
+      priceHigh = Math.max(priceHigh, c.high);
+    }
+  } else {
+    const spanMs = Math.max(endMs - startMs, 1);
+    const padMs = Math.max(spanMs * 0.12, 3600 * 1000);
+    startTime = new Date(startMs - padMs).toISOString();
+    endTime = new Date(endMs + padMs).toISOString();
+  }
+
+  return {
+    start: startTime,
+    end: endTime,
+    low: priceLow,
+    high: priceHigh,
+    padRatio: structuralRangeFitPadRatio(layer),
+  };
+}
+
+function isIntradayChartTimeframe(tf: string): boolean {
+  const t = String(tf || '').toUpperCase();
+  return t === 'H4' || t === 'H1' || t === 'M15' || t === 'M5';
+}
+
+function resolveMappingContextRange(
+  savedRanges: any[],
+  selectedParentRangeId: string,
+  activeStructuralRangeId: string,
+): any | null {
+  const all = safeArray(savedRanges);
+  const byId = (id: string) => all.find((r:any) => String(r.range_id || r.id) === String(id)) || null;
+
+  if (selectedParentRangeId) {
+    const parent = byId(selectedParentRangeId);
+    if (parent) return parent;
+  }
+
+  if (activeStructuralRangeId) {
+    const active = byId(activeStructuralRangeId);
+    const activeLayer = normalizeStructureLayer(active?.structure_layer || active?.layer);
+    if (active) {
+      if (activeLayer === 'DAILY' || activeLayer === 'WEEKLY' || activeLayer === 'MACRO') return active;
+      if (activeLayer === 'INTRADAY' || activeLayer === 'MICRO') {
+        const pid = active.parent_range_id;
+        if (pid !== null && pid !== undefined && String(pid) !== '') {
+          const parent = byId(String(pid));
+          if (parent) return parent;
+        }
+      }
+    }
+    const pathIds = getContextStackPathIds(activeStructuralRangeId, all);
+    for (let i = pathIds.length - 1; i >= 0; i--) {
+      const row = byId(pathIds[i]);
+      if (normalizeStructureLayer(row?.structure_layer || row?.layer) === 'DAILY') return row;
+    }
+    for (let i = pathIds.length - 1; i >= 0; i--) {
+      const row = byId(pathIds[i]);
+      if (normalizeStructureLayer(row?.structure_layer || row?.layer) === 'WEEKLY') return row;
+    }
+  }
+  return null;
+}
+
+function structuralContextTargetTime(range: any): string | null {
+  if (!range) return null;
+  return String(
+    range.range_start_time
+    || range.active_from_time
+    || range.range_high_time
+    || range.range_low_time
+    || '',
+  ) || null;
+}
+
+function isoDay(value?: string | null): string | null {
+  if (!value) return null;
+  const d = new Date(String(value));
+  if (!Number.isFinite(d.getTime())) return null;
+  return d.toISOString().slice(0, 10);
+}
+
+function todayIsoDay(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function parseMt5TimeMs(value?: string | null): number | null {
+  const ms = candleTimeMs(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function resolveCandleLoadWindow(
+  targetTf: string,
+  savedRanges: any[],
+  selectedParentRangeId: string,
+  activeStructuralRangeId: string,
+  rangeWindow: { start?: string; end?: string },
+  options?: { liveTail?: boolean },
+): { start: string; end: string; label: string } | null {
+  const liveEnd = options?.liveTail ? todayIsoDay() : null;
+  if (!isIntradayChartTimeframe(targetTf)) return null;
+  const contextRange = resolveMappingContextRange(savedRanges, selectedParentRangeId, activeStructuralRangeId);
+  if (contextRange) {
+    const fit = structuralRangeFitDomain(contextRange, []);
+    if (fit?.start && fit?.end) {
+      const start = isoDay(fit.start);
+      const end = liveEnd || isoDay(fit.end);
+      if (start && end) {
+        return { start, end, label: formatStructuralRangeOptionLabel(contextRange) };
+      }
+    }
+  }
+  const start = isoDay(rangeWindow.start);
+  const end = liveEnd || isoDay(rangeWindow.end || rangeWindow.start);
+  if (start && end) return { start, end, label: 'active case window' };
+  return null;
+}
+
+function candleWindowOverlapsRange(candles: Candle[], startRaw?: string | null, endRaw?: string | null): boolean {
+  const ext = candleDataExtent(candles);
+  if (!ext) return false;
+  if (!startRaw || !endRaw) return true;
+  const startMs = parseStructuralTimeMs(startRaw);
+  const endMs = parseStructuralTimeMs(endRaw);
+  if (startMs === null || endMs === null) return true;
+  return endMs >= ext.startMs && startMs <= ext.endMs;
+}
+
+function normalizeCandleTime(raw: any): string {
+  if (raw === null || raw === undefined) return '';
+  const s = String(raw).trim();
+  const mt5 = s.match(/^(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})/);
+  if (mt5) return `${mt5[1]}-${mt5[2]}-${mt5[3]}T${mt5[4]}:${mt5[5]}:00.000Z`;
+  if (/^\d{10,13}$/.test(s)) {
+    const n = Number(s);
+    const ms = n < 1e12 ? n * 1000 : n;
+    return new Date(ms).toISOString();
+  }
+  if (s.includes('T')) return s.endsWith('Z') ? s : `${s}Z`;
+  return s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z');
+}
+
+function candleTimeMs(value?: string | null): number {
+  if (!value) return NaN;
+  const iso = normalizeCandleTime(value);
+  const ms = new Date(iso).getTime();
+  return Number.isFinite(ms) ? ms : NaN;
+}
+
+function candleTimeDate(value?: string | null): Date {
+  const ms = candleTimeMs(value);
+  return Number.isFinite(ms) ? new Date(ms) : new Date(String(value || ''));
+}
+
+function buildCandleFetchUrl(symbol: string, tf: string, window?: { start?: string; end?: string } | null, refresh = false) {
+  const params = new URLSearchParams({ symbol, timeframe: tf, limit: '12000' });
+  if (window?.start) params.set('start', window.start);
+  // Do not pass date-only end — SQL string compare treats 2026.06.04 as > 2026.06.12.
+  // History tail is bounded by limit DESC; replay trims client-side.
+  if (refresh) params.set('refresh', '1');
+  return `${BASE_URL}/api/v1/candles?${params.toString()}`;
+}
+
+function parseCandleRows(raw: any[]): Candle[] {
+  return safeArray(raw)
+    .map((c:any)=>({
+      ...c,
+      time: normalizeCandleTime(c.time),
+      open:Number(c.open),
+      high:Number(c.high),
+      low:Number(c.low),
+      close:Number(c.close),
+      volume:Number(c.volume||0),
+    }))
+    .filter((c:Candle)=>Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close) && !!c.time);
+}
+
 function collectDirectChildRangeIds(selectedId: string, allRanges: any[]): string[] {
   return allRanges
     .filter((r:any) => String(r.parent_range_id || '') === String(selectedId))
@@ -618,12 +1008,11 @@ function countRangeDescendants(rangeId: string, allRanges: any[]): number {
   return direct.length + direct.reduce((sum, child) => sum + countRangeDescendants(String(child.range_id || child.id), allRanges), 0);
 }
 
-function parentLinkModeLabel(mode: ParentResolveMode, manualPickerOpen: boolean): string {
-  if (manualPickerOpen) return 'Manual parent selected';
+function parentLinkModeLabel(mode: ParentResolveMode): string {
   if (mode === 'date_containment') return 'Auto-linked by date containment';
   if (mode === 'single_candidate') return 'Auto-linked by date containment';
-  if (mode === 'manual') return 'Manual parent selected';
-  if (mode === 'multiple_matches') return 'Multiple possible parents, select manually';
+  if (mode === 'manual') return 'Parent from explorer';
+  if (mode === 'multiple_matches') return 'Multiple parents — click one in Explorer';
   if (mode === 'no_match') return 'No parent found';
   return 'No parent required';
 }
@@ -1478,6 +1867,71 @@ function candleIndexAtOrBefore(candles:Candle[], time?:string|null): number {
   return Math.max(0, idx >= 0 ? idx : 0);
 }
 
+function candleIndexAtOrAfter(candles:Candle[], time?:string|null): number {
+  if (!candles.length) return 0;
+  if (!time) return candles.length - 1;
+  const cut = new Date(String(time)).getTime();
+  if (!Number.isFinite(cut)) return candles.length - 1;
+  for (let i = 0; i < candles.length; i++) {
+    const t = new Date(String(candles[i].time)).getTime();
+    if (Number.isFinite(t) && t >= cut) return i;
+  }
+  return candles.length - 1;
+}
+
+function candleDataExtent(candles: Candle[]): { startMs: number; endMs: number; start: string; end: string } | null {
+  if (!candles.length) return null;
+  const startMs = new Date(String(candles[0].time)).getTime();
+  const endMs = new Date(String(candles[candles.length - 1].time)).getTime();
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  return { startMs, endMs, start: candles[0].time, end: candles[candles.length - 1].time };
+}
+
+function isPlausibleMarketTimeMs(ms: number | null, candles?: Candle[]): boolean {
+  if (ms === null || !Number.isFinite(ms)) return false;
+  const year = new Date(ms).getUTCFullYear();
+  if (year < 1990 || year > 2035) return false;
+  const ext = candles?.length ? candleDataExtent(candles) : null;
+  if (ext) {
+    const pad = Math.max((ext.endMs - ext.startMs) * 0.2, 86400000 * 14);
+    return ms >= ext.startMs - pad && ms <= ext.endMs + pad;
+  }
+  return true;
+}
+
+function clampFitTimesToCandles(startRaw: string, endRaw: string, candles: Candle[]): { start: string; end: string } {
+  const ext = candleDataExtent(candles);
+  if (!ext) return { start: startRaw, end: endRaw || startRaw };
+  let startMs = parseStructuralTimeMs(startRaw);
+  let endMs = parseStructuralTimeMs(endRaw);
+  if (!isPlausibleMarketTimeMs(startMs, candles)) startMs = ext.startMs;
+  if (!isPlausibleMarketTimeMs(endMs, candles)) endMs = ext.endMs;
+  if (startMs === null) startMs = ext.startMs;
+  if (endMs === null) endMs = ext.endMs;
+  if (endMs < startMs) endMs = startMs;
+  startMs = Math.max(ext.startMs, Math.min(ext.endMs, startMs));
+  endMs = Math.max(startMs, Math.min(ext.endMs, endMs));
+  return { start: new Date(startMs).toISOString(), end: new Date(endMs).toISOString() };
+}
+
+function buildCandleWindowFit(candles: Candle[], centerTime: string, padBars = 40): StructuralFitWindow | null {
+  if (!candles.length || !centerTime) return null;
+  const centerMs = parseStructuralTimeMs(centerTime);
+  if (!isPlausibleMarketTimeMs(centerMs, candles)) return null;
+  const idx = candleIndexAtOrBefore(candles, centerTime);
+  const pad = Math.max(8, padBars);
+  const i0 = Math.max(0, idx - pad);
+  const i1 = Math.min(candles.length - 1, idx + pad);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let i = i0; i <= i1; i++) {
+    lo = Math.min(lo, candles[i].low);
+    hi = Math.max(hi, candles[i].high);
+  }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
+  return { start: candles[i0].time, end: candles[i1].time, low: lo, high: hi, padRatio: 0.1 };
+}
+
 function candleIndexNearest(candles:Candle[], time?:string|null): number {
   if (!candles.length) return 0;
   if (!time) return candles.length - 1;
@@ -1545,6 +1999,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   });
   const [message, setMessage] = useState('D3 Map Canvas ready. Click Candle mode lets you mark Range H/L, reference highs/lows, BOS and sweeps without wrestling tiny handles.');
   const [loading, setLoading] = useState(false);
+  const [candleFeedStatus, setCandleFeedStatus] = useState<any>(null);
   const [toolMode, setToolMode] = useState<'inspect'|'plot'|'drag'|'range'|'select'>('inspect');
   const [scaleMode, setScaleMode] = useState<'auto'|'range'>('auto');
   const [cursor, setCursor] = useState<{time?:string; price?:number; zone?:string; pct?:number; ohlc?:Candle|null}|null>(null);
@@ -1590,8 +2045,9 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [candleWidthScale, setCandleWidthScale] = useLocalStorage<number>('fx_tm_candle_width_scale_v087_27', 1);
   const [priceZoomScale, setPriceZoomScale] = useLocalStorage<number>('fx_tm_price_zoom_scale_v087_27', 1);
   const candleLoadSeqRef = useRef(0);
-  const pendingCameraIntentRef = useRef<{intent:CameraIntent; targetTime?:string|null; reason?:string}>({ intent:'LATEST', reason:'initial-load' });
+  const pendingCameraIntentRef = useRef<{intent:CameraIntent; targetTime?:string|null; reason?:string; fitWindow?: StructuralFitWindow | null; priceDomain?: { low: number; high: number } | null; contextRangeId?: string | null}>({ intent:'LATEST', reason:'initial-load' });
   const visibleCameraDomainRef = useRef<VisibleCameraDomain|null>(null);
+  const [visibleBarCount, setVisibleBarCount] = useState(0);
   const [cameraCommand, setCameraCommand] = useState<CameraCommand>({ intent:'NONE', token:0 });
   const cameraLog = (...args:any[]) => { if (DEBUG_CAMERA) console.log('[camera]', ...args); };
   const clampScale = (v:number) => Math.max(0.35, Math.min(4, Number(v) || 1));
@@ -1688,7 +2144,6 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [savedStructuralRanges, setSavedStructuralRanges] = useState<StructuralRange[]>([]);
   const [lastSavedRangeConfirmation, setLastSavedRangeConfirmation] = useState<any>(null);
   const [selectedParentRangeId, setSelectedParentRangeId] = useLocalStorage<string>('fx_tm_selected_parent_range_id_phase3', '');
-  const [showManualParentPicker, setShowManualParentPicker] = useState(false);
   const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
   const [rhAnchor, setRhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [rlAnchor, setRlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
@@ -1707,6 +2162,8 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [hierarchyShowSiblings, setHierarchyShowSiblings] = useLocalStorage<boolean>('fx_tm_hierarchy_show_siblings_v1', false);
   const [hierarchyShowChildren, setHierarchyShowChildren] = useLocalStorage<boolean>('fx_tm_hierarchy_show_children_v1', false);
   const [hierarchyShowAll, setHierarchyShowAll] = useLocalStorage<boolean>('fx_tm_hierarchy_show_all_v1', false);
+  const [hierarchyCollapsedIds, setHierarchyCollapsedIds] = useState<string[]>([]);
+  const [explorerYearFilter, setExplorerYearFilter] = useLocalStorage<string>('fx_tm_explorer_year_v1', 'all');
   const [caseMetadataOpen, setCaseMetadataOpen] = useState(false);
   const [hierarchyAudit, setHierarchyAudit] = useState<any>(null);
   const [caseScope, setCaseScope] = useState<CaseScope>(() => timeframeToScope(timeframe));
@@ -2169,7 +2626,10 @@ function MapStudio({ symbol }: { symbol:string }) {
       const r = await fetch(`${BASE_URL}/api/v1/mos/research-reset`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol, confirm:'RESET' }) }).then(x=>x.json());
       if (!r?.ok) throw new Error(r?.error || r?.detail || 'Reset failed');
       setActiveCaseId(null); setActiveCaseLabel(''); setSeedIdeas([]); setSessionEventIds(new Set());
-      await loadSeedIdeas(); await loadMapEvents();
+      eventsByTfRef.current = {};
+      setEventsByTf({});
+      await loadSeedIdeas();
+      await loadMapMemory(timeframe);
       setMessage(`Research mapping reset for ${symbol}. Candles preserved. Clean slate, finally.`);
     } catch (err:any) { setMessage(`Research reset failed: ${err?.message || err}`); }
   };
@@ -2208,11 +2668,11 @@ function MapStudio({ symbol }: { symbol:string }) {
     const overlays: SavedRangeChartLine[] = [];
     const selectedId = String(activeStructuralRangeId || '');
 
-    const pushRange = (r: any, opts?: { isParentContext?: boolean; isActive?: boolean }) => {
+    const pushRange = (r: any, opts?: { isParentContext?: boolean; isActive?: boolean; isSibling?: boolean }) => {
       const id = String(r?.range_id || r?.id || '');
       if (!id || overlayIds.has(id)) return;
       const line = structuralRangeToChartLine(r, activeStructuralRangeId, {
-        isParentContext: opts?.isParentContext,
+        isParentContext: opts?.isParentContext || opts?.isSibling,
       });
       if (!line) return;
       if (opts?.isActive) line.isActive = true;
@@ -2227,37 +2687,31 @@ function MapStudio({ symbol }: { symbol:string }) {
       return overlays;
     }
 
-    if (selectedId && hierarchyPathOnly) {
-      for (const id of collectHierarchyPathIds(selectedId, allRanges)) {
-        const r = allRanges.find((x:any) => String(x.range_id || x.id) === id);
-        if (r) pushRange(r, { isParentContext: id !== selectedId, isActive: id === selectedId });
+    const pathIds = selectedId ? getContextStackPathIds(selectedId, allRanges) : fallbackContextPathIds(allRanges);
+    for (const id of pathIds) {
+      const r = allRanges.find((x:any) => String(x.range_id || x.id) === id);
+      if (r) {
+        pushRange(r, {
+          isParentContext: id !== selectedId,
+          isActive: !!selectedId && id === selectedId,
+        });
       }
-      if (hierarchyShowSiblings) {
-        for (const sid of collectSiblingRangeIds(selectedId, allRanges)) {
-          const r = allRanges.find((x:any) => String(x.range_id || x.id) === sid);
-          if (r) pushRange(r, { isParentContext: true });
-        }
-      }
-      if (hierarchyShowChildren) {
-        for (const cid of collectDirectChildRangeIds(selectedId, allRanges)) {
-          const r = allRanges.find((x:any) => String(x.range_id || x.id) === cid);
-          if (r) pushRange(r);
-        }
-      }
-      return overlays;
     }
 
-    const currentLayerRank = structureLayerRank(structureLayer);
-    for (const r of allRanges) {
-      const layer = normalizeStructureLayer(r.structure_layer || r.layer);
-      if (!layer) continue;
-      const rank = structureLayerRank(layer);
-      if (rank < 0) continue;
-      if (rank === currentLayerRank) pushRange(r, { isActive: String(r.range_id || r.id) === selectedId });
-      else if (rank < currentLayerRank) pushRange(r, { isParentContext: true });
+    if (!hierarchyPathOnly && hierarchyShowSiblings && selectedId) {
+      for (const sid of collectSiblingRangeIds(selectedId, allRanges)) {
+        const r = allRanges.find((x:any) => String(x.range_id || x.id) === sid);
+        if (r) pushRange(r, { isSibling: true });
+      }
+    }
+    if (!hierarchyPathOnly && hierarchyShowChildren && selectedId) {
+      for (const cid of collectDirectChildRangeIds(selectedId, allRanges)) {
+        const r = allRanges.find((x:any) => String(x.range_id || x.id) === cid);
+        if (r) pushRange(r, { isSibling: true });
+      }
     }
     return overlays;
-  }, [savedStructuralRanges, structureLayer, activeStructuralRangeId, hierarchyPathOnly, hierarchyShowSiblings, hierarchyShowChildren, hierarchyShowAll]);
+  }, [savedStructuralRanges, activeStructuralRangeId, hierarchyPathOnly, hierarchyShowSiblings, hierarchyShowChildren, hierarchyShowAll]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
     const draftHigh = parseNum(rhAnchor.price);
@@ -2458,30 +2912,88 @@ function MapStudio({ symbol }: { symbol:string }) {
     const pending = pendingCameraIntentRef.current;
     if (pending.intent && pending.intent !== 'NONE') return pending;
     if (cameraMode === 'LOCKED') return { intent:'RESTORE_LOCKED' as CameraIntent, targetTime:fallbackTime, reason:'locked-load' };
+    const contextRange = resolveMappingContextRange(savedStructuralRanges, selectedParentRangeId, activeStructuralRangeId);
+    if (isIntradayChartTimeframe(requestedTf) && contextRange) {
+      const ctxTime = structuralContextTargetTime(contextRange) || fallbackTime;
+      return {
+        intent:'FIT_STRUCTURAL_RANGE' as CameraIntent,
+        targetTime: ctxTime,
+        reason:`${requestedTf}-context-load`,
+        contextRangeId: String(contextRange.range_id || contextRange.id),
+      };
+    }
     if (cameraMode === 'CASE') return { intent:'CASE' as CameraIntent, targetTime:fallbackTime, reason:'case-load' };
     if (cameraMode === 'REPLAY') return { intent:'REPLAY' as CameraIntent, targetTime:fallbackTime, reason:'replay-load' };
     return { intent:'PRESERVE_OR_NEAREST_TIME' as CameraIntent, targetTime:fallbackTime, reason:`${requestedTf}-load` };
   };
 
-  const applyCameraCommand = (intent:CameraIntent, targetTime?:string|null, reason?:string, scaleFactor?:number) => {
-    cameraLog('camera intent applied', { intent, targetTime, reason, scaleFactor });
-    setCameraCommand(prev => ({ intent, targetTime: targetTime || null, reason, scaleFactor, token: prev.token + 1 }));
+  const applyCameraCommand = (intent:CameraIntent, targetTime?:string|null, reason?:string, scaleFactor?:number, fitWindow?: StructuralFitWindow | null, priceDomain?: { low: number; high: number } | null) => {
+    cameraLog('camera intent applied', { intent, targetTime, reason, scaleFactor, fitWindow, priceDomain });
+    setCameraCommand(prev => ({ intent, targetTime: targetTime || null, reason, scaleFactor, fitWindow: fitWindow || null, priceDomain: priceDomain || null, token: prev.token + 1 }));
   };
 
   const fitRangeView = () => {
-    if (!rhAnchor.price || !rlAnchor.price) { setMessage('Set Range High and Range Low before Fit Range.'); return; }
-    applyCameraCommand('RANGE', null, 'fit-range');
+    const hi = parseNum(rhAnchor.price);
+    const lo = parseNum(rlAnchor.price);
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) {
+      setMessage('Set Range High and Range Low before Fit Range.');
+      return;
+    }
+    const t0 = String(rhAnchor.time || rangeWindow.start || selectedCandle?.time || replayCandle?.time || '');
+    const t1 = String(rlAnchor.time || rangeWindow.end || t0);
+    if (!candles.length) {
+      setMessage('Load candles before Fit Range.');
+      return;
+    }
+    const clamped = clampFitTimesToCandles(t0 || candles[0].time, t1 || t0 || candles[0].time, candles);
+    const fit = buildCandleWindowFit(candles, clamped.start, readablePadBarsForTimeframe(timeframe))
+      || structuralRangeFitDomain({ range_high: hi, range_low: lo, range_start_time: clamped.start, range_end_time: clamped.end }, candles);
+    if (!fit) {
+      setMessage('Could not fit range view.');
+      return;
+    }
+    fit.low = Math.min(lo, fit.low);
+    fit.high = Math.max(hi, fit.high);
+    applyCameraCommand('FIT_STRUCTURAL_RANGE', clamped.start, 'fit-range', undefined, fit);
+    setMessage(`Fit range · ${shortTime(clamped.start, timeframe)} → ${shortTime(clamped.end, timeframe)}`);
   };
 
   const fitReplayView = () => {
     const targetTime = selectedCandle?.time || replayCandle?.time || candleReplayCursorTime || null;
-    if (!targetTime) { setMessage('No selected/replay candle to fit.'); return; }
-    applyCameraCommand('REPLAY', targetTime, 'fit-replay');
+    if (!targetTime || !candles.length) {
+      setMessage('No selected/replay candle to fit.');
+      return;
+    }
+    const fit = buildCandleWindowFit(candles, targetTime, readablePadBarsForTimeframe(timeframe));
+    if (!fit) {
+      setMessage('Could not fit replay view.');
+      return;
+    }
+    applyCameraCommand('FIT_STRUCTURAL_RANGE', targetTime, 'fit-replay', undefined, fit);
+    setMessage(`Fit replay · ${shortTime(targetTime, timeframe)}`);
   };
 
   const fitCaseView = () => {
-    const targetTime = activeCaseLedger?.start || rangeWindow.start || selectedCandle?.time || replayCandle?.time || null;
-    applyCameraCommand('CASE', targetTime, 'fit-case');
+    if (!candles.length) {
+      setMessage('Load candles before Fit Case.');
+      return;
+    }
+    const startRaw = String(activeCaseLedger?.start || caseWindowStartDisplay || rangeWindow.start || '');
+    const endRaw = String(activeCaseLedger?.end || caseWindowEndDisplay || rangeWindow.end || startRaw);
+    const center = startRaw || selectedCandle?.time || replayCandle?.time || candles[Math.floor(candles.length / 2)].time;
+    const clamped = clampFitTimesToCandles(startRaw || center, endRaw || center, candles);
+    const caseLo = parseNum(activeCaseLedger?.low || caseLow);
+    const caseHi = parseNum(activeCaseLedger?.high || caseHigh);
+    let fit = buildCandleWindowFit(candles, clamped.start, 50);
+    if (!fit) {
+      fit = { start: clamped.start, end: clamped.end, low: caseLo, high: caseHi, padRatio: 0.14 };
+    }
+    if (Number.isFinite(caseLo) && Number.isFinite(caseHi) && caseHi > caseLo) {
+      fit.low = Math.min(fit.low, caseLo);
+      fit.high = Math.max(fit.high, caseHi);
+    }
+    applyCameraCommand('FIT_STRUCTURAL_RANGE', clamped.start, 'fit-case', undefined, fit);
+    setMessage(`Fit case · ${shortTime(clamped.start, timeframe)} → ${shortTime(clamped.end, timeframe)}`);
   };
 
   const fitAllView = () => applyCameraCommand('FIT_ALL', null, 'fit-all');
@@ -2499,22 +3011,45 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`Locked view for ${timeframe}: ${shortTime(dom.start, timeframe)} → ${shortTime(dom.end, timeframe)}`);
   };
 
-  const loadCandles = async (requestedTf = timeframe) => {
+  const loadCandles = async (requestedTf = timeframe, opts?: { quiet?: boolean; skipCamera?: boolean }) => {
     const targetTf = String(requestedTf || timeframe).toUpperCase();
+    const quiet = !!opts?.quiet;
     const requestId = candleLoadSeqRef.current + 1;
     candleLoadSeqRef.current = requestId;
     const preservedTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
-    const pendingIntent = resolveLoadCameraIntent(targetTf, preservedTime);
+    const pendingIntent = quiet
+      ? { intent: 'PRESERVE_OR_NEAREST_TIME' as CameraIntent, targetTime: preservedTime, reason: 'quiet-refresh' }
+      : resolveLoadCameraIntent(targetTf, preservedTime);
+    const loadWindow = resolveCandleLoadWindow(
+      targetTf,
+      savedStructuralRanges,
+      selectedParentRangeId,
+      activeStructuralRangeId,
+      rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+      { liveTail: !candleReplayMode },
+    );
     const isCurrentLoad = () => requestId === candleLoadSeqRef.current && activeTimeframeRef.current === targetTf;
-    cameraLog('candle load start', { requestId, targetTf, intent:pendingIntent.intent, targetTime:pendingIntent.targetTime });
-    setLoading(true); setMessage(`Loading ${targetTf} candles from backend...`);
+    cameraLog('candle load start', { requestId, targetTf, intent:pendingIntent.intent, targetTime:pendingIntent.targetTime, loadWindow, quiet });
+    if (!quiet) {
+      setLoading(true);
+      setMessage(loadWindow
+        ? `Loading ${targetTf} candles for ${loadWindow.start} → ${loadWindow.end}...`
+        : `Loading ${targetTf} candles from backend...`);
+    }
     try {
-      const r = await fetch(`${BASE_URL}/api/v1/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(targetTf)}&limit=12000`).then(x=>x.json());
+      let r = await fetch(buildCandleFetchUrl(symbol, targetTf, loadWindow, !quiet)).then(x=>x.json());
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
       if (!r.ok) throw new Error(r.error || 'Backend returned no candles');
-      const parsed = (r.candles || [])
-        .map((c:any)=>({ ...c, open:Number(c.open), high:Number(c.high), low:Number(c.low), close:Number(c.close), volume:Number(c.volume||0) }))
-        .filter((c:Candle)=>Number.isFinite(c.open) && Number.isFinite(c.high) && Number.isFinite(c.low) && Number.isFinite(c.close));
+      let parsed = parseCandleRows(r.candles);
+      let contextMiss = false;
+      if (!parsed.length && loadWindow) {
+        r = await fetch(buildCandleFetchUrl(symbol, targetTf, null, !quiet)).then(x=>x.json());
+        if (!isCurrentLoad()) return;
+        parsed = parseCandleRows(r.candles);
+        contextMiss = parsed.length > 0;
+      } else if (loadWindow && parsed.length && !candleWindowOverlapsRange(parsed, loadWindow.start, loadWindow.end)) {
+        contextMiss = true;
+      }
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after parse', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
       setCandles(parsed);
       if (!parsed.length) {
@@ -2522,7 +3057,9 @@ function MapStudio({ symbol }: { symbol:string }) {
         setSelectedCandle(null);
         setSelectedCandlePoint(null);
         pendingCameraIntentRef.current = { intent:'NONE' };
-        setMessage(`No ${targetTf} candles returned.`);
+        if (!quiet) {
+          setMessage(`No ${targetTf} candles on VPS. Tools → Sync MT5 Now (or Import EA CSV) to load OHLC history.`);
+        }
         cameraLog('candle load empty', { requestId, targetTf });
         return;
       }
@@ -2530,28 +3067,114 @@ function MapStudio({ symbol }: { symbol:string }) {
       const nearestIdx = targetTime ? candleIndexNearest(parsed, targetTime) : parsed.length - 1;
       const safeIdx = clamp(nearestIdx, 0, parsed.length - 1);
       const nearest = parsed[safeIdx];
-      setCandleReplayIndex(safeIdx);
-      if (targetTime && nearest) {
-        setSelectedCandle(nearest);
-        setSelectedCandlePoint({ price: Number(nearest.close.toFixed(2)) });
-        if (candleReplayMode || pendingIntent.intent === 'REPLAY') setCandleReplayCursorTime(nearest.time);
-        cameraLog('selected/replay nearest-candle mapping', { requestId, targetTf, targetTime, nearestTime:nearest.time, safeIdx });
+      if (!quiet) {
+        setCandleReplayIndex(safeIdx);
+        if (targetTime && nearest) {
+          setSelectedCandle(nearest);
+          setSelectedCandlePoint({ price: Number(nearest.close.toFixed(2)) });
+          if (candleReplayMode || pendingIntent.intent === 'REPLAY') setCandleReplayCursorTime(nearest.time);
+          cameraLog('selected/replay nearest-candle mapping', { requestId, targetTf, targetTime, nearestTime:nearest.time, safeIdx });
+        }
       }
-      // v086.13: no more automatic last-120-candle default range.
-      // Fibs should appear only from explicit Set M/W/D High/Low or hydrated ledger anchors.
-      await loadMapMemory(targetTf, requestId);
+      if (!quiet) await loadMapMemory(targetTf, requestId);
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after memory', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
+      if (opts?.skipCamera) {
+        pendingCameraIntentRef.current = { intent:'NONE' };
+        if (!quiet) {
+          const ext = candleDataExtent(parsed);
+          setMessage(`Loaded ${parsed.length} ${targetTf} candles${ext ? ` · latest ${shortTime(ext.end, targetTf)}` : ''}.`);
+        }
+        return;
+      }
       const commandTargetTime = pendingIntent.targetTime || targetTime || nearest?.time || null;
-      applyCameraCommand(pendingIntent.intent === 'NONE' ? 'PRESERVE_OR_NEAREST_TIME' : pendingIntent.intent, commandTargetTime, pendingIntent.reason || 'confirmed-candle-load');
+      let fitWindow = pendingIntent.fitWindow || null;
+      let cameraIntent: CameraIntent = pendingIntent.intent === 'NONE' ? 'PRESERVE_OR_NEAREST_TIME' : pendingIntent.intent;
+      let useStructuralPrice = !!(pendingIntent.contextRangeId && fitWindow);
+      if (!contextMiss && pendingIntent.contextRangeId) {
+        const contextRange = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(pendingIntent.contextRangeId));
+        if (contextRange) fitWindow = structuralRangeFitDomain(contextRange, parsed) || fitWindow;
+        useStructuralPrice = !!fitWindow;
+      }
+      if (contextMiss) {
+        cameraIntent = 'PRESERVE_OR_NEAREST_TIME';
+        fitWindow = null;
+        useStructuralPrice = false;
+      }
+      applyCameraCommand(
+        cameraIntent,
+        commandTargetTime,
+        pendingIntent.reason || 'confirmed-candle-load',
+        undefined,
+        fitWindow,
+        useStructuralPrice ? null : (pendingIntent.priceDomain || null),
+      );
       pendingCameraIntentRef.current = { intent:'NONE' };
-      setMessage(`Loaded ${parsed.length} ${targetTf} candles + backend map memory.`);
-      cameraLog('candle load applied', { requestId, targetTf, intent:pendingIntent.intent, commandTargetTime });
+      const ext = candleDataExtent(parsed);
+      if (!quiet) {
+        if (contextMiss && ext && loadWindow) {
+          setMessage(
+            `No ${targetTf} history for ${loadWindow.label} (${loadWindow.start} → ${loadWindow.end}). `
+            + `VPS only has ${shortTime(ext.start, targetTf)} → ${shortTime(ext.end, targetTf)} (${parsed.length} bars). `
+            + `Tools → Sync MT5 Now or Import EA CSV.`,
+          );
+        } else {
+          setMessage(`Loaded ${parsed.length} ${targetTf} candles${loadWindow ? ` for ${loadWindow.start} → ${loadWindow.end}` : ''}${ext ? ` · latest ${shortTime(ext.end, targetTf)}` : ''} + backend map memory.`);
+        }
+      }
+      cameraLog('candle load applied', { requestId, targetTf, intent:cameraIntent, commandTargetTime, contextMiss, loadWindow, quiet });
     } catch(e:any) {
       if (!isCurrentLoad()) { cameraLog('candle load error ignored as stale', { requestId, targetTf, error:e?.message || e }); return; }
-      setMessage(`Load ${targetTf} failed: ${e?.message || e}`);
+      if (!quiet) setMessage(`Load ${targetTf} failed: ${e?.message || e}`);
     }
     finally {
-      if (isCurrentLoad()) setLoading(false);
+      if (isCurrentLoad() && !quiet) setLoading(false);
+    }
+  };
+
+  const fetchCandleFeedStatus = async () => {
+    try {
+      const r = await fetch(`${BASE_URL}/api/v1/candles/status`).then(x => x.json());
+      if (r?.ok) setCandleFeedStatus(r);
+      return r;
+    } catch {
+      return null;
+    }
+  };
+
+  const syncCandlesFromMt5 = async (forceBackfill = false) => {
+    try {
+      const r = await fetch(`${BASE_URL}/api/v1/candles/sync-mt5`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: [symbol], force_backfill: forceBackfill }),
+      }).then(x => x.json());
+      await fetchCandleFeedStatus();
+      return r;
+    } catch (e: any) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+  };
+
+  const bootstrapCandleFeed = async () => {
+    const status = await fetchCandleFeedStatus();
+    const groups = safeArray<any>(status?.groups);
+    const row = groups.find((g: any) => String(g.symbol) === symbol && String(g.timeframe).toUpperCase() === 'M15');
+    const count = Number(row?.count || 0);
+    const lastMs = parseMt5TimeMs(row?.last_time);
+    const staleMs = Date.now() - (3 * 60 * 60 * 1000);
+    const needsBackfill = count < 500 || lastMs === null || lastMs < staleMs;
+    if (!needsBackfill) return;
+    setMessage(`Refreshing ${symbol} OHLC from MT5...`);
+    const sync = await syncCandlesFromMt5(true);
+    if (sync?.ok) {
+      setMessage('MT5 sync finished. Loading candles...');
+      return;
+    }
+    // VPS may not have sync-mt5 yet — GET /api/v1/candles?refresh=1 triggers inline MT5 upsert after deploy.
+    if (sync?.error?.includes('404') || sync?.error?.includes('Not Found') || String(sync?.error || '').includes('unavailable')) {
+      setMessage(`MT5 sync endpoint not deployed — requesting inline MT5 refresh on next candle load.`);
+    } else if (sync?.error) {
+      setMessage(`MT5 sync: ${sync.error}`);
     }
   };
 
@@ -2559,9 +3182,33 @@ function MapStudio({ symbol }: { symbol:string }) {
     setLoading(true); setMessage('Importing EA CSV files from Common\\Files...');
     try {
       const r = await fetch(`${BASE_URL}/api/v1/candles/import-common-files`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol, timeframes: MAP_TIMEFRAMES })}).then(x=>x.json());
-      setMessage(r.ok ? 'Import finished. Reload candles next.' : `Import failed: ${r.error || 'unknown'}`);
+      if (r.ok) {
+        await fetchCandleFeedStatus();
+        await loadCandles(timeframe);
+        setMessage('EA CSV import finished and chart reloaded.');
+      } else {
+        setMessage(`Import failed: ${r.error || 'unknown'}`);
+      }
     } catch(e:any) { setMessage(`Import failed: ${e?.message || e}`); }
     finally { setLoading(false); }
+  };
+
+  const syncMt5Now = async () => {
+    setLoading(true);
+    setMessage(`Syncing ${symbol} OHLC from MT5...`);
+    try {
+      const r = await syncCandlesFromMt5(true);
+      if (r?.ok) {
+        setMessage('MT5 sync finished. Reloading chart...');
+        await loadCandles(timeframe);
+      } else {
+        setMessage(`MT5 sync failed: ${r?.error || r?.reason || 'endpoint unavailable'}. Deploy candle_sync.py on VPS and restart uvicorn.`);
+      }
+    } catch (e: any) {
+      setMessage(`MT5 sync failed: ${e?.message || e}`);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const saveEvent = async (ev:MapEvent) => {
@@ -3011,8 +3658,6 @@ function MapStudio({ symbol }: { symbol:string }) {
       zone_percent: Number((pct ?? 0).toFixed(2)),
       notes: ''
     };
-    const lifecycleLock = htfCandidateLockKey(cand, timeframe, low, high);
-    if (lifecycleLock) setHtfAcceptedSuggestionLocks(prev => Array.from(new Set([...(prev || []), lifecycleLock])));
     upsertMarkerIntoEvents(ev);
     await saveEvent(ev);
     setMessage(`Saved ${ev.event_name} at ${ev.price} (${ev.zone}) · ${shortTime(ev.time, timeframe)}`);
@@ -3139,11 +3784,10 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (structureLayer === 'MACRO') return;
     const childSpan = { range_high_time: rhAnchor.time, range_low_time: rlAnchor.time };
     const resolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childSpan);
-    if (showManualParentPicker) return;
     if (resolve.autoSelected && resolve.parentId && String(resolve.parentId) !== String(selectedParentRangeId)) {
       setSelectedParentRangeId(String(resolve.parentId));
     }
-  }, [structureLayer, rhAnchor.time, rlAnchor.time, savedStructuralRanges, selectedParentRangeId, showManualParentPicker]);
+  }, [structureLayer, rhAnchor.time, rlAnchor.time, savedStructuralRanges, selectedParentRangeId]);
 
   useEffect(() => {
     const allowed = sourceTimeframeOptionsForLayer(structureLayer);
@@ -3287,14 +3931,47 @@ function MapStudio({ symbol }: { symbol:string }) {
     return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
   }, [savedStructuralRanges, activeStructuralRangeId]);
 
+  const effectiveStructuralAnchors = useMemo(
+    () => resolveEffectiveStructuralAnchorTimes(
+      rhAnchor,
+      rlAnchor,
+      rangeWindowByTf[timeframe] || rangeWindow,
+      selectedCandle?.time || replayCandle?.time || null,
+    ),
+    [rhAnchor, rlAnchor, rangeWindowByTf, timeframe, rangeWindow, selectedCandle?.time, replayCandle?.time],
+  );
+
   const childDraftSpan = useMemo(() => ({
-    range_high_time: rhAnchor.time || null,
-    range_low_time: rlAnchor.time || null,
-  }), [rhAnchor.time, rlAnchor.time]);
+    range_high_time: effectiveStructuralAnchors.range_high_time,
+    range_low_time: effectiveStructuralAnchors.range_low_time,
+  }), [effectiveStructuralAnchors.range_high_time, effectiveStructuralAnchors.range_low_time]);
+
+  const resolveParentSelectionForSave = () => {
+    const neededParentLayer = expectedParentStructureLayer(structureLayer);
+    if (!neededParentLayer) return selectedParentRangeId || '';
+    if (selectedParentRangeId) {
+      const selectedRow = safeArray<any>(savedStructuralRanges).find(
+        (r:any) => String(r.range_id || r.id) === String(selectedParentRangeId),
+      );
+      const selectedLayer = selectedRow ? normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) : null;
+      if (selectedLayer === neededParentLayer) return String(selectedParentRangeId);
+    }
+    if (activeStructuralRangeId) {
+      const activeRow = findSavedRangeRowById(activeStructuralRangeId);
+      const activeLayer = activeRow ? normalizeStructureLayer(activeRow.structure_layer || activeRow.layer) : null;
+      if (activeLayer === neededParentLayer) return String(activeStructuralRangeId);
+    }
+    return selectedParentRangeId || '';
+  };
+
+  const parentSelectionForSave = useMemo(
+    () => resolveParentSelectionForSave(),
+    [structureLayer, selectedParentRangeId, activeStructuralRangeId, savedStructuralRanges],
+  );
 
   const parentLinkResolve = useMemo(
-    () => resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan),
-    [structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan],
+    () => resolveParentRangeIdForSave(structureLayer, parentSelectionForSave, savedStructuralRanges, childDraftSpan),
+    [structureLayer, parentSelectionForSave, savedStructuralRanges, childDraftSpan],
   );
 
   const resolvedParentRange = useMemo(() => {
@@ -3305,7 +3982,7 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const parentLinkContextLabel = useMemo(() => {
     if (structureLayer === 'MACRO') return null;
-    const mode = parentLinkModeLabel(parentLinkResolve.mode, showManualParentPicker);
+    const mode = parentLinkModeLabel(parentLinkResolve.mode);
     if (!resolvedParentRange) {
       return {
         mappingLine: `Mapping: ${structureLayer} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
@@ -3318,17 +3995,13 @@ function MapStudio({ symbol }: { symbol:string }) {
       parentLine: `Parent: ${formatStructuralRangeOptionLabel(resolvedParentRange)}`,
       mode,
     };
-  }, [structureLayer, sourceTimeframe, timeframe, parentLinkResolve, resolvedParentRange, showManualParentPicker]);
+  }, [structureLayer, sourceTimeframe, timeframe, parentLinkResolve, resolvedParentRange]);
 
-  const showParentSelector = structureLayer !== 'MACRO' && (
-    showManualParentPicker
-    || parentLinkResolve.mode === 'multiple_matches'
-    || (parentLinkResolve.mode === 'no_match' && parentCandidatesForScope.length > 0)
-  );
+  const parentLinkHint = parentLinkResolve.error || parentLinkResolve.orphanWarning || null;
 
   const savePreview = useMemo(() => {
     const mappingCase = getCurrentMappingCaseRef();
-    const parentResolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan);
+    const parentResolve = resolveParentRangeIdForSave(structureLayer, parentSelectionForSave, savedStructuralRanges, childDraftSpan);
     const parentId = parentResolve.parentId;
     const chartMismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
     const macroW1ValidNote = structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1' && String(timeframe).toUpperCase() === 'W1'
@@ -3369,7 +4042,33 @@ function MapStudio({ symbol }: { symbol:string }) {
       selectedIsBroken,
       warning,
     };
-  }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, selectedParentRangeId, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, savedStructuralRanges, parentStructureLayer, selectedSavedRange, childDraftSpan]);
+  }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, parentSelectionForSave, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, savedStructuralRanges, parentStructureLayer, selectedSavedRange, childDraftSpan]);
+
+  const saveBlockReason = useMemo(() => {
+    if (!getCurrentMappingCaseRef().hasCase) return 'Create or select a mapping case first (Case tab).';
+    if (!rhAnchor.price || !rlAnchor.price) return 'Set Range High and Range Low first.';
+    if (parentLinkResolve.error) return parentLinkResolve.error;
+    return null;
+  }, [parentLinkResolve.error, rhAnchor.price, rlAnchor.price, activeCaseId, rawActiveCaseId]);
+
+  const chartStatusLine = useMemo(() => {
+    if (saveBlockReason) {
+      return `${saveBlockReason} Click the ${parentStructureLayer || 'parent'} row in Structural Explorer.`;
+    }
+    if (structuralRangeDraftDirty && parentLinkResolve.orphanWarning) {
+      return parentLinkResolve.orphanWarning;
+    }
+    const targetBars = targetVisibleBarsForTimeframe(timeframe);
+    const zoomHint = visibleBarCount > targetBars * 1.35
+      ? ` · ${visibleBarCount} bars visible (try Fit Replay or W+ to read structure)`
+      : visibleBarCount > 0
+        ? ` · ${visibleBarCount} bars`
+        : '';
+    if (selectedCandle) {
+      return `Selected ${shortTime(selectedCandle.time, timeframe)} · H ${selectedCandle.high.toFixed(2)} · L ${selectedCandle.low.toFixed(2)}${zoomHint}`;
+    }
+    return `${message}${zoomHint}`;
+  }, [saveBlockReason, structuralRangeDraftDirty, parentLinkResolve.orphanWarning, parentStructureLayer, selectedCandle, timeframe, message, visibleBarCount]);
 
   const saveNextRangeEligible = useMemo(() => {
     if (!activeStructuralRangeId) {
@@ -3451,115 +4150,24 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`Selected saved range #${id}. Save Range button is now Update Selected Range.`);
   };
 
-  const caseHierarchyForest = useMemo(
-    () => buildCaseHierarchyForest(savedStructuralRanges),
-    [savedStructuralRanges],
+  const explorerYearOptions = useMemo(() => {
+    const years = new Set<number>();
+    for (const r of savedStructuralRanges) {
+      const y = rangeYearBucket(r);
+      if (y !== null) years.add(y);
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }, [savedStructuralRanges]);
+
+  const explorerFilteredRanges = useMemo(
+    () => filterRangesForExplorerYear(savedStructuralRanges, explorerYearFilter),
+    [savedStructuralRanges, explorerYearFilter],
   );
 
-  const jumpToStructuralRange = (range: any) => {
-    const start = range?.range_start_time || range?.range_high_time || range?.active_from_time;
-    const chartTf = String(range?.chart_timeframe || range?.source_timeframe || range?.timeframe || timeframe).toUpperCase();
-    if (chartTf !== String(timeframe).toUpperCase()) {
-      switchTimeframePreserveCase(chartTf);
-    }
-    selectSavedStructuralRange(range);
-    if (start) {
-      setJumpDate(String(start).slice(0, 10));
-      setCandleReplayFrameByTime(String(start));
-      setFitToken(x => x + 1);
-      setMessage(`Jumped to ${formatHierarchyTreeRowLabel(range)}`);
-    } else {
-      setMessage(`Selected ${formatHierarchyTreeRowLabel(range)}`);
-    }
-  };
-
-  const editStructuralRangeFromTree = (range: any) => {
-    selectSavedStructuralRange(range);
-    setRightDeckTab('mark');
-    setMarkWorkspaceMode('htf');
-    setWorkspacePanelOpen(true);
-    setMessage(`Editing range #${range?.range_id || range?.id} in Structural Map.`);
-  };
-
-  const relinkStructuralRange = async (range: any) => {
-    const id = String(range?.range_id || range?.id || '');
-    if (!id) return;
-    const layer = normalizeStructureLayer(range.structure_layer || range.layer);
-    const parentLayer = layer ? expectedParentStructureLayer(layer) : null;
-    if (!layer || !parentLayer) return;
-    const candidates = parentLayerCandidates(layer, savedStructuralRanges);
-    const hint = candidates.slice(0, 8).map(formatStructuralRangeOptionLabel).join('\n');
-    const raw = window.prompt(
-      `Relink #${id} ${layer} to ${parentLayer} parent id.\n\nCandidates:\n${hint || '(none)'}\n\nEnter parent range id or leave empty for orphan:`,
-      String(range?.parent_range_id || ''),
-    );
-    if (raw === null) return;
-    const trimmed = raw.trim();
-    const parentId = trimmed ? Number(trimmed) : null;
-    if (trimmed && !Number.isFinite(parentId)) {
-      setMessage('Parent id must be a number.');
-      return;
-    }
-    try {
-      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/reparent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ child_range_id: Number(id), parent_range_id: parentId }),
-      });
-      await refreshSavedRangesForCurrentCase();
-      try { await refreshHierarchyAudit(); } catch {}
-      setMessage(`Relinked #${id} → parent ${parentId ?? 'none'}.`);
-    } catch (err: any) {
-      setMessage(`Relink failed: ${err?.message || err}`);
-    }
-  };
-
-  const archiveStructuralRange = async (range: any) => {
-    const id = String(range?.range_id || range?.id || '');
-    if (!id) return;
-    const childCount = countRangeDescendants(id, savedStructuralRanges);
-    const ok = window.confirm(
-      childCount > 0
-        ? `Range #${id} has ${childCount} child range(s) linked below it.\n\nArchive this range anyway?`
-        : `Archive range #${id}?`,
-    );
-    if (!ok) return;
-    try {
-      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'ABANDONED' }),
-      });
-      if (String(activeStructuralRangeId) === id) setActiveStructuralRangeId('');
-      await refreshSavedRangesForCurrentCase();
-      try { await refreshHierarchyAudit(); } catch {}
-      setMessage(`Archived range #${id}.`);
-    } catch (err: any) {
-      setMessage(`Archive failed: ${err?.message || err}`);
-    }
-  };
-
-  const renderHierarchyTreeNodes = (nodes: CaseHierarchyTreeNode[]): React.ReactNode => nodes.flatMap((node) => {
-    const range = node.range;
-    const id = String(range?.range_id || range?.id || '');
-    const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || 'WEEKLY';
-    const isActive = id === String(activeStructuralRangeId);
-    return [
-      <div key={id} className={`hierarchyTreeRow ${isActive ? 'active' : ''}`} style={{ paddingLeft: `${8 + node.depth * 14}px` }}>
-        <button type="button" className="hierarchyTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
-          {node.depth > 0 && <span className="hierarchyTreeBranch">└── </span>}
-          <span className={`hierarchyTreeLabel hierarchyLayer-${layer.toLowerCase()}`}>{formatHierarchyTreeRowLabel(range)}</span>
-        </button>
-        <div className="hierarchyTreeActions">
-          <button type="button" title="Jump to range" onClick={() => jumpToStructuralRange(range)}>Jump</button>
-          <button type="button" title="Edit in Structural Map" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
-          <button type="button" title="Relink parent" onClick={() => void relinkStructuralRange(range)}>Relink</button>
-          <button type="button" className="dangerTiny" title="Archive range" onClick={() => void archiveStructuralRange(range)}>Archive</button>
-        </div>
-      </div>,
-      ...renderHierarchyTreeNodes(node.children),
-    ];
-  });
+  const caseHierarchyForest = useMemo(
+    () => buildCaseHierarchyForest(explorerFilteredRanges),
+    [explorerFilteredRanges],
+  );
 
   const refreshStructuralRanges = async () => {
     const params = new URLSearchParams({ symbol });
@@ -3908,23 +4516,28 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     const parentResolve = resolveParentRangeIdForSave(
       structureLayer,
-      selectedParentRangeId,
+      parentSelectionForSave,
       savedStructuralRanges,
-      { range_high_time: rhAnchor.time, range_low_time: rlAnchor.time },
+      childDraftSpan,
     );
     if (parentResolve.error) {
-      setMessage(parentResolve.error);
-      setShowManualParentPicker(true);
+      setMessage(`${parentResolve.error} Click the ${parentStructureLayer || 'parent'} row in Structural Explorer, or save then use Relink.`);
       return;
     }
     if (!confirmOrphanSaveIfNeeded(structureLayer, parentResolve)) return;
     if (parentResolve.autoSelected && parentResolve.parentId) {
       setSelectedParentRangeId(String(parentResolve.parentId));
-      setShowManualParentPicker(false);
     }
     setStructuralSaving(true);
     try {
       const win = structuralWindow();
+      const anchorTimes = resolveEffectiveStructuralAnchorTimes(
+        rhAnchor,
+        rlAnchor,
+        rangeWindowByTf[timeframe] || rangeWindow,
+        selectedCandle?.time || replayCandle?.time || null,
+      );
+      const dateFields = structuralRangeDateFields(anchorTimes.range_high_time, anchorTimes.range_low_time);
       const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
       const payload = {
         ...(isUpdate ? { range_id: activeStructuralRangeId } : { range_key: `${safeCaseKey}_${structureLayer}_${sourceTimeframe}_${Date.now()}` }),
@@ -3936,11 +4549,11 @@ function MapStudio({ symbol }: { symbol:string }) {
         parent_range_id: parentResolve.parentId,
         range_high_price: Number(rhAnchor.price),
         range_low_price: Number(rlAnchor.price),
-        range_high_time: win.range_high_time,
-        range_low_time: win.range_low_time,
-        range_start_time: win.range_start_time,
-        range_end_time: win.range_end_time,
-        active_from_time: win.active_from_time,
+        range_high_time: anchorTimes.range_high_time || win.range_high_time,
+        range_low_time: anchorTimes.range_low_time || win.range_low_time,
+        range_start_time: dateFields.range_start_time || win.range_start_time,
+        range_end_time: dateFields.range_end_time || win.range_end_time,
+        active_from_time: dateFields.active_from_time || win.active_from_time,
         duration_minutes: win.duration,
         ...activeStructuralRangeStatusFields(),
         meta_json: { phase:'electron_phase3_structural_mapping', proof_target:'WEEKLY_DAILY', parent_link_mode: parentResolve.mode },
@@ -4107,9 +4720,9 @@ function MapStudio({ symbol }: { symbol:string }) {
     const hasActiveRangeParent = activeRangeParentId !== null && activeRangeParentId !== undefined && String(activeRangeParentId) !== '';
     const parentResolve = resolveParentRangeIdForSave(
       structureLayer,
-      selectedParentRangeId,
+      parentSelectionForSave,
       savedStructuralRanges,
-      { range_high_time: rhAnchor.time, range_low_time: rlAnchor.time },
+      childDraftSpan,
     );
     if (!hasActiveRangeParent && parentResolve.error) {
       setMessage(parentResolve.error);
@@ -4633,6 +5246,255 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`Replay scrubbed to ${shortTime(c.time, timeframe)} · ${safe + 1}/${candles.length}`);
   };
 
+  const applyExplorerRowSelection = (range: any) => {
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return;
+    const rangeLayer = normalizeStructureLayer(range?.structure_layer || range?.layer);
+    const neededParentLayer = expectedParentStructureLayer(structureLayer);
+
+    if (rangeLayer === structureLayer) {
+      selectSavedStructuralRange(range);
+      return;
+    }
+
+    setActiveStructuralRangeId(id);
+    const high = range.range_high_price ?? range.range_high;
+    const low = range.range_low_price ?? range.range_low;
+    if (high !== undefined && high !== null && high !== '') {
+      const next = { price: String(high), time: String(range.range_high_time || ''), candle: null };
+      setRhAnchor(next);
+      setRangeHigh(String(high));
+    }
+    if (low !== undefined && low !== null && low !== '') {
+      const next = { price: String(low), time: String(range.range_low_time || ''), candle: null };
+      setRlAnchor(next);
+      setRangeLow(String(low));
+    }
+    setRangeWindowByTf(prev => ({
+      ...prev,
+      [timeframe]: {
+        ...(prev[timeframe] || {}),
+        start: range.range_start_time || range.range_high_time || prev[timeframe]?.start || '',
+        end: range.range_end_time || range.range_low_time || prev[timeframe]?.end || '',
+      },
+    }));
+    setStructuralRangeDraftDirty(false);
+
+    if (rangeLayer && neededParentLayer && rangeLayer === neededParentLayer) {
+      setSelectedParentRangeId(id);
+      setMessage(`Parent context: ${rangeLayer} #${id} → mapping ${structureLayer}.`);
+    } else {
+      setMessage(`Selected ${rangeLayer || 'range'} #${id} for navigation.`);
+    }
+  };
+
+  const jumpToStructuralRange = (range: any) => {
+    const start = range?.range_start_time || range?.range_high_time || range?.active_from_time;
+    const startStr = start ? String(start) : '';
+    const chartTf = String(range?.chart_timeframe || range?.source_timeframe || range?.timeframe || timeframe).toUpperCase();
+    const needsTfSwitch = chartTf !== String(timeframe).toUpperCase();
+    const fitWindow = structuralRangeFitDomain(range, needsTfSwitch ? [] : candles);
+    applyExplorerRowSelection(range);
+    if (needsTfSwitch) {
+      pendingCameraIntentRef.current = {
+        intent: 'FIT_STRUCTURAL_RANGE',
+        targetTime: startStr || selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null,
+        reason: 'explorer-jump-fit',
+        fitWindow,
+      };
+      activeTimeframeRef.current = chartTf;
+      setTimeframe(chartTf);
+    } else {
+      if (startStr) {
+        setCandleReplayFrameByTime(startStr);
+        setJumpDate(startStr.slice(0, 10));
+      }
+      if (fitWindow) {
+        applyCameraCommand('FIT_STRUCTURAL_RANGE', startStr || null, 'explorer-jump-fit', undefined, fitWindow);
+      } else if (startStr) {
+        applyCameraCommand('PRESERVE_OR_NEAREST_TIME', startStr, 'explorer-jump');
+      }
+    }
+  };
+
+  const editStructuralRangeFromTree = (range: any) => {
+    selectSavedStructuralRange(range);
+    setRightDeckTab('mark');
+    setMarkWorkspaceMode('htf');
+    setWorkspacePanelOpen(true);
+    setMessage(`Editing range #${range?.range_id || range?.id} in Structural Map.`);
+  };
+
+  const relinkStructuralRange = async (range: any) => {
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return;
+    const layer = normalizeStructureLayer(range.structure_layer || range.layer);
+    const parentLayer = layer ? expectedParentStructureLayer(layer) : null;
+    if (!layer || !parentLayer) return;
+    const candidates = parentLayerCandidates(layer, savedStructuralRanges);
+    const hint = candidates.slice(0, 8).map(formatStructuralRangeOptionLabel).join('\n');
+    const raw = window.prompt(
+      `Relink #${id} ${layer} to ${parentLayer} parent id.\n\nCandidates:\n${hint || '(none)'}\n\nEnter parent range id or leave empty for orphan:`,
+      String(range?.parent_range_id || ''),
+    );
+    if (raw === null) return;
+    const trimmed = raw.trim();
+    const parentId = trimmed ? Number(trimmed) : null;
+    if (trimmed && !Number.isFinite(parentId)) {
+      setMessage('Parent id must be a number.');
+      return;
+    }
+    try {
+      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/reparent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ child_range_id: Number(id), parent_range_id: parentId }),
+      });
+      await refreshSavedRangesForCurrentCase();
+      try { await refreshHierarchyAudit(); } catch {}
+      setMessage(`Relinked #${id} → parent ${parentId ?? 'none'}.`);
+    } catch (err: any) {
+      setMessage(`Relink failed: ${err?.message || err}`);
+    }
+  };
+
+  const archiveStructuralRange = async (range: any) => {
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return;
+    const childCount = countRangeDescendants(id, savedStructuralRanges);
+    const ok = window.confirm(
+      childCount > 0
+        ? 'This range has child ranges. Archiving may orphan or hide children.\n\nArchive anyway?'
+        : `Archive range #${id}?`,
+    );
+    if (!ok) return;
+    try {
+      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ABANDONED' }),
+      });
+      if (String(activeStructuralRangeId) === id) setActiveStructuralRangeId('');
+      await refreshSavedRangesForCurrentCase();
+      try { await refreshHierarchyAudit(); } catch {}
+      setMessage(`Archived range #${id}.`);
+    } catch (err: any) {
+      setMessage(`Archive failed: ${err?.message || err}`);
+    }
+  };
+
+  const renderExplorerTreeNodes = (nodes: CaseHierarchyTreeNode[]): React.ReactNode => nodes.flatMap((node) => {
+    const range = node.range;
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return [];
+    const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || 'WEEKLY';
+    const layerKey = layer.toLowerCase();
+    const isActive = id === String(activeStructuralRangeId);
+    const isParentContext = id === String(selectedParentRangeId) && expectedParentStructureLayer(structureLayer) === layer;
+    const lines = formatExplorerRowLines(range, node.children.length);
+    const hasChildren = node.children.length > 0;
+    const collapsed = hierarchyCollapsedIds.includes(id);
+    const toggleCollapsed = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setHierarchyCollapsedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+    };
+    return [
+      <div
+        key={id}
+        className={`explorerTreeRow ${isActive ? 'active' : ''} ${isParentContext ? 'parentContext' : ''} ${node.depth > 0 ? 'isChild' : ''}`}
+        style={{ marginLeft: `${node.depth * 12}px` }}
+      >
+        {hasChildren ? (
+          <button type="button" className="explorerTreeToggle" onClick={toggleCollapsed} aria-label={collapsed ? 'Expand' : 'Collapse'}>
+            {collapsed ? '▶' : '▼'}
+          </button>
+        ) : <span className="explorerTreeToggle spacer" />}
+        <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
+        <button type="button" className="explorerTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
+          <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.line1}</span>
+          <span className="explorerTreeLine2">{lines.line2}</span>
+          {lines.spanNote && <span className="explorerSpanNote">{lines.spanNote}</span>}
+        </button>
+        {isActive && (
+          <div className="explorerTreeActions">
+            <button type="button" title="Jump" onClick={() => jumpToStructuralRange(range)}>Jump</button>
+            <button type="button" title="Edit" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
+            <button type="button" title="Relink" onClick={() => void relinkStructuralRange(range)}>Relink</button>
+            <button type="button" className="dangerTiny" title="Archive" onClick={() => void archiveStructuralRange(range)}>Archive</button>
+          </div>
+        )}
+      </div>,
+      ...(collapsed ? [] : renderExplorerTreeNodes(node.children)),
+    ];
+  });
+
+  const renderExplorerOrphanRows = () => caseHierarchyForest.orphans.map((range:any) => {
+    const id = String(range.range_id || range.id);
+    const layer = normalizeStructureLayer(range.structure_layer || range.layer) || 'WEEKLY';
+    const layerKey = layer.toLowerCase();
+    const isActive = id === String(activeStructuralRangeId);
+    const lines = formatExplorerRowLines(range, 0);
+    return (
+      <div key={`orphan-${id}`} className={`explorerTreeRow orphan ${isActive ? 'active' : ''}`}>
+        <span className="explorerTreeToggle spacer" />
+        <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
+        <button type="button" className="explorerTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
+          <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.line1}</span>
+          <span className="explorerTreeLine2">{lines.line2}</span>
+          {lines.spanNote && <span className="explorerSpanNote">{lines.spanNote}</span>}
+        </button>
+        {isActive && (
+          <div className="explorerTreeActions">
+            <button type="button" onClick={() => jumpToStructuralRange(range)}>Jump</button>
+            <button type="button" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
+            <button type="button" onClick={() => void relinkStructuralRange(range)}>Relink</button>
+            <button type="button" className="dangerTiny" onClick={() => void archiveStructuralRange(range)}>Archive</button>
+          </div>
+        )}
+      </div>
+    );
+  });
+
+  const hierarchyBranchIds = useMemo(
+    () => collectHierarchyBranchIds(caseHierarchyForest.roots),
+    [caseHierarchyForest.roots],
+  );
+
+  const structuralExplorerPanelEl = (scrollClass = 'explorerTreeScroll') => (
+    <div className="structuralExplorerPanel">
+      <div className="structuralExplorerHeader">
+        <b>Structural Explorer</b>
+        <span>{explorerFilteredRanges.length} / {savedStructuralRanges.length} ranges</span>
+      </div>
+      <div className="explorerYearFilterRow">
+        <label className="explorerYearLabel">Year
+          <select value={explorerYearFilter} onChange={e => setExplorerYearFilter(e.target.value)}>
+            <option value="all">All</option>
+            {explorerYearOptions.map(y => <option key={y} value={String(y)}>{y}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="explorerTreeControls">
+        <button type="button" className="hierarchyCtrlBtn" onClick={() => refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`))}>Refresh</button>
+        <button type="button" className="hierarchyCtrlBtn" onClick={() => setHierarchyCollapsedIds([])}>Expand All</button>
+        <button type="button" className="hierarchyCtrlBtn" onClick={() => setHierarchyCollapsedIds(hierarchyBranchIds)}>Collapse All</button>
+        <span className="explorerOverlayLabel">Chart:</span>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyPathOnly && !hierarchyShowAll} disabled={hierarchyShowAll} onChange={e => setHierarchyPathOnly(e.target.checked)} /> Path only</label>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowSiblings} disabled={hierarchyShowAll || hierarchyPathOnly} onChange={e => setHierarchyShowSiblings(e.target.checked)} /> Siblings</label>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowChildren} disabled={hierarchyShowAll || hierarchyPathOnly} onChange={e => setHierarchyShowChildren(e.target.checked)} /> Children</label>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowAll} onChange={e => setHierarchyShowAll(e.target.checked)} /> All</label>
+      </div>
+      <div className={scrollClass}>
+        {!explorerFilteredRanges.length && <div className="caseLedgerEmpty">{savedStructuralRanges.length ? 'No ranges match this year filter.' : 'No saved structural ranges for this case yet.'}</div>}
+        {!!caseHierarchyForest.roots.length && renderExplorerTreeNodes(caseHierarchyForest.roots)}
+        {!!caseHierarchyForest.orphans.length && <>
+          <div className="hierarchyOrphanHeader">Unlinked / Orphans</div>
+          {renderExplorerOrphanRows()}
+        </>}
+      </div>
+    </div>
+  );
+
   const jumpCandleReplayLatest = () => {
     if (!candles.length) return;
     setCandleReplayFrame(candles.length - 1);
@@ -4782,16 +5644,72 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const switchTimeframePreserveCase = (nextTf:string) => {
     const tf = String(nextTf || timeframe).toUpperCase();
-    const targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
-    const intent:CameraIntent = cameraMode === 'LOCKED'
+    let targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
+    const dom = visibleCameraDomainRef.current;
+    if (dom?.start && dom?.end && Number.isFinite(new Date(dom.start).getTime()) && Number.isFinite(new Date(dom.end).getTime())) {
+      setCameraDomainByCaseTf(prev => ({ ...prev, [cameraKey]: { start: dom.start, end: dom.end } }));
+    }
+    let priceDomain: { low: number; high: number } | null = null;
+    if (dom && Number.isFinite(dom.priceLow) && Number.isFinite(dom.priceHigh) && dom.priceHigh > dom.priceLow) {
+      const currentPrice = { low: dom.priceLow, high: dom.priceHigh };
+      setCameraPriceDomainByCaseTf(prev => ({ ...prev, [cameraKey]: currentPrice }));
+      priceDomain = currentPrice;
+    }
+    const nextKey = `${activeCaseDisplayId || 'global'}_${tf}`;
+    const savedDest = cameraPriceDomainByCaseTf[nextKey];
+    if (savedDest && Number.isFinite(savedDest.low) && Number.isFinite(savedDest.high) && savedDest.high > savedDest.low) {
+      priceDomain = savedDest;
+    }
+
+    const contextRange = resolveMappingContextRange(savedStructuralRanges, selectedParentRangeId, activeStructuralRangeId);
+    const drillingIntraday = isIntradayChartTimeframe(tf);
+    let intent:CameraIntent = cameraMode === 'LOCKED'
       ? 'RESTORE_LOCKED'
       : cameraMode === 'CASE'
         ? 'CASE'
         : cameraMode === 'REPLAY'
           ? 'REPLAY'
           : 'PRESERVE_OR_NEAREST_TIME';
-    cameraLog('timeframe switch start', { from:timeframe, to:tf, intent, targetTime });
-    pendingCameraIntentRef.current = { intent, targetTime, reason:`timeframe-switch:${timeframe}->${tf}` };
+    let contextRangeId: string | null = null;
+
+    if (cameraMode !== 'LOCKED' && drillingIntraday && contextRange) {
+      intent = 'FIT_STRUCTURAL_RANGE';
+      contextRangeId = String(contextRange.range_id || contextRange.id);
+      targetTime = targetTime || structuralContextTargetTime(contextRange);
+      priceDomain = null;
+    } else if (cameraMode !== 'LOCKED' && !drillingIntraday) {
+      const savedTime = cameraDomainByCaseTf[nextKey];
+      const savedPrice = cameraPriceDomainByCaseTf[nextKey];
+      if (savedTime?.start && savedTime?.end) {
+        intent = 'FIT_STRUCTURAL_RANGE';
+        priceDomain = savedPrice && savedPrice.high > savedPrice.low
+          ? savedPrice
+          : priceDomain;
+        pendingCameraIntentRef.current = {
+          intent,
+          targetTime: targetTime || savedTime.start,
+          reason: `timeframe-switch-restore:${timeframe}->${tf}`,
+          fitWindow: {
+            start: savedTime.start,
+            end: savedTime.end,
+            low: 0,
+            high: 0,
+            padRatio: 0,
+          },
+          priceDomain,
+          contextRangeId: null,
+        };
+        const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
+        if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
+        activeTimeframeRef.current = tf;
+        setTimeframe(tf);
+        cameraLog('timeframe switch restore', { from: timeframe, to: tf, savedTime, priceDomain });
+        return;
+      }
+    }
+
+    cameraLog('timeframe switch start', { from:timeframe, to:tf, intent, targetTime, priceDomain, contextRangeId });
+    pendingCameraIntentRef.current = { intent, targetTime, reason:`timeframe-switch:${timeframe}->${tf}`, priceDomain, contextRangeId };
     const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
     if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
     activeTimeframeRef.current = tf;
@@ -5014,14 +5932,47 @@ function MapStudio({ symbol }: { symbol:string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  useEffect(()=>{ loadCandles(timeframe); }, [symbol, timeframe]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await bootstrapCandleFeed();
+      if (!cancelled) await loadCandles(timeframe);
+    })();
+    return () => { cancelled = true; };
+  }, [symbol, timeframe]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncTimer = window.setInterval(async () => {
+      if (cancelled) return;
+      await syncCandlesFromMt5(false);
+      if (!cancelled) await loadCandles(timeframe, { quiet: true, skipCamera: true });
+    }, CANDLE_SYNC_INTERVAL_MS);
+    const refreshTimer = window.setInterval(async () => {
+      if (cancelled) return;
+      await loadCandles(timeframe, { quiet: true, skipCamera: true });
+    }, CANDLE_REFRESH_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(syncTimer);
+      window.clearInterval(refreshTimer);
+    };
+  }, [symbol, timeframe]);
 
   const showStructuralMappingRibbon = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
   const selectStructureLayer = (layer: StructureLayer) => {
-    const prevParentLayer = expectedParentStructureLayer(structureLayer);
     const nextParentLayer = expectedParentStructureLayer(layer);
-    if (prevParentLayer !== nextParentLayer) setSelectedParentRangeId('');
-    setShowManualParentPicker(false);
+    if (nextParentLayer) {
+      const selectedRow = selectedParentRangeId
+        ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(selectedParentRangeId))
+        : null;
+      const selectedRowLayer = selectedRow ? normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) : null;
+      if (selectedRowLayer && selectedRowLayer !== nextParentLayer) {
+        setSelectedParentRangeId('');
+      }
+    } else {
+      setSelectedParentRangeId('');
+    }
     setStructureLayer(layer);
     setSourceTimeframe(defaultSourceTimeframeForStructureLayer(layer));
   };
@@ -5046,29 +5997,18 @@ function MapStudio({ symbol }: { symbol:string }) {
         </select>
       </label>
       {parentStructureLayer && parentLinkContextLabel && (
-        <div className="structuralParentContext" title="Resolved parent for next save">
-          <div className="parentContextMapping">{parentLinkContextLabel.mappingLine}</div>
-          <div className="parentContextParent">{parentLinkContextLabel.parentLine}</div>
-          <div className="parentContextMode">Mode: {parentLinkContextLabel.mode}</div>
-          <button type="button" className="parentContextChangeBtn" onClick={() => setShowManualParentPicker(v => !v)}>
-            {showManualParentPicker ? 'Hide Parent List' : 'Change Parent'}
-          </button>
-        </div>
+        <span
+          className="ribbonParentChip"
+          title={`${parentLinkContextLabel.mappingLine}\n${parentLinkContextLabel.parentLine}\n${parentLinkContextLabel.mode}\nClick parent row in Structural Explorer to change.`}
+        >
+          {parentLinkContextLabel.parentLine.replace(/^Parent:\s*/, '')}
+        </span>
       )}
-      {showParentSelector && parentStructureLayer && (
-        <label className="ribbonParentTf" title={`${parentStructureLayer} parent for ${structureLayer}`}>
-          <select value={selectedParentRangeId} onChange={e => { setSelectedParentRangeId(e.target.value); setShowManualParentPicker(true); }}>
-            <option value="">Select {parentStructureLayer} parent…</option>
-            {(parentLinkResolve.matchIds.length
-              ? parentCandidatesForScope.filter((r:any) => parentLinkResolve.matchIds.includes(String(r.range_id || r.id)))
-              : parentCandidatesForScope
-            ).map((r:any) => (
-              <option key={r.range_id || r.id} value={String(r.range_id || r.id)}>
-                {formatStructuralRangeOptionLabel(r)}
-              </option>
-            ))}
-          </select>
-        </label>
+      {saveBlockReason && (
+        <span className="ribbonSaveBlock" title={saveBlockReason}>{saveBlockReason}</span>
+      )}
+      {!saveBlockReason && parentLinkResolve.orphanWarning && structuralRangeDraftDirty && (
+        <span className="ribbonSaveHint" title={parentLinkResolve.orphanWarning}>{parentLinkResolve.orphanWarning}</span>
       )}
       <span className="ribbonStatus" title={`${structureLayer} · source ${sourceTimeframe} · chart ${timeframe}${activeStructuralRangeId ? ` · active #${activeStructuralRangeId}` : ''}`}>
         {chartFullscreen
@@ -5085,6 +6025,21 @@ function MapStudio({ symbol }: { symbol:string }) {
     .replace('Update Broken Range (confirm)', 'Upd Broken')
     .replace('Update Selected Range', 'Update')
     .replace('Save New Range', 'Save');
+
+  const structuralMarkToolbarEl = (
+    <div className="structuralMarkToolbar" aria-label="Structural mapping toolbar">
+      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('RH')} title="Range High">RH</button>
+      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('RL')} title="Range Low">RL</button>
+      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
+      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
+      <span className="structuralMarkDivider" />
+      <button type="button" className={`structuralMarkBtn primary ${savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!parentLinkResolve.error || !getCurrentMappingCaseRef().hasCase} title={saveBlockReason || savePreview.actionLabel}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+      <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save next range'}>Next</button>
+      <button type="button" className="structuralMarkBtn" onClick={refreshHierarchyAudit} title="Refresh audit">Audit</button>
+      <button type="button" className="structuralMarkBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
+      <button type="button" className="structuralMarkBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving} title="Undo last event">Undo</button>
+    </div>
+  );
 
   return <div className={`mapStudioShell d3MapStudio ${chartFullscreen ? 'chartFullscreenActive' : ''}`}>
     <div className="panelHeader mapStudioHeader">
@@ -5104,7 +6059,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       <select className="cameraModeSelect" value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)} title="Camera mode"><option value="AUTO">Auto cam</option><option value="LOCKED">Locked cam</option><option value="CASE">Case cam</option><option value="REPLAY">Replay cam</option></select>
       <div className="scaleNudges"><button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}x</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button><button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}x</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button><button onClick={resetCameraScale}>Reset</button></div>
       <div className="scaleNudges fitNudges"><button onClick={fitRangeView}>Fit Range</button><button onClick={fitReplayView}>Fit Replay</button><button onClick={fitCaseView}>Fit Case</button><button onClick={fitAllView}>Fit All</button><button onClick={lockCurrentView}>Lock View</button></div>
-      <span className="loadedPill compactStatus">{candles.length ? `${candles.length} ${timeframe}` : 'No candles'}</span>
+      <span className="loadedPill compactStatus">{candles.length ? `${candles.length} ${timeframe}` : 'No candles'}{candleFeedStatus?.sync?.last_finished_at ? ` · sync ${String(candleFeedStatus.sync.last_finished_at).slice(11, 16)}Z` : ''}</span>
       <label className="historyMarksControl" title="Filter stored chart marks without deleting ledger records">History
         <select value={historyMarkMode} onChange={e=>setHistoryMarkMode(e.target.value)}>
           <option value="OFF">OFF</option>
@@ -5117,6 +6072,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       </label>
       <button className={showRejectedMarks ? 'active historyMarksBtn' : 'historyMarksBtn'} onClick={()=>setShowRejectedMarks(v=>!v)} title="Rejected candidates stay stored for ML, but stay off the chart unless you ask for the mess.">Rejected {showRejectedMarks ? 'ON' : 'OFF'}</button>
       <details className="toolsMenu"><summary>Tools ▾</summary><div className="toolsMenuPanel">
+        <button onClick={syncMt5Now} disabled={loading}><RefreshCw size={18}/> Sync MT5 Now</button>
         <button onClick={importCommon} disabled={loading}><Database size={18}/> Import EA CSV</button>
         <button onClick={()=>setJumpToken(x=>x+1)}>Jump latest</button>
         <button onClick={fitAllView}>Fit all</button>
@@ -5138,7 +6094,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       <div className={`d3ChartCard ${chartFullscreen ? 'chartFullscreenCard' : ''}`}>
         <div className="chartTitleRow chartTitleRowMap compactChartTitle">
           <h3>{symbol} {timeframe}</h3>
-          <span>{selectedCandle ? `Selected ${shortTime(selectedCandle.time, timeframe)} · H ${selectedCandle.high.toFixed(2)} · L ${selectedCandle.low.toFixed(2)} · use Mark tab` : message}</span>
+          <span>{chartStatusLine}</span>
         </div>
         {replayMode && currentPlaybackFrame && <div className={`replayFrameBanner ${String(currentPlaybackFrame.lookahead_result || '').toLowerCase()}`}>
           <div><b>Replay Frame {playbackIndex + 1}/{playbackFrames.length}</b><span>{currentPlaybackFrame.frame_timestamp}</span></div>
@@ -5166,7 +6122,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BL')} title="Break Down / BOS_DOWN"><span>↓</span></button>
           <span className="quickAnchorDivider" />
           <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving} title="Update mapping case">{caseSaving ? '…' : getCurrentMappingCaseRef().hasCase ? 'Case' : 'New Case'}</button>
-          <button className={`quickSaveBtn ${savePreview.selectedIsBroken ? '' : 'primary'}`} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price} title={savePreview.actionLabel}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+          <button className={`quickSaveBtn ${savePreview.selectedIsBroken ? '' : 'primary'}`} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!parentLinkResolve.error || !getCurrentMappingCaseRef().hasCase} title={saveBlockReason || savePreview.actionLabel}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
           <button className="quickSaveBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? '…' : 'Next'}</button>
           <button className="quickSaveBtn" onClick={refreshHierarchyAudit} title="Refresh hierarchy audit">Audit</button>
           <button className="quickSaveBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
@@ -5203,6 +6159,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button onClick={startChildReplayFromParentStart} disabled={!activeParentRangeOverlay.length}>Child Replay</button>
           <span>{candles.length ? `${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)} · C ${replayCandle.close.toFixed(2)}` : ''}</span>
         </div>}
+        <div className="chartGestureHint" aria-hidden="true">Drag to pan · Pinch or scroll to zoom · Drag right edge for price</div>
         <D3CandleMap
           candles={candles}
           replayCutTime={candleReplayMode && replayCandle ? replayCandle.time : null}
@@ -5249,7 +6206,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           candleWidthScale={candleWidthScale}
           priceZoomScale={priceZoomScale}
           onCameraDomainChange={(dom)=>{ if (cameraMode === 'LOCKED') setCameraDomainByCaseTf(prev=>({ ...prev, [cameraKey]: dom })); }}
-          onVisibleDomainChange={(dom)=>{ visibleCameraDomainRef.current = dom; }}
+          onVisibleDomainChange={(dom)=>{ visibleCameraDomainRef.current = dom; setVisibleBarCount(Number(dom.visibleBars || 0)); }}
           onRangeChange={({high, low, start, end})=>{
             if (typeof high === 'number' && Number.isFinite(high)) setRangeHigh(String(Number(high.toFixed(2))));
             if (typeof low === 'number' && Number.isFinite(low)) setRangeLow(String(Number(low.toFixed(2))));
@@ -5345,155 +6302,75 @@ function MapStudio({ symbol }: { symbol:string }) {
             <button className={markWorkspaceMode==='case'?'active':''} onClick={()=>setMarkWorkspaceMode('case')}>Case Save</button>
           </div>
 
-          {markWorkspaceMode === 'htf' && <div className="markModePane htfEnginePane">
-            <div className="markPanelTitleRow"><div><h3>Structural HTF Mapping</h3><p className="mutedSmall">MACRO → WEEKLY → DAILY → INTRADAY. Store RH/RL ranges and Break Up/Down BOS events only.</p></div></div>
-            <div className="markSelectedCard wide">
-              <b>Selected Candle</b>
-              <span>{selectedCandle ? `${shortTime(selectedCandle.time, timeframe)} · O ${selectedCandle.open.toFixed(2)} · H ${selectedCandle.high.toFixed(2)} · L ${selectedCandle.low.toFixed(2)} · C ${selectedCandle.close.toFixed(2)}` : 'Click a candle to capture RH/RL/BH/BL.'}</span>
-            </div>
+          {markWorkspaceMode === 'htf' && <div className="markModePane htfEnginePane structuralMapClean">
+            {structuralMarkToolbarEl}
 
-            <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>Mapping Scope</b><span>{structureLayer} · source {sourceTimeframe} · chart {timeframe}</span></div>
-              <div className="markModeStrip compact">
-                {STRUCTURE_LAYERS.map(layer=><button key={layer} className={structureLayer===layer?'active':''} onClick={()=>selectStructureLayer(layer)}>{layer}{layer==='MICRO' ? ' · later' : ''}</button>)}
+            <div className="structuralScopeCompact">
+              <div className="markModeStrip compact structuralScopeStrip">
+                {STRUCTURE_LAYERS.map(layer => (
+                  <button key={layer} type="button" className={structureLayer === layer ? 'active' : ''} onClick={() => selectStructureLayer(layer)}>{layer}</button>
+                ))}
               </div>
-              <label className="toolbarStoryInput">Source TF
-                <select value={sourceTimeframe} onChange={e=>setSourceTimeframe(e.target.value)}>
-                  {sourceTimeframeOptionsForLayer(structureLayer).map(tf=><option key={tf} value={tf}>{tf}</option>)}
+              <label className="structuralSourceTfLabel">Source
+                <select value={sourceTimeframe} onChange={e => setSourceTimeframe(e.target.value)}>
+                  {sourceTimeframeOptionsForLayer(structureLayer).map(tf => <option key={tf} value={tf}>{tf}</option>)}
                 </select>
               </label>
-              {structureLayer === 'MACRO' && <div className="caseBadge">Macro root range. No parent required.</div>}
-              {parentStructureLayer && parentLinkContextLabel && <div className="structuralParentContext compilerPreviewCard">
-                <div className="parentContextMapping"><b>Mapping scope</b><span>{parentLinkContextLabel.mappingLine}</span></div>
-                <div className="parentContextParent"><b>Parent</b><span>{parentLinkContextLabel.parentLine}</span></div>
-                <div className="parentContextMode"><b>Mode</b><span>{parentLinkContextLabel.mode}</span></div>
-                <button type="button" className="gpsSaveBtn secondary parentContextChangeBtn" onClick={() => setShowManualParentPicker(v => !v)}>
-                  {showManualParentPicker ? 'Hide Parent List' : 'Change Parent'}
-                </button>
-              </div>}
-              {showParentSelector && parentStructureLayer && <div className="compilerPreviewCard">
-                <b>{parentStructureLayer} Parent</b>
-                <label>Parent range
-                  <select value={selectedParentRangeId} onChange={e => { setSelectedParentRangeId(e.target.value); setShowManualParentPicker(true); }}>
-                    <option value="">{structureLayer === 'WEEKLY' ? `No ${parentStructureLayer} parent (optional)` : `Select ${parentStructureLayer} parent`}</option>
-                    {(parentLinkResolve.matchIds.length
-                      ? parentCandidatesForScope.filter((r:any) => parentLinkResolve.matchIds.includes(String(r.range_id || r.id)))
-                      : parentCandidatesForScope
-                    ).map((r:any) => (
-                      <option key={r.range_id || r.id} value={String(r.range_id || r.id)}>{formatStructuralRangeOptionLabel(r)}</option>
-                    ))}
-                  </select>
-                </label>
-                {structureLayer === 'WEEKLY' && macroRangesInCase.length > 0 && !selectedParentRangeId && <div className="caseBadge warningBadge">Macro exists in case · Weekly will save without Macro parent (orphan/review).</div>}
-                {parentLinkResolve.error && <div className="caseBadge warningBadge">{parentLinkResolve.error}</div>}
-                {parentLinkResolve.orphanWarning && !parentLinkResolve.error && <div className="caseBadge warningBadge">{parentLinkResolve.orphanWarning}</div>}
-              </div>}
-              {structureLayer === 'INTRADAY' && <div className="caseBadge">Intraday mapping is storage-ready. H8 rendering remains TODO.</div>}
-              {structureLayer === 'MICRO' && <div className="caseBadge">Micro layer is selectable for storage proof. Full workflow comes later.</div>}
-              <button className="gpsSaveBtn secondary" onClick={refreshStructuralRanges}>Refresh Parents/Ranges</button>
             </div>
 
-            <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>RH / RL / Break Up / Break Down</b><span>Break Up/Down = formal BOS</span></div>
-              <div className="htfLiteGrid compactStateGrid">
-                <div><span>RH</span><strong>{rhAnchor.price || 'not set'}</strong><em>{rhAnchor.time ? shortTime(rhAnchor.time, timeframe) : 'Range High'}</em></div>
-                <div><span>RL</span><strong>{rlAnchor.price || 'not set'}</strong><em>{rlAnchor.time ? shortTime(rlAnchor.time, timeframe) : 'Range Low'}</em></div>
-                <div><span>Break Up</span><strong>{bhAnchor.price || 'not set'}</strong><em>{bhAnchor.time ? shortTime(bhAnchor.time, timeframe) : 'BOS_UP candle high'}</em></div>
-                <div><span>Break Down</span><strong>{blAnchor.price || 'not set'}</strong><em>{blAnchor.time ? shortTime(blAnchor.time, timeframe) : 'BOS_DOWN candle low'}</em></div>
+            {structureLayer === 'MACRO' && <div className="caseBadge compactBadge">Macro root · no parent required</div>}
+
+            {parentLinkHint && <div className={`parentLinkHint ${parentLinkResolve.error ? 'warningBadge' : 'compactBadge'}`}>{parentLinkHint}</div>}
+
+            {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollMark')}
+
+            <details className="structuralPanelDetails collapsedSection">
+              <summary>Save Preview · {savePreview.actionLabel}</summary>
+              <div className="htfLiteGrid compactStateGrid miniPreviewGrid">
+                <div><span>Will Save</span><strong>{savePreview.structure_layer}</strong></div>
+                <div><span>Source</span><strong>{savePreview.source_timeframe}</strong></div>
+                <div><span>Parent</span><strong>{savePreview.parent_range_id ? `#${savePreview.parent_range_id}` : 'none'}</strong></div>
+                <div><span>RH / RL</span><strong>{savePreview.range_high_price || '—'} / {savePreview.range_low_price || '—'}</strong></div>
+                <div><span>Selected</span><strong>{activeStructuralRangeId || 'new'}</strong></div>
               </div>
-              <div className="caseActionRow">
-                <button onClick={()=>setStructuralPoint('RH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range High</button>
-                <button onClick={()=>setStructuralPoint('RL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range Low</button>
-                <button onClick={()=>setStructuralPoint('BH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Up</button>
-                <button onClick={()=>setStructuralPoint('BL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
-                <button className="gpsSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
+              {savePreview.warning && <div className="caseBadge warningBadge">{savePreview.warning}</div>}
+              {!saveNextRangeEligible.eligible && saveNextRangeEligible.oldRangeId && activeStructuralRangeId && <div className="caseBadge">{saveNextRangeEligible.reason}</div>}
+            </details>
+
+            <details className="structuralPanelDetails collapsedSection">
+              <summary>Advanced Manual Buttons</summary>
+              <div className="htfLiteGrid compactStateGrid miniPreviewGrid">
+                <div><span>RH</span><strong>{rhAnchor.price || 'not set'}</strong></div>
+                <div><span>RL</span><strong>{rlAnchor.price || 'not set'}</strong></div>
+                <div><span>Break Up</span><strong>{bhAnchor.price || 'not set'}</strong></div>
+                <div><span>Break Down</span><strong>{blAnchor.price || 'not set'}</strong></div>
+              </div>
+              <div className="caseActionRow compactActionRow">
+                <button type="button" onClick={() => setStructuralPoint('RH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range High</button>
+                <button type="button" onClick={() => setStructuralPoint('RL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range Low</button>
+                <button type="button" onClick={() => setStructuralPoint('BH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Up</button>
+                <button type="button" onClick={() => setStructuralPoint('BL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
+                <button type="button" className="gpsSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
               </div>
               {lastRangeLifecyclePatchWarning && <div className="caseBadge warningBadge">{lastRangeLifecyclePatchWarning}</div>}
-              <div className="htfCandidateState">
-                <span>{lastSavedQuickEvent ? `Last Event Saved: ${lastSavedQuickEvent.role} · ${lastSavedQuickEvent.structure_layer}/${lastSavedQuickEvent.source_timeframe} · ${String(lastSavedQuickEvent.event_id).slice(0,8)}${lastSavedQuickEvent.range_lifecycle_patched ? ` · range #${lastSavedQuickEvent.broken_range_id} BROKEN` : ''}` : 'No quick event saved this session.'}</span>
-                <em>Break Up/Down save formal BOS events, then PATCH the active range as BROKEN. After retrace, set new RH/RL and click Save Next Range to chain Range → BOS → Range.</em>
-              </div>
-            </div>
+              {lastSavedQuickEvent && <div className="htfCandidateState mini"><span>Last: {lastSavedQuickEvent.role} · {lastSavedQuickEvent.structure_layer}/{lastSavedQuickEvent.source_timeframe}</span></div>}
+            </details>
 
-            <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>Save Preview</b><span>{savePreview.actionLabel}</span></div>
-              {savePreview.warning && <div className="caseBadge warningBadge">{savePreview.warning}</div>}
-              {savePreview.preview_note && <div className="caseBadge">{savePreview.preview_note}</div>}
-              <div className="htfLiteGrid compactStateGrid">
-                <div><span>Chart TF</span><strong>{savePreview.chart_timeframe}</strong><em>view only</em></div>
-                <div><span>Will Save</span><strong>{savePreview.structure_layer}</strong><em>{savePreview.actionLabel}</em></div>
-                <div><span>Source TF</span><strong>{savePreview.source_timeframe}</strong><em>{savePreview.source_timeframe_note || 'structural truth'}</em></div>
-                <div><span>Case Ref</span><strong>{savePreview.case_ref || 'no case'}</strong><em>{savePreview.raw_case_id || savePreview.case_id || 'missing'}</em></div>
-                <div><span>Parent</span><strong>{savePreview.parent_range_id ? `#${savePreview.parent_range_id}` : 'none'}</strong><em>{savePreview.parent_layer ? `${savePreview.parent_layer} · ${savePreview.parent_link_mode || 'pending'}` : 'root range'}</em></div>
-                <div><span>RH</span><strong>{savePreview.range_high_price || 'not set'}</strong><em>{savePreview.range_high_time ? shortTime(savePreview.range_high_time, timeframe) : 'draft'}</em></div>
-                <div><span>RL</span><strong>{savePreview.range_low_price || 'not set'}</strong><em>{savePreview.range_low_time ? shortTime(savePreview.range_low_time, timeframe) : 'draft'}</em></div>
-                <div><span>Selected</span><strong>{activeStructuralRangeId || 'new'}</strong><em>{selectedSavedRange ? 'will update' : 'will create'}</em></div>
-                {saveNextRangeEligible.eligible && <>
-                  <div><span>Chain From</span><strong>#{saveNextRangeEligible.oldRangeId}</strong><em>broken range</em></div>
-                  <div><span>BOS Event</span><strong>{String(saveNextRangeEligible.createdByEventId)}</strong><em>created_by_event_id</em></div>
-                  <div><span>Next Parent</span><strong>{saveNextRangeEligible.parentRangeId || 'none'}</strong><em>inherits unless changed</em></div>
-                </>}
+            <details className="structuralPanelDetails collapsedSection">
+              <summary>Hierarchy Audit {hierarchyAudit ? `· ${((hierarchyAudit.errors || []).length ? 'FAIL' : (hierarchyAudit.warnings || []).length ? 'WARN' : 'PASS')}` : ''}</summary>
+              <div className="htfLiteGrid compactStateGrid miniPreviewGrid">
+                <div><span>Macro</span><strong>{hierarchyAudit?.summary?.macro_ranges ?? '—'}</strong></div>
+                <div><span>Weekly</span><strong>{hierarchyAudit?.summary?.weekly_ranges ?? '—'}</strong></div>
+                <div><span>W→M</span><strong>{hierarchyAudit?.summary?.weekly_ranges_linked_to_macro ?? '—'}</strong></div>
+                <div><span>Daily</span><strong>{hierarchyAudit?.summary?.daily_ranges ?? '—'}</strong></div>
+                <div><span>D→W</span><strong>{hierarchyAudit?.summary?.daily_ranges_linked_to_weekly ?? '—'}</strong></div>
+                <div><span>Invalid</span><strong>{hierarchyAudit?.summary?.invalid_parent_links ?? '—'}</strong></div>
               </div>
-              {!saveNextRangeEligible.eligible && saveNextRangeEligible.oldRangeId && activeStructuralRangeId && <div className="caseBadge">{saveNextRangeEligible.reason}</div>}
-            </div>
-
-            <div className="htfCandidateBox fullWidth compactBosOnlyBox">
-              <div className="htfLiteHeader"><b>Save Structural Facts</b><span>{activeStructuralRangeId ? `active range #${activeStructuralRangeId}` : 'range id set after save'}</span></div>
-              <div className="htfCandidateState"><span>Save Range = saves RH/RL structural range to DB. Break Up/Down buttons save formal BOS events. Save Next Range chains after a BOS break.</span><em>REF HIGH/LOW is derived from active range RH/RL. Parent Break remains separate for Weekly boundary updates.</em></div>
-              <div className="caseActionRow">
-                <button className={savePreview.selectedIsBroken ? 'gpsSaveBtn secondary' : 'gpsSaveBtn'} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price}>{structuralSaving ? 'Saving...' : savePreview.actionLabel}</button>
-                <button className="gpsSaveBtn secondary" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? 'Saving...' : 'Save Next Range'}</button>
-                <button className="gpsSaveBtn secondary" onClick={()=>{ setActiveStructuralRangeId(''); setLastSavedRangeConfirmation(null); setMessage('New range mode selected. Next Save Range will create a new saved range.'); }}>Start New Range</button>
-                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('UP', { quickButton:true })} disabled={structuralSaving || (!selectedCandle && !replayCandle)}>Break Up</button>
-                <button className="gpsSaveBtn secondary" onClick={()=>saveStructuralBos('DOWN', { quickButton:true })} disabled={structuralSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
+              <div className="caseActionRow compactActionRow">
+                <button type="button" className="gpsSaveBtn secondary" onClick={refreshHierarchyAudit}>Refresh Audit</button>
+                <button type="button" className="gpsSaveBtn secondary" onClick={exportAuditJson}>Export Audit JSON</button>
               </div>
-              {lastSavedRangeConfirmation && <div className="caseBadge">
-                Saved confirmation: #{lastSavedRangeConfirmation.range_id || '?'} · {lastSavedRangeConfirmation.structure_layer} · {lastSavedRangeConfirmation.source_timeframe} · parent {lastSavedRangeConfirmation.parent_range_id || 'none'} · raw {lastSavedRangeConfirmation.raw_case_id || 'none'} · {lastSavedRangeConfirmation.case_ref || 'no case_ref'} · RH {lastSavedRangeConfirmation.range_high_price} / RL {lastSavedRangeConfirmation.range_low_price}
-              </div>}
-            </div>
-
-            <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>Saved Ranges for Current Case</b><span>{savedStructuralRanges.length} saved</span></div>
-              <div className="caseActionRow">
-                <button className="gpsSaveBtn secondary" onClick={()=>refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`))}>Refresh Saved Ranges</button>
-              </div>
-              <div className="caseLedgerRows">
-                {!savedStructuralRanges.length && <div className="caseLedgerEmpty">No saved structural ranges for this active case yet.</div>}
-                {savedStructuralRanges.slice(0, 24).map((r:any) => {
-                  const display = formatStructuralRangeDisplayLines(r, savedStructuralRanges);
-                  return (
-                    <button key={r.range_id || r.id} className={String(r.range_id || r.id) === String(activeStructuralRangeId) ? 'active' : ''} onClick={()=>selectSavedStructuralRange(r)}>
-                      <b>{display.line1}</b>
-                      <span>{display.line2}{display.parentLine ? ` · ${display.parentLine}` : ''}</span>
-                      <em>{r.old_range_id ? `old #${r.old_range_id}` : ''}{r.new_range_id ? `${r.old_range_id ? ' · ' : ''}next #${r.new_range_id}` : ''}{r.parent_link_status ? ` · ${r.parent_link_status}` : ''}</em>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="htfStateLiteCard">
-              <div className="htfLiteHeader"><b>Hierarchy Audit</b><span>{hierarchyAudit ? 'loaded' : 'not loaded'}</span></div>
-              <div className="htfLiteGrid compactStateGrid">
-                <div><span>Macro</span><strong>{hierarchyAudit?.summary?.macro_ranges ?? '—'}</strong><em>ranges</em></div>
-                <div><span>Weekly</span><strong>{hierarchyAudit?.summary?.weekly_ranges ?? '—'}</strong><em>ranges</em></div>
-                <div><span>W → M</span><strong>{hierarchyAudit?.summary?.weekly_ranges_linked_to_macro ?? '—'}</strong><em>linked</em></div>
-                <div><span>Orphan W</span><strong>{hierarchyAudit?.summary?.orphan_weekly_without_macro_parent ?? hierarchyAudit?.summary?.orphan_weekly_ranges ?? '—'}</strong><em>review</em></div>
-                <div><span>Daily</span><strong>{hierarchyAudit?.summary?.daily_ranges ?? '—'}</strong><em>ranges</em></div>
-                <div><span>D → W</span><strong>{hierarchyAudit?.summary?.daily_ranges_linked_to_weekly ?? '—'}</strong><em>linked</em></div>
-                <div><span>Orphan D</span><strong>{hierarchyAudit?.summary?.orphan_daily_ranges ?? '—'}</strong><em>warnings</em></div>
-                <div><span>Invalid</span><strong>{hierarchyAudit?.summary?.invalid_parent_links ?? '—'}</strong><em>parent links</em></div>
-                <div><span>Missing RH/RL</span><strong>{hierarchyAudit?.summary?.ranges_missing_rh_rl ?? '—'}</strong><em>errors</em></div>
-                <div><span>BOS BH/BL</span><strong>{hierarchyAudit?.summary?.bos_events_missing_bh_bl ?? '—'}</strong><em>missing</em></div>
-                <div><span>Status</span><strong>{hierarchyAudit ? ((hierarchyAudit.errors || []).length ? 'FAIL' : (hierarchyAudit.warnings || []).length ? 'WARN' : 'PASS') : '—'}</strong><em>backend audit</em></div>
-              </div>
-              <div className="htfCandidateState"><span>Audit reads DB; it does not save.</span><em>Export writes a JSON file only; it does not save drafts.</em></div>
-              <div className="caseActionRow">
-                <button className="gpsSaveBtn secondary" onClick={refreshHierarchyAudit}>Refresh Audit</button>
-                <button className="gpsSaveBtn secondary" onClick={exportAuditJson}>Export Audit JSON</button>
-                <button className="gpsSaveBtn secondary" onClick={exportCurrentMappingJson}>Export Current Mapping JSON</button>
-              </div>
-            </div>
+            </details>
           </div>}
 
           {markWorkspaceMode === 'manual' && <div className="markModePane manualEventsPane">
@@ -5585,46 +6462,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         </div>
       </div>
 
-      <div className="caseHierarchySection">
-        <div className="caseHierarchyHeader">
-          <b>Case Hierarchy</b>
-          <span>{savedStructuralRanges.length} range{savedStructuralRanges.length === 1 ? '' : 's'}</span>
-        </div>
-        <div className="hierarchyChartFilters">
-          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyPathOnly && !hierarchyShowAll} disabled={hierarchyShowAll} onChange={e => setHierarchyPathOnly(e.target.checked)} /> Path only</label>
-          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowSiblings} disabled={hierarchyShowAll} onChange={e => setHierarchyShowSiblings(e.target.checked)} /> Siblings</label>
-          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowChildren} disabled={hierarchyShowAll} onChange={e => setHierarchyShowChildren(e.target.checked)} /> Children</label>
-          <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowAll} onChange={e => setHierarchyShowAll(e.target.checked)} /> Show all</label>
-        </div>
-        <div className="hierarchyTreeScroll">
-          {!savedStructuralRanges.length && <div className="caseLedgerEmpty">No saved structural ranges for this case yet.</div>}
-          {!!caseHierarchyForest.roots.length && renderHierarchyTreeNodes(caseHierarchyForest.roots)}
-          {!!caseHierarchyForest.orphans.length && <>
-            <div className="hierarchyOrphanHeader">Unlinked / Orphans</div>
-            {caseHierarchyForest.orphans.map((range:any) => {
-              const id = String(range.range_id || range.id);
-              const layer = normalizeStructureLayer(range.structure_layer || range.layer) || 'WEEKLY';
-              return (
-                <div key={`orphan-${id}`} className={`hierarchyTreeRow orphan ${id === String(activeStructuralRangeId) ? 'active' : ''}`}>
-                  <button type="button" className="hierarchyTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
-                    <span className={`hierarchyTreeLabel hierarchyLayer-${layer.toLowerCase()}`}>{formatHierarchyTreeRowLabel(range)}</span>
-                  </button>
-                  <div className="hierarchyTreeActions">
-                    <button type="button" onClick={() => jumpToStructuralRange(range)}>Jump</button>
-                    <button type="button" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
-                    <button type="button" onClick={() => void relinkStructuralRange(range)}>Relink</button>
-                    <button type="button" className="dangerTiny" onClick={() => void archiveStructuralRange(range)}>Archive</button>
-                  </div>
-                </div>
-              );
-            })}
-          </>}
-        </div>
-        <div className="caseManagerToolbar mini">
-          <button type="button" className="caseToolbarBtn" onClick={() => refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`))}>Refresh Tree</button>
-          <button type="button" className="caseToolbarBtn" onClick={refreshHierarchyAudit}>Refresh Audit</button>
-        </div>
-      </div>
+      {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollCase')}
 
       {caseSavedNotice && <div className="caseSavedNotice">✓ {caseSavedNotice}</div>}
 
@@ -5766,9 +6604,119 @@ type D3CandleMapProps = {
   onVisibleDomainChange?:(domain:VisibleCameraDomain)=>void;
 };
 
+function snapChartPx(value: number): number {
+  return Math.round(value);
+}
+
+function snapChartStrokePx(value: number): number {
+  return Math.round(value) + 0.5;
+}
+
+function targetVisibleBarsForTimeframe(tf: string): number {
+  const t = String(tf || 'D1').toUpperCase();
+  if (t === 'M15' || t === 'M5') return 40;
+  if (t === 'H1') return 48;
+  if (t === 'H4') return 52;
+  if (t === 'D1') return 72;
+  if (t === 'W1') return 64;
+  if (t === 'MN1') return 42;
+  return 56;
+}
+
+function readablePadBarsForTimeframe(tf: string): number {
+  return Math.max(16, Math.round(targetVisibleBarsForTimeframe(tf) / 2));
+}
+
+function medianBarSpacingPx(candles: Candle[], zx: d3.ScaleTime<number, number>, maxSamples = 28): number {
+  if (candles.length < 2) return 10;
+  const gaps: number[] = [];
+  const step = Math.max(1, Math.floor(candles.length / maxSamples));
+  for (let i = step; i < candles.length; i += step) {
+    const a = zx(candleTimeDate(candles[i - 1].time));
+    const b = zx(candleTimeDate(candles[i].time));
+    const gap = Math.abs(b - a);
+    if (Number.isFinite(gap) && gap > 0.5) gaps.push(gap);
+  }
+  if (!gaps.length) return 10;
+  gaps.sort((x, y) => x - y);
+  return gaps[Math.floor(gaps.length / 2)] || 10;
+}
+
+const CHART_MARGIN = { top: 24, right: 86, bottom: 42, left: 72 };
+
+type ChartSurfaceMetrics = {
+  width: number;
+  height: number;
+  dpr: number;
+  margin: typeof CHART_MARGIN;
+  innerW: number;
+  innerH: number;
+};
+
+function chartDevicePixelRatio(): number {
+  return Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+}
+
+/** Logical CSS-pixel chart size used for scales, zoom, and pointer mapping. */
+function getChartSurfaceMetrics(svgEl: SVGSVGElement | null): ChartSurfaceMetrics | null {
+  if (!svgEl) return null;
+  const rect = svgEl.getBoundingClientRect();
+  const width = snapChartPx(Math.max(280, rect.width || 0));
+  const height = snapChartPx(Math.max(220, rect.height || 0));
+  if (width <= 0 || height <= 0) return null;
+  const margin = CHART_MARGIN;
+  return {
+    width,
+    height,
+    dpr: chartDevicePixelRatio(),
+    margin,
+    innerW: width - margin.left - margin.right,
+    innerH: height - margin.top - margin.bottom,
+  };
+}
+
+function applyChartSurfaceSize(
+  svg: d3.Selection<SVGSVGElement, unknown, null, undefined>,
+  metrics: ChartSurfaceMetrics,
+) {
+  svg
+    .style('width', `${metrics.width}px`)
+    .style('height', `${metrics.height}px`)
+    .attr('width', snapChartPx(metrics.width * metrics.dpr))
+    .attr('height', snapChartPx(metrics.height * metrics.dpr))
+    .attr('viewBox', `0 0 ${metrics.width} ${metrics.height}`);
+}
+
+/** Pointer/touch → viewBox coordinates (CSS pixel space, matches y/x scales). */
+function chartPointer(event: any, svgEl: SVGSVGElement): [number, number] {
+  const source = event?.sourceEvent ?? event;
+  return d3.pointer(source, svgEl);
+}
+
+function clampChartPlotXY(mx: number, my: number, metrics: ChartSurfaceMetrics): { x: number; y: number } {
+  return {
+    x: Math.max(metrics.margin.left, Math.min(metrics.margin.left + metrics.innerW, mx)),
+    y: Math.max(metrics.margin.top, Math.min(metrics.margin.top + metrics.innerH, my)),
+  };
+}
+
+function priceLineY(yScale: d3.ScaleLinear<number, number>, price: number): number {
+  return snapChartStrokePx(yScale(Number(price)));
+}
+
+function chartXScaleFromData(data: Candle[], metrics: ChartSurfaceMetrics) {
+  const dates = data.map((d) => new Date(d.time));
+  return d3.scaleTime()
+    .domain(d3.extent(dates) as [Date, Date])
+    .range([metrics.margin.left, metrics.margin.left + metrics.innerW]);
+}
+
 function D3CandleMap(props:D3CandleMapProps) {
   const svgRef = useRef<SVGSVGElement|null>(null);
   const transformRef = useRef<any>(d3.zoomIdentity);
+  const zoomBehaviorRef = useRef<d3.ZoomBehavior<SVGRectElement, unknown> | null>(null);
+  const suppressZoomDrawRef = useRef(false);
+  const drawRafRef = useRef<number | null>(null);
   const yPanPxRef = useRef(0);
   const yZoomRef = useRef(1);
   const yDragSnapRef = useRef<{ startY:number; startPan:number } | null>(null);
@@ -5776,6 +6724,8 @@ function D3CandleMap(props:D3CandleMapProps) {
   const lastYBaseRef = useRef<{baseLo:number;baseHi:number;innerH:number}|null>(null);
   const latestProps = useRef(props);
   latestProps.current = props;
+  const readableZoomKeyRef = useRef('');
+  const layoutMetricsRef = useRef<ChartSurfaceMetrics | null>(null);
   const cursorRafRef = useRef<number | null>(null);
   const latestCursorPayloadRef = useRef<any>(null);
 
@@ -5790,21 +6740,40 @@ function D3CandleMap(props:D3CandleMapProps) {
     return best;
   };
 
+  const scheduleDraw = () => {
+    if (drawRafRef.current != null) return;
+    drawRafRef.current = window.requestAnimationFrame(() => {
+      drawRafRef.current = null;
+      draw();
+    });
+  };
+
+  const applyOverlayZoomTransform = (overlay: d3.Selection<SVGRectElement, unknown, null, undefined>) => {
+    const node = overlay.node();
+    if (!node) return;
+    suppressZoomDrawRef.current = true;
+    try {
+      overlay.property('__zoom', transformRef.current);
+    } finally {
+      suppressZoomDrawRef.current = false;
+    }
+  };
+
   const draw = () => {
     const svgEl = svgRef.current;
     if (!svgEl) return;
+    const metrics = getChartSurfaceMetrics(svgEl);
+    if (!metrics) return;
+    layoutMetricsRef.current = metrics;
     const p = latestProps.current;
     const data = p.candles || [];
-    const replayCutMs = p.replayCutTime ? new Date(String(p.replayCutTime)).getTime() : null;
-    const renderData = replayCutMs && Number.isFinite(replayCutMs) ? data.filter(d => new Date(d.time).getTime() <= replayCutMs) : data;
+    const replayCutMs = p.replayCutTime ? candleTimeMs(p.replayCutTime) : null;
+    const renderData = replayCutMs && Number.isFinite(replayCutMs)
+      ? data.filter(d => candleTimeMs(d.time) <= replayCutMs)
+      : data;
     const svg = d3.select(svgEl);
-    const rect = svgEl.getBoundingClientRect();
-    const width = Math.max(900, rect.width || 1200);
-    const height = Math.max(520, rect.height || 620);
-    const margin = { top: 24, right: 86, bottom: 42, left: 72 };
-    const innerW = width - margin.left - margin.right;
-    const innerH = height - margin.top - margin.bottom;
-    svg.attr('viewBox', `0 0 ${width} ${height}`);
+    const { width, height, margin, innerW, innerH } = metrics;
+    applyChartSurfaceSize(svg, metrics);
     svg.selectAll('*').remove();
     svg.append('rect').attr('width', width).attr('height', height).attr('fill', '#000');
     if (!data.length) {
@@ -5817,12 +6786,31 @@ function D3CandleMap(props:D3CandleMapProps) {
       return;
     }
 
-    const dateDomainSource = data.length ? data : rawData;
-    const dates = dateDomainSource.map(d=>new Date(d.time));
+    const dateDomainSource = data;
+    const dates = dateDomainSource.map(d => candleTimeDate(d.time)).filter(d => Number.isFinite(d.getTime()));
     const x0 = d3.scaleTime().domain(d3.extent(dates) as [Date,Date]).range([margin.left, margin.left+innerW]);
     let zx = transformRef.current.rescaleX(x0);
-    const domain = zx.domain();
-    const visible = renderData.filter(d=>{ const dt = new Date(d.time); return dt >= domain[0] && dt <= domain[1]; });
+    let domain = zx.domain();
+    let visible = renderData.filter(d => {
+      const dt = candleTimeDate(d.time);
+      return Number.isFinite(dt.getTime()) && dt >= domain[0] && dt <= domain[1];
+    });
+    if (!visible.length && renderData.length) {
+      const fitBars = targetVisibleBarsForTimeframe(p.timeframe) * 2;
+      const tail = renderData.slice(-Math.min(renderData.length, fitBars));
+      const tailDates = tail.map(d => candleTimeDate(d.time)).filter(d => Number.isFinite(d.getTime()));
+      const ext = d3.extent(tailDates) as [Date, Date];
+      if (ext[0] && ext[1] && Number.isFinite(ext[0].getTime()) && Number.isFinite(ext[1].getTime())) {
+        x0.domain(ext);
+        transformRef.current = d3.zoomIdentity;
+        zx = transformRef.current.rescaleX(x0);
+        domain = zx.domain();
+        visible = renderData.filter(d => {
+          const dt = candleTimeDate(d.time);
+          return Number.isFinite(dt.getTime()) && dt >= domain[0] && dt <= domain[1];
+        });
+      }
+    }
     // v081: Do NOT fallback to renderData.slice(-120) when replay cursor moves outside the camera.
     // That fallback made candle stepping feel like the whole map view reset. The camera/zoom transform
     // must remain sovereign; if the replay cursor is offscreen, the viewport stays put until the user
@@ -5866,13 +6854,21 @@ function D3CandleMap(props:D3CandleMapProps) {
     const center = ((baseLo + baseHi) / 2) + ((yPanPxRef.current || 0) * pricePerPx);
     const yDomain: [number, number] = [center - span/2, center + span/2];
     if (v.length) lastYDomainRef.current = yDomain;
-    p.onVisibleDomainChange?.({ start:domain[0].toISOString(), end:domain[1].toISOString(), priceLow:yDomain[0], priceHigh:yDomain[1] });
+    const barSpacingPx = v.length >= 2 ? medianBarSpacingPx(v, zx) : innerW / Math.max(8, v.length);
+    p.onVisibleDomainChange?.({
+      start: domain[0].toISOString(),
+      end: domain[1].toISOString(),
+      priceLow: yDomain[0],
+      priceHigh: yDomain[1],
+      visibleBars: v.length,
+      barSpacingPx,
+    });
     const y = d3.scaleLinear().domain(yDomain).range([margin.top+innerH, margin.top]).nice();
 
     const plot = svg.append('g').attr('class','plot');
     const grid = plot.append('g');
     grid.selectAll('line.ygrid').data(y.ticks(7)).join('line')
-      .attr('x1', margin.left).attr('x2', margin.left+innerW).attr('y1', d=>y(d)).attr('y2', d=>y(d)).attr('stroke','rgba(255,255,255,.08)');
+      .attr('x1', margin.left).attr('x2', margin.left+innerW).attr('y1', d=>snapChartStrokePx(y(d))).attr('y2', d=>snapChartStrokePx(y(d))).attr('stroke','rgba(255,255,255,.08)').attr('shape-rendering','crispEdges');
     grid.selectAll('text.ytick').data(y.ticks(7)).join('text')
       .attr('x', 10).attr('y', d=>y(d)+4).attr('fill','rgba(226,232,240,.65)').attr('font-size',13).text(d=>Number(d).toFixed(2));
 
@@ -5911,8 +6907,8 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('class','savedRangeLine')
         .attr('x1', margin.left)
         .attr('x2', margin.left + innerW)
-        .attr('y1', (d:any)=>y(Number(d.price)))
-        .attr('y2', (d:any)=>y(Number(d.price)))
+        .attr('y1', (d:any)=>priceLineY(y, Number(d.price)))
+        .attr('y2', (d:any)=>priceLineY(y, Number(d.price)))
         .attr('stroke', (d:any)=>d.color)
         .attr('stroke-opacity', (d:any)=>d.style.opacity)
         .attr('stroke-width', (d:any)=>d.style.width)
@@ -5933,8 +6929,8 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('class','draftRangeLine')
         .attr('x1', margin.left)
         .attr('x2', margin.left + innerW)
-        .attr('y1', (d:any)=>y(Number(d.price)))
-        .attr('y2', (d:any)=>y(Number(d.price)))
+        .attr('y1', (d:any)=>priceLineY(y, Number(d.price)))
+        .attr('y2', (d:any)=>priceLineY(y, Number(d.price)))
         .attr('stroke', draftColor)
         .attr('stroke-opacity', draftStyle.opacity)
         .attr('stroke-width', draftStyle.width)
@@ -5942,8 +6938,9 @@ function D3CandleMap(props:D3CandleMapProps) {
       drawRangeLineLabels(dg, draftRows);
     }
 
-    const baseCandleW = innerW / Math.max(8, v.length || 8) * 0.58;
-    const candleW = Math.max(1.0, Math.min(42, baseCandleW * Math.max(0.35, Math.min(4, Number(p.candleWidthScale || 1)))));
+    const slotW = barSpacingPx;
+    const widthScale = Math.max(0.35, Math.min(4, Number(p.candleWidthScale || 1)));
+    const candleW = Math.max(2, Math.min(48, snapChartPx(slotW * 0.8 * widthScale)));
 
     if (!v.length) {
       svg.append('text')
@@ -5995,13 +6992,33 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('fill','rgba(255,223,118,.75)').attr('font-size',11).text(pct=>`${pct}%`);
     }
 
-    const candlesG = plot.append('g').attr('class','candles');
+    const candlesG = plot.append('g').attr('class','candles').attr('shape-rendering','crispEdges');
     candlesG.selectAll('g.candle').data(v, (d:any)=>d.time).join('g')
       .attr('class','candle')
       .each(function(d:any){
-        const g = d3.select(this); const x = zx(new Date(d.time)); const up = d.close >= d.open;
-        g.append('line').attr('x1',x).attr('x2',x).attr('y1',y(d.high)).attr('y2',y(d.low)).attr('stroke',up?'#35e783':'#ff5b6e').attr('stroke-width',1.6).attr('opacity',.82);
-        g.append('rect').attr('x',x-candleW/2).attr('y',Math.min(y(d.open), y(d.close))).attr('width',candleW).attr('height',Math.max(2,Math.abs(y(d.open)-y(d.close)))).attr('rx',1.5).attr('fill',up?'#35e783':'#ff5b6e').attr('opacity',.82);
+        const g = d3.select(this);
+        const up = d.close >= d.open;
+        const color = up ? '#35e783' : '#ff5b6e';
+        const xCenter = snapChartStrokePx(zx(candleTimeDate(d.time)));
+        const yHigh = snapChartPx(y(d.high));
+        const yLow = snapChartPx(y(d.low));
+        const yOpen = snapChartPx(y(d.open));
+        const yClose = snapChartPx(y(d.close));
+        const bodyTop = Math.min(yOpen, yClose);
+        const bodyHeight = Math.max(1, Math.abs(yClose - yOpen));
+        const bodyLeft = snapChartPx(xCenter - candleW / 2);
+        g.append('line')
+          .attr('x1', xCenter).attr('x2', xCenter)
+          .attr('y1', yHigh).attr('y2', yLow)
+          .attr('stroke', color)
+          .attr('stroke-width', slotW >= 6 ? 1.25 : 1)
+          .attr('vector-effect', 'non-scaling-stroke');
+        g.append('rect')
+          .attr('x', bodyLeft)
+          .attr('y', bodyTop)
+          .attr('width', candleW)
+          .attr('height', bodyHeight)
+          .attr('fill', color);
       });
 
     // Auto trajectory line intentionally hidden in v048. Route paths should be plotted/refined as saved map coordinates, not drawn as a giant spaghetti noodle.
@@ -6011,7 +7028,7 @@ function D3CandleMap(props:D3CandleMapProps) {
     svg.selectAll('.domain,.tick line').attr('stroke','rgba(226,232,240,.18)');
 
     if (p.selectedCandleTime) {
-      const selectedDate = new Date(String(p.selectedCandleTime));
+      const selectedDate = candleTimeDate(p.selectedCandleTime);
       if (selectedDate >= domain[0] && selectedDate <= domain[1]) {
         const sx = zx(selectedDate);
         const sy = Number.isFinite(Number(p.selectedCandlePrice)) ? y(Number(p.selectedCandlePrice)) : margin.top + innerH / 2;
@@ -6036,8 +7053,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     evNodes.call(d3.drag<any,MapEvent>()
       .on('drag', function(event, d){
         if (latestProps.current.toolMode !== 'drag' || d.source === 'seed') return;
-        const px = Math.max(margin.left, Math.min(margin.left+innerW, event.x));
-        const py = Math.max(margin.top, Math.min(margin.top+innerH, event.y));
+        const m = layoutMetricsRef.current;
+        if (!m) return;
+        const [mx, my] = chartPointer(event.sourceEvent || event, svgEl);
+        const { x: px, y: py } = clampChartPlotXY(mx, my, m);
         const date = zx.invert(px);
         const c = nearestCandle(date, renderData);
         const price = y.invert(py);
@@ -6049,12 +7068,11 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       .on('end', function(event, d){ if (latestProps.current.toolMode === 'drag') latestProps.current.onFinishEventDrag(d); }) as any);
 
     // v079: safe manual vertical price panning. Drag the right price strip up/down.
-    // The drag uses a frozen start snapshot, not yScale.invert() against a moving domain.
-    // That kills the old 7k/-2k hyper-jump bug while giving manual control back.
     const yDragZone = svg.append('rect')
+      .attr('class', 'chartPriceStrip')
       .attr('x', margin.left + innerW + 2)
       .attr('y', margin.top)
-      .attr('width', Math.max(28, margin.right - 8))
+      .attr('width', Math.max(36, margin.right - 4))
       .attr('height', innerH)
       .attr('fill', 'transparent')
       .attr('cursor', 'ns-resize')
@@ -6062,14 +7080,15 @@ Date: ${shortTime(d.time,p.timeframe)}`);
 
     yDragZone.call(d3.drag<any,any>()
       .on('start', (event:any) => {
-        yDragSnapRef.current = { startY: event.y, startPan: yPanPxRef.current || 0 };
+        const [, my] = chartPointer(event.sourceEvent || event, svgEl);
+        yDragSnapRef.current = { startY: my, startPan: yPanPxRef.current || 0 };
       })
       .on('drag', (event:any) => {
         const snap = yDragSnapRef.current;
         if (!snap) return;
-        const pixelDelta = event.y - snap.startY;
-        yPanPxRef.current = snap.startPan + pixelDelta;
-        draw();
+        const [, my] = chartPointer(event.sourceEvent || event, svgEl);
+        yPanPxRef.current = snap.startPan + (my - snap.startY);
+        scheduleDraw();
       })
       .on('end', () => {
         yDragSnapRef.current = null;
@@ -6078,10 +7097,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     yDragZone.on('dblclick', () => {
       yPanPxRef.current = 0;
       yZoomRef.current = 1;
-      draw();
+      scheduleDraw();
     });
 
-    const overlay = svg.append('rect').attr('x',margin.left).attr('y',margin.top).attr('width',innerW).attr('height',innerH).attr('fill','transparent').attr('cursor', p.toolMode==='plot'?'crosshair':(p.toolMode==='select'?'pointer':'grab')).attr('pointer-events', (p.toolMode==='range' || p.toolMode==='drag') ? 'none' : 'all');
+    const overlay = svg.append('rect').attr('class','chartPanSurface').attr('x',margin.left).attr('y',margin.top).attr('width',innerW).attr('height',innerH).attr('fill','transparent').attr('cursor', p.toolMode==='plot'?'crosshair':(p.toolMode==='select'?'pointer':'grab')).attr('pointer-events', (p.toolMode==='range' || p.toolMode==='drag') ? 'none' : 'all');
     const crossG = svg.append('g').attr('pointer-events','none').style('display','none');
     crossG.append('line').attr('class','cx').attr('y1',margin.top).attr('y2',margin.top+innerH).attr('stroke','rgba(255,255,255,.28)').attr('stroke-dasharray','5 7');
     crossG.append('line').attr('class','cy').attr('x1',margin.left).attr('x2',margin.left+innerW).attr('stroke','rgba(255,255,255,.28)').attr('stroke-dasharray','5 7');
@@ -6092,13 +7111,12 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     dateBubble.append('rect').attr('y',height-margin.bottom+22).attr('width',92).attr('height',24).attr('rx',7).attr('fill','rgba(0,0,0,.78)').attr('stroke','rgba(255,191,47,.45)');
     dateBubble.append('text').attr('y',height-margin.bottom+38).attr('text-anchor','middle').attr('fill','#ffdf76').attr('font-size',11).attr('font-weight',900);
     overlay.on('mousemove', (event:any)=>{
-      const [mx,my] = d3.pointer(event, svgEl);
-      const price = y.invert(Math.max(margin.top, Math.min(margin.top+innerH, my)));
-      const date = zx.invert(Math.max(margin.left, Math.min(margin.left+innerW, mx)));
+      const [mx, my] = chartPointer(event, svgEl);
+      const { x: sx, y: sy } = clampChartPlotXY(mx, my, metrics);
+      const price = y.invert(sy);
+      const date = zx.invert(sx);
       const c = nearestCandle(date, renderData);
       const pct = p.hasRange ? zonePercent(price, p.rangeLow, p.rangeHigh) : null;
-      const sx = Math.max(margin.left, Math.min(margin.left+innerW, mx));
-      const sy = Math.max(margin.top, Math.min(margin.top+innerH, my));
       crossG.style('display', null); crossG.select('.cx').attr('x1',sx).attr('x2',sx); crossG.select('.cy').attr('y1',sy).attr('y2',sy);
       crossG.select('.priceBubble').attr('transform',`translate(0,${sy-12})`);
       crossG.select('.priceBubble text').text(price.toFixed(2));
@@ -6115,10 +7133,11 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       }
     }).on('mouseleave', ()=>crossG.style('display','none'))
       .on('click', (event:any)=>{
-        const [mx,my] = d3.pointer(event, svgEl);
-        const date = zx.invert(Math.max(margin.left, Math.min(margin.left+innerW, mx)));
+        const [mx, my] = chartPointer(event, svgEl);
+        const { x: sx, y: sy } = clampChartPlotXY(mx, my, metrics);
+        const date = zx.invert(sx);
         const c = nearestCandle(date, renderData);
-        const rawPrice = y.invert(Math.max(margin.top, Math.min(margin.top+innerH, my)));
+        const rawPrice = y.invert(sy);
         const price = c ? (Math.abs(rawPrice - c.high) < Math.abs(rawPrice - c.low) ? c.high : c.low) : rawPrice;
         if (latestProps.current.replayCursorEnabled && latestProps.current.toolMode === 'inspect' && c && latestProps.current.onReplayCursorChange) {
           latestProps.current.onReplayCursorChange(c.time);
@@ -6133,39 +7152,58 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       });
 
     const zoomed = (event:any) => {
+      if (suppressZoomDrawRef.current) return;
       const next = event.transform;
-      // Keep D3 zoom responsible for horizontal time navigation only.
-      // Vertical price panning is handled by the dedicated right-side price strip below,
-      // using a frozen drag snapshot so it cannot recursively mutate itself into deep space.
       transformRef.current = d3.zoomIdentity.translate(next.x, 0).scale(next.k);
       try {
         const pp = latestProps.current;
         if (pp.cameraMode === 'LOCKED') {
           const dataNow = pp.replayCutTime ? safeArray(pp.candles).filter((d:any)=>new Date(d.time).getTime() <= new Date(String(pp.replayCutTime)).getTime()) : safeArray(pp.candles);
           if (dataNow.length && svgRef.current) {
-            const rect2 = svgRef.current.getBoundingClientRect();
-            const w2 = Math.max(900, rect2.width || 1200);
-            const m2 = { left:72, right:86 };
-            const iw2 = w2 - m2.left - m2.right;
-            const xBase = d3.scaleTime().domain(d3.extent(dataNow.map((d:any)=>new Date(d.time))) as [Date,Date]).range([m2.left, m2.left+iw2]);
+            const m = getChartSurfaceMetrics(svgRef.current);
+            if (!m) return;
+            const xBase = d3.scaleTime().domain(d3.extent(dataNow.map((d:any)=>new Date(d.time))) as [Date,Date]).range([m.margin.left, m.margin.left + m.innerW]);
             const dom = transformRef.current.rescaleX(xBase).domain();
             pp.onCameraDomainChange?.({ start: dom[0].toISOString(), end: dom[1].toISOString() });
           }
         }
       } catch {}
-      draw();
+      scheduleDraw();
     };
+    if (!zoomBehaviorRef.current) {
+      zoomBehaviorRef.current = d3.zoom<SVGRectElement, unknown>()
+        .scaleExtent([0.35, Math.max(120, data.length / 8)])
+        .wheelDelta((event:any)=> -event.deltaY * (event.deltaMode ? 0.24 : 0.008))
+        .filter((event:any) => {
+          const mode = latestProps.current.toolMode;
+          if (mode === 'range' || mode === 'drag') return false;
+          if (event.type === 'wheel') return true;
+          if (event.type.startsWith('touch')) return true;
+          return event.button === 0;
+        })
+        .on('zoom', zoomed);
+    }
+    const zoom = zoomBehaviorRef.current;
     const freePad = innerW * 10;
-    const zoom = d3.zoom<SVGSVGElement,unknown>()
-      .scaleExtent([0.35, Math.max(120, data.length/8)])
-      .wheelDelta((event:any)=> -event.deltaY * (event.deltaMode ? 0.24 : 0.008))
-      .translateExtent([[-freePad,0],[width+freePad,height]])
-      .extent([[margin.left,margin.top],[margin.left+innerW,margin.top+innerH]])
-      .on('zoom', zoomed);
-    svg.call(zoom as any);
-    (svgEl as any).__zoom = transformRef.current;
+    zoom
+      .scaleExtent([0.35, Math.max(120, data.length / 8)])
+      .translateExtent([[-freePad, 0], [width + freePad, height]])
+      .extent([[margin.left, margin.top], [margin.left + innerW, margin.top + innerH]]);
+    overlay.call(zoom as any);
+    applyOverlayZoomTransform(overlay);
     svg.on('wheel.priceZoom', null);
   };
+
+  const savedOverlaysKey = (props.savedRangeOverlays || []).map((r) => `${r.rangeId}:${r.high}:${r.low}:${r.isActive}:${r.isParentContext}`).join('|');
+  const draftOverlayKey = props.draftRangeOverlay?.visible ? `${props.draftRangeOverlay.high}:${props.draftRangeOverlay.low}:${props.draftRangeOverlay.structureLayer}` : '';
+
+  useEffect(() => {
+    const svgEl = svgRef.current;
+    if (!svgEl || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => scheduleDraw());
+    ro.observe(svgEl);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(()=>{
     if (!svgRef.current || !props.candles.length || props.cameraMode !== 'LOCKED' || !props.lockedCameraDomain?.start || !props.lockedCameraDomain?.end) { draw(); return; }
@@ -6173,42 +7211,80 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     const b = new Date(String(props.lockedCameraDomain.end));
     if (!Number.isFinite(a.getTime()) || !Number.isFinite(b.getTime()) || Math.abs(b.getTime()-a.getTime()) < 1) { draw(); return; }
     const svgEl = svgRef.current;
-    const rect = svgEl.getBoundingClientRect();
-    const width = Math.max(900, rect.width || 1200);
-    const margin = { left:72, right:86 };
-    const innerW = width - margin.left - margin.right;
+    const metrics = getChartSurfaceMetrics(svgEl);
+    if (!metrics) { draw(); return; }
     const cutMs = props.replayCutTime ? new Date(String(props.replayCutTime)).getTime() : null;
     const data = cutMs && Number.isFinite(cutMs) ? safeArray(props.candles).filter((d:any)=>new Date(d.time).getTime() <= cutMs) : safeArray(props.candles);
     if (!data.length) { draw(); return; }
-    const x0 = d3.scaleTime().domain(d3.extent(data.map((d:any)=>new Date(d.time))) as [Date,Date]).range([margin.left, margin.left+innerW]);
+    const x0 = chartXScaleFromData(data, metrics);
     const pxA = x0(a); const pxB = x0(b);
     if (Number.isFinite(pxA) && Number.isFinite(pxB) && Math.abs(pxB-pxA) > 4) {
       const lo = Math.min(pxA, pxB);
       const span = Math.abs(pxB-pxA);
-      const k = Math.max(0.35, Math.min(180, (innerW * 0.84) / span));
-      const tx = (margin.left + innerW * 0.08) - k * lo;
+      const k = Math.max(0.35, Math.min(180, (metrics.innerW * 0.84) / span));
+      const tx = (metrics.margin.left + metrics.innerW * 0.08) - k * lo;
       transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
     }
     draw();
-  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, props.savedRangeOverlays, props.draftRangeOverlay, props.showFibOverlays]);
+  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays]);
 
   useEffect(()=>{
     if (!svgRef.current || !props.candles.length) return;
     const svg = d3.select(svgRef.current);
-    const rect = svgRef.current.getBoundingClientRect();
-    const width = Math.max(900, rect.width || 1200);
-    const margin = { left:72, right:86 };
-    const innerW = width - margin.left - margin.right;
-    const bars = Math.min(120, props.candles.length);
-    const k = Math.max(1, props.candles.length / bars);
-    // Leave future space to the right so candles can be centred instead of glued to the edge like bad UI tax.
-    const targetRight = margin.left + innerW * 0.78;
-    const tx = targetRight - k * (margin.left + innerW);
+    const metrics = getChartSurfaceMetrics(svgRef.current);
+    if (!metrics) return;
+    const bars = targetVisibleBarsForTimeframe(props.timeframe);
+    const k = Math.max(1, props.candles.length / Math.max(1, bars));
+    const targetRight = metrics.margin.left + metrics.innerW * 0.78;
+    const tx = targetRight - k * (metrics.margin.left + metrics.innerW);
     const t = d3.zoomIdentity.translate(tx,0).scale(k);
     transformRef.current = t;
     svg.call((d3.zoom() as any).transform, t);
     draw();
   }, [props.jumpLatestToken]);
+
+  useEffect(() => {
+    if (!svgRef.current || !props.candles.length) return;
+    const key = `${props.timeframe}:${props.candles.length}:${props.replayCutTime || ''}:${props.cameraKey || ''}`;
+    if (readableZoomKeyRef.current === key) return;
+    const currentK = Number(transformRef.current?.k || 1);
+    if (currentK > 1.12) {
+      readableZoomKeyRef.current = key;
+      return;
+    }
+    const targetBars = targetVisibleBarsForTimeframe(props.timeframe);
+    if (props.candles.length <= targetBars) {
+      readableZoomKeyRef.current = key;
+      return;
+    }
+    readableZoomKeyRef.current = key;
+    const metrics = getChartSurfaceMetrics(svgRef.current);
+    if (!metrics) return;
+    const cutMs = props.replayCutTime ? new Date(String(props.replayCutTime)).getTime() : null;
+    const data = cutMs && Number.isFinite(cutMs)
+      ? safeArray(props.candles).filter((d:any) => new Date(d.time).getTime() <= cutMs)
+      : safeArray(props.candles);
+    if (!data.length) return;
+    const centerTime = props.replayCutTime || props.selectedCandleTime || data[data.length - 1]?.time;
+    const fit = centerTime ? buildCandleWindowFit(data, String(centerTime), readablePadBarsForTimeframe(props.timeframe)) : null;
+    const x0 = chartXScaleFromData(data, metrics);
+    if (fit) {
+      const a = x0(new Date(fit.start));
+      const b = x0(new Date(fit.end));
+      if (Number.isFinite(a) && Number.isFinite(b) && Math.abs(b - a) > 10) {
+        const span = Math.max(10, Math.abs(b - a));
+        const k = Math.max(1, Math.min(160, (metrics.innerW * 0.84) / span));
+        const tx = (metrics.margin.left + metrics.innerW * 0.08) - k * Math.min(a, b);
+        transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
+        draw();
+        return;
+      }
+    }
+    const k = Math.max(1, data.length / targetBars);
+    const targetRight = metrics.margin.left + metrics.innerW * 0.78;
+    transformRef.current = d3.zoomIdentity.translate(targetRight - k * (metrics.margin.left + metrics.innerW), 0).scale(k);
+    draw();
+  }, [props.candles.length, props.timeframe, props.replayCutTime, props.cameraKey, props.selectedCandleTime]);
 
   useEffect(()=>{
     const command = props.cameraCommand;
@@ -6226,16 +7302,13 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       draw();
       return;
     }
-    const svgEl = svgRef.current;
-    const rect = svgEl.getBoundingClientRect();
-    const width = Math.max(900, rect.width || 1200);
-    const margin = { left:72, right:86 };
-    const innerW = width - margin.left - margin.right;
+    const metrics = getChartSurfaceMetrics(svgRef.current);
+    if (!metrics) { draw(); return; }
     const dateDomainSource = data.length ? data : rawData;
-    const dates = dateDomainSource.map(d=>new Date(d.time));
-    const x0 = d3.scaleTime().domain(d3.extent(dates) as [Date,Date]).range([margin.left, margin.left+innerW]);
+    const x0 = chartXScaleFromData(dateDomainSource, metrics);
+    const { margin, innerW } = metrics;
     const fitLatest = () => {
-      const bars = Math.min(120, data.length);
+      const bars = targetVisibleBarsForTimeframe(props.timeframe);
       const k = Math.max(1, data.length / Math.max(1, bars));
       const targetRight = margin.left + innerW * 0.78;
       const tx = targetRight - k * (margin.left + innerW);
@@ -6250,8 +7323,19 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     const fitWindow = (startRaw?:string|null, endRaw?:string|null, singleSpan = 0.35) => {
       const start = startRaw ? new Date(String(startRaw)) : null;
       const end = endRaw ? new Date(String(endRaw)) : null;
-      const validStart = !!start && Number.isFinite(start.getTime());
-      const validEnd = !!end && Number.isFinite(end.getTime()) && validStart && end!.getTime() > start!.getTime();
+      let validStart = !!start && Number.isFinite(start.getTime());
+      let validEnd = !!end && Number.isFinite(end.getTime()) && validStart && end!.getTime() > start!.getTime();
+      if (validStart && data.length) {
+        const startMs = start!.getTime();
+        const ext = candleDataExtent(data);
+        if (ext && (startMs < ext.startMs - 86400000 * 365 || startMs > ext.endMs + 86400000 * 365 || start!.getUTCFullYear() > 2035)) {
+          validStart = false;
+        }
+      }
+      if (!validStart && data.length && startRaw) {
+        const around = buildCandleWindowFit(data, String(startRaw), 42);
+        if (around) return fitWindow(around.start, around.end);
+      }
       if (!validStart) return false;
       const a = x0(start as Date);
       const b = validEnd ? x0(end as Date) : a + innerW * singleSpan;
@@ -6264,6 +7348,40 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       const tx = leftTarget - k * Math.min(a,b);
       transformRef.current = d3.zoomIdentity.translate(tx,0).scale(k);
       return true;
+    };
+    const fitAroundTime = (timeRaw?: string | null, padBars = 42) => {
+      if (!timeRaw || !data.length) return false;
+      const fit = buildCandleWindowFit(data, String(timeRaw), padBars);
+      if (!fit) return false;
+      const ok = fitWindow(fit.start, fit.end);
+      if (ok) applyPriceDomain(fit.low, fit.high, fit.padRatio ?? 0.1);
+      return ok;
+    };
+    const fitAroundTimeHorizontalOnly = (timeRaw?: string | null, padBars = 42) => {
+      if (!timeRaw || !data.length) return false;
+      const fit = buildCandleWindowFit(data, String(timeRaw), padBars);
+      if (!fit) return false;
+      return fitWindow(fit.start, fit.end);
+    };
+    const resolveCommandPriceDomain = (): { low: number; high: number } | null => {
+      const pd = command?.priceDomain;
+      if (pd && Number.isFinite(pd.low) && Number.isFinite(pd.high) && pd.high > pd.low) return pd;
+      if (String(command?.reason || '').includes('timeframe-switch') && props.lockedPriceDomain) {
+        const lp = props.lockedPriceDomain;
+        if (Number.isFinite(lp.low) && Number.isFinite(lp.high) && lp.high > lp.low) return lp;
+      }
+      return null;
+    };
+    const applyPreservedPriceDomain = () => {
+      const pd = resolveCommandPriceDomain();
+      if (!pd) return false;
+      return applyPriceDomain(pd.low, pd.high, 0);
+    };
+    const syncZoomTransform = () => {
+      const svgElNow = svgRef.current;
+      if (!svgElNow) return;
+      const overlaySel = d3.select(svgElNow).select<SVGRectElement>('rect.chartPanSurface');
+      if (overlaySel.node()) applyOverlayZoomTransform(overlaySel);
     };
     const visibleTimeCenter = () => {
       const dom = transformRef.current.rescaleX(x0).domain();
@@ -6327,24 +7445,70 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     if (intent === 'VERTICAL_STRETCH') applied = applyVerticalStretch(command?.scaleFactor || 1) || true;
     if (intent === 'RESTORE_LOCKED') applied = fitLocked();
     if (!applied && intent === 'CASE') {
-      applied = fitWindow(props.caseStart || props.rangeStart, props.caseEnd || props.rangeEnd);
-      applyPriceDomain(props.caseLow || props.rangeLow, props.caseHigh || props.rangeHigh);
+      const start = props.caseStart || props.rangeStart;
+      const end = props.caseEnd || props.rangeEnd;
+      if (start && data.length) {
+        const clamped = clampFitTimesToCandles(String(start), String(end || start), data);
+        applied = fitWindow(clamped.start, clamped.end);
+      } else {
+        applied = resolveCommandPriceDomain()
+          ? fitAroundTimeHorizontalOnly(targetTime || props.goDate, readablePadBarsForTimeframe(props.timeframe))
+          : fitAroundTime(targetTime || props.goDate, readablePadBarsForTimeframe(props.timeframe));
+      }
+      if (applied) {
+        if (!applyPreservedPriceDomain()) {
+          applyPriceDomain(props.caseLow || props.rangeLow, props.caseHigh || props.rangeHigh);
+        }
+      }
     }
     if (!applied && intent === 'RANGE') {
-      applied = fitWindow(props.rangeStart, props.rangeEnd);
-      applyPriceDomain(props.rangeLow, props.rangeHigh);
+      if (props.rangeStart && data.length) {
+        const clamped = clampFitTimesToCandles(String(props.rangeStart), String(props.rangeEnd || props.rangeStart), data);
+        applied = fitWindow(clamped.start, clamped.end);
+      }
+      if (applied) {
+        if (!applyPreservedPriceDomain()) {
+          applyPriceDomain(props.rangeLow, props.rangeHigh);
+        }
+      }
     }
-    if (!applied && (intent === 'REPLAY' || intent === 'PRESERVE_OR_NEAREST_TIME' || intent === 'RESTORE_LOCKED')) applied = fitWindow(targetTime || props.goDate, null);
+    if (!applied && intent === 'FIT_STRUCTURAL_RANGE' && command?.fitWindow) {
+      const fw = command.fitWindow;
+      if (data.length) {
+        const clamped = clampFitTimesToCandles(fw.start, fw.end, data);
+        applied = fitWindow(clamped.start, clamped.end);
+        if (applied) {
+          if (Number.isFinite(fw.low) && Number.isFinite(fw.high) && fw.high > fw.low) {
+            applyPriceDomain(fw.low, fw.high, fw.padRatio ?? 0.12);
+          } else {
+            applyPreservedPriceDomain();
+          }
+        }
+      }
+    }
+    if (!applied && intent === 'REPLAY') {
+      applied = resolveCommandPriceDomain()
+        ? fitAroundTimeHorizontalOnly(targetTime || props.goDate, readablePadBarsForTimeframe(props.timeframe))
+        : fitAroundTime(targetTime || props.goDate, readablePadBarsForTimeframe(props.timeframe));
+      if (applied) applyPreservedPriceDomain();
+    }
+    if (!applied && (intent === 'PRESERVE_OR_NEAREST_TIME' || intent === 'RESTORE_LOCKED')) {
+      applied = targetTime
+        ? (resolveCommandPriceDomain()
+          ? fitAroundTimeHorizontalOnly(targetTime, readablePadBarsForTimeframe(props.timeframe))
+          : fitAroundTime(targetTime, readablePadBarsForTimeframe(props.timeframe)))
+        : false;
+      if (applied) applyPreservedPriceDomain();
+    }
     if (!applied && intent === 'LATEST') { fitLatest(); applied = true; }
     if (!applied && intent === 'FIT_ALL') applied = fitAll();
     if (!applied) {
       fitLatest();
-    } else {
-      if (intent === 'LATEST') {
-        yPanPxRef.current = 0;
-        yZoomRef.current = 1;
-      }
+    } else if (intent === 'LATEST') {
+      yPanPxRef.current = 0;
+      yZoomRef.current = 1;
     }
+    syncZoomTransform();
     draw();
   }, [props.fitAllToken, props.goDate, props.cameraCommand?.token]);
 
