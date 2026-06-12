@@ -2802,6 +2802,9 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   background:rgba(15,23,42,.82);color:#cbd5e1;cursor:pointer;
 }
 .compactCaseList button{font-size:11px;padding:6px 8px;}
+.savedCasesPanel{margin:10px 0 14px;padding:10px;border:1px solid #1e3a52;border-radius:14px;background:rgba(6,14,24,.72);}
+.savedCasesHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
+.savedCasesHeader b{color:#ffbf2f;}
 .activeCaseCard{
   display:grid;
   grid-template-columns:82px 1fr auto;

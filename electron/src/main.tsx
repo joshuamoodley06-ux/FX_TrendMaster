@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, Map as MapIcon, RefreshCw, Save, Settings, Target, Zap } from 'lucide-react';
-import { buildRawPayloadJson, createRawCase, exportRawCaseEvents, groupRawDisplayEventsByTimeframe, listRawCases, saveRawEvent } from './rawMapping';
+import { buildRawPayloadJson, clearRawCases, createRawCase, exportRawCaseEvents, groupRawDisplayEventsByTimeframe, listRawCases, saveRawEvent } from './rawMapping';
 import brandLogo from '../assets/logo.png';
 import './styles.css';
 
@@ -2622,17 +2622,24 @@ function MapStudio({ symbol }: { symbol:string }) {
     } catch (err:any) { setMessage(`Clear cases failed: ${err?.message || err}`); }
   };
   const resetResearchMappingDb = async () => {
-    if (!window.confirm(`HARD RESET ${symbol} research mapping? This deletes cases, map events, HTF snapshots, objectives, ranges and route memory. Raw candles stay. This is the clean-slate button.`)) return;
+    if (!window.confirm(`HARD RESET ${symbol} mapping? Deletes ALL legacy + raw mapping cases/events, map events, HTF snapshots, objectives, ranges and route memory. Raw OHLC candles stay.`)) return;
     if (window.prompt('Type RESET to confirm the mapping wipe') !== 'RESET') { setMessage('Reset cancelled. The database lives another day.'); return; }
     try {
-      const r = await fetch(`${BASE_URL}/api/v1/mos/research-reset`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol, confirm:'RESET' }) }).then(x=>x.json());
-      if (!r?.ok) throw new Error(r?.error || r?.detail || 'Reset failed');
-      setActiveCaseId(null); setActiveCaseLabel(''); setSeedIdeas([]); setSessionEventIds(new Set());
+      const [r, rawClear] = await Promise.all([
+        fetch(`${BASE_URL}/api/v1/mos/research-reset`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol, confirm:'RESET' }) }).then(x=>x.json()),
+        clearRawCases(BASE_URL, symbol, 'RESET'),
+      ]);
+      if (!r?.ok) throw new Error(r?.error || r?.detail || 'Research reset failed');
+      if (!rawClear.ok && rawClear.httpStatus !== 404 && rawClear.httpStatus !== 405) {
+        throw new Error(rawClear.error || 'Raw mapping clear failed');
+      }
+      setActiveCaseId(null); setRawActiveCaseId(''); setActiveCaseLabel(''); setSeedIdeas([]); setSessionEventIds(new Set());
       eventsByTfRef.current = {};
       setEventsByTf({});
       await loadSavedCasesFromBackend();
       await loadMapMemory(timeframe);
-      setMessage(`Research mapping reset for ${symbol}. Candles preserved. Clean slate, finally.`);
+      const rawMsg = rawClear.ok ? ` Raw: ${rawClear.deleted_cases || 0} case(s), ${rawClear.deleted_events || 0} event(s) removed.` : '';
+      setMessage(`Mapping reset complete for ${symbol}. Candles preserved.${rawMsg}`);
     } catch (err:any) { setMessage(`Research reset failed: ${err?.message || err}`); }
   };
 
@@ -5876,6 +5883,10 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   useEffect(()=>{ loadSavedCasesFromBackend(); }, [symbol]);
 
+  useEffect(() => {
+    if (rightDeckTab === 'seed') loadSavedCasesFromBackend();
+  }, [rightDeckTab]);
+
   useEffect(()=>{
     if (!candles.length) return;
     if (candleReplayCursorTime) {
@@ -6539,6 +6550,26 @@ function MapStudio({ symbol }: { symbol:string }) {
       {caseLoadStatus && <div className="caseBadge">{caseLoadStatus}</div>}
       {caseSavedNotice && <div className="caseSavedNotice">✓ {caseSavedNotice}</div>}
 
+      <div className="seedIdeaList compactCaseList savedCasesPanel">
+        <div className="savedCasesHeader">
+          <b>Saved cases (from VPS)</b>
+          <button type="button" className="caseToolbarBtn" onClick={() => loadSavedCasesFromBackend()}>Refresh</button>
+        </div>
+        {savedCaseIdeas.length === 0 && (
+          <div className="caseLedgerEmpty">No saved cases for {symbol} yet. Create one below, or click Refresh after saving on another device.</div>
+        )}
+        {savedCaseIdeas.map((x:any) => {
+          const caseKey = String(x.raw_case_id || x.id || '');
+          const isActive = caseKey === String(activeCaseDisplayId || '');
+          const label = x.is_raw_mapping_case ? `Raw ${caseKey.slice(0, 8)}` : `#${x.id}`;
+          return (
+            <button key={caseKey} type="button" className={isActive ? 'active' : ''} onClick={() => openSavedCase(x)}>
+              {label} {x.seed_name} · {shortTime(x.replay_candle_time, x.case_timeframe || x.replay_timeframe)}
+            </button>
+          );
+        })}
+      </div>
+
       <details className="caseMetadataDetails" open={caseMetadataOpen} onToggle={e => setCaseMetadataOpen((e.target as HTMLDetailsElement).open)}>
         <summary>Case Metadata</summary>
         <div className="caseScopeStrip compactScopeStrip">
@@ -6561,12 +6592,6 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button type="button" onClick={buildYtdCaseName}>Name YTD</button>
         </div>
         <label className="seedNotes">Notes<textarea value={seedNotes} onChange={e=>setSeedNotes(e.target.value)} placeholder="What this case shows, what was marked, and what the expected/actual path was." /></label>
-        {savedCaseIdeas.length > 0 && <div className="seedIdeaList compactCaseList"><b>Saved cases (from VPS)</b>{savedCaseIdeas.map((x:any)=>{
-          const caseKey = String(x.raw_case_id || x.id || '');
-          const isActive = caseKey === String(activeCaseDisplayId || '');
-          const label = x.is_raw_mapping_case ? `Raw ${caseKey.slice(0,8)}` : `#${x.id}`;
-          return <button key={caseKey} type="button" className={isActive?'active':''} onClick={()=>openSavedCase(x)}>{label} {x.seed_name} · {shortTime(x.replay_candle_time, x.case_timeframe || x.replay_timeframe)}</button>;
-        })}</div>}
       </details>
 
       <details className="dangerZoneDetails">
@@ -6574,7 +6599,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         <div className="dangerZoneBox">
           <button type="button" className="caseToolbarBtn danger" onClick={deleteActiveCase} disabled={!activeCaseId}>Delete Active Case</button>
           <button type="button" className="caseToolbarBtn danger" onClick={clearAllCases}>Clear All Cases</button>
-          <span>Wipe Mapping Research Data deletes cases, map events, HTF snapshots, objectives, ranges and route memory for this symbol. Raw candles stay.</span>
+          <span>Wipe Mapping Research Data deletes legacy + raw mapping cases/events, map events, HTF snapshots, objectives, ranges and route memory for this symbol. Raw candles stay.</span>
           <button type="button" className="caseToolbarBtn danger" onClick={resetResearchMappingDb}>Wipe Mapping Research Data</button>
         </div>
       </details>

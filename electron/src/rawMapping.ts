@@ -466,6 +466,29 @@ export async function deleteRawEvent(
   return assertRawApiOk(response, body, 'Delete raw event');
 }
 
+export async function clearRawCases(
+  apiBase: string,
+  symbol: string,
+  confirm = 'RESET',
+): Promise<RawMappingCasesListResponse & { deleted_cases?: number; deleted_events?: number }> {
+  const url = new URL(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/cases`);
+  url.searchParams.set('symbol', String(symbol || '').toUpperCase());
+  url.searchParams.set('confirm', confirm);
+  const response = await fetch(url.toString(), { method: 'DELETE' });
+  const body = await parseJsonResponse<RawMappingCasesListResponse & { deleted_cases?: number; deleted_events?: number }>(response);
+  if (!response.ok || !body?.ok) {
+    return {
+      ok: false,
+      cases: [],
+      count: 0,
+      error: body?.error || body?.detail || response.statusText || 'Clear raw cases failed',
+      status: body?.status || response.status,
+      httpStatus: response.status,
+    };
+  }
+  return { ...body, httpStatus: response.status };
+}
+
 export async function listRawCases(
   apiBase: string,
   symbol: string,

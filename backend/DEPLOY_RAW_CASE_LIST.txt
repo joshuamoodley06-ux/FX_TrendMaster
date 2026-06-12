@@ -6,12 +6,24 @@ Saved raw mapping cases are in the VPS SQLite DB, but the live API only had
 POST /api/v1/raw-mapping/cases. Without GET list, Electron cannot reload cases
 on a fresh app start.
 
-Fix (2 files)
--------------
-Copy from this repo into your VPS app folder (e.g. trading_gate/app):
+Fix (automated on VPS)
+----------------------
+Use scripts/vps_restart_backend.bat on the server. It will:
+  1. git clone or git pull FX_TrendMaster into:
+       C:\Users\Administrator\Desktop\FXTM App\FX_TrendMaster
+  2. copy backend\main.py and backend\candle_store.py into:
+       C:\Users\Administrator\Desktop\FXTM App\trading_gate\app
+  3. set DATABASE_PATH / RAW_MAPPING_DB_PATH
+  4. start uvicorn (same as your old .bat)
 
-  backend/main.py
-  backend/candle_store.py
+Replace your old restart .bat with scripts/vps_restart_backend.bat, or run it once.
+
+Manual fix (2 files)
+--------------------
+Copy from this repo into your VPS app folder:
+
+  backend/main.py   ->  trading_gate/app/main.py
+  backend/candle_store.py   ->  trading_gate/app/candle_store.py
 
 Then restart uvicorn on port 8000.
 
@@ -20,7 +32,7 @@ Verify
   curl "https://api01.apexcoastalrentals.co.za/api/v1/raw-mapping/cases?symbol=XAUUSD&limit=5"
 
 Expected: JSON with ok:true and a cases array (may be empty if no raw cases yet).
-If you see 405 Method Not Allowed, the old backend is still running.
+If you see 405 Method Not Allowed, the old main.py is still in trading_gate/app.
 
 After deploy
 ------------

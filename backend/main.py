@@ -4512,6 +4512,13 @@ def raw_mapping_cases_list(symbol: str | None = None, limit: int = 200, status: 
     return market_memory.list_raw_mapping_cases(symbol=symbol, limit=limit, status=status)
 
 
+@app.delete("/api/v1/raw-mapping/cases")
+def raw_mapping_cases_clear(symbol: str = "XAUUSD", confirm: str = ""):
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    return market_memory.clear_raw_mapping_data(symbol=symbol, confirm=confirm)
+
+
 @app.post("/api/v1/raw-mapping/cases")
 def raw_mapping_case_create(response: Response, payload: dict[str, Any] = Body(...)):
     if market_memory is None:

@@ -4257,6 +4257,18 @@ def reset_research_mapping(symbol: str = "XAUUSD", confirm: str = "") -> dict[st
                 conn.execute(f"DELETE FROM {table} WHERE symbol=?", (sym,))
             except Exception:
                 counts[table] = 0
+        try:
+            row = conn.execute("SELECT COUNT(*) AS n FROM raw_mapping_events WHERE symbol=?", (sym,)).fetchone()
+            counts["raw_mapping_events"] = int(row["n"] if row else 0)
+            conn.execute("DELETE FROM raw_mapping_events WHERE symbol=?", (sym,))
+        except Exception:
+            counts["raw_mapping_events"] = 0
+        try:
+            row = conn.execute("SELECT COUNT(*) AS n FROM raw_mapping_cases WHERE symbol=?", (sym,)).fetchone()
+            counts["raw_mapping_cases"] = int(row["n"] if row else 0)
+            conn.execute("DELETE FROM raw_mapping_cases WHERE symbol=?", (sym,))
+        except Exception:
+            counts["raw_mapping_cases"] = 0
         conn.commit()
     return {"ok": True, "status": "RESEARCH_MAPPING_RESET", "symbol": sym, "deleted": counts, "candles_preserved": True}
 
@@ -4411,6 +4423,29 @@ def list_raw_mapping_cases(symbol: str | None = None, limit: int = 200, status: 
         rows = conn.execute(sql, tuple(params)).fetchall()
         cases = [_raw_row(r) for r in rows]
         return {'ok': True, 'cases': cases, 'count': len(cases)}
+
+
+def clear_raw_mapping_data(symbol: str = "XAUUSD", confirm: str = "") -> dict[str, Any]:
+    """Admin wipe of raw mapping cases/events for a symbol. Candles untouched."""
+    init_db()
+    sym = str(symbol or "XAUUSD").strip().upper()
+    if confirm != "RESET":
+        return {"ok": False, "error": "CONFIRM_RESET_REQUIRED", "detail": "Pass confirm=RESET to wipe raw mapping rows."}
+    with connect() as conn:
+        ev_row = conn.execute("SELECT COUNT(*) AS n FROM raw_mapping_events WHERE symbol=?", (sym,)).fetchone()
+        case_row = conn.execute("SELECT COUNT(*) AS n FROM raw_mapping_cases WHERE symbol=?", (sym,)).fetchone()
+        deleted_events = int(ev_row["n"] if ev_row else 0)
+        deleted_cases = int(case_row["n"] if case_row else 0)
+        conn.execute("DELETE FROM raw_mapping_events WHERE symbol=?", (sym,))
+        conn.execute("DELETE FROM raw_mapping_cases WHERE symbol=?", (sym,))
+        conn.commit()
+    return {
+        "ok": True,
+        "status": "RAW_MAPPING_CLEARED",
+        "symbol": sym,
+        "deleted_events": deleted_events,
+        "deleted_cases": deleted_cases,
+    }
 
 
 def _payload_consistent(existing: sqlite3.Row, incoming: dict[str, Any], scale: int) -> bool:
