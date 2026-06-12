@@ -14,8 +14,6 @@
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "concurrently": "latest",
-    "electron": "latest",
-    "electron-builder": "latest",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
@@ -27,15 +25,19 @@
   "build": {
     "appId": "co.za.apex.fxtrendmaster",
     "productName": "FX TrendMaster Cockpit",
+    "icon": "assets/icon.png",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "assets/**/*",
       "package.json"
     ],
     "win": {
+      "icon": "assets/icon.png",
+      "signAndEditExecutable": false,
       "target": [
         "nsis",
         "portable"
@@ -43,6 +45,8 @@
     }
   },
   "devDependencies": {
-    "@types/d3": "latest"
+    "@types/d3": "latest",
+    "electron": "latest",
+    "electron-builder": "latest"
   }
 }

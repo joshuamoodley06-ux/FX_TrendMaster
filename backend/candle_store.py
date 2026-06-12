@@ -4355,7 +4355,16 @@ def ensure_raw_mapping_case(case_id: str, symbol: str = 'XAUUSD', case_name: str
     with connect() as conn:
         existing = conn.execute("SELECT * FROM raw_mapping_cases WHERE case_id=?", (cid,)).fetchone()
         if existing:
-            return {'ok': True, 'case': _raw_row(existing), 'created': False}
+            conn.execute(
+                """
+                UPDATE raw_mapping_cases
+                SET case_name=?, base_timeframe=?, notes=?, updated_at_utc_ms=?
+                WHERE case_id=?
+                """,
+                (case_name or existing['case_name'], tf, notes or existing['notes'] or '', now, cid),
+            )
+            row = conn.execute("SELECT * FROM raw_mapping_cases WHERE case_id=?", (cid,)).fetchone()
+            return {'ok': True, 'case': _raw_row(row), 'created': False}
         conn.execute(
             """
             INSERT INTO raw_mapping_cases(case_id,symbol,case_name,base_timeframe,price_scale_default,status,notes,schema_version,created_at_utc_ms,updated_at_utc_ms)
@@ -4377,6 +4386,31 @@ def create_raw_mapping_case(payload: dict[str, Any]) -> dict[str, Any]:
         price_scale_default=payload.get('price_scale_default'),
         notes=str(payload.get('notes') or '')
     )
+
+
+def list_raw_mapping_cases(symbol: str | None = None, limit: int = 200, status: str | None = None) -> dict[str, Any]:
+    """Return durable raw mapping cases from the VPS ledger DB."""
+    init_db()
+    lim = max(1, min(int(limit or 200), 500))
+    sym = str(symbol or '').upper().strip() if symbol else ''
+    status_norm = str(status or '').upper().strip() if status else ''
+    with connect() as conn:
+        sql = "SELECT * FROM raw_mapping_cases"
+        params: list[Any] = []
+        clauses: list[str] = []
+        if sym:
+            clauses.append("symbol=?")
+            params.append(sym)
+        if status_norm:
+            clauses.append("status=?")
+            params.append(status_norm)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY COALESCE(updated_at_utc_ms, created_at_utc_ms) DESC LIMIT ?"
+        params.append(lim)
+        rows = conn.execute(sql, tuple(params)).fetchall()
+        cases = [_raw_row(r) for r in rows]
+        return {'ok': True, 'cases': cases, 'count': len(cases)}
 
 
 def _payload_consistent(existing: sqlite3.Row, incoming: dict[str, Any], scale: int) -> bool:
@@ -4446,6 +4480,10 @@ def save_raw_mapping_event(payload: dict[str, Any]) -> dict[str, Any]:
                 (payload['event_id'], payload['case_id'], payload['symbol'], payload['timeframe'], int(payload['candle_time_utc_ms']), payload.get('candle_index'), price, price_int, scale, payload['event_type'], payload['event_side'], payload['source'], next_order, payload.get('supersedes_event_id'), str(payload.get('notes') or ''), now, raw_json)
             )
             row = conn.execute("SELECT * FROM raw_mapping_events WHERE event_id=?", (payload['event_id'],)).fetchone()
+            conn.execute(
+                "UPDATE raw_mapping_cases SET updated_at_utc_ms=? WHERE case_id=?",
+                (now, payload['case_id']),
+            )
             conn.commit()
             return {'ok': True, 'status': 201, 'event': _raw_row(row)}
         except sqlite3.IntegrityError as exc:

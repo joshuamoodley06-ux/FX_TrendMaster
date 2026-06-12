@@ -1,6 +1,8 @@
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
 
+const iconPath = path.join(__dirname, '../assets/icon.png');
+
 function createWindow() {
   const win = new BrowserWindow({
     width: 1440,
@@ -9,6 +11,7 @@ function createWindow() {
     minHeight: 760,
     backgroundColor: '#05070d',
     title: 'FX TrendMaster Cockpit',
+    icon: iconPath,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false

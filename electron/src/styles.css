@@ -18,7 +18,7 @@ button,select,input,textarea{font:inherit}
 .appShell{display:flex;height:100vh;width:100vw}
 .sidebar{width:280px;background:linear-gradient(180deg,#070b11,#030407);border-right:1px solid #1b2633;padding:22px;display:flex;flex-direction:column;gap:24px}
 .brandBlock{display:flex;align-items:center;gap:14px}
-.logoOrb{width:54px;height:54px;border-radius:18px;background:radial-gradient(circle,#ffe8a0,#ffbf2f 42%,#7c5200);display:grid;place-items:center;color:#060606;font-weight:1000;box-shadow:0 0 28px rgba(255,191,47,.45)}
+.brandLogo{width:54px;height:54px;border-radius:14px;object-fit:cover;flex-shrink:0;box-shadow:0 0 28px rgba(255,191,47,.35)}
 h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font-size:12px}
 .navGroup{display:flex;flex-direction:column;gap:10px}.navItem{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid transparent;border-radius:16px;color:#9aa8b7}.navItem.active{color:#071014;background:linear-gradient(135deg,var(--gold),#ffe18a);font-weight:900;box-shadow:0 0 22px rgba(255,191,47,.14)}
 .sidebarFooter{margin-top:auto;padding:14px;border:1px solid var(--border);border-radius:18px;background:#060a10}.muted{color:var(--muted);margin:0}.apiText{font-size:12px;color:#b7c4d8;word-break:break-all}.statusDot{display:flex;align-items:center;gap:8px;font-weight:900;font-size:13px}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}.online{background:var(--green);box-shadow:0 0 12px var(--green)}.offline{background:var(--red);box-shadow:0 0 12px var(--red)}
@@ -615,8 +615,15 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .d3CandleSvg .candles rect{shape-rendering:crispEdges}
 .d3CandleSvg .chartPanSurface{cursor:grab;touch-action:none}
 .d3CandleSvg .chartPanSurface:active{cursor:grabbing}
-.d3CandleSvg .chartPriceStrip{fill:rgba(0,255,208,.04);stroke:rgba(0,255,208,.18);stroke-width:1;touch-action:none}
-.d3CandleSvg .chartPriceStrip:hover,.d3CandleSvg .chartPriceStrip:active{fill:rgba(0,255,208,.08)}
+.d3CandleSvg .chartPriceStrip{
+  fill:rgba(0,255,208,.08);
+  stroke:rgba(0,255,208,.32);
+  stroke-width:2;
+  touch-action:none;
+  -webkit-tap-highlight-color:transparent;
+}
+.d3CandleSvg .chartPriceStrip:active{fill:rgba(0,255,208,.16);stroke:rgba(0,255,208,.55)}
+.d3CandleSvg .chartPriceStripGrip line{pointer-events:none}
 .chartGestureHint{
   margin:-4px 0 8px;
   color:#64748b;
@@ -629,7 +636,11 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 @media (pointer: coarse){
   .chartGestureHint{color:#94a3b8;font-size:12px}
-  .d3CandleSvg .chartPriceStrip{fill:rgba(0,255,208,.06)}
+  .d3CandleSvg .chartPriceStrip{
+    fill:rgba(0,255,208,.14);
+    stroke:rgba(0,255,208,.45);
+    stroke-width:3;
+  }
 }
 .d3Side{min-height:680px;overflow:auto}
 .d3Side .routeList{max-height:270px;overflow:auto;padding-right:4px}
@@ -3052,29 +3063,93 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   position:fixed !important;
   inset:0 !important;
   z-index:9999 !important;
-  padding:6px !important;
+  padding:0 !important;
   margin:0 !important;
   background:#020617 !important;
   width:100vw !important;
   height:100vh !important;
   overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+  grid-template-columns:none !important;
+  gap:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .floatingWorkspaceDock,
+.mapStudioShell.chartFullscreenActive .floatingWorkspacePanel{
+  position:fixed !important;
 }
 .mapStudioShell.chartFullscreenActive .d3ChartCard{
-  height:calc(100vh - 12px) !important;
+  flex:1 1 auto !important;
   min-height:0 !important;
-  border-radius:12px !important;
-  padding:8px 48px 8px 8px !important;
+  width:100% !important;
+  height:auto !important;
+  border-radius:0 !important;
+  padding:0 !important;
+  padding-right:0 !important;
   background:#000 !important;
+  border:none !important;
+  display:flex !important;
+  flex-direction:column !important;
+  overflow:hidden !important;
+}
+.mapStudioShell.chartFullscreenActive .d3ChartCard.workspacePanelOpen{
+  padding-right:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .chartTitleRowMap.compactChartTitle{
+  display:none !important;
+}
+.mapStudioShell.chartFullscreenActive .chartMapStage{
+  position:relative !important;
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  width:100% !important;
+  overflow:hidden !important;
+}
+.mapStudioShell.chartFullscreenActive .chartMapStage .d3CandleSvg{
+  width:100% !important;
+  height:100% !important;
+  min-height:0 !important;
+  border-radius:0 !important;
+  border-left:0 !important;
+  border-right:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .fullscreenBottomBar{
+  position:relative !important;
+  left:auto !important;
+  right:auto !important;
+  bottom:auto !important;
+  flex:0 0 auto !important;
+  width:100% !important;
+  margin:0 !important;
+  padding:6px 10px 8px !important;
+  gap:5px !important;
+  align-items:center !important;
+  background:linear-gradient(180deg,rgba(2,6,23,.72),rgba(2,6,23,.96)) !important;
+  border-top:1px solid rgba(148,163,184,.16) !important;
+  border-radius:0 !important;
+  box-shadow:0 -8px 24px rgba(0,0,0,.28) !important;
+}
+.mapStudioShell.chartFullscreenActive .fullscreenCameraDock{
+  width:min(980px,100%) !important;
+  justify-content:center !important;
+  background:transparent !important;
+  border:none !important;
+  box-shadow:none !important;
+  padding:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .fullscreenReplayDock{
+  width:min(980px,100%) !important;
+  justify-content:center !important;
+  background:rgba(2,6,23,.55) !important;
+}
+.mapStudioShell.chartFullscreenActive .chartGestureHint{
+  display:none !important;
 }
 .mapStudioShell.chartFullscreenActive .chartTitleRowMap.compactChartTitle,
 .mapStudioShell.chartFullscreenActive .chartReplayOverlay{
   transform:scale(.82);
   transform-origin:left top;
   opacity:.72;
-}
-.mapStudioShell.chartFullscreenActive .d3CandleSvg{
-  height:calc(100vh - 42px) !important;
-  min-height:0 !important;
 }
 .mapStudioShell.chartFullscreenActive .quickAnchorBar{
   position:absolute !important;
@@ -3185,18 +3260,22 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   margin:0 2px !important;
 }
 .mapStudioShell.chartFullscreenActive .floatingWorkspaceDock{
-  z-index:10003 !important;
-  top:12px !important;
-  right:10px !important;
-  bottom:76px !important;
+  z-index:10005 !important;
+  top:50% !important;
+  right:6px !important;
+  bottom:auto !important;
+  transform:translateY(-50%) !important;
+  width:40px !important;
+  padding:5px 3px !important;
 }
 .mapStudioShell.chartFullscreenActive .floatingWorkspacePanel{
-  z-index:10002 !important;
-  top:12px !important;
-  right:58px !important;
-  bottom:76px !important;
-  width:min(430px,34vw) !important;
-  min-width:360px !important;
+  z-index:10004 !important;
+  top:8px !important;
+  right:52px !important;
+  bottom:8px !important;
+  width:min(430px,calc(100vw - 64px)) !important;
+  min-width:320px !important;
+  max-width:520px !important;
 }
 
 /* v087.26 fullscreen mapping controls: keep parent reference out of the Set H/L area and make replay usable inside full chart. */
@@ -3544,7 +3623,7 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .fullscreenTfDock{
   position:absolute;
   top:10px;
-  right:70px;
+  right:10px;
   z-index:10004;
   display:flex;
   align-items:center;
@@ -3581,16 +3660,43 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .fullscreenTfDock button:disabled,
 .fullscreenReplayDock button:disabled,
 .fullscreenFitDock button:disabled{opacity:.42;cursor:not-allowed;}
-.fullscreenReplayDock{
+.fullscreenBottomBar{
   position:absolute;
-  left:50%;
-  bottom:10px;
-  transform:translateX(-50%);
+  left:8px;
+  right:8px;
+  bottom:8px;
   z-index:10004;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:6px;
+  pointer-events:none;
+}
+.fullscreenBottomBar > *{pointer-events:auto;}
+.fullscreenCameraDock{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  width:100%;
+  padding:0;
+  border-radius:0;
+  background:transparent;
+  border:none;
+  backdrop-filter:none;
+  box-shadow:none;
+}
+.fullscreenReplayDock{
+  position:static;
+  left:auto;
+  bottom:auto;
+  transform:none;
+  align-self:center;
   display:flex;
   align-items:center;
   gap:6px;
-  max-width:calc(100vw - 190px);
+  max-width:100%;
   padding:7px 9px;
   border-radius:14px;
   background:rgba(2,6,23,.76);
@@ -3620,7 +3726,22 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 .fitNudges button{min-width:auto;padding:0 10px}
 .scaleNudges button,.fullscreenScaleDock button{min-width:34px;height:34px;border-radius:10px;border:1px solid rgba(148,163,184,.25);background:#0f172a;color:#e8eef7;font-weight:900;font-size:12px;padding:0 8px}
 .scaleNudges span,.fullscreenScaleDock span{color:#ffdf76;font-size:11px;font-weight:900;min-width:38px;text-align:center}
-.fullscreenScaleDock{position:absolute;right:18px;top:70px;z-index:60;display:flex;gap:5px;align-items:center;background:rgba(2,6,23,.82);border:1px solid rgba(148,163,184,.25);border-radius:14px;padding:6px;box-shadow:0 16px 40px rgba(0,0,0,.35)}
-.fullscreenFitDock{position:absolute;right:18px;top:116px;z-index:60;display:flex;gap:5px;align-items:center;flex-wrap:wrap;max-width:min(360px,44vw);background:rgba(2,6,23,.82);border:1px solid rgba(148,163,184,.25);border-radius:14px;padding:6px;box-shadow:0 16px 40px rgba(0,0,0,.35)}
+.fullscreenScaleDock,.fullscreenFitDock{
+  position:static;
+  right:auto;
+  top:auto;
+  z-index:auto;
+  display:flex;
+  gap:5px;
+  align-items:center;
+  flex-wrap:wrap;
+  background:transparent;
+  border:none;
+  padding:0;
+  box-shadow:none;
+}
+.fullscreenFitDock{max-width:none;}
 .fullscreenTfDock select{height:30px;border-radius:10px;border:1px solid rgba(148,163,184,.25);background:#07111f;color:#e8eef7;font-weight:900;padding:0 6px;font-size:11px}
-.chartFullscreenMode .d3CandleSvg{height:calc(100vh - 120px)!important;min-height:680px}
+.chartFullscreenMode .d3CandleSvg{height:100%!important;min-height:0!important}
+.chartMapStage{position:relative;width:100%;min-height:420px}
+.chartMapStage .d3CandleSvg{width:100%;height:620px;display:block}

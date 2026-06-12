@@ -130,6 +130,136 @@ export type RawMappingExportResponse = {
   status?: number;
 };
 
+export type RawMappingCasesListResponse = {
+  ok: boolean;
+  cases?: RawMappingCase[];
+  count?: number;
+  error?: string;
+  detail?: string;
+  status?: number;
+};
+
+export type RawDisplayEvent = {
+  id: string;
+  raw_event_id: string;
+  event_type: string;
+  event_name?: string;
+  time: string;
+  price: number;
+  notes?: string;
+  source?: 'manual' | 'auto' | 'map' | 'seed' | 'candidate';
+  candle_open?: number;
+  candle_high?: number;
+  candle_low?: number;
+  candle_close?: number;
+  meta_json?: Record<string, unknown>;
+};
+
+export function parseRawPayloadJson(raw: RawMappingEvent): Record<string, unknown> {
+  const payload = raw?.raw_payload_json;
+  if (!payload) return {};
+  if (typeof payload === 'object') return payload as Record<string, unknown>;
+  try {
+    return JSON.parse(String(payload)) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** Canonical visibility: DELETE_RECORD chains hide targets; delete rows never display. */
+export function filterVisibleRawEvents(rows: RawMappingEvent[]): RawMappingEvent[] {
+  const deleted = new Set<string>();
+  for (const row of rows || []) {
+    if (String(row?.event_type || '').toUpperCase() === 'DELETE_RECORD' && row?.supersedes_event_id) {
+      deleted.add(String(row.supersedes_event_id));
+    }
+  }
+  return safeArray(rows).filter((row) => {
+    if (String(row?.event_type || '').toUpperCase() === 'DELETE_RECORD') return false;
+    if (deleted.has(String(row?.event_id || ''))) return false;
+    return true;
+  });
+}
+
+function safeArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function candleTimeIso(raw: RawMappingEvent, payload: Record<string, unknown>): string {
+  const ms = Number(raw?.candle_time_utc_ms);
+  if (Number.isFinite(ms) && ms > 0) return new Date(ms).toISOString();
+  const fromPayload = payload?.candle_time || payload?.time;
+  if (fromPayload) return String(fromPayload);
+  return new Date().toISOString();
+}
+
+export function mapRawEventToDisplayEvent(raw: RawMappingEvent): RawDisplayEvent | null {
+  if (!raw?.event_id) return null;
+  const payload = parseRawPayloadJson(raw);
+  const semanticSide = String(payload?.semantic_side || raw?.event_side || 'NONE').toUpperCase();
+  const rawType = String(raw?.event_type || '').toUpperCase();
+  let eventType = String(payload?.legacy_event_type || '').toUpperCase();
+
+  if (!eventType) {
+    if (rawType === 'SET_ANCHOR' || rawType === 'SET_INITIAL_ANCHOR' || rawType === 'ADJUST_ANCHOR') {
+      if (semanticSide === 'HIGH') eventType = 'RANGE_HIGH';
+      else if (semanticSide === 'LOW') eventType = 'RANGE_LOW';
+      else if (semanticSide === 'REF') eventType = 'SET_ANCHOR_REF';
+      else eventType = rawType;
+    } else if (rawType === 'MANUAL_BOS' || rawType === 'AUTO_BOS') {
+      if (semanticSide === 'UP') eventType = 'BOS_UP';
+      else if (semanticSide === 'DOWN') eventType = 'BOS_DOWN';
+      else eventType = rawType;
+    } else if (rawType === 'RECLAIM') {
+      eventType = semanticSide === 'UP' ? 'RECLAIM_UP' : semanticSide === 'DOWN' ? 'RECLAIM_DOWN' : 'RECLAIM';
+    } else {
+      eventType = rawType || 'NOTE';
+    }
+  }
+
+  const price = Number(raw?.price);
+  if (!Number.isFinite(price)) return null;
+
+  const displayMarkerId = String(payload?.display_marker_id || raw.event_id);
+  const sourceRaw = String(raw?.source || payload?.source || 'manual').toLowerCase();
+  const source = (sourceRaw === 'auto' ? 'auto' : 'manual') as RawDisplayEvent['source'];
+
+  return {
+    id: displayMarkerId,
+    raw_event_id: String(raw.event_id),
+    event_type: eventType,
+    event_name: String(payload?.legacy_event_name || raw?.notes || eventType),
+    time: candleTimeIso(raw, payload),
+    price,
+    notes: String(raw?.notes || ''),
+    source,
+    candle_open: Number(payload?.candle_open),
+    candle_high: Number(payload?.candle_high),
+    candle_low: Number(payload?.candle_low),
+    candle_close: Number(payload?.candle_close),
+    meta_json: {
+      ...payload,
+      raw_event_id: raw.event_id,
+      display_marker_id: displayMarkerId,
+      semantic_side: semanticSide,
+      raw_event_type: rawType,
+    },
+  };
+}
+
+export function groupRawDisplayEventsByTimeframe(
+  rows: RawMappingEvent[],
+): Record<string, RawDisplayEvent[]> {
+  const grouped: Record<string, RawDisplayEvent[]> = {};
+  for (const raw of filterVisibleRawEvents(rows)) {
+    const ev = mapRawEventToDisplayEvent(raw);
+    if (!ev) continue;
+    const tf = String(raw?.timeframe || 'W1').toUpperCase();
+    grouped[tf] = [...(grouped[tf] || []), ev];
+  }
+  return grouped;
+}
+
 export type BuildRawPayloadInput = {
   event_id: string;
   case_id: string;
@@ -334,6 +464,29 @@ export async function deleteRawEvent(
   });
   const body = await parseJsonResponse<RawMappingEventCreateResponse>(response);
   return assertRawApiOk(response, body, 'Delete raw event');
+}
+
+export async function listRawCases(
+  apiBase: string,
+  symbol: string,
+  limit = 200,
+): Promise<RawMappingCasesListResponse & { httpStatus?: number }> {
+  const url = new URL(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/cases`);
+  url.searchParams.set('symbol', String(symbol || '').toUpperCase());
+  url.searchParams.set('limit', String(limit));
+  const response = await fetch(url.toString());
+  const body = await parseJsonResponse<RawMappingCasesListResponse>(response);
+  if (!response.ok || !body?.ok) {
+    return {
+      ok: false,
+      cases: [],
+      count: 0,
+      error: body?.error || body?.detail || response.statusText || 'List raw cases failed',
+      status: body?.status || response.status,
+      httpStatus: response.status,
+    };
+  }
+  return { ...body, httpStatus: response.status };
 }
 
 export async function exportRawCaseEvents(

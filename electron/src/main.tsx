@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, Map as MapIcon, RefreshCw, Save, Settings, Target, Zap } from 'lucide-react';
-import { buildRawPayloadJson, createRawCase, saveRawEvent } from './rawMapping';
+import { buildRawPayloadJson, createRawCase, exportRawCaseEvents, groupRawDisplayEventsByTimeframe, listRawCases, saveRawEvent } from './rawMapping';
+import brandLogo from '../assets/logo.png';
 import './styles.css';
 
 const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
@@ -314,7 +315,7 @@ function App() {
   return <div className={`appShell ${collapsed ? 'navCollapsed' : ''}`}>
     <aside className="sidebar">
       <button className="collapseBtn" onClick={() => setCollapsed(!collapsed)} title="Hide/show tabs">{collapsed ? <ChevronRight size={18}/> : <ChevronLeft size={18}/>}<span>{collapsed ? '' : 'Hide tabs'}</span></button>
-      <div className="brandBlock"><div className="logoOrb">FX</div>{!collapsed && <div><h1>TrendMaster</h1><p>Electron Cockpit v0.34</p></div>}</div>
+      <div className="brandBlock"><img className="brandLogo" src={brandLogo} alt="FX TrendMaster" />{!collapsed && <div><h1>TrendMaster</h1><p>Electron Cockpit v0.34</p></div>}</div>
       <div className="navGroup">
         <NavItem icon={<Activity size={18}/>} label="Overview Maps" page="visual" active={page==='visual'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<MapIcon size={18}/>} label="Map Studio" page="mapstudio" active={page==='mapstudio'} collapsed={collapsed} setPage={setPage}/>
@@ -2089,6 +2090,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [seedNotes, setSeedNotes] = useState('');
   const [seedAnchors, setSeedAnchors] = useState<any>({});
   const [seedIdeas, setSeedIdeas] = useState<any[]>([]);
+  const [caseLoadStatus, setCaseLoadStatus] = useState('');
   const [caseSaving, setCaseSaving] = useState(false);
   const [caseSavedNotice, setCaseSavedNotice] = useState('');
   const [activeCaseId, setActiveCaseId] = useLocalStorage<number|null>('fx_tm_active_case_id_v087_29b', null);
@@ -2605,7 +2607,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       const r = await fetch(`${BASE_URL}/api/v1/mos/seed-idea/${activeCaseId}`, { method:'DELETE' }).then(x=>x.json());
       if (!r?.ok) throw new Error(r?.error || r?.detail || 'Delete failed');
       setActiveCaseId(null); setActiveCaseLabel(''); setCaseSavedNotice('');
-      await loadSeedIdeas();
+      await loadSavedCasesFromBackend();
       setMessage(`Deleted Case #${r.id}. Raw events kept; because deleting receipts by accident is how databases become crime scenes.`);
     } catch (err:any) { setMessage(`Delete case failed: ${err?.message || err}`); }
   };
@@ -2615,7 +2617,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       const r = await fetch(`${BASE_URL}/api/v1/mos/seed-ideas?symbol=${encodeURIComponent(symbol)}`, { method:'DELETE' }).then(x=>x.json());
       if (!r?.ok) throw new Error(r?.error || r?.detail || 'Clear cases failed');
       setActiveCaseId(null); setActiveCaseLabel(''); setSeedIdeas([]); setCaseSavedNotice('');
-      await loadSeedIdeas();
+      await loadSavedCasesFromBackend();
       setMessage(`Cleared ${r.deleted_cases || 0} ${symbol} case containers. Raw event ledger remains.`);
     } catch (err:any) { setMessage(`Clear cases failed: ${err?.message || err}`); }
   };
@@ -2628,7 +2630,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       setActiveCaseId(null); setActiveCaseLabel(''); setSeedIdeas([]); setSessionEventIds(new Set());
       eventsByTfRef.current = {};
       setEventsByTf({});
-      await loadSeedIdeas();
+      await loadSavedCasesFromBackend();
       await loadMapMemory(timeframe);
       setMessage(`Research mapping reset for ${symbol}. Candles preserved. Clean slate, finally.`);
     } catch (err:any) { setMessage(`Research reset failed: ${err?.message || err}`); }
@@ -3417,6 +3419,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     const scope = timeframeToScope(tf);
     const name = String(rawCase?.case_name || seedName || activeCaseLabel || `${symbol}_${tf}_Raw_Case`).replace(/\s+·\s+[a-f0-9-]+$/i, '');
     const now = new Date().toISOString();
+    const created = rawCase?.created_at_utc_ms ? new Date(Number(rawCase.created_at_utc_ms)).toISOString() : now;
+    const updated = rawCase?.updated_at_utc_ms ? new Date(Number(rawCase.updated_at_utc_ms)).toISOString() : created;
     return {
       id: caseId,
       raw_case_id: caseId,
@@ -3426,14 +3430,51 @@ function MapStudio({ symbol }: { symbol:string }) {
       replay_timeframe: tf,
       case_timeframe: tf,
       case_scope: scope,
-      replay_candle_time: activeReplayCandle?.time || candleReplayCursorTime || now,
-      created_at: rawCase?.created_at_utc_ms ? new Date(Number(rawCase.created_at_utc_ms)).toISOString() : now,
-      updated_at: rawCase?.updated_at_utc_ms ? new Date(Number(rawCase.updated_at_utc_ms)).toISOString() : now,
+      replay_candle_time: updated,
+      created_at: created,
+      updated_at: updated,
       raw_case: rawCase || null,
+      notes: rawCase?.notes || '',
     };
   };
 
-  const mergeRecentCases = (rows:any[], extra?:any) => {
+  const rawCaseRowFromBackend = (rawCase:any) => rawCaseRecentRow(String(rawCase?.case_id || ''), rawCase);
+
+  const loadRawCaseLedgerIntoWorkspace = async (rawId:string, preferredTf?:string) => {
+    if (!rawId) return 0;
+    try {
+      const exported = await exportRawCaseEvents(BASE_URL, rawId);
+      const grouped = groupRawDisplayEventsByTimeframe(safeArray<any>(exported?.sequence_by_intent));
+      const tfKeys = Object.keys(grouped);
+      if (tfKeys.length) {
+        setEventsByTf(prev => ({ ...prev, ...grouped }));
+        setRangeByTf(prev => {
+          const out:any = { ...prev };
+          for (const [tf, rows] of Object.entries(grouped)) {
+            const highs = safeArray<MapEvent>(rows).filter((e:any) => String(e?.event_type || '').toUpperCase().includes('RANGE_HIGH') || String(e?.meta_json?.candle_role || '').toUpperCase() === 'HIGH');
+            const lows = safeArray<MapEvent>(rows).filter((e:any) => String(e?.event_type || '').toUpperCase().includes('RANGE_LOW') || String(e?.meta_json?.candle_role || '').toUpperCase() === 'LOW');
+            const latestHigh = highs[highs.length - 1];
+            const latestLow = lows[lows.length - 1];
+            if (latestHigh || latestLow) {
+              out[tf] = {
+                high: latestHigh ? String(Number(latestHigh.price).toFixed(2)) : (out[tf]?.high || ''),
+                low: latestLow ? String(Number(latestLow.price).toFixed(2)) : (out[tf]?.low || ''),
+              };
+            }
+          }
+          return out;
+        });
+      }
+      const nextTf = String(preferredTf || exported?.meta?.case?.base_timeframe || caseTimeframe || timeframe).toUpperCase();
+      if (nextTf) activeTimeframeRef.current = nextTf;
+      return tfKeys.reduce((sum, tf) => sum + safeArray<MapEvent>(grouped[tf]).length, 0);
+    } catch (err:any) {
+      setMessage(`Failed to load raw case ledger from VPS: ${err?.message || err}`);
+      return 0;
+    }
+  };
+
+  const mergeSavedCases = (rows:any[], extra?:any) => {
     const merged = new globalThis.Map<string, any>();
     for (const row of safeArray<any>(rows)) {
       const key = String(row?.raw_case_id || row?.id || '');
@@ -3442,11 +3483,6 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (extra) {
       const key = String(extra?.raw_case_id || extra?.id || '');
       if (key) merged.set(key, { ...(merged.get(key) || {}), ...extra });
-    }
-    const activeRaw = rawActiveCaseId ? rawCaseRecentRow(String(rawActiveCaseId)) : null;
-    if (activeRaw) {
-      const key = String(activeRaw.raw_case_id);
-      merged.set(key, { ...(merged.get(key) || {}), ...activeRaw });
     }
     return sortCaseRows(Array.from(merged.values()));
   };
@@ -3470,6 +3506,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         base_timeframe: caseTimeframe || timeframe || 'W1',
         price_scale_default: String(symbol).toUpperCase().includes('XAU') ? 100 : 100000,
         notes: seedNotes || 'Created from Electron raw mapping contract',
+        ...(rawActiveCaseId ? { case_id: String(rawActiveCaseId) } : {}),
       };
       const r = await createRawCase(BASE_URL, payload);
       const id = String(r?.case?.case_id || r?.case_id || '');
@@ -3477,7 +3514,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       setRawActiveCaseId(id);
       setActiveCaseId(null);
       setActiveCaseLabel(`${caseName} · ${id.slice(0, 8)}`);
-      setSeedIdeas(prev => mergeRecentCases(prev, rawCaseRecentRow(id, r?.case)));
+      setSeedIdeas(prev => mergeSavedCases(prev, rawCaseRecentRow(id, r?.case)));
       return id;
     } catch (err: any) {
       setMessage(`Raw case create failed: ${err?.message || err}`);
@@ -5585,8 +5622,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (!rawId) throw new Error('No raw case id returned');
       const savedMsg = `Raw ${scopeLabel(caseScope)} case ready: ${rawId.slice(0,8)}.`;
       setCaseSavedNotice(savedMsg);
-      await loadSeedIdeas();
-      setSeedIdeas(prev => mergeRecentCases(prev, rawCaseRecentRow(rawId)));
+      await loadSavedCasesFromBackend();
+      setSeedIdeas(prev => mergeSavedCases(prev, rawCaseRecentRow(rawId)));
       setMessage(`${savedMsg} Case Save now creates/uses raw_mapping_cases only. It does not send old bundled map events.`);
       setTimeout(()=>setCaseSavedNotice(''), 6000);
     } catch (err:any) {
@@ -5596,11 +5633,31 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const loadSeedIdeas = async () => {
+  const loadSavedCasesFromBackend = async () => {
+    setCaseLoadStatus('Loading saved cases from VPS…');
     try {
-      const data = await fetch(`${BASE_URL}/api/v1/mos/seed-ideas?symbol=${encodeURIComponent(symbol)}&limit=12`).then(r=>r.json());
-      setSeedIdeas(mergeRecentCases(Array.isArray(data?.ideas) ? data.ideas : []));
-    } catch { setSeedIdeas(mergeRecentCases([])); }
+      const [legacyData, rawList] = await Promise.all([
+        fetch(`${BASE_URL}/api/v1/mos/seed-ideas?symbol=${encodeURIComponent(symbol)}&limit=50`).then(r => r.json()).catch(() => ({ ideas: [] })),
+        listRawCases(BASE_URL, symbol, 200),
+      ]);
+      const legacyRows = Array.isArray(legacyData?.ideas) ? legacyData.ideas : [];
+      const rawRows = safeArray<any>(rawList?.cases).map((c:any) => rawCaseRowFromBackend(c));
+      const merged = mergeSavedCases([...legacyRows, ...rawRows]);
+      setSeedIdeas(merged);
+
+      const rawCount = rawRows.length;
+      const legacyCount = legacyRows.length;
+      if (rawList.ok) {
+        setCaseLoadStatus(`${merged.length} saved case${merged.length === 1 ? '' : 's'} loaded from VPS (${rawCount} raw, ${legacyCount} legacy).`);
+      } else if (rawList.httpStatus === 405 || rawList.httpStatus === 404) {
+        setCaseLoadStatus(`${legacyCount} legacy case${legacyCount === 1 ? '' : 's'} loaded. VPS still needs backend update for raw case list (GET /api/v1/raw-mapping/cases).`);
+      } else {
+        setCaseLoadStatus(`${legacyCount} legacy case${legacyCount === 1 ? '' : 's'} loaded. Raw case list unavailable: ${rawList.error || 'backend error'}.`);
+      }
+    } catch (err:any) {
+      setSeedIdeas(mergeSavedCases([]));
+      setCaseLoadStatus(`Could not load cases from VPS: ${err?.message || err}`);
+    }
   };
 
 
@@ -5734,8 +5791,9 @@ function MapStudio({ symbol }: { symbol:string }) {
       pendingCameraIntentRef.current = { intent: cameraMode === 'LOCKED' ? 'RESTORE_LOCKED' : 'PRESERVE_OR_NEAREST_TIME', targetTime: idea.replay_candle_time || selectedCandle?.time || candleReplayCursorTime || null, reason:'open-raw-case' };
       activeTimeframeRef.current = nextTf;
       setTimeframe(nextTf);
-      setSeedIdeas(prev => mergeRecentCases(prev, rawCaseRecentRow(rawId, idea.raw_case)));
-      setMessage(`Opened raw Case ${rawId.slice(0,8)}. Raw H/L/REF markers will save to this active ledger.`);
+      setSeedIdeas(prev => mergeSavedCases(prev, rawCaseRecentRow(rawId, idea.raw_case)));
+      const restoredCount = await loadRawCaseLedgerIntoWorkspace(rawId, nextTf);
+      setMessage(`Opened raw Case ${rawId.slice(0,8)} from VPS${restoredCount ? ` · ${restoredCount} ledger event${restoredCount===1?'':'s'} restored` : ''}.`);
       return;
     }
     const id = Number(idea.id);
@@ -5796,19 +5854,27 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`Opened Case #${id}. Restored ${nextTf} workspace and case camera ${w.start ? String(w.start).slice(0,10) : 'start?'} → ${w.end ? String(w.end).slice(0,10) : 'end?'}. Switch W1/D1 and the camera stays in this case window.`);
   };
 
-  const recentCaseIdeas = useMemo(() => {
-    const matching = sortCaseRows(safeArray<any>(seedIdeas)).filter(caseMatchesContext);
-    const visible = matching.slice(0, 8);
-    const activeKey = String(activeCaseDisplayId || '');
-    if (!activeKey) return visible;
-    const hasActive = visible.some((x:any) => String(x?.raw_case_id || x?.id || '') === activeKey);
-    if (hasActive) return visible;
-    const activeRow = matching.find((x:any) => String(x?.raw_case_id || x?.id || '') === activeKey)
-      || (rawActiveCaseId ? rawCaseRecentRow(String(rawActiveCaseId)) : null);
-    return activeRow ? [...visible, activeRow] : visible;
-  }, [seedIdeas, activeCaseDisplayId, rawActiveCaseId, symbol, caseTimeframe, caseScope, timeframe, seedName, activeCaseLabel, activeReplayCandle?.time, candleReplayCursorTime]);
+  const savedCaseIdeas = useMemo(() => {
+    return sortCaseRows(safeArray<any>(seedIdeas)).filter((idea:any) =>
+      String(idea?.symbol || symbol).toUpperCase() === String(symbol).toUpperCase()
+    );
+  }, [seedIdeas, symbol]);
 
-  useEffect(()=>{ loadSeedIdeas(); }, [symbol]);
+  const rawCaseRestoreRef = useRef('');
+  useEffect(() => {
+    if (!rawActiveCaseId) {
+      rawCaseRestoreRef.current = '';
+      return;
+    }
+    if (rawCaseRestoreRef.current === rawActiveCaseId) return;
+    if (!seedIdeas.length) return;
+    rawCaseRestoreRef.current = rawActiveCaseId;
+    const row = safeArray<any>(seedIdeas).find((x:any) => String(x?.raw_case_id || x?.id || '') === String(rawActiveCaseId));
+    const tf = String(row?.case_timeframe || row?.replay_timeframe || row?.raw_case?.base_timeframe || caseTimeframe || timeframe).toUpperCase();
+    loadRawCaseLedgerIntoWorkspace(String(rawActiveCaseId), tf);
+  }, [rawActiveCaseId, seedIdeas]);
+
+  useEffect(()=>{ loadSavedCasesFromBackend(); }, [symbol]);
 
   useEffect(()=>{
     if (!candles.length) return;
@@ -6091,7 +6157,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     </div>}
 
     <div className={`d3Workspace ${chartFullscreen ? 'chartFullscreenMode' : ''}`}>
-      <div className={`d3ChartCard ${chartFullscreen ? 'chartFullscreenCard' : ''}`}>
+      <div className={`d3ChartCard ${chartFullscreen ? 'chartFullscreenCard' : ''} ${chartFullscreen && workspacePanelOpen ? 'workspacePanelOpen' : ''}`}>
         <div className="chartTitleRow chartTitleRowMap compactChartTitle">
           <h3>{symbol} {timeframe}</h3>
           <span>{chartStatusLine}</span>
@@ -6139,27 +6205,8 @@ function MapStudio({ symbol }: { symbol:string }) {
           {(['MN1','W1','D1','H4','H1','M15'] as string[]).map(tf => <button key={tf} className={timeframe===tf?'active':''} onClick={()=>switchTimeframePreserveCase(tf)}>{tf}</button>)}
           <select value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)}><option value="AUTO">Auto</option><option value="LOCKED">Lock</option><option value="CASE">Case</option><option value="REPLAY">Replay</option></select>
         </div>}
-        {chartFullscreen && <div className="fullscreenScaleDock" aria-label="Fullscreen candle scale controls">
-          <button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button>
-          <button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button>
-          <button onClick={resetCameraScale}>Reset</button>
-        </div>}
-        {chartFullscreen && <div className="fullscreenFitDock" aria-label="Fullscreen fit controls">
-          <button onClick={fitRangeView}>Fit Range</button>
-          <button onClick={fitReplayView}>Fit Replay</button>
-          <button onClick={fitCaseView}>Fit Case</button>
-          <button onClick={fitAllView}>Fit All</button>
-          <button onClick={lockCurrentView}>Lock View</button>
-        </div>}
-        {chartFullscreen && <div className="fullscreenReplayDock" aria-label="Fullscreen replay controls">
-          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0}>◀</button>
-          <button className={candleReplayPlaying?'active':''} onClick={()=>{ setCandleReplayMode(true); setCandleReplayPlaying(x=>!x); }} disabled={!candles.length}>{candleReplayPlaying ? 'Pause' : 'Play'}</button>
-          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex + 1)} disabled={!candles.length || effectiveReplayIndex >= candles.length - 1}>▶</button>
-          <button onClick={jumpToParentRangeStart} disabled={!activeParentRangeOverlay.length}>Parent</button>
-          <button onClick={startChildReplayFromParentStart} disabled={!activeParentRangeOverlay.length}>Child Replay</button>
-          <span>{candles.length ? `${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)} · C ${replayCandle.close.toFixed(2)}` : ''}</span>
-        </div>}
-        <div className="chartGestureHint" aria-hidden="true">Drag to pan · Pinch or scroll to zoom · Drag right edge for price</div>
+        <div className="chartMapStage">
+        <div className="chartGestureHint" aria-hidden="true">Drag to pan · Pinch or scroll to zoom · Drag green price strip up/down</div>
         <D3CandleMap
           candles={candles}
           replayCutTime={candleReplayMode && replayCandle ? replayCandle.time : null}
@@ -6214,7 +6261,32 @@ function MapStudio({ symbol }: { symbol:string }) {
             if (typeof end === 'string') setRangeWindow({ end });
           }}
         />
+        </div>
       </div>
+      {chartFullscreen && <div className="fullscreenBottomBar" aria-label="Fullscreen chart controls">
+        <div className="fullscreenReplayDock" aria-label="Fullscreen replay controls">
+          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0}>◀</button>
+          <button className={candleReplayPlaying?'active':''} onClick={()=>{ setCandleReplayMode(true); setCandleReplayPlaying(x=>!x); }} disabled={!candles.length}>{candleReplayPlaying ? 'Pause' : 'Play'}</button>
+          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex + 1)} disabled={!candles.length || effectiveReplayIndex >= candles.length - 1}>▶</button>
+          <button onClick={jumpToParentRangeStart} disabled={!activeParentRangeOverlay.length}>Parent</button>
+          <button onClick={startChildReplayFromParentStart} disabled={!activeParentRangeOverlay.length}>Child Replay</button>
+          <span>{candles.length ? `${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)} · C ${replayCandle.close.toFixed(2)}` : ''}</span>
+        </div>
+        <div className="fullscreenCameraDock" aria-label="Fullscreen zoom and fit controls">
+          <div className="fullscreenScaleDock">
+            <button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button>
+            <button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button>
+            <button onClick={resetCameraScale}>Reset</button>
+          </div>
+          <div className="fullscreenFitDock">
+            <button onClick={fitRangeView}>Fit Range</button>
+            <button onClick={fitReplayView}>Fit Replay</button>
+            <button onClick={fitCaseView}>Fit Case</button>
+            <button onClick={fitAllView}>Fit All</button>
+            <button onClick={lockCurrentView}>Lock View</button>
+          </div>
+        </div>
+      </div>}
       <div className="floatingWorkspaceDock" aria-label="Workspace tools">
         <button className={rightDeckTab==='narrative' && workspacePanelOpen ? 'active' : ''} title="Narrative" onClick={()=>{ setRightDeckTab('narrative'); setWorkspacePanelOpen(prev => rightDeckTab === 'narrative' ? !prev : true); }}>N</button>
         <button className={rightDeckTab==='gps' && workspacePanelOpen ? 'active' : ''} title="GPS" onClick={()=>{ setRightDeckTab('gps'); setWorkspacePanelOpen(prev => rightDeckTab === 'gps' ? !prev : true); }}>G</button>
@@ -6464,6 +6536,7 @@ function MapStudio({ symbol }: { symbol:string }) {
 
       {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollCase')}
 
+      {caseLoadStatus && <div className="caseBadge">{caseLoadStatus}</div>}
       {caseSavedNotice && <div className="caseSavedNotice">✓ {caseSavedNotice}</div>}
 
       <details className="caseMetadataDetails" open={caseMetadataOpen} onToggle={e => setCaseMetadataOpen((e.target as HTMLDetailsElement).open)}>
@@ -6488,7 +6561,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button type="button" onClick={buildYtdCaseName}>Name YTD</button>
         </div>
         <label className="seedNotes">Notes<textarea value={seedNotes} onChange={e=>setSeedNotes(e.target.value)} placeholder="What this case shows, what was marked, and what the expected/actual path was." /></label>
-        {recentCaseIdeas.length > 0 && <div className="seedIdeaList compactCaseList"><b>Recent cases</b>{recentCaseIdeas.map((x:any)=>{
+        {savedCaseIdeas.length > 0 && <div className="seedIdeaList compactCaseList"><b>Saved cases (from VPS)</b>{savedCaseIdeas.map((x:any)=>{
           const caseKey = String(x.raw_case_id || x.id || '');
           const isActive = caseKey === String(activeCaseDisplayId || '');
           const label = x.is_raw_mapping_case ? `Raw ${caseKey.slice(0,8)}` : `#${x.id}`;
@@ -6690,7 +6763,25 @@ function applyChartSurfaceSize(
 /** Pointer/touch → viewBox coordinates (CSS pixel space, matches y/x scales). */
 function chartPointer(event: any, svgEl: SVGSVGElement): [number, number] {
   const source = event?.sourceEvent ?? event;
-  return d3.pointer(source, svgEl);
+  try {
+    const pt = d3.pointer(source, svgEl);
+    if (Number.isFinite(pt[0]) && Number.isFinite(pt[1])) return pt;
+  } catch {
+    /* d3.pointer can throw on some touch synthetic events */
+  }
+  const rect = svgEl.getBoundingClientRect();
+  if (!rect.width || !rect.height) return [NaN, NaN];
+  const touch = source?.touches?.[0] || source?.changedTouches?.[0];
+  const clientX = touch?.clientX ?? source?.clientX;
+  const clientY = touch?.clientY ?? source?.clientY;
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return [NaN, NaN];
+  const vb = svgEl.viewBox.baseVal;
+  const vw = vb.width || rect.width;
+  const vh = vb.height || rect.height;
+  return [
+    ((clientX - rect.left) / rect.width) * vw,
+    ((clientY - rect.top) / rect.height) * vh,
+  ];
 }
 
 function clampChartPlotXY(mx: number, my: number, metrics: ChartSurfaceMetrics): { x: number; y: number } {
@@ -6720,6 +6811,8 @@ function D3CandleMap(props:D3CandleMapProps) {
   const yPanPxRef = useRef(0);
   const yZoomRef = useRef(1);
   const yDragSnapRef = useRef<{ startY:number; startPan:number } | null>(null);
+  const yDragActiveRef = useRef(false);
+  const priceStripLastTapRef = useRef(0);
   const lastYDomainRef = useRef<[number, number] | null>(null);
   const lastYBaseRef = useRef<{baseLo:number;baseHi:number;innerH:number}|null>(null);
   const latestProps = useRef(props);
@@ -7067,38 +7160,105 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       })
       .on('end', function(event, d){ if (latestProps.current.toolMode === 'drag') latestProps.current.onFinishEventDrag(d); }) as any);
 
-    // v079: safe manual vertical price panning. Drag the right price strip up/down.
-    const yDragZone = svg.append('rect')
+    // v079: safe manual vertical price panning. Drag the right price strip up/down (touch + mouse).
+    const touchCoarse = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+    const stripPad = touchCoarse ? 10 : 4;
+    const stripW = Math.max(touchCoarse ? 56 : 44, margin.right - 2) + stripPad;
+    const stripX = margin.left + innerW + 1 - stripPad;
+    const priceStripG = svg.append('g').attr('class', 'chartPriceStripGroup').attr('pointer-events', 'all');
+    const yDragZone = priceStripG.append('rect')
       .attr('class', 'chartPriceStrip')
-      .attr('x', margin.left + innerW + 2)
+      .attr('x', stripX)
       .attr('y', margin.top)
-      .attr('width', Math.max(36, margin.right - 4))
+      .attr('width', stripW)
       .attr('height', innerH)
       .attr('fill', 'transparent')
       .attr('cursor', 'ns-resize')
-      .attr('pointer-events', 'all');
+      .style('touch-action', 'none');
+    const gripX = stripX + stripW / 2;
+    const grip = priceStripG.append('g').attr('class', 'chartPriceStripGrip').attr('pointer-events', 'none');
+    for (let i = -1; i <= 1; i += 1) {
+      grip.append('line')
+        .attr('x1', gripX + i * 5 - 8)
+        .attr('x2', gripX + i * 5 + 8)
+        .attr('y1', margin.top + innerH * 0.42)
+        .attr('y2', margin.top + innerH * 0.42)
+        .attr('stroke', 'rgba(0,255,208,.55)')
+        .attr('stroke-width', touchCoarse ? 2.5 : 2)
+        .attr('stroke-linecap', 'round');
+      grip.append('line')
+        .attr('x1', gripX + i * 5 - 8)
+        .attr('x2', gripX + i * 5 + 8)
+        .attr('y1', margin.top + innerH * 0.58)
+        .attr('y2', margin.top + innerH * 0.58)
+        .attr('stroke', 'rgba(0,255,208,.55)')
+        .attr('stroke-width', touchCoarse ? 2.5 : 2)
+        .attr('stroke-linecap', 'round');
+    }
 
-    yDragZone.call(d3.drag<any,any>()
-      .on('start', (event:any) => {
-        const [, my] = chartPointer(event.sourceEvent || event, svgEl);
-        yDragSnapRef.current = { startY: my, startPan: yPanPxRef.current || 0 };
-      })
-      .on('drag', (event:any) => {
-        const snap = yDragSnapRef.current;
-        if (!snap) return;
-        const [, my] = chartPointer(event.sourceEvent || event, svgEl);
-        yPanPxRef.current = snap.startPan + (my - snap.startY);
-        scheduleDraw();
-      })
-      .on('end', () => {
-        yDragSnapRef.current = null;
-      }) as any);
-
-    yDragZone.on('dblclick', () => {
+    const resetPricePan = () => {
       yPanPxRef.current = 0;
       yZoomRef.current = 1;
       scheduleDraw();
-    });
+    };
+    const pointerY = (evt: any) => {
+      const [, my] = chartPointer(evt, svgEl);
+      return Number.isFinite(my) ? my : null;
+    };
+    const onPriceStripDown = (evt: any) => {
+      evt.preventDefault();
+      evt.stopPropagation();
+      const my = pointerY(evt);
+      if (my == null) return;
+      yDragActiveRef.current = true;
+      yDragSnapRef.current = { startY: my, startPan: yPanPxRef.current || 0 };
+      if (typeof evt.pointerId === 'number' && yDragZone.node()?.setPointerCapture) {
+        try { yDragZone.node()!.setPointerCapture(evt.pointerId); } catch { /* ignore */ }
+      }
+    };
+    const onPriceStripMove = (evt: any) => {
+      if (!yDragActiveRef.current) return;
+      evt.preventDefault();
+      const snap = yDragSnapRef.current;
+      if (!snap) return;
+      const my = pointerY(evt);
+      if (my == null) return;
+      yPanPxRef.current = snap.startPan + (my - snap.startY);
+      scheduleDraw();
+    };
+    const endPriceStripDrag = (evt: any) => {
+      if (!yDragActiveRef.current) return;
+      yDragActiveRef.current = false;
+      yDragSnapRef.current = null;
+      if (typeof evt?.pointerId === 'number' && yDragZone.node()?.releasePointerCapture) {
+        try { yDragZone.node()!.releasePointerCapture(evt.pointerId); } catch { /* ignore */ }
+      }
+    };
+    const onPriceStripUp = (evt: any) => {
+      const snap = yDragSnapRef.current;
+      const my = pointerY(evt);
+      const dragged = snap && my != null && Math.abs(my - snap.startY) > 10;
+      endPriceStripDrag(evt);
+      if (dragged) {
+        priceStripLastTapRef.current = 0;
+        return;
+      }
+      const now = Date.now();
+      if (now - priceStripLastTapRef.current < 320) resetPricePan();
+      priceStripLastTapRef.current = now;
+    };
+
+    yDragZone
+      .on('pointerdown', onPriceStripDown)
+      .on('pointermove', onPriceStripMove)
+      .on('pointerup', onPriceStripUp)
+      .on('pointercancel', endPriceStripDrag)
+      .on('lostpointercapture', endPriceStripDrag)
+      .on('dblclick', (evt: any) => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        resetPricePan();
+      });
 
     const overlay = svg.append('rect').attr('class','chartPanSurface').attr('x',margin.left).attr('y',margin.top).attr('width',innerW).attr('height',innerH).attr('fill','transparent').attr('cursor', p.toolMode==='plot'?'crosshair':(p.toolMode==='select'?'pointer':'grab')).attr('pointer-events', (p.toolMode==='range' || p.toolMode==='drag') ? 'none' : 'all');
     const crossG = svg.append('g').attr('pointer-events','none').style('display','none');
@@ -7191,6 +7351,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       .extent([[margin.left, margin.top], [margin.left + innerW, margin.top + innerH]]);
     overlay.call(zoom as any);
     applyOverlayZoomTransform(overlay);
+    priceStripG.raise();
     svg.on('wheel.priceZoom', null);
   };
 

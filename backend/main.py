@@ -4505,6 +4505,13 @@ def candles_get(
     return market_memory.get_candles(symbol=symbol, timeframe=timeframe, limit=limit, start=start, end=end)
 
 
+@app.get("/api/v1/raw-mapping/cases")
+def raw_mapping_cases_list(symbol: str | None = None, limit: int = 200, status: str | None = None):
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    return market_memory.list_raw_mapping_cases(symbol=symbol, limit=limit, status=status)
+
+
 @app.post("/api/v1/raw-mapping/cases")
 def raw_mapping_case_create(response: Response, payload: dict[str, Any] = Body(...)):
     if market_memory is None:

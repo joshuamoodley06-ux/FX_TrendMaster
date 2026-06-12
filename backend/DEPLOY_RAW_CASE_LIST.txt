@@ -1,0 +1,28 @@
+DEPLOY: Raw case list fix (required for dev + .exe to show saved cases)
+
+Problem
+-------
+Saved raw mapping cases are in the VPS SQLite DB, but the live API only had
+POST /api/v1/raw-mapping/cases. Without GET list, Electron cannot reload cases
+on a fresh app start.
+
+Fix (2 files)
+-------------
+Copy from this repo into your VPS app folder (e.g. trading_gate/app):
+
+  backend/main.py
+  backend/candle_store.py
+
+Then restart uvicorn on port 8000.
+
+Verify
+------
+  curl "https://api01.apexcoastalrentals.co.za/api/v1/raw-mapping/cases?symbol=XAUUSD&limit=5"
+
+Expected: JSON with ok:true and a cases array (may be empty if no raw cases yet).
+If you see 405 Method Not Allowed, the old backend is still running.
+
+After deploy
+------------
+Rebuild Electron (npm run dist) or restart npm run dev.
+Map Studio -> Case Manager -> "Saved cases (from VPS)" loads from backend only.
