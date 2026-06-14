@@ -38,3 +38,12 @@ After deploy
 ------------
 Rebuild Electron (npm run dist) or restart npm run dev.
 Map Studio -> Case Manager -> "Saved cases (from VPS)" loads from backend only.
+
+Hard-delete orphan ranges (master case cleanup)
+-----------------------------------------------
+1. Deploy backend (copy main.py + candle_store.py, restart uvicorn), OR run on VPS DB directly.
+2. API path (from your PC):
+     python electron/scripts/cleanup_master_orphans.py --hard-delete
+3. Direct DB path (on VPS RDP):
+     python scripts/hard_delete_orphans_sqlite.py --db "C:\Users\Administrator\Desktop\FXTM App\trading_gate\app\market_memory.db" --execute
+Keeps MACRO #152 tree; permanently removes unlinked/orphan ranges + linked events.

@@ -2539,7 +2539,7 @@ def list_map_ranges(symbol: str = "XAUUSD", timeframe: str | None = None, case_i
     """
     init_db()
     limit = max(1, min(int(limit or 1000), 5000))
-    clauses = ["symbol=?"]
+    clauses = ["symbol=?", "status!='archived'"]
     args: list[Any] = [symbol]
     if timeframe:
         clauses.append("timeframe=?")
@@ -3117,6 +3117,88 @@ def delete_map_range(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: s
         )
         conn.commit()
     return {"ok": True, "archived": cur.rowcount, "symbol": symbol, "timeframe": tf, "range_key": range_key}
+
+
+def hard_delete_map_ranges(
+    range_ids: list[int],
+    raw_case_id: str | None = None,
+    confirm: str = "",
+) -> dict[str, Any]:
+    """Permanently remove structural ranges and their linked research rows.
+
+    Raw OHLC candles are untouched. This deletes map_events, map_points, route_memory,
+    htf_state_snapshots, and range_objectives scoped to each range_id, then removes the range row.
+    """
+    init_db()
+    if confirm != "DELETE":
+        return {"ok": False, "error": "CONFIRM_DELETE_REQUIRED", "detail": "Pass confirm=DELETE to permanently remove ranges."}
+    ids = sorted({int(x) for x in range_ids if x is not None})
+    if not ids:
+        return {"ok": False, "error": "No range_ids provided"}
+
+    deleted_ranges = 0
+    deleted_events = 0
+    deleted_points = 0
+    deleted_routes = 0
+    deleted_snapshots = 0
+    deleted_objectives = 0
+    errors: list[dict[str, Any]] = []
+    now = now_iso()
+
+    with connect() as conn:
+        for rid in ids:
+            row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (rid,)).fetchone()
+            if row is None:
+                errors.append({"range_id": rid, "error": "not_found"})
+                continue
+            d = dict(row)
+            if raw_case_id and str(d.get("raw_case_id") or "").strip() != str(raw_case_id).strip():
+                errors.append({"range_id": rid, "error": "raw_case_id_mismatch"})
+                continue
+
+            cur = conn.execute(
+                "DELETE FROM map_events WHERE range_id=? OR active_range_id=? OR parent_range_id=?",
+                (rid, rid, rid),
+            )
+            deleted_events += int(cur.rowcount or 0)
+            cur = conn.execute("DELETE FROM map_points WHERE range_id=?", (rid,))
+            deleted_points += int(cur.rowcount or 0)
+            cur = conn.execute("DELETE FROM route_memory WHERE range_id=?", (rid,))
+            deleted_routes += int(cur.rowcount or 0)
+            cur = conn.execute("DELETE FROM htf_state_snapshots WHERE range_id=?", (rid,))
+            deleted_snapshots += int(cur.rowcount or 0)
+            cur = conn.execute("DELETE FROM range_objectives WHERE range_id=?", (rid,))
+            deleted_objectives += int(cur.rowcount or 0)
+            cur = conn.execute("DELETE FROM map_ranges WHERE id=?", (rid,))
+            if int(cur.rowcount or 0):
+                deleted_ranges += 1
+            else:
+                errors.append({"range_id": rid, "error": "delete_failed"})
+
+        placeholders = ",".join(["?"] * len(ids))
+        conn.execute(
+            f"""
+            UPDATE map_ranges
+            SET parent_range_id=NULL, old_range_id=NULL, new_range_id=NULL, updated_at=?
+            WHERE parent_range_id IN ({placeholders})
+               OR old_range_id IN ({placeholders})
+               OR new_range_id IN ({placeholders})
+            """,
+            [now] + ids + ids + ids,
+        )
+        conn.commit()
+
+    return {
+        "ok": True,
+        "deleted_ranges": deleted_ranges,
+        "deleted_events": deleted_events,
+        "deleted_points": deleted_points,
+        "deleted_routes": deleted_routes,
+        "deleted_snapshots": deleted_snapshots,
+        "deleted_objectives": deleted_objectives,
+        "range_ids": ids,
+        "errors": errors,
+    }
 
 
 # -------------------------------

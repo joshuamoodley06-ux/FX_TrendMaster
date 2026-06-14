@@ -4655,6 +4655,25 @@ def map_range_delete(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: s
     return market_memory.delete_map_range(symbol=symbol, timeframe=timeframe, range_key=range_key)
 
 
+@app.post("/api/v1/map/ranges/hard-delete")
+def map_ranges_hard_delete(response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    body = payload or {}
+    raw_ids = body.get("range_ids") or body.get("range_id") or []
+    if isinstance(raw_ids, (int, str)):
+        raw_ids = [raw_ids]
+    range_ids = [int(x) for x in raw_ids if str(x).strip().isdigit()]
+    result = market_memory.hard_delete_map_ranges(
+        range_ids=range_ids,
+        raw_case_id=body.get("raw_case_id"),
+        confirm=str(body.get("confirm") or ""),
+    )
+    if not result.get("ok"):
+        response.status_code = int(result.get("status") or 400)
+    return result
+
+
 @app.get("/api/v1/map/ranges")
 def map_ranges_list(symbol: str = "XAUUSD", timeframe: str | None = None, case_id: int | None = None, raw_case_id: str | None = None, case_ref: str | None = None, structure_layer: str | None = None, source_timeframe: str | None = None, parent_range_id: int | None = None, limit: int = 1000):
     if market_memory is None:
