@@ -5020,7 +5020,39 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving the next range.'); return false; }
     const oldRangeId = String(saveNextRangeEligible.oldRangeId || activeStructuralRangeId);
     const createdByEventId = saveNextRangeEligible.createdByEventId;
-    const parentRangeId = saveNextRangeEligible.parentRangeId;
+    const brokenRange = saveNextRangeEligible.brokenRange as any;
+    const nextScope = normalizeRangeScope(rangeScope);
+    let parentRangeId: string | number | null = saveNextRangeEligible.parentRangeId;
+    if (nextScope === 'MAJOR') {
+      const parentResolve = resolveParentRangeIdForSave(
+        structureLayer,
+        'MAJOR',
+        parentSelectionForSave,
+        savedStructuralRanges,
+        childDraftSpan,
+      );
+      if (parentResolve.parentId) {
+        parentRangeId = parentResolve.parentId;
+      } else if (brokenRange && isRangeMajor(brokenRange) && brokenRange.parent_range_id != null && String(brokenRange.parent_range_id) !== '') {
+        parentRangeId = brokenRange.parent_range_id;
+      }
+    } else {
+      const brokenScope = normalizeRangeScope(brokenRange?.range_scope);
+      if (brokenScope === 'MINOR') {
+        parentRangeId = brokenRange?.parent_range_id ?? parentRangeId;
+      } else if (brokenRange && isRangeMajor(brokenRange)) {
+        parentRangeId = String(brokenRange.range_id || brokenRange.id);
+      } else {
+        const parentResolve = resolveParentRangeIdForSave(
+          structureLayer,
+          'MINOR',
+          parentSelectionForSave,
+          savedStructuralRanges,
+          childDraftSpan,
+        );
+        if (parentResolve.parentId) parentRangeId = parentResolve.parentId;
+      }
+    }
     if (!createdByEventId) { setMessage('BOS event reference missing for chain. Break the range again or refresh audit.'); return false; }
     setStructuralSaving(true);
     try {
@@ -5033,7 +5065,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         raw_case_id: mappingCase.raw_case_id,
         case_ref: mappingCase.case_ref,
         symbol,
-        range_scope: normalizeRangeScope(selectedSavedRange?.range_scope || activeRange?.range_scope || rangeScope),
+        range_scope: nextScope,
         ...structuralMappingScopeFields(structureLayer, sourceTimeframe, timeframe),
         parent_range_id: parentRangeId,
         old_range_id: Number(oldRangeId),
@@ -5306,7 +5338,13 @@ function MapStudio({ symbol }: { symbol:string }) {
         clearStructuralRangeDraft();
         setChainDraftMode(true);
         autoChainSaveAttemptRef.current = '';
-        setMessage(`${bosType} saved. Range ${activeStructuralRangeId} marked BROKEN. Set RH/RL for the next ${structureLayer} range.`);
+        if (activeRange && isRangeMajor(activeRange)) {
+          setRangeScope('MAJOR');
+        } else if (activeRange) {
+          setRangeScope('MINOR');
+        }
+        const scopeHint = activeRange && isRangeMajor(activeRange) ? 'MAJOR' : 'MINOR';
+        setMessage(`${bosType} saved. Range ${activeStructuralRangeId} marked BROKEN. Set RH/RL for the next ${structureLayer} ${scopeHint} range (Role chip controls scope).`);
         try { await refreshSavedRangesForCurrentCase(); } catch {}
       } else if (!lifecyclePatchFailed) {
         setMessage(`Saved ${direction === 'UP' ? 'Break Up' : 'Break Down'} as formal ${bosType} ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${structureLayer}/${sourceTimeframe} · active range #${activeStructuralRangeId} · ref ${refPrice ?? 'derived later'}`);
@@ -6827,6 +6865,20 @@ function MapStudio({ symbol }: { symbol:string }) {
       }
     }
   };
+  const chainScopeMismatch = useMemo(() => {
+    if (!chainDraftMode || !activeStructuralRangeId) return null;
+    const broken = selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId);
+    if (!broken) return null;
+    const brokenScope = normalizeRangeScope(broken.range_scope);
+    if (brokenScope === 'MINOR' && rangeScope === 'MAJOR') {
+      return 'Broken range is MINOR but Role is MAJOR — Save Next creates a new major sibling. Break the weekly MAJOR itself if that was the intent.';
+    }
+    if (brokenScope === 'MAJOR' && rangeScope === 'MINOR') {
+      return 'Broken range is MAJOR but Role is MINOR — switch to MAJOR to chain the next weekly major.';
+    }
+    return null;
+  }, [chainDraftMode, activeStructuralRangeId, selectedSavedRange, savedStructuralRanges, rangeScope]);
+
   const structuralMappingRibbonEl = (
     <div className={`structuralMappingRibbon ${chartFullscreen ? 'ribbonDocked ribbonCompact' : 'ribbonInline'}`} aria-label="Structural mapping scope">
       {!chartFullscreen && <div className="ribbonScopeRow">
@@ -6883,7 +6935,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       <button type="button" className={`ribbonChainToggle ${autoChainSave ? 'active' : ''}`} onClick={() => setAutoChainSave(v => !v)} title="After BOS break, auto Save Next Range when RH and RL are set">
         {chartFullscreen ? `Auto ${autoChainSave ? 'ON' : 'OFF'}` : `Auto Chain Save: ${autoChainSave ? 'ON' : 'OFF'}`}
       </button>
-      {chainDraftMode && <div className="chainDraftBanner">{chartFullscreen ? `BROKEN · set RH/RL for next ${STRUCTURE_LAYER_CHIP[structureLayer]}` : `Range is BROKEN. Set RH/RL for the next ${structureLayer} range.`}</div>}
+      {chainDraftMode && <div className="chainDraftBanner">{chainScopeMismatch || (chartFullscreen ? `BROKEN · set RH/RL for next ${STRUCTURE_LAYER_CHIP[structureLayer]} ${rangeScope}` : `Range is BROKEN. Set RH/RL for the next ${structureLayer} ${rangeScope} range.`)}</div>}
     </div>
   );
   const compactQuickSaveLabel = savePreview.actionLabel
