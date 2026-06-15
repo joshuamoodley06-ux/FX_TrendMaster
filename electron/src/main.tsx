@@ -1303,6 +1303,8 @@ type DraftRangeChartLine = {
   low: number;
   structureLayer: StructureLayer;
   visible: boolean;
+  start?: string | null;
+  end?: string | null;
 };
 
 function collectParentContextChain(startRangeId: string, allRanges: any[]): string[] {
@@ -1595,11 +1597,15 @@ function shortTime(value: any, timeframe?: string): string {
   if (!value) return '';
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  const iso = date.toISOString();
   const tf = String(timeframe || '').toUpperCase();
-  if (tf === 'MN1') return iso.slice(0, 7);
-  if (tf === 'W1' || tf === 'D1') return iso.slice(0, 10);
-  return iso.slice(0, 16).replace('T', ' ');
+  const y = date.getFullYear();
+  const mo = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  if (tf === 'MN1') return `${y}-${mo}`;
+  if (tf === 'W1' || tf === 'D1') return `${y}-${mo}-${day}`;
+  const h = String(date.getHours()).padStart(2, '0');
+  const mi = String(date.getMinutes()).padStart(2, '0');
+  return `${y}-${mo}-${day} ${h}:${mi}`;
 }
 
 
@@ -2829,24 +2835,55 @@ function MapStudio({ symbol }: { symbol:string }) {
     } catch (err:any) { setMessage(`Clear cases failed: ${err?.message || err}`); }
   };
   const resetResearchMappingDb = async () => {
-    if (!window.confirm(`HARD RESET ${symbol} mapping? Deletes ALL legacy + raw mapping cases/events, map events, HTF snapshots, objectives, ranges and route memory. Raw OHLC candles stay.`)) return;
+    const wipeSymbols = Array.from(new Set([symbol, ...SYMBOLS].map((s) => String(s || '').trim().toUpperCase()).filter(Boolean)));
+    if (!window.confirm(`HARD RESET mapping for ${wipeSymbols.join(', ')}? Deletes ALL legacy + raw mapping cases/events, structural ranges, map events, HTF snapshots, objectives, and route memory. Raw OHLC candles stay.`)) return;
     if (window.prompt('Type RESET to confirm the mapping wipe') !== 'RESET') { setMessage('Reset cancelled. The database lives another day.'); return; }
     try {
-      const [r, rawClear] = await Promise.all([
-        fetch(`${BASE_URL}/api/v1/mos/research-reset`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol, confirm:'RESET' }) }).then(x=>x.json()),
-        clearRawCases(BASE_URL, symbol, 'RESET'),
-      ]);
-      if (!r?.ok) throw new Error(r?.error || r?.detail || 'Research reset failed');
-      if (!rawClear.ok && rawClear.httpStatus !== 404 && rawClear.httpStatus !== 405) {
-        throw new Error(rawClear.error || 'Raw mapping clear failed');
-      }
-      setActiveCaseId(null); setRawActiveCaseId(''); setActiveCaseLabel(''); setSeedIdeas([]); setSessionEventIds(new Set());
+      const results = await Promise.all(wipeSymbols.map(async (sym) => {
+        const [r, rawClear] = await Promise.all([
+          fetch(`${BASE_URL}/api/v1/mos/research-reset`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ symbol: sym, confirm:'RESET' }) }).then(x=>x.json()),
+          clearRawCases(BASE_URL, sym, 'RESET'),
+        ]);
+        return { sym, r, rawClear };
+      }));
+      const failed = results.find(({ r }) => !r?.ok);
+      if (failed) throw new Error(failed.r?.error || failed.r?.detail || `Research reset failed for ${failed.sym}`);
+      const rawFail = results.find(({ rawClear }) => !rawClear.ok && rawClear.httpStatus !== 404 && rawClear.httpStatus !== 405);
+      if (rawFail) throw new Error(rawFail.rawClear.error || `Raw mapping clear failed for ${rawFail.sym}`);
+
+      setActiveCaseId(null);
+      setRawActiveCaseId('');
+      setActiveCaseLabel('');
+      setSeedIdeas([]);
+      setSessionEventIds(new Set());
+      setActiveStructuralRangeId('');
+      setSelectedParentRangeId('');
+      setStructuralRanges([]);
+      setSavedStructuralRanges([]);
+      setStructuralAnchorsByLayer({});
+      setReplayCursorByKey({});
+      setChartDrawings([]);
+      setSelectedDrawingId(null);
+      setRangeByTf({});
+      setRangeWindowByTf({});
+      setMeasurementRangeByTf({});
+      setCameraDomainByCaseTf({});
+      setCameraPriceDomainByCaseTf({});
       eventsByTfRef.current = {};
       setEventsByTf({});
+      try { localStorage.removeItem('fx_tm_chart_drawings_v1'); } catch { /* ignore */ }
+      try { localStorage.removeItem('fx_tm_replay_cursor_time_v087_22'); } catch { /* ignore */ }
+
       await loadSavedCasesFromBackend();
       await loadMapMemory(timeframe);
-      const rawMsg = rawClear.ok ? ` Raw: ${rawClear.deleted_cases || 0} case(s), ${rawClear.deleted_events || 0} event(s) removed.` : '';
-      setMessage(`Mapping reset complete for ${symbol}. Candles preserved.${rawMsg}`);
+      const summary = results.map(({ sym, r, rawClear }) => {
+        const deleted = r?.deleted || {};
+        const ranges = Number(deleted.map_ranges || 0);
+        const events = Number(deleted.map_events || 0) + Number(deleted.raw_mapping_events || 0) + Number(rawClear.deleted_events || 0);
+        const cases = Number(deleted.raw_mapping_cases || 0) + Number(deleted.mos_seed_ideas || 0) + Number(rawClear.deleted_cases || 0);
+        return `${sym}: ${cases} case(s), ${ranges} range(s), ${events} event(s)`;
+      }).join(' · ');
+      setMessage(`Mapping wipe complete. Candles preserved. ${summary}`);
     } catch (err:any) { setMessage(`Research reset failed: ${err?.message || err}`); }
   };
 
@@ -2988,8 +3025,10 @@ function MapStudio({ symbol }: { symbol:string }) {
       low: draftLow,
       structureLayer: structureLayer,
       visible: true,
+      start: rhAnchor.time || null,
+      end: rlAnchor.time || null,
     };
-  }, [rhAnchor.price, rlAnchor.price, structureLayer, activeStructuralRangeId, savedStructuralRanges, structuralRangeDraftDirty]);
+  }, [rhAnchor.price, rlAnchor.time, rlAnchor.price, rhAnchor.time, structureLayer, activeStructuralRangeId, savedStructuralRanges, structuralRangeDraftDirty]);
 
   const htfSemiAuto = useMemo(() => analyseHTFSemiAuto({
     timeframe,
@@ -6739,6 +6778,26 @@ function MapStudio({ symbol }: { symbol:string }) {
     </div>
   );
 
+  const chartHudCandleTime = cursor?.time || (candleReplayMode && replayCandle?.time) || selectedCandle?.time || null;
+  const chartHudPrice = cursor?.price ?? cursor?.ohlc?.close ?? replayCandle?.close ?? selectedCandlePoint?.price ?? null;
+  const chartDrawToolbarEl = (
+    <div className="chartDrawToolbar" aria-label="Chart drawing tools">
+      <button type="button" className={chartDrawTool === 'off' && toolMode === 'inspect' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('inspect'); }} title="Pan chart">Pan</button>
+      <button type="button" className={toolMode === 'select' && chartDrawTool === 'off' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('select'); }} title="Select candle">Sel</button>
+      <button type="button" className={toolMode === 'scrub' && chartDrawTool === 'off' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('scrub'); }} disabled={!candleReplayMode} title="Scrub replay bar">Scrub</button>
+      <span className="chartDrawDivider" />
+      <button type="button" className={chartDrawTool === 'hline' ? 'active' : ''} onClick={() => setChartDrawTool('hline')} title="Horizontal line (resize width in Edit mode)">H</button>
+      <button type="button" className={chartDrawTool === 'vline' ? 'active' : ''} onClick={() => setChartDrawTool('vline')} title="Vertical line (resize in Edit mode)">V</button>
+      <button type="button" className={chartDrawTool === 'text' ? 'active' : ''} onClick={() => setChartDrawTool('text')} title="Text label">Txt</button>
+      <button type="button" className={chartDrawTool === 'edit' ? 'active' : ''} onClick={() => setChartDrawTool('edit')} title="Move / resize drawings">Edit</button>
+      <span className="chartDrawDivider" />
+      {CHART_DRAWING_COLORS.map((c) => (
+        <button key={c} type="button" className={`drawColorSwatch${chartDrawColor === c ? ' active' : ''}`} style={{ background: c }} onClick={() => setChartDrawColor(c)} title={`Color ${c}`} aria-label={`Color ${c}`} />
+      ))}
+      <button type="button" className="chartDrawClearBtn" disabled={!chartDrawings.length} onClick={() => { setChartDrawings([]); setSelectedDrawingId(null); }} title="Clear drawings for this case/timeframe">Clear</button>
+    </div>
+  );
+
   return <div className={`mapStudioShell d3MapStudio ${chartFullscreen ? 'chartFullscreenActive' : ''}`}>
     <div className="panelHeader mapStudioHeader">
       <div><h2>Map Studio</h2><p>D3 candle canvas with locked vertical scale, horizontal pan, precision crosshair, and backend candle memory.</p></div>
@@ -6784,10 +6843,9 @@ function MapStudio({ symbol }: { symbol:string }) {
       </>}
     </div>
 
-    {cursor && <div className="crosshairReadout">
+    {cursor && !chartFullscreen && <div className="crosshairReadout">
       <b>{shortTime(cursor.time, timeframe)}</b>
       <span>{cursor.ohlc ? `C ${cursor.ohlc.close.toFixed(2)}` : `Price ${cursor.price?.toFixed(2)}`}</span>
-      {cursor.ohlc && <span>O {cursor.ohlc.open.toFixed(2)} · H {cursor.ohlc.high.toFixed(2)} · L {cursor.ohlc.low.toFixed(2)}</span>}
       <span>{cursor.zone || 'No range'}{cursor.pct !== undefined ? ` · ${cursor.pct.toFixed(2)}%` : ''}</span>
     </div>}
 
@@ -6815,6 +6873,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         {!chartFullscreen && showStructuralMappingRibbon && structuralMappingRibbonEl}
         {chartFullscreen && <div className="structuralMappingDock compact">
           {showStructuralMappingRibbon && structuralMappingRibbonEl}
+          {chartDrawToolbarEl}
           <div className="quickAnchorBar quickAnchorBarCompact" aria-label="Quick structural mapping controls">
           <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RH')} title="Range High"><span>RH</span></button>
           <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RL')} title="Range Low"><span>RL</span></button>
@@ -6844,27 +6903,13 @@ function MapStudio({ symbol }: { symbol:string }) {
           <select value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)}><option value="AUTO">Auto</option><option value="LOCKED">Lock</option><option value="CASE">Case</option><option value="REPLAY">Replay</option></select>
         </div>}
         <div className="chartMapStage">
-        {cursor && <div className="chartCrosshairHud" aria-live="polite">
-          <b>{shortTime(cursor.time, timeframe)}</b>
-          <span>{cursor.ohlc ? `C ${cursor.ohlc.close.toFixed(2)}` : `Price ${cursor.price?.toFixed(2)}`}</span>
-          {cursor.ohlc && <span>O {cursor.ohlc.open.toFixed(2)} · H {cursor.ohlc.high.toFixed(2)} · L {cursor.ohlc.low.toFixed(2)}</span>}
+        {chartHudCandleTime && <div className="chartCrosshairHud" aria-live="polite">
+          <b>{shortTime(chartHudCandleTime, timeframe)}</b>
+          {chartHudPrice != null && Number.isFinite(Number(chartHudPrice)) && <span>{Number(chartHudPrice).toFixed(2)}</span>}
         </div>}
-        <div className="chartGestureHint" aria-hidden="true">Drag to pan · Scroll to zoom · Price strip drag · Draw tools save per case/timeframe</div>
-        <div className="chartDrawToolbar" aria-label="Chart drawing tools">
-          <button type="button" className={chartDrawTool === 'off' && toolMode === 'inspect' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('inspect'); }} title="Pan chart">Pan</button>
-          <button type="button" className={toolMode === 'select' && chartDrawTool === 'off' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('select'); }} title="Select candle">Sel</button>
-          <button type="button" className={toolMode === 'scrub' && chartDrawTool === 'off' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('scrub'); }} disabled={!candleReplayMode} title="Scrub replay bar">Scrub</button>
-          <span className="chartDrawDivider" />
-          <button type="button" className={chartDrawTool === 'hline' ? 'active' : ''} onClick={() => setChartDrawTool('hline')} title="Horizontal line (resize width in Edit mode)">H</button>
-          <button type="button" className={chartDrawTool === 'vline' ? 'active' : ''} onClick={() => setChartDrawTool('vline')} title="Vertical line (resize in Edit mode)">V</button>
-          <button type="button" className={chartDrawTool === 'text' ? 'active' : ''} onClick={() => setChartDrawTool('text')} title="Text label">Txt</button>
-          <button type="button" className={chartDrawTool === 'edit' ? 'active' : ''} onClick={() => setChartDrawTool('edit')} title="Move / resize drawings">Edit</button>
-          <span className="chartDrawDivider" />
-          {CHART_DRAWING_COLORS.map((c) => (
-            <button key={c} type="button" className={`drawColorSwatch${chartDrawColor === c ? ' active' : ''}`} style={{ background: c }} onClick={() => setChartDrawColor(c)} title={`Color ${c}`} aria-label={`Color ${c}`} />
-          ))}
-          <button type="button" className="chartDrawClearBtn" disabled={!chartDrawings.length} onClick={() => { setChartDrawings([]); setSelectedDrawingId(null); }} title="Clear drawings for this case/timeframe">Clear</button>
-        </div>
+        {!chartFullscreen && <div className="chartGestureHint" aria-hidden="true">Drag to pan · Scroll to zoom · Price strip drag · Draw tools save per case/timeframe</div>}
+        {!chartFullscreen && chartDrawToolbarEl}
+        <div className="chartMapCanvas">
         <D3CandleMap
           candles={candles}
           replayCutTime={candleReplayMode && replayCandle ? replayCandle.time : null}
@@ -6879,8 +6924,8 @@ function MapStudio({ symbol }: { symbol:string }) {
           caseHigh={activeCaseLedger?.high || ''}
           caseLow={activeCaseLedger?.low || ''}
           parentOverlays={[]}
-          savedRangeOverlays={[]}
-          draftRangeOverlay={null}
+          savedRangeOverlays={chartSavedRangeOverlays}
+          draftRangeOverlay={chartDraftRangeOverlay}
           showFibOverlays={false}
           events={visibleEvents}
           selectedCandleTime={selectedCandle?.time || null}
@@ -6925,6 +6970,7 @@ function MapStudio({ symbol }: { symbol:string }) {
             if (typeof end === 'string') setRangeWindow({ end });
           }}
         />
+        </div>
         </div>
       </div>
       {chartFullscreen && <div className="fullscreenBottomBar" aria-label="Fullscreen chart controls">
@@ -7275,8 +7321,8 @@ function MapStudio({ symbol }: { symbol:string }) {
         <div className="dangerZoneBox">
           <button type="button" className="caseToolbarBtn danger" onClick={deleteActiveCase} disabled={!activeCaseId}>Delete Active Case</button>
           <button type="button" className="caseToolbarBtn danger" onClick={clearAllCases}>Clear All Cases</button>
-          <span>Wipe Mapping Research Data deletes legacy + raw mapping cases/events, map events, HTF snapshots, objectives, ranges and route memory for this symbol. Raw candles stay.</span>
-          <button type="button" className="caseToolbarBtn danger" onClick={resetResearchMappingDb}>Wipe Mapping Research Data</button>
+          <span>Wipe Mapping Research Data deletes legacy + raw mapping cases/events, structural ranges, map events, HTF snapshots, objectives, and route memory for all symbols. Raw candles stay. Also clears local replay, drawings, and case selection.</span>
+          <button type="button" className="caseToolbarBtn danger" onClick={resetResearchMappingDb}>Wipe All Mapping Data</button>
         </div>
       </details>
     </div>
@@ -7599,6 +7645,41 @@ function priceLineY(yScale: d3.ScaleLinear<number, number>, price: number): numb
   return snapChartStrokePx(yScale(Number(price)));
 }
 
+function rangeSpanX(
+  zx: d3.ScaleTime<number, number>,
+  start: string | null | undefined,
+  end: string | null | undefined,
+  margin: typeof CHART_MARGIN,
+  innerW: number,
+): { x1: number; x2: number } {
+  const plotLeft = margin.left;
+  const plotRight = margin.left + innerW;
+  const full = { x1: plotLeft, x2: plotRight };
+  const clampX = (x: number) => Math.max(plotLeft, Math.min(plotRight, x));
+  const a = start ? candleTimeDate(start) : null;
+  const b = end ? candleTimeDate(end) : null;
+  const aOk = !!a && Number.isFinite(a.getTime());
+  const bOk = !!b && Number.isFinite(b.getTime());
+  if (aOk && bOk) {
+    const xA = zx(a!);
+    const xB = zx(b!);
+    if (Number.isFinite(xA) && Number.isFinite(xB)) {
+      const x1 = clampX(Math.min(xA, xB));
+      const x2 = clampX(Math.max(xA, xB));
+      return x2 - x1 >= 2 ? { x1, x2 } : { x1: clampX(xA - 12), x2: clampX(xA + 12) };
+    }
+  }
+  if (aOk) {
+    const xA = zx(a!);
+    if (Number.isFinite(xA)) return { x1: clampX(xA - innerW * 0.12), x2: clampX(xA + innerW * 0.12) };
+  }
+  if (bOk) {
+    const xB = zx(b!);
+    if (Number.isFinite(xB)) return { x1: clampX(xB - innerW * 0.12), x2: clampX(xB + innerW * 0.12) };
+  }
+  return full;
+}
+
 function chartXScaleFromData(data: Candle[], metrics: ChartSurfaceMetrics) {
   const dates = data.map((d) => new Date(d.time));
   return d3.scaleTime()
@@ -7765,7 +7846,7 @@ function D3CandleMap(props:D3CandleMapProps) {
     const drawRangeLineLabels = (container:any, rows:any[]) => {
       const labels = container.selectAll('g.rangeLineLabel').data(rows).join('g')
         .attr('class','rangeLineLabel')
-        .attr('transform',(d:any)=>`translate(${margin.left + 8},${y(Number(d.price)) - (d.kind === 'high' ? 14 : -4)})`);
+        .attr('transform',(d:any)=>`translate(${Number(d.x1 ?? margin.left) + 8},${y(Number(d.price)) - (d.kind === 'high' ? 14 : -4)})`);
       labels.append('rect')
         .attr('width', (d:any)=>Math.max(92, d.label.length * 6.2))
         .attr('height', 18).attr('rx', 6)
@@ -7789,15 +7870,17 @@ function D3CandleMap(props:D3CandleMapProps) {
         const color = structureLayerLineColor(r.structureLayer);
         const prefix = r.isParentContext ? 'ctx ' : '';
         const scopeLabel = r.rangeScope === 'MINOR' ? ' MINOR' : '';
+        const span = rangeSpanX(zx, r.start, r.end, margin, innerW);
+        const rowBase = { color, style, rangeId: r.rangeId, x1: span.x1, x2: span.x2, start: r.start, end: r.end };
         return [
-          { kind:'high' as const, price:r.high, label:`${prefix}#${r.rangeId} ${r.structureLayer}${scopeLabel} RH`, color, style, rangeId:r.rangeId },
-          { kind:'low' as const, price:r.low, label:`${prefix}#${r.rangeId} ${r.structureLayer}${scopeLabel} RL`, color, style, rangeId:r.rangeId },
+          { kind:'high' as const, price:r.high, label:`${prefix}#${r.rangeId} ${r.structureLayer}${scopeLabel} RH`, ...rowBase },
+          { kind:'low' as const, price:r.low, label:`${prefix}#${r.rangeId} ${r.structureLayer}${scopeLabel} RL`, ...rowBase },
         ];
       });
       sg.selectAll('line.savedRangeLine').data(savedRows).join('line')
         .attr('class','savedRangeLine')
-        .attr('x1', margin.left)
-        .attr('x2', margin.left + innerW)
+        .attr('x1', (d:any)=>Number(d.x1))
+        .attr('x2', (d:any)=>Number(d.x2))
         .attr('y1', (d:any)=>priceLineY(y, Number(d.price)))
         .attr('y2', (d:any)=>priceLineY(y, Number(d.price)))
         .attr('stroke', (d:any)=>d.color)
@@ -7825,13 +7908,14 @@ function D3CandleMap(props:D3CandleMapProps) {
             label: x.label,
             color,
             style: parentStyle,
+            ...rangeSpanX(zx, x.start, x.end, margin, innerW),
           };
         });
       if (parentRows.length) {
         pg.selectAll('line.parentRangeLine').data(parentRows).join('line')
           .attr('class','parentRangeLine')
-          .attr('x1', margin.left)
-          .attr('x2', margin.left + innerW)
+          .attr('x1', (d:any)=>Number(d.x1))
+          .attr('x2', (d:any)=>Number(d.x2))
           .attr('y1', (d:any)=>priceLineY(y, Number(d.price)))
           .attr('y2', (d:any)=>priceLineY(y, Number(d.price)))
           .attr('stroke', (d:any)=>d.color)
@@ -7846,15 +7930,16 @@ function D3CandleMap(props:D3CandleMapProps) {
       const draft = p.draftRangeOverlay;
       const draftStyle = draftRangeLineStyle();
       const draftColor = structureLayerLineColor(draft.structureLayer);
+      const draftSpan = rangeSpanX(zx, draft.start, draft.end, margin, innerW);
       const dg = plot.append('g').attr('class','draftRangeLines').attr('pointer-events','none');
       const draftRows = [
-        { kind:'high' as const, price:draft.high, label:`Draft ${draft.structureLayer} RH`, color:draftColor, style:draftStyle },
-        { kind:'low' as const, price:draft.low, label:`Draft ${draft.structureLayer} RL`, color:draftColor, style:draftStyle },
+        { kind:'high' as const, price:draft.high, label:`Draft ${draft.structureLayer} RH`, color:draftColor, style:draftStyle, x1: draftSpan.x1, x2: draftSpan.x2 },
+        { kind:'low' as const, price:draft.low, label:`Draft ${draft.structureLayer} RL`, color:draftColor, style:draftStyle, x1: draftSpan.x1, x2: draftSpan.x2 },
       ];
       dg.selectAll('line.draftRangeLine').data(draftRows).join('line')
         .attr('class','draftRangeLine')
-        .attr('x1', margin.left)
-        .attr('x2', margin.left + innerW)
+        .attr('x1', (d:any)=>Number(d.x1))
+        .attr('x2', (d:any)=>Number(d.x2))
         .attr('y1', (d:any)=>priceLineY(y, Number(d.price)))
         .attr('y2', (d:any)=>priceLineY(y, Number(d.price)))
         .attr('stroke', draftColor)
@@ -8235,9 +8320,9 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     const dateBubble = crossG.append('g').attr('class','dateBubble');
     dateBubble.append('rect').attr('y',height-margin.bottom+18).attr('width',118).attr('height',26).attr('rx',7).attr('fill','rgba(2,6,23,.92)').attr('stroke','rgba(255,191,47,.65)').attr('stroke-width',1.2);
     dateBubble.append('text').attr('y',height-margin.bottom+35).attr('text-anchor','middle').attr('fill','#ffdf76').attr('font-size',12).attr('font-weight',900);
-    const ohlcBubble = crossG.append('g').attr('class','ohlcBubble');
-    ohlcBubble.append('rect').attr('width',220).attr('height',24).attr('rx',7).attr('fill','rgba(2,6,23,.88)').attr('stroke','rgba(148,163,184,.35)').attr('stroke-width',1);
-    ohlcBubble.append('text').attr('x',110).attr('y',16).attr('text-anchor','middle').attr('fill','#e2e8f0').attr('font-size',11).attr('font-weight',800);
+    const candleDateBubble = crossG.append('g').attr('class','candleDateBubble');
+    candleDateBubble.append('rect').attr('width',160).attr('height',26).attr('rx',7).attr('fill','rgba(2,6,23,.92)').attr('stroke','rgba(255,191,47,.65)').attr('stroke-width',1.2);
+    candleDateBubble.append('text').attr('x',80).attr('y',17).attr('text-anchor','middle').attr('fill','#ffdf76').attr('font-size',12).attr('font-weight',900);
 
     const paintCrosshair = (snap: CrosshairSnap) => {
       const c = snap.candle;
@@ -8263,11 +8348,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       crossG.select('.dateBubble rect').attr('width', dateW);
       crossG.select('.dateBubble').attr('transform', `translate(${dateX - dateW / 2}, 0)`);
       crossG.select('.dateBubble text').attr('x', dateW / 2).text(snap.dateText);
-      const ohlcText = `O ${c.open.toFixed(2)}  H ${c.high.toFixed(2)}  L ${c.low.toFixed(2)}  C ${c.close.toFixed(2)}`;
-      const ohlcW = Math.max(220, ohlcText.length * 6.4 + 16);
-      crossG.select('.ohlcBubble rect').attr('width', ohlcW);
-      crossG.select('.ohlcBubble').attr('transform', `translate(${Math.max(margin.left + 6, Math.min(margin.left + innerW - ohlcW - 6, snap.cx - ohlcW / 2))}, ${margin.top + 8})`);
-      crossG.select('.ohlcBubble text').attr('x', ohlcW / 2).text(ohlcText);
+      const topDateW = Math.max(140, snap.dateText.length * 7.4 + 20);
+      crossG.select('.candleDateBubble rect').attr('width', topDateW);
+      crossG.select('.candleDateBubble').attr('transform', `translate(${Math.max(margin.left + 6, Math.min(margin.left + innerW - topDateW - 6, snap.cx - topDateW / 2))}, ${margin.top + 8})`);
+      crossG.select('.candleDateBubble text').attr('x', topDateW / 2).text(snap.dateText);
     };
 
     const notifyCrosshair = (snap: CrosshairSnap) => {
@@ -8570,8 +8654,8 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     svg.on('wheel.priceZoom', null);
   };
 
-  const savedOverlaysKey = (props.savedRangeOverlays || []).map((r) => `${r.rangeId}:${r.high}:${r.low}:${r.isActive}:${r.isParentContext}`).join('|');
-  const draftOverlayKey = props.draftRangeOverlay?.visible ? `${props.draftRangeOverlay.high}:${props.draftRangeOverlay.low}:${props.draftRangeOverlay.structureLayer}` : '';
+  const savedOverlaysKey = (props.savedRangeOverlays || []).map((r) => `${r.rangeId}:${r.high}:${r.low}:${r.start}:${r.end}:${r.isActive}:${r.isParentContext}`).join('|');
+  const draftOverlayKey = props.draftRangeOverlay?.visible ? `${props.draftRangeOverlay.high}:${props.draftRangeOverlay.low}:${props.draftRangeOverlay.start}:${props.draftRangeOverlay.end}:${props.draftRangeOverlay.structureLayer}` : '';
   const drawingsKey = (props.chartDrawings || []).map((d) => `${d.id}:${d.kind}`).join('|');
 
   useEffect(() => {

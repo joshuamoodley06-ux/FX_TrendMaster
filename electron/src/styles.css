@@ -3483,7 +3483,7 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .mapStudioShell.chartFullscreenActive .structuralMappingDock.compact{
   gap:3px !important;
-  max-width:min(640px,68vw) !important;
+  max-width:min(920px,92vw) !important;
   padding:4px 6px !important;
   border-radius:10px !important;
   background:rgba(2,6,23,.88) !important;
@@ -3496,7 +3496,8 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   top:auto !important;
 }
 .mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .structuralMappingRibbon,
-.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar{
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .quickAnchorBar,
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .chartDrawToolbar{
   background:transparent !important;
   border:none !important;
   padding:0 !important;
@@ -3924,7 +3925,24 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 .fullscreenFitDock{max-width:none;}
 .fullscreenTfDock select{height:30px;border-radius:10px;border:1px solid rgba(148,163,184,.25);background:#07111f;color:#e8eef7;font-weight:900;padding:0 6px;font-size:11px}
 .chartFullscreenMode .d3CandleSvg{height:100%!important;min-height:0!important}
-.chartMapStage{position:relative;width:100%;min-height:420px}
+.chartMapStage{
+  position:relative;
+  width:100%;
+  min-height:420px;
+  display:flex;
+  flex-direction:column;
+}
+.chartMapCanvas{
+  position:relative;
+  flex:1 1 auto;
+  min-height:620px;
+}
+.chartMapCanvas .d3CandleSvg{
+  width:100%;
+  height:100%;
+  min-height:280px;
+  display:block;
+}
 .chartCrosshairHud{
   position:absolute;
   top:10px;
@@ -3946,7 +3964,38 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 }
 .chartCrosshairHud b{color:#ffdf76;font-size:13px}
 .chartCrosshairHud span{color:#cbd5e1}
-.chartMapStage .d3CandleSvg{width:100%;height:620px;display:block}
+.mapStudioShell.chartFullscreenActive .chartMapStage{
+  min-height:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .chartMapCanvas{
+  min-height:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .chartMapCanvas .d3CandleSvg{
+  min-height:0 !important;
+}
+.mapStudioShell.chartFullscreenActive .chartCrosshairHud{
+  top:12px !important;
+  right:12px !important;
+  left:auto !important;
+  z-index:10003 !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .chartDrawToolbar{
+  position:relative !important;
+  z-index:10001 !important;
+  display:flex !important;
+  margin:0 !important;
+  padding:4px 6px !important;
+  border-radius:10px !important;
+  background:transparent !important;
+  border:none !important;
+  backdrop-filter:none !important;
+  max-width:100% !important;
+}
+.mapStudioShell.chartFullscreenActive .structuralMappingDock.compact .chartDrawToolbar button{
+  min-width:28px !important;
+  height:24px !important;
+  font-size:9px !important;
+}
 
 /* Analyst Research View */
 .researchStack{display:flex;flex-direction:column;gap:16px;max-width:1180px}
