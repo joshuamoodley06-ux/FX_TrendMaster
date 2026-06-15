@@ -1,6 +1,6 @@
 {
   "name": "fx-trendmaster-electron",
-  "version": "0.0.10",
+  "version": "0.0.24",
   "private": true,
   "description": "FX TrendMaster Electron cockpit MVP",
   "main": "electron/main.cjs",
@@ -27,13 +27,19 @@
     "productName": "FX TrendMaster Cockpit",
     "icon": "assets/icon.png",
     "directories": {
-      "output": "release"
+      "output": "release-0.0.24"
     },
     "files": [
       "dist/**/*",
       "electron/**/*",
       "assets/**/*",
+      "python_analyst/**/*",
+      "!python_analyst/**/__pycache__/**",
+      "!python_analyst/.pytest_cache/**",
       "package.json"
+    ],
+    "asarUnpack": [
+      "python_analyst/**"
     ],
     "win": {
       "icon": "assets/icon.png",

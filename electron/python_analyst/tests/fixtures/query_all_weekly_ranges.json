@@ -1,0 +1,12 @@
+{
+  "schema_version": "mediator_query_v1",
+  "query_id": "audit_all_weekly_ranges",
+  "symbol": "XAUUSD",
+  "year_labels": ["2019_Q3-2021_Q1"],
+  "structure_layer": "WEEKLY",
+  "question_type": "range_list",
+  "row_limit": 50,
+  "random_sample": false,
+  "include_source_rows": true,
+  "metrics": ["sample_size"]
+}

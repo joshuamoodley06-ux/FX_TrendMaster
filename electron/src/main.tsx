@@ -3,7 +3,27 @@ import * as d3 from 'd3';
 import { createRoot } from 'react-dom/client';
 import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, Map as MapIcon, RefreshCw, Save, Settings, Target, Zap } from 'lucide-react';
 import { buildRawPayloadJson, clearRawCases, createRawCase, exportRawCaseEvents, groupRawDisplayEventsByTimeframe, listRawCases, saveRawEvent } from './rawMapping';
+import { AnalystPage } from './analystPage';
+import {
+  buildMasterCaseName,
+  computeMappingGaps,
+  filterRangesForExplorerMode,
+  type ExplorerMappingMode,
+  type MappingGap,
+} from './mappingWorkflow';
 import brandLogo from '../assets/logo.png';
+import {
+  CHART_DRAWING_COLORS,
+  type ChartDrawTool,
+  type ChartDrawing,
+  loadChartDrawings,
+  loadReplayCursorForKey,
+  newDrawingId,
+  normalizeHLineDrawing,
+  normalizeVLineDrawing,
+  saveChartDrawings,
+  saveReplayCursorForKey,
+} from './chartDrawings';
 import './styles.css';
 
 const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
@@ -226,6 +246,8 @@ function App() {
   const [active, setActive] = useState<any>(null);
   const [journal, setJournal] = useState<any[]>([]);
   const [status, setStatus] = useState<any>(null);
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [ohlcStatus, setOhlcStatus] = useState<any>(null);
   const [journalSummary, setJournalSummary] = useState<any>(null);
   const [structuredJournal, setStructuredJournal] = useState<any>(null);
   const [detailedJournal, setDetailedJournal] = useState<any>(null);
@@ -244,7 +266,7 @@ function App() {
   const load = async () => {
     setError('');
     try {
-      const [s, a, j, db, brainSnap, journalReport, structuredReport, detailedReport] = await Promise.all([
+      const [s, a, j, db, brainSnap, journalReport, structuredReport, detailedReport, candleStatus] = await Promise.all([
         fetch(`${BASE_URL}/state?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()),
         fetch(`${BASE_URL}/trade/active?symbol=${encodeURIComponent(symbol)}&account=challenge`).then(r => r.json()).catch(() => null),
         fetch(`${BASE_URL}/sql/trades/recent?limit=12`).then(r => r.json()).catch(() => ({ trades: [] })),
@@ -253,9 +275,13 @@ function App() {
         fetch(`${BASE_URL}/api/v1/journal/report/summary?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
         fetch(`${BASE_URL}/api/v1/journal/report/recent?symbol=${encodeURIComponent(symbol)}&limit=50`).then(r => r.json()).catch(() => null),
         fetch(`${BASE_URL}/api/v1/journal/trades/detailed?symbol=${encodeURIComponent(symbol)}&limit=50`).then(r => r.json()).catch(() => null),
+        fetch(`${BASE_URL}/api/v1/candles/status`).then(r => r.json()).catch(() => null),
       ]);
-      setState(s); setActive(a); setJournal(j.trades || j.rows || []); setStatus(db); setBrain(brainSnap); setJournalSummary(journalReport); setStructuredJournal(structuredReport); setDetailedJournal(detailedReport); setLastRefresh(new Date().toLocaleTimeString());
-    } catch (e: any) { setError(e?.message || 'Could not reach backend'); }
+      setState(s); setActive(a); setJournal(j.trades || j.rows || []); setStatus(db); setBrain(brainSnap); setJournalSummary(journalReport); setStructuredJournal(structuredReport); setDetailedJournal(detailedReport);
+      setApiOnline(!!(candleStatus?.ok || s?.symbol));
+      setOhlcStatus(candleStatus?.ok ? candleStatus : null);
+      setLastRefresh(new Date().toLocaleTimeString());
+    } catch (e: any) { setApiOnline(false); setError(e?.message || 'Could not reach backend'); }
   };
 
   useEffect(() => { load(); const t = setInterval(load, 7000); return () => clearInterval(t); }, [symbol]);
@@ -323,12 +349,12 @@ function App() {
         <NavItem icon={<Target size={18}/>} label="Lifecycle Catch-Up" page="brain" active={page==='brain'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<Zap size={18}/>} label="Live Trade" page="live" active={page==='live'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<BookOpen size={18}/>} label="Journal" page="journal" active={page==='journal'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<Database size={18}/>} label="Data Collection" page="data" active={page==='data'} collapsed={collapsed} setPage={setPage}/>
+        <NavItem icon={<Database size={18}/>} label="Data Collection Statistics" page="data" active={page==='data'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<BookOpen size={18}/>} label="Historical Builder" page="historical" active={page==='historical'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<Settings size={18}/>} label="Display Settings" page="settings" active={page==='settings'} collapsed={collapsed} setPage={setPage}/>
         <NavItem icon={<Database size={18}/>} label="SQL" page="sql" active={page==='sql'} collapsed={collapsed} setPage={setPage}/>
       </div>
-      {!collapsed && <div className="sidebarFooter"><p className="muted">API</p><p className="apiText">{BASE_URL}</p><div className="statusDot"><span className={status?.ok ? 'dot online' : 'dot offline'} />{status?.ok ? 'SQL Online' : 'Checking SQL'}</div></div>}
+      {!collapsed && <div className="sidebarFooter"><p className="muted">API</p><p className="apiText">{BASE_URL}</p><div className="statusDot"><span className={`dot ${apiOnline ? 'online' : 'offline'}`} />{apiOnline ? 'VPS Online' : apiOnline === false ? 'VPS Offline' : 'Checking VPS…'}</div>{apiOnline && ohlcStatus?.candles != null && <p className="sidebarInfo">OHLC ledger: {Number(ohlcStatus.candles).toLocaleString()} candles in market_memory.db</p>}{apiOnline && <p className="sidebarInfo">Raw mapping ledger: raw_mapping_v159.db (Python reads this + OHLC)</p>}{status?.ok === false && apiOnline && <p className="sidebarInfo sidebarInfoOptional">Trade SQL journal not deployed — optional, not used for mapping.</p>}</div>}
     </aside>
     <main className="mainArea">
       <header className="topbar">
@@ -367,7 +393,7 @@ function App() {
       {page === 'brain' && <section className="singlePage"><LifecycleCatchUpWizard symbol={symbol} onSaved={load} /></section>}
       {page === 'live' && <section className="singlePage"><LiveTradePanel large data={active} idea={pickedIdea}/></section>}
       {page === 'journal' && <section className="singlePage"><JournalPage rows={journal} summary={journalSummary} structured={structuredJournal} detailed={detailedJournal}/></section>}
-      {page === 'data' && <section className="singlePage"><DataCollectionPage /></section>}
+      {page === 'data' && <section className="singlePage"><AnalystPage /></section>}
       {page === 'historical' && <section className="singlePage"><HistoricalLifecycleBuilder symbol={symbol} visuals={visualsSafe} /></section>}
       {page === 'sql' && <section className="singlePage"><SqlPage status={status} journal={journal} summary={journalSummary} structured={structuredJournal}/></section>}
       {page === 'settings' && <section className="singlePage"><GraphSettings visuals={visualsSafe} setVisuals={setVisuals} updateVisual={updateVisual} localSave={localSave} saveMapsToBackend={saveMapsToBackend} loadMapsFromBackend={loadMapsFromBackend}/></section>}
@@ -382,12 +408,27 @@ type Candle = { symbol:string; timeframe:string; time:string; open:number; high:
 type MapEvent = { id:string; event_type:string; event_name?:string; time?:string; price:number; zone?:string; zone_percent?:number; notes?:string; candle_open?:number; candle_high?:number; candle_low?:number; candle_close?:number; source?:'map'|'seed'|'auto'|'candidate'|'manual'; primitive?:string; derived_event_code?:string; movement_rule?:string; range_status_after?:string; engine_source?:string; logic_version?:string; candidate_id?:string; confidence?:string; candidate_status?:'ACCEPTED'|'REJECTED'|'EDITED'|'CANDIDATE'; meta_json?:any; structural_event?:string; layer?:string; parent_timeframe?:string; range_id?:any; active_range_id?:any; parent_range_id?:any; old_range_id?:any; new_range_id?:any; raw_event_id?:string };
 
 type StructureLayer = 'MACRO'|'WEEKLY'|'DAILY'|'INTRADAY'|'MICRO';
+type RangeScope = 'MAJOR' | 'MINOR';
 const STRUCTURE_LAYERS: StructureLayer[] = ['MACRO', 'WEEKLY', 'DAILY', 'INTRADAY', 'MICRO'];
+const RANGE_SCOPES: RangeScope[] = ['MAJOR', 'MINOR'];
 const STRUCTURE_LAYER_CHIP: Record<StructureLayer, string> = {
   MACRO: 'M', WEEKLY: 'W', DAILY: 'D', INTRADAY: 'I', MICRO: 'µ',
 };
 function defaultSourceTimeframeForStructureLayer(layer: StructureLayer): string {
   return ({ MACRO:'MN1', WEEKLY:'W1', DAILY:'D1', INTRADAY:'H1', MICRO:'M15' } as Record<StructureLayer,string>)[layer] || 'D1';
+}
+function defaultChartTimeframeForStructureLayer(layer: StructureLayer): string {
+  return defaultSourceTimeframeForStructureLayer(layer);
+}
+function allowedChartTimeframesForStructureLayer(layer: StructureLayer): string[] {
+  if (layer === 'MACRO') return ['MN1', 'W1'];
+  if (layer === 'WEEKLY') return ['W1'];
+  if (layer === 'DAILY') return ['D1'];
+  if (layer === 'INTRADAY') return ['H4', 'H1'];
+  return ['M15', 'M5'];
+}
+function isChartTimeframeAllowedForLayer(chartTf: string, layer: StructureLayer): boolean {
+  return allowedChartTimeframesForStructureLayer(layer).includes(String(chartTf || '').toUpperCase());
 }
 function expectedParentStructureLayer(layer: StructureLayer): StructureLayer | null {
   const idx = STRUCTURE_LAYERS.indexOf(layer);
@@ -440,17 +481,31 @@ function formatExplorerRangeSpan(range: any): string {
   if (end === 'ACTIVE') return `${start} → ACTIVE`;
   return `${start} → ${end}`;
 }
+function normalizeRangeScope(value: any): RangeScope {
+  const scope = String(value || 'MAJOR').toUpperCase();
+  return scope === 'MINOR' ? 'MINOR' : 'MAJOR';
+}
+function isRangeMajor(range: any): boolean {
+  return normalizeRangeScope(range?.range_scope) === 'MAJOR';
+}
+function formatRangeLayerScopeLabel(range: any): string {
+  const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const scope = normalizeRangeScope(range?.range_scope);
+  const id = range?.range_id || range?.id || '?';
+  return `${layer} ${scope} #${id}`;
+}
 function formatExplorerRowLines(range: any, directChildCount: number): { line1: string; line2: string; spanNote: string | null } {
   const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const scope = normalizeRangeScope(range?.range_scope);
   const id = range?.range_id || range?.id || '?';
   const statusPart = rangeStatusDirectionLabel(range);
-  const childLabel = directChildCountLabel(layer as StructureLayer);
+  const childLabel = scope === 'MAJOR' ? directChildCountLabel(layer as StructureLayer) : null;
   const high = Number(range?.range_high_price ?? range?.range_high);
   const low = Number(range?.range_low_price ?? range?.range_low);
   const rh = Number.isFinite(high) ? high.toFixed(2) : '?';
   const rl = Number.isFinite(low) ? low.toFixed(2) : '?';
   return {
-    line1: childLabel ? `${layer} #${id} · ${directChildCount} ${childLabel}` : `${layer} #${id}`,
+    line1: childLabel ? `${layer} ${scope} #${id} · ${directChildCount} ${childLabel}` : `${layer} ${scope} #${id}`,
     line2: `${formatExplorerRangeSpan(range)} | ${statusPart} · RH ${rh} / RL ${rl}`,
     spanNote: rangeCrossYearSpanNote(range),
   };
@@ -461,18 +516,33 @@ function filterRangesForExplorerYear(ranges: any[], yearFilter: string): any[] {
   if (!Number.isFinite(year)) return safeArray(ranges);
   return safeArray(ranges).filter((r:any) => rangeYearBucket(r) === year);
 }
-function structureLayerRequiresParentConfirmation(layer: StructureLayer): boolean {
+function structureLayerRequiresParentConfirmation(layer: StructureLayer, rangeScope: RangeScope = 'MAJOR'): boolean {
+  if (rangeScope === 'MINOR') return true;
   return layer === 'DAILY' || layer === 'INTRADAY' || layer === 'MICRO';
 }
-function parentRangeIdForStructureLayer(layer: StructureLayer, selectedParentRangeId: string): string | null {
+function parentRangeIdForStructureLayer(layer: StructureLayer, rangeScope: RangeScope, selectedParentRangeId: string): string | null {
+  if (rangeScope === 'MAJOR' && layer === 'MACRO') return null;
+  if (rangeScope === 'MINOR') return selectedParentRangeId || null;
   if (layer === 'MACRO') return null;
   return selectedParentRangeId || null;
 }
 
-function parentLayerCandidates(layer: StructureLayer, savedRanges: any[]): any[] {
+function parentLayerCandidates(layer: StructureLayer, savedRanges: any[], rangeScope: RangeScope = 'MAJOR'): any[] {
+  if (rangeScope === 'MINOR') {
+    return safeArray(savedRanges).filter((r:any) =>
+      normalizeStructureLayer(r.structure_layer || r.layer) === layer && isRangeMajor(r),
+    );
+  }
   const parentLayer = expectedParentStructureLayer(layer);
   if (!parentLayer) return [];
-  return safeArray(savedRanges).filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === parentLayer);
+  return safeArray(savedRanges).filter((r:any) =>
+    normalizeStructureLayer(r.structure_layer || r.layer) === parentLayer && isRangeMajor(r),
+  );
+}
+
+function parentTargetLayerLabel(layer: StructureLayer, rangeScope: RangeScope): string {
+  if (rangeScope === 'MINOR') return `${layer} MAJOR`;
+  return expectedParentStructureLayer(layer) || 'none';
 }
 
 type ParentResolveMode =
@@ -588,6 +658,7 @@ function rangeStatusDirectionLabel(range: any): string {
 function formatStructuralRangeOptionLabel(range: any): string {
   const id = range?.range_id || range?.id || '?';
   const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const scope = normalizeRangeScope(range?.range_scope);
   const start = rangeLabelStartDate(range);
   const end = rangeLabelEndDate(range);
   const statusPart = rangeStatusDirectionLabel(range);
@@ -598,12 +669,13 @@ function formatStructuralRangeOptionLabel(range: any): string {
   const pricePart = Number.isFinite(lowN) && Number.isFinite(highN)
     ? `${lowN.toFixed(2)} → ${highN.toFixed(2)}`
     : `${low} → ${high}`;
-  return `#${id} ${layer} | ${start} → ${end} | ${statusPart} | ${pricePart}`;
+  return `#${id} ${layer} ${scope} | ${start} → ${end} | ${statusPart} | ${pricePart}`;
 }
 
 function formatStructuralRangeDisplayLines(range: any, savedRanges: any[]): { line1: string; line2: string; parentLine?: string } {
   const id = range?.range_id || range?.id || '?';
   const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const scope = normalizeRangeScope(range?.range_scope);
   const start = rangeLabelStartDate(range);
   const end = rangeLabelEndDate(range);
   const statusPart = rangeStatusDirectionLabel(range);
@@ -612,14 +684,15 @@ function formatStructuralRangeDisplayLines(range: any, savedRanges: any[]): { li
   const pricePart = Number.isFinite(low) && Number.isFinite(high)
     ? `${low.toFixed(2)} → ${high.toFixed(2)}`
     : '—';
-  const line1 = `#${id} ${layer} | ${start} → ${end} | ${statusPart}`;
+  const line1 = `#${id} ${layer} ${scope} | ${start} → ${end} | ${statusPart}`;
   const line2 = pricePart;
   let parentLine: string | undefined;
   const parentId = range?.parent_range_id;
   if (parentId !== null && parentId !== undefined && String(parentId) !== '') {
     const parent = safeArray(savedRanges).find((r:any) => String(r.range_id || r.id) === String(parentId));
     const parentLayer = parent ? (normalizeStructureLayer(parent.structure_layer || parent.layer) || 'Parent') : 'Parent';
-    parentLine = `Parent: ${parentLayer} #${parentId}`;
+    const parentScope = parent ? normalizeRangeScope(parent.range_scope) : 'MAJOR';
+    parentLine = `Parent: ${parentLayer} ${parentScope} #${parentId}`;
   }
   return { line1, line2, parentLine };
 }
@@ -631,6 +704,7 @@ function formatHierarchyTreeRowLabel(range: any): string {
 
 function formatHierarchyTreeRowLines(range: any): { line1: string; line2: string } {
   const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
+  const scope = normalizeRangeScope(range?.range_scope);
   const id = range?.range_id || range?.id || '?';
   const start = rangeLabelStartDate(range);
   const end = rangeLabelEndDate(range);
@@ -644,7 +718,7 @@ function formatHierarchyTreeRowLines(range: any): { line1: string; line2: string
     ? ` · Parent #${parentId}`
     : '';
   return {
-    line1: `${layer} #${id} | ${start} → ${end} | ${statusPart}`,
+    line1: `${layer} ${scope} #${id} | ${start} → ${end} | ${statusPart}`,
     line2: `RH ${rh} / RL ${rl}${parentSuffix}`,
   };
 }
@@ -670,11 +744,31 @@ function compareRangesByStartDate(a: any, b: any): number {
   return aMs - bMs || String(a?.range_id || a?.id).localeCompare(String(b?.range_id || b?.id));
 }
 
+function visibleStructuralRanges(rows: any[]): any[] {
+  return safeArray(rows).filter((r:any) => String(r.status || '').toUpperCase() !== 'ARCHIVED');
+}
+
+function latestSavedRangeForLayer(layer: StructureLayer, ranges: any[], preferredId?: string, majorOnly = false): any | null {
+  const all = safeArray(ranges);
+  const layerMatch = (r: any) => {
+    if (normalizeStructureLayer(r.structure_layer || r.layer) !== layer) return false;
+    return !majorOnly || isRangeMajor(r);
+  };
+  if (preferredId) {
+    const preferred = all.find((r:any) => String(r.range_id || r.id) === String(preferredId));
+    if (preferred && layerMatch(preferred)) return preferred;
+  }
+  const layerRanges = all.filter(layerMatch).sort(compareRangesByStartDate);
+  return layerRanges.length ? layerRanges[layerRanges.length - 1] : null;
+}
+
 function buildCaseHierarchyForest(ranges: any[]): { roots: CaseHierarchyTreeNode[]; orphans: any[] } {
   const nodes = safeArray(ranges);
   const byId = new Map(nodes.map((r:any) => [String(r.range_id || r.id), r]));
-  const macroRanges = nodes.filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO');
-  const hasMacro = macroRanges.length > 0;
+  const macroMajors = nodes.filter((r:any) =>
+    normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO' && isRangeMajor(r),
+  );
+  const hasMacro = macroMajors.length > 0;
   const visited = new Set<string>();
 
   const buildTree = (r: any, depth: number): CaseHierarchyTreeNode => {
@@ -688,10 +782,11 @@ function buildCaseHierarchyForest(ranges: any[]): { roots: CaseHierarchyTreeNode
   };
 
   const rootCandidates = hasMacro
-    ? macroRanges
+    ? macroMajors
     : nodes.filter((r:any) => {
         const pid = r.parent_range_id;
-        return pid === null || pid === undefined || String(pid) === '' || !byId.has(String(pid));
+        const isOrphanLink = pid === null || pid === undefined || String(pid) === '' || !byId.has(String(pid));
+        return isOrphanLink && isRangeMajor(r);
       });
 
   const roots = rootCandidates.sort(compareRangesByStartDate).map((r:any) => buildTree(r, 0));
@@ -961,12 +1056,23 @@ function candleTimeDate(value?: string | null): Date {
 }
 
 function buildCandleFetchUrl(symbol: string, tf: string, window?: { start?: string; end?: string } | null, refresh = false) {
-  const params = new URLSearchParams({ symbol, timeframe: tf, limit: '12000' });
+  const params = new URLSearchParams({ symbol, timeframe: tf, limit: '8000' });
   if (window?.start) params.set('start', window.start);
   // Do not pass date-only end — SQL string compare treats 2026.06.04 as > 2026.06.12.
   // History tail is bounded by limit DESC; replay trims client-side.
   if (refresh) params.set('refresh', '1');
   return `${BASE_URL}/api/v1/candles?${params.toString()}`;
+}
+
+async function fetchJsonWithTimeout(url: string, timeoutMs = 45000): Promise<any> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return await response.json();
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function parseCandleRows(raw: any[]): Candle[] {
@@ -1039,6 +1145,7 @@ function structuralRangeDateFields(
 
 function resolveParentRangeIdForSave(
   layer: StructureLayer,
+  rangeScope: RangeScope,
   selectedParentRangeId: string,
   savedRanges: any[],
   childSpan?: {
@@ -1049,16 +1156,16 @@ function resolveParentRangeIdForSave(
     range_end_time?: string | null;
   },
 ): ParentResolveResult {
-  const parentLayer = expectedParentStructureLayer(layer);
+  const parentLayer = rangeScope === 'MINOR' ? layer : expectedParentStructureLayer(layer);
   if (!parentLayer) {
     return { parentId: null, error: null, autoSelected: false, mode: 'none', matchIds: [], orphanWarning: null };
   }
 
-  const candidates = parentLayerCandidates(layer, savedRanges);
+  const candidates = parentLayerCandidates(layer, savedRanges, rangeScope);
   if (!candidates.length) {
-    const orphanWarning = layer === 'WEEKLY'
+    const orphanWarning = layer === 'WEEKLY' && rangeScope === 'MAJOR'
       ? null
-      : `No ${parentLayer} ranges in case. ${layer} will save as orphan.`;
+      : `No ${parentLayer} MAJOR ranges in case. ${layer} ${rangeScope} will save as orphan.`;
     return { parentId: null, error: null, autoSelected: false, mode: 'no_match', matchIds: [], orphanWarning };
   }
 
@@ -1086,7 +1193,7 @@ function resolveParentRangeIdForSave(
   if (childTimesMs.length && dateMatches.length > 1) {
     return {
       parentId: null,
-      error: `Multiple ${parentLayer} parents match this date span. Select parent manually.`,
+      error: `Multiple ${parentLayer} MAJOR parents match this date span. Select parent manually.`,
       autoSelected: false,
       mode: 'multiple_matches',
       matchIds: dateMatches.map((r:any) => String(r.range_id || r.id)),
@@ -1095,9 +1202,9 @@ function resolveParentRangeIdForSave(
   }
 
   if (childTimesMs.length && dateMatches.length === 0) {
-    const orphanWarning = layer === 'WEEKLY'
-      ? `No ${parentLayer} parent contains this date span. Weekly may save as orphan.`
-      : `No ${parentLayer} parent contains this date span. ${layer} orphan requires confirmation.`;
+    const orphanWarning = layer === 'WEEKLY' && rangeScope === 'MAJOR'
+      ? `No ${parentLayer} MAJOR parent contains this date span. Weekly may save as orphan.`
+      : `No ${parentLayer} MAJOR parent contains this date span. ${layer} ${rangeScope} orphan requires confirmation.`;
     return { parentId: null, error: null, autoSelected: false, mode: 'no_match', matchIds: [], orphanWarning };
   }
 
@@ -1109,7 +1216,7 @@ function resolveParentRangeIdForSave(
   if (!childTimesMs.length && candidates.length > 1) {
     return {
       parentId: null,
-      error: `Set RH/RL dates or select ${parentLayer} parent before saving ${layer} range.`,
+      error: `Set RH/RL dates or select ${parentLayer} MAJOR parent before saving ${layer} ${rangeScope} range.`,
       autoSelected: false,
       mode: 'multiple_matches',
       matchIds: candidates.map((r:any) => String(r.range_id || r.id)),
@@ -1119,7 +1226,7 @@ function resolveParentRangeIdForSave(
 
   return {
     parentId: null,
-    error: `Select ${parentLayer} parent before saving ${layer} range.`,
+    error: `Select ${parentLayer} MAJOR parent before saving ${layer} ${rangeScope} range.`,
     autoSelected: false,
     mode: 'multiple_matches',
     matchIds: candidates.map((r:any) => String(r.range_id || r.id)),
@@ -1161,10 +1268,11 @@ function chartLayerMismatchWarning(chartTf: string, mappingLayer: StructureLayer
   if (mappingLayer === 'MACRO') {
     const macroSources = sourceTimeframeOptionsForLayer('MACRO');
     if (macroSources.includes(sourceTfUpper) && chartTfUpper === sourceTfUpper) return '';
+    if (isChartTimeframeAllowedForLayer(chartTfUpper, 'MACRO')) return '';
   }
-  const chart = chartStructureForTimeframeStatic(chartTf);
-  if (chart.structure_layer === mappingLayer) return '';
-  return `You are viewing ${chartTf} candles but saving a ${mappingLayer} range.`;
+  if (isChartTimeframeAllowedForLayer(chartTfUpper, mappingLayer)) return '';
+  const expected = allowedChartTimeframesForStructureLayer(mappingLayer).join(' or ');
+  return `Chart is ${chartTfUpper} but scope is ${mappingLayer}. Switch chart to ${expected} to plot RH/RL.`;
 }
 function chartStructureForTimeframeStatic(tfRaw:string) {
   const tf = String(tfRaw || 'D1').toUpperCase();
@@ -1180,6 +1288,7 @@ function chartStructureForTimeframeStatic(tfRaw:string) {
 type SavedRangeChartLine = {
   rangeId: string;
   structureLayer: StructureLayer;
+  rangeScope: RangeScope;
   status: string;
   high: number;
   low: number;
@@ -1226,6 +1335,7 @@ function structuralRangeToChartLine(
   return {
     rangeId,
     structureLayer: layer,
+    rangeScope: normalizeRangeScope(r.range_scope),
     status: String(r.status || 'ACTIVE').toUpperCase(),
     high: hi,
     low: lo,
@@ -1241,6 +1351,7 @@ function structureLayerRank(layer: StructureLayer): number {
 }
 
 type StructuralAnchor = { price:string; time:string; candle?:Candle|null };
+type LayerAnchorPair = { rh: StructuralAnchor; rl: StructuralAnchor };
 type StructuralRange = {
   range_id?:number|string;
   id?:number|string;
@@ -1250,6 +1361,7 @@ type StructuralRange = {
   chart_timeframe?:string;
   source_timeframe?:string;
   parent_range_id?:number|string|null;
+  range_scope?:string;
   parent_link_status?:string;
   range_high_price?:number|string|null;
   range_low_price?:number|string|null;
@@ -2001,7 +2113,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [message, setMessage] = useState('D3 Map Canvas ready. Click Candle mode lets you mark Range H/L, reference highs/lows, BOS and sweeps without wrestling tiny handles.');
   const [loading, setLoading] = useState(false);
   const [candleFeedStatus, setCandleFeedStatus] = useState<any>(null);
-  const [toolMode, setToolMode] = useState<'inspect'|'plot'|'drag'|'range'|'select'>('inspect');
+  const [toolMode, setToolMode] = useState<'inspect'|'plot'|'drag'|'range'|'select'|'scrub'>('select');
   const [scaleMode, setScaleMode] = useState<'auto'|'range'>('auto');
   const [cursor, setCursor] = useState<{time?:string; price?:number; zone?:string; pct?:number; ohlc?:Candle|null}|null>(null);
   const [candleMenu, setCandleMenu] = useState<{x:number;y:number;candle:Candle;price:number}|null>(null);
@@ -2083,9 +2195,19 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [candleReplayIndex, setCandleReplayIndex] = useState(0);
   // v087.22: one master replay cursor time drives every timeframe. W1 back one candle should
   // hide all D1/H1/M15 candles newer than that weekly timestamp, otherwise replay leaks future data.
-  const [candleReplayCursorTime, setCandleReplayCursorTime] = useLocalStorage<string|null>('fx_tm_replay_cursor_time_v087_22', null);
+  const [replayCursorByKey, setReplayCursorByKey] = useLocalStorage<Record<string, string>>('fx_tm_replay_cursor_by_case_v1', {});
   const [candleReplayPlaying, setCandleReplayPlaying] = useState(false);
   const [candleReplaySpeedMs, setCandleReplaySpeedMs] = useState(550);
+  const [replayStartMenuOpen, setReplayStartMenuOpen] = useState(false);
+  const [replaySelectBarMode, setReplaySelectBarMode] = useState(false);
+  const REPLAY_SPEED_OPTIONS = [
+    { label: '1x', ms: 550 },
+    { label: '2x', ms: 275 },
+    { label: '3x', ms: 183 },
+    { label: '5x', ms: 110 },
+    { label: '10x', ms: 55 },
+  ];
+  const replaySpeedLabel = REPLAY_SPEED_OPTIONS.find((o) => o.ms === candleReplaySpeedMs)?.label ?? '1x';
   const [seedName, setSeedName] = useState('XAUUSD Case');
   const [seedNotes, setSeedNotes] = useState('');
   const [seedAnchors, setSeedAnchors] = useState<any>({});
@@ -2135,11 +2257,28 @@ function MapStudio({ symbol }: { symbol:string }) {
     return params;
   };
   const cameraKey = `${activeCaseDisplayId || 'global'}_${timeframe}`;
+  const chartDrawingsKey = cameraKey;
+  const candleReplayCursorTime = replayCursorByKey[chartDrawingsKey] ?? null;
+  const setCandleReplayCursorTime = (time: string | null) => {
+    setReplayCursorByKey((prev) => {
+      const next = { ...prev };
+      if (time) next[chartDrawingsKey] = time;
+      else delete next[chartDrawingsKey];
+      return next;
+    });
+    if (time) saveReplayCursorForKey(chartDrawingsKey, time);
+    else saveReplayCursorForKey(chartDrawingsKey, null);
+  };
+  const [chartDrawings, setChartDrawings] = useState<ChartDrawing[]>([]);
+  const [chartDrawTool, setChartDrawTool] = useState<ChartDrawTool>('off');
+  const [chartDrawColor, setChartDrawColor] = useState<string>(CHART_DRAWING_COLORS[0]);
+  const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
   const lockedCameraDomain = cameraDomainByCaseTf[cameraKey] || null;
   const caseSaveInFlightRef = useRef<Set<string>>(new Set());
   const [bundleSaving, setBundleSaving] = useState(false);
   const [rawMarkSaving, setRawMarkSaving] = useState(false);
   const [structureLayer, setStructureLayer] = useLocalStorage<StructureLayer>('fx_tm_structure_layer_phase3', 'WEEKLY');
+  const [rangeScope, setRangeScope] = useLocalStorage<RangeScope>('fx_tm_range_scope_v1', 'MAJOR');
   const [sourceTimeframe, setSourceTimeframe] = useLocalStorage<string>('fx_tm_structure_source_tf_phase3', 'W1');
   const [structuralSaving, setStructuralSaving] = useState(false);
   const [structuralRanges, setStructuralRanges] = useState<StructuralRange[]>([]);
@@ -2149,6 +2288,10 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
   const [rhAnchor, setRhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [rlAnchor, setRlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
+  const [structuralAnchorsByLayer, setStructuralAnchorsByLayer] = useLocalStorage<Partial<Record<StructureLayer, LayerAnchorPair>>>(
+    'fx_tm_structural_anchors_by_layer_v1',
+    {},
+  );
   const [bhAnchor, setBhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [blAnchor, setBlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [quickEventSaving, setQuickEventSaving] = useState(false);
@@ -2165,6 +2308,11 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [hierarchyShowChildren, setHierarchyShowChildren] = useLocalStorage<boolean>('fx_tm_hierarchy_show_children_v1', false);
   const [hierarchyShowAll, setHierarchyShowAll] = useLocalStorage<boolean>('fx_tm_hierarchy_show_all_v1', false);
   const [hierarchyCollapsedIds, setHierarchyCollapsedIds] = useState<string[]>([]);
+  const [explorerMappingMode, setExplorerMappingMode] = useLocalStorage<ExplorerMappingMode>(
+    'fx_tm_explorer_mapping_mode_v1',
+    'htf',
+  );
+  const [gapQueueOpen, setGapQueueOpen] = useLocalStorage<boolean>('fx_tm_gap_queue_open_v1', true);
   const [explorerYearFilter, setExplorerYearFilter] = useLocalStorage<string>('fx_tm_explorer_year_v1', 'all');
   const [caseMetadataOpen, setCaseMetadataOpen] = useState(false);
   const [hierarchyAudit, setHierarchyAudit] = useState<any>(null);
@@ -2482,20 +2630,51 @@ function MapStudio({ symbol }: { symbol:string }) {
   };
 
   const activeParentRangeOverlay = useMemo<ParentRangeOverlayLine[]>(() => {
-    const parentTf = parentTimeframeFor(timeframe);
-    if (!parentTf || parentTf === timeframe) return [];
-    const parentRange = rangeByTf[parentTf] || {};
-    const parentWindow = rangeWindowByTf[parentTf] || {};
-    const hi = parseNum(parentRange.high || (parentTf === 'W1' ? seedAnchors.case_high || seedAnchors.weekly_high : ''));
-    const lo = parseNum(parentRange.low || (parentTf === 'W1' ? seedAnchors.case_low || seedAnchors.weekly_low : ''));
+    const parentLayer = expectedParentStructureLayer(structureLayer);
+    if (!parentLayer) return [];
+    const parentRange = latestSavedRangeForLayer(
+      parentLayer,
+      savedStructuralRanges,
+      selectedParentRangeId || undefined,
+    );
+    let hi = NaN;
+    let lo = NaN;
+    let start = '';
+    let end = '';
+    let parentTf = defaultSourceTimeframeForStructureLayer(parentLayer);
+    if (parentRange) {
+      hi = Number(parentRange.range_high_price ?? parentRange.range_high);
+      lo = Number(parentRange.range_low_price ?? parentRange.range_low);
+      start = String(parentRange.range_start_time || parentRange.range_high_time || '');
+      end = String(parentRange.range_end_time || parentRange.range_low_time || '');
+      parentTf = String(parentRange.chart_timeframe || parentRange.source_timeframe || parentTf).toUpperCase();
+    } else {
+      const anchors = structuralAnchorsByLayer[parentLayer];
+      hi = parseNum(anchors?.rh?.price);
+      lo = parseNum(anchors?.rl?.price);
+      start = String(anchors?.rh?.time || '');
+      end = String(anchors?.rl?.time || '');
+    }
+    if (!Number.isFinite(hi) || !Number.isFinite(lo)) {
+      const chartParentTf = parentTimeframeFor(timeframe);
+      if (chartParentTf && chartParentTf !== timeframe) {
+        const parentRangeByTf = rangeByTf[chartParentTf] || {};
+        const parentWindow = rangeWindowByTf[chartParentTf] || {};
+        hi = parseNum(parentRangeByTf.high || (chartParentTf === 'W1' ? seedAnchors.case_high || seedAnchors.weekly_high : ''));
+        lo = parseNum(parentRangeByTf.low || (chartParentTf === 'W1' ? seedAnchors.case_low || seedAnchors.weekly_low : ''));
+        start = start || String(parentWindow.start || '');
+        end = end || String(parentWindow.end || '');
+        parentTf = chartParentTf;
+      }
+    }
     const direction = safeArray<any>(eventsByTf[parentTf] || [])
       .map((e:any)=>String(e?.event_type || e?.derived_event_code || '').toUpperCase())
       .find((x:string)=>x.includes('BOS_UP') || x.includes('BOS_DOWN') || x === 'BOS_UP' || x === 'BOS_DOWN') || '';
     const out:ParentRangeOverlayLine[] = [];
-    if (Number.isFinite(hi)) out.push({ timeframe:parentTf, kind:'high', price:Number(hi), label:`${parentTf} High`, direction, start:parentWindow.start, end:parentWindow.end });
-    if (Number.isFinite(lo)) out.push({ timeframe:parentTf, kind:'low', price:Number(lo), label:`${parentTf} Low`, direction, start:parentWindow.start, end:parentWindow.end });
+    if (Number.isFinite(hi)) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'high', price:Number(hi), label:`${parentLayer} RH`, direction, start, end, rangeId: parentRange ? (parentRange.range_id || parentRange.id) : null });
+    if (Number.isFinite(lo)) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'low', price:Number(lo), label:`${parentLayer} RL`, direction, start, end, rangeId: parentRange ? (parentRange.range_id || parentRange.id) : null });
     return out;
-  }, [timeframe, rangeByTf, rangeWindowByTf, seedAnchors.case_high, seedAnchors.case_low, seedAnchors.weekly_high, seedAnchors.weekly_low, eventsByTf]);
+  }, [structureLayer, selectedParentRangeId, savedStructuralRanges, structuralAnchorsByLayer, timeframe, rangeByTf, rangeWindowByTf, seedAnchors.case_high, seedAnchors.case_low, seedAnchors.weekly_high, seedAnchors.weekly_low, eventsByTf]);
 
   const jumpToParentRangeStart = () => {
     const parentTf = parentTimeframeFor(timeframe);
@@ -2533,6 +2712,27 @@ function MapStudio({ symbol }: { symbol:string }) {
 
 
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const cleanCaseDisplayName = (value?: string | null) => String(value || '').replace(/\s+·\s+[a-f0-9-]+$/i, '').trim();
+  const quarterFromTime = (value?: string | null) => {
+    const d = new Date(String(value || ''));
+    if (!Number.isFinite(d.getTime())) return null;
+    return { year: d.getFullYear(), quarter: Math.floor(d.getMonth() / 3) + 1 };
+  };
+  const formatQuarterCaseName = (year: number, quarter: number) => `${String(symbol || 'XAUUSD').toUpperCase()} ${year} Q${quarter}`;
+  const buildQuarterCaseNameFromCandle = () => {
+    const q = quarterFromTime(selectedCandle?.time || replayCandle?.time || activeReplayCandle?.time);
+    return q ? formatQuarterCaseName(q.year, q.quarter) : `${String(symbol || 'XAUUSD').toUpperCase()} Case`;
+  };
+  const applyQuarterCaseName = () => {
+    const name = buildQuarterCaseNameFromCandle();
+    setSeedName(name);
+    setMessage(`Case name set to "${name}". Click Create Case when ready.`);
+  };
+  const applyQuarterCaseNameFor = (year: number, quarter: number) => {
+    const name = formatQuarterCaseName(year, quarter);
+    setSeedName(name);
+    setMessage(`Case name set to "${name}".`);
+  };
   const monthYearLabel = (v:any) => {
     const d = new Date(String(v || ''));
     if (!Number.isFinite(d.getTime())) return '';
@@ -2565,6 +2765,13 @@ function MapStudio({ symbol }: { symbol:string }) {
     // because one naming click was stretching fresh 2026 anchor windows back to Jan/current.
     setSeedAnchors((prev:any)=>({ ...prev, case_scope: caseScope, case_timeframe: caseTimeframe }));
     setMessage(`Case named ${name}. Window left untouched; anchor candles remain the truth.`);
+  };
+  const applyMasterCaseName = () => {
+    const name = buildMasterCaseName(symbol, 2019, 2026);
+    setSeedName(name);
+    setCaseScope('WEEKLY');
+    setSeedAnchors((prev:any) => ({ ...prev, case_scope: 'WEEKLY', case_timeframe: 'W1' }));
+    setMessage(`Master case name set: "${name}". Create Case — map Macro→Weekly→Daily first, LTF later.`);
   };
 
   const exportActiveCaseAuditJson = async () => {
@@ -2676,10 +2883,13 @@ function MapStudio({ symbol }: { symbol:string }) {
     const overlayIds = new Set<string>();
     const overlays: SavedRangeChartLine[] = [];
     const selectedId = String(activeStructuralRangeId || '');
+    const currentRank = structureLayerRank(structureLayer);
 
     const pushRange = (r: any, opts?: { isParentContext?: boolean; isActive?: boolean; isSibling?: boolean }) => {
       const id = String(r?.range_id || r?.id || '');
       if (!id || overlayIds.has(id)) return;
+      const overlayLayer = normalizeStructureLayer(r.structure_layer || r.layer);
+      if (explorerMappingMode === 'htf' && (overlayLayer === 'INTRADAY' || overlayLayer === 'MICRO')) return;
       const line = structuralRangeToChartLine(r, activeStructuralRangeId, {
         isParentContext: opts?.isParentContext || opts?.isSibling,
       });
@@ -2689,22 +2899,62 @@ function MapStudio({ symbol }: { symbol:string }) {
       overlays.push(line);
     };
 
+    const pushParentDraftForLayer = (layer: StructureLayer) => {
+      const draftKey = `draft-${layer}`;
+      if (overlayIds.has(draftKey)) return;
+      const anchors = structuralAnchorsByLayer[layer];
+      const hi = parseNum(anchors?.rh?.price);
+      const lo = parseNum(anchors?.rl?.price);
+      if (!Number.isFinite(hi) || !Number.isFinite(lo) || hi <= lo) return;
+      overlayIds.add(draftKey);
+      overlays.push({
+        rangeId: draftKey,
+        structureLayer: layer,
+        rangeScope: 'MAJOR' as RangeScope,
+        status: 'ACTIVE',
+        high: hi,
+        low: lo,
+        start: anchors?.rh?.time || null,
+        end: anchors?.rl?.time || null,
+        isActive: false,
+        isParentContext: true,
+      });
+    };
+
     if (hierarchyShowAll) {
       for (const r of allRanges) {
-        pushRange(r, { isActive: String(r.range_id || r.id) === selectedId });
+        const layer = normalizeStructureLayer(r.structure_layer || r.layer);
+        const isAncestor = layer ? structureLayerRank(layer) < currentRank : false;
+        pushRange(r, {
+          isActive: String(r.range_id || r.id) === selectedId && !isAncestor,
+          isParentContext: isAncestor,
+        });
       }
       return overlays;
+    }
+
+    for (const ancestorLayer of STRUCTURE_LAYERS) {
+      if (structureLayerRank(ancestorLayer) >= currentRank) continue;
+      const preferredId = ancestorLayer === expectedParentStructureLayer(structureLayer) ? selectedParentRangeId : undefined;
+      const ancestorRange = latestSavedRangeForLayer(ancestorLayer, allRanges, preferredId || undefined, true);
+      if (ancestorRange) {
+        pushRange(ancestorRange, { isParentContext: true, isActive: false });
+      } else {
+        pushParentDraftForLayer(ancestorLayer);
+      }
     }
 
     const pathIds = selectedId ? getContextStackPathIds(selectedId, allRanges) : fallbackContextPathIds(allRanges);
     for (const id of pathIds) {
       const r = allRanges.find((x:any) => String(x.range_id || x.id) === id);
-      if (r) {
-        pushRange(r, {
-          isParentContext: id !== selectedId,
-          isActive: !!selectedId && id === selectedId,
-        });
-      }
+      if (!r) continue;
+      const layer = normalizeStructureLayer(r.structure_layer || r.layer);
+      if (layer && structureLayerRank(layer) < currentRank) continue;
+      const isCurrentLayer = layer === structureLayer;
+      pushRange(r, {
+        isParentContext: !isCurrentLayer && id !== selectedId,
+        isActive: isCurrentLayer && !!selectedId && id === selectedId,
+      });
     }
 
     if (!hierarchyPathOnly && hierarchyShowSiblings && selectedId) {
@@ -2720,7 +2970,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       }
     }
     return overlays;
-  }, [savedStructuralRanges, activeStructuralRangeId, hierarchyPathOnly, hierarchyShowSiblings, hierarchyShowChildren, hierarchyShowAll]);
+  }, [savedStructuralRanges, activeStructuralRangeId, structureLayer, selectedParentRangeId, structuralAnchorsByLayer, hierarchyPathOnly, hierarchyShowSiblings, hierarchyShowChildren, hierarchyShowAll, explorerMappingMode]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
     const draftHigh = parseNum(rhAnchor.price);
@@ -2931,6 +3181,9 @@ function MapStudio({ symbol }: { symbol:string }) {
         contextRangeId: String(contextRange.range_id || contextRange.id),
       };
     }
+    if (cameraMode === 'CASE' && !rawActiveCaseId && (activeCaseId === null || activeCaseId === undefined)) {
+      return { intent:'LATEST' as CameraIntent, targetTime:fallbackTime, reason:'no-active-case' };
+    }
     if (cameraMode === 'CASE') return { intent:'CASE' as CameraIntent, targetTime:fallbackTime, reason:'case-load' };
     if (cameraMode === 'REPLAY') return { intent:'REPLAY' as CameraIntent, targetTime:fallbackTime, reason:'replay-load' };
     return { intent:'PRESERVE_OR_NEAREST_TIME' as CameraIntent, targetTime:fallbackTime, reason:`${requestedTf}-load` };
@@ -3046,13 +3299,13 @@ function MapStudio({ symbol }: { symbol:string }) {
         : `Loading ${targetTf} candles from backend...`);
     }
     try {
-      let r = await fetch(buildCandleFetchUrl(symbol, targetTf, loadWindow, !quiet)).then(x=>x.json());
+      let r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, loadWindow, !quiet));
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
       if (!r.ok) throw new Error(r.error || 'Backend returned no candles');
       let parsed = parseCandleRows(r.candles);
       let contextMiss = false;
       if (!parsed.length && loadWindow) {
-        r = await fetch(buildCandleFetchUrl(symbol, targetTf, null, !quiet)).then(x=>x.json());
+        r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, null, !quiet));
         if (!isCurrentLoad()) return;
         parsed = parseCandleRows(r.candles);
         contextMiss = parsed.length > 0;
@@ -3067,7 +3320,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         setSelectedCandlePoint(null);
         pendingCameraIntentRef.current = { intent:'NONE' };
         if (!quiet) {
-          setMessage(`No ${targetTf} candles on VPS. Tools → Sync MT5 Now (or Import EA CSV) to load OHLC history.`);
+          setMessage(`No ${targetTf} candles for ${symbol} on VPS. Use XAUUSD (has OHLC loaded) or Tools → Import EA CSV / Sync MT5.`);
         }
         cameraLog('candle load empty', { requestId, targetTf });
         return;
@@ -3085,7 +3338,8 @@ function MapStudio({ symbol }: { symbol:string }) {
           cameraLog('selected/replay nearest-candle mapping', { requestId, targetTf, targetTime, nearestTime:nearest.time, safeIdx });
         }
       }
-      if (!quiet) await loadMapMemory(targetTf, requestId);
+      if (!quiet) setLoading(false);
+      void loadMapMemory(targetTf, requestId);
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after memory', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
       if (opts?.skipCamera) {
         pendingCameraIntentRef.current = { intent:'NONE' };
@@ -3105,13 +3359,21 @@ function MapStudio({ symbol }: { symbol:string }) {
         useStructuralPrice = !!fitWindow;
       }
       if (contextMiss) {
-        cameraIntent = 'PRESERVE_OR_NEAREST_TIME';
+        cameraIntent = 'LATEST';
         fitWindow = null;
         useStructuralPrice = false;
       }
+      const lockedDom = cameraMode === 'LOCKED' ? cameraDomainByCaseTf[cameraKey] : null;
+      if (lockedDom?.start && lockedDom?.end && !candleWindowOverlapsRange(parsed, lockedDom.start, lockedDom.end)) {
+        cameraIntent = 'LATEST';
+        fitWindow = null;
+        useStructuralPrice = false;
+      } else if (cameraIntent === 'CASE' && !commandTargetTime) {
+        cameraIntent = 'LATEST';
+      }
       applyCameraCommand(
         cameraIntent,
-        commandTargetTime,
+        cameraIntent === 'LATEST' ? (parsed[parsed.length - 1]?.time || commandTargetTime) : commandTargetTime,
         pendingIntent.reason || 'confirmed-candle-load',
         undefined,
         fitWindow,
@@ -3127,16 +3389,16 @@ function MapStudio({ symbol }: { symbol:string }) {
             + `Tools → Sync MT5 Now or Import EA CSV.`,
           );
         } else {
-          setMessage(`Loaded ${parsed.length} ${targetTf} candles${loadWindow ? ` for ${loadWindow.start} → ${loadWindow.end}` : ''}${ext ? ` · latest ${shortTime(ext.end, targetTf)}` : ''} + backend map memory.`);
+          setMessage(`Loaded ${parsed.length} ${targetTf} candles${loadWindow ? ` for ${loadWindow.start} → ${loadWindow.end}` : ''}${ext ? ` · latest ${shortTime(ext.end, targetTf)}` : ''}.`);
         }
       }
       cameraLog('candle load applied', { requestId, targetTf, intent:cameraIntent, commandTargetTime, contextMiss, loadWindow, quiet });
     } catch(e:any) {
       if (!isCurrentLoad()) { cameraLog('candle load error ignored as stale', { requestId, targetTf, error:e?.message || e }); return; }
-      if (!quiet) setMessage(`Load ${targetTf} failed: ${e?.message || e}`);
+      if (!quiet) setMessage(`Load ${targetTf} failed: ${e?.name === 'AbortError' ? 'timed out — check VPS connection and click Reload' : (e?.message || e)}`);
     }
     finally {
-      if (isCurrentLoad() && !quiet) setLoading(false);
+      if (!quiet) setLoading(false);
     }
   };
 
@@ -3418,7 +3680,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       const ms = new Date(String(raw || '')).getTime();
       return Number.isFinite(ms) ? ms : 0;
     };
-    return timeOf(b) - timeOf(a) || String(b?.id || '').localeCompare(String(a?.id || ''));
+    return timeOf(b) - timeOf(a) || String(a?.seed_name || '').localeCompare(String(b?.seed_name || ''), undefined, { numeric: true }) || String(b?.id || '').localeCompare(String(a?.id || ''));
   });
 
   const rawCaseRecentRow = (caseId:string, rawCase?:any) => {
@@ -3503,28 +3765,29 @@ function MapStudio({ symbol }: { symbol:string }) {
     return !tf || tf === String(caseTimeframe).toUpperCase() || scope === String(caseScope).toUpperCase();
   };
 
-  const ensureRawCase = async () => {
-    if (rawActiveCaseId) return String(rawActiveCaseId);
+  const ensureRawCase = async (opts?: { forceNew?: boolean }) => {
+    const caseName = cleanCaseDisplayName(seedName) || cleanCaseDisplayName(activeCaseLabel) || `${String(symbol).toUpperCase()} Case`;
+    const existingId = opts?.forceNew ? '' : String(rawActiveCaseId || '').trim();
     try {
-      const caseName = String(seedName || activeCaseLabel || `${symbol}_${caseTimeframe}_Raw_Case`).trim() || `${symbol}_${caseTimeframe}_Raw_Case`;
       const payload = {
         symbol,
         case_name: caseName,
         base_timeframe: caseTimeframe || timeframe || 'W1',
         price_scale_default: String(symbol).toUpperCase().includes('XAU') ? 100 : 100000,
         notes: seedNotes || 'Created from Electron raw mapping contract',
-        ...(rawActiveCaseId ? { case_id: String(rawActiveCaseId) } : {}),
+        ...(existingId ? { case_id: existingId } : {}),
       };
       const r = await createRawCase(BASE_URL, payload);
-      const id = String(r?.case?.case_id || r?.case_id || '');
+      const id = String(r?.case?.case_id || r?.case_id || existingId || '');
       if (!id) throw new Error('Raw case create returned no case_id');
       setRawActiveCaseId(id);
       setActiveCaseId(null);
-      setActiveCaseLabel(`${caseName} · ${id.slice(0, 8)}`);
+      setActiveCaseLabel(caseName);
+      setSeedName(caseName);
       setSeedIdeas(prev => mergeSavedCases(prev, rawCaseRecentRow(id, r?.case)));
       return id;
     } catch (err: any) {
-      setMessage(`Raw case create failed: ${err?.message || err}`);
+      setMessage(`Raw case save failed: ${err?.message || err}`);
       return null;
     }
   };
@@ -3803,15 +4066,19 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const parentStructureLayer = useMemo(() => expectedParentStructureLayer(structureLayer), [structureLayer]);
+  const parentStructureLayer = useMemo(() => (
+    rangeScope === 'MINOR' ? structureLayer : expectedParentStructureLayer(structureLayer)
+  ), [structureLayer, rangeScope]);
 
   const macroRangesInCase = useMemo(() => {
-    return safeArray<StructuralRange>(savedStructuralRanges).filter((r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO');
+    return safeArray<StructuralRange>(savedStructuralRanges).filter((r:any) =>
+      normalizeStructureLayer(r.structure_layer || r.layer) === 'MACRO' && isRangeMajor(r),
+    );
   }, [savedStructuralRanges]);
 
   const parentCandidatesForScope = useMemo(() => {
-    return parentLayerCandidates(structureLayer, savedStructuralRanges);
-  }, [structureLayer, savedStructuralRanges]);
+    return parentLayerCandidates(structureLayer, savedStructuralRanges, rangeScope);
+  }, [structureLayer, rangeScope, savedStructuralRanges]);
 
   useEffect(() => {
     if (!activeStructuralRangeId) return;
@@ -3825,13 +4092,13 @@ function MapStudio({ symbol }: { symbol:string }) {
   }, [structureLayer, activeStructuralRangeId, savedStructuralRanges]);
 
   useEffect(() => {
-    if (structureLayer === 'MACRO') return;
+    if (structureLayer === 'MACRO' && rangeScope === 'MAJOR') return;
     const childSpan = { range_high_time: rhAnchor.time, range_low_time: rlAnchor.time };
-    const resolve = resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childSpan);
+    const resolve = resolveParentRangeIdForSave(structureLayer, rangeScope, selectedParentRangeId, savedStructuralRanges, childSpan);
     if (resolve.autoSelected && resolve.parentId && String(resolve.parentId) !== String(selectedParentRangeId)) {
       setSelectedParentRangeId(String(resolve.parentId));
     }
-  }, [structureLayer, rhAnchor.time, rlAnchor.time, savedStructuralRanges, selectedParentRangeId]);
+  }, [structureLayer, rangeScope, rhAnchor.time, rlAnchor.time, savedStructuralRanges, selectedParentRangeId]);
 
   useEffect(() => {
     const allowed = sourceTimeframeOptionsForLayer(structureLayer);
@@ -3947,9 +4214,9 @@ function MapStudio({ symbol }: { symbol:string }) {
       : '';
     const selectedStr = String(selectedParentRangeId || '');
     const explicitChange = !!selectedStr && selectedStr !== brokenParentStr;
-    if (explicitChange) return parentRangeIdForStructureLayer(structureLayer, selectedParentRangeId);
+    if (explicitChange) return parentRangeIdForStructureLayer(structureLayer, rangeScope, selectedParentRangeId);
     if (brokenParentStr) return brokenParentId;
-    return parentRangeIdForStructureLayer(structureLayer, selectedParentRangeId);
+    return parentRangeIdForStructureLayer(structureLayer, rangeScope, selectedParentRangeId);
   };
 
   const clearStructuralRangeDraft = () => {
@@ -3991,31 +4258,34 @@ function MapStudio({ symbol }: { symbol:string }) {
   }), [effectiveStructuralAnchors.range_high_time, effectiveStructuralAnchors.range_low_time]);
 
   const resolveParentSelectionForSave = () => {
-    const neededParentLayer = expectedParentStructureLayer(structureLayer);
+    const neededParentLayer = rangeScope === 'MINOR' ? structureLayer : expectedParentStructureLayer(structureLayer);
     if (!neededParentLayer) return selectedParentRangeId || '';
+    const parentRowMatches = (row: any) => {
+      const rowLayer = normalizeStructureLayer(row.structure_layer || row.layer);
+      if (rangeScope === 'MINOR') return rowLayer === structureLayer && isRangeMajor(row);
+      return rowLayer === neededParentLayer && isRangeMajor(row);
+    };
     if (selectedParentRangeId) {
       const selectedRow = safeArray<any>(savedStructuralRanges).find(
         (r:any) => String(r.range_id || r.id) === String(selectedParentRangeId),
       );
-      const selectedLayer = selectedRow ? normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) : null;
-      if (selectedLayer === neededParentLayer) return String(selectedParentRangeId);
+      if (selectedRow && parentRowMatches(selectedRow)) return String(selectedParentRangeId);
     }
     if (activeStructuralRangeId) {
       const activeRow = findSavedRangeRowById(activeStructuralRangeId);
-      const activeLayer = activeRow ? normalizeStructureLayer(activeRow.structure_layer || activeRow.layer) : null;
-      if (activeLayer === neededParentLayer) return String(activeStructuralRangeId);
+      if (activeRow && parentRowMatches(activeRow)) return String(activeStructuralRangeId);
     }
     return selectedParentRangeId || '';
   };
 
   const parentSelectionForSave = useMemo(
     () => resolveParentSelectionForSave(),
-    [structureLayer, selectedParentRangeId, activeStructuralRangeId, savedStructuralRanges],
+    [structureLayer, rangeScope, selectedParentRangeId, activeStructuralRangeId, savedStructuralRanges],
   );
 
   const parentLinkResolve = useMemo(
-    () => resolveParentRangeIdForSave(structureLayer, parentSelectionForSave, savedStructuralRanges, childDraftSpan),
-    [structureLayer, parentSelectionForSave, savedStructuralRanges, childDraftSpan],
+    () => resolveParentRangeIdForSave(structureLayer, rangeScope, parentSelectionForSave, savedStructuralRanges, childDraftSpan),
+    [structureLayer, rangeScope, parentSelectionForSave, savedStructuralRanges, childDraftSpan],
   );
 
   const resolvedParentRange = useMemo(() => {
@@ -4025,27 +4295,27 @@ function MapStudio({ symbol }: { symbol:string }) {
   }, [parentLinkResolve.parentId, savedStructuralRanges]);
 
   const parentLinkContextLabel = useMemo(() => {
-    if (structureLayer === 'MACRO') return null;
+    if (structureLayer === 'MACRO' && rangeScope === 'MAJOR') return null;
     const mode = parentLinkModeLabel(parentLinkResolve.mode);
     if (!resolvedParentRange) {
       return {
-        mappingLine: `Mapping: ${structureLayer} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
+        mappingLine: `Mapping: ${structureLayer} ${rangeScope} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
         parentLine: `Parent: none · ${parentLinkResolve.orphanWarning || mode}`,
         mode,
       };
     }
     return {
-      mappingLine: `Mapping: ${structureLayer} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
+      mappingLine: `Mapping: ${structureLayer} ${rangeScope} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
       parentLine: `Parent: ${formatStructuralRangeOptionLabel(resolvedParentRange)}`,
       mode,
     };
-  }, [structureLayer, sourceTimeframe, timeframe, parentLinkResolve, resolvedParentRange]);
+  }, [structureLayer, rangeScope, sourceTimeframe, timeframe, parentLinkResolve, resolvedParentRange]);
 
   const parentLinkHint = parentLinkResolve.error || parentLinkResolve.orphanWarning || null;
 
   const savePreview = useMemo(() => {
     const mappingCase = getCurrentMappingCaseRef();
-    const parentResolve = resolveParentRangeIdForSave(structureLayer, parentSelectionForSave, savedStructuralRanges, childDraftSpan);
+    const parentResolve = resolveParentRangeIdForSave(structureLayer, rangeScope, parentSelectionForSave, savedStructuralRanges, childDraftSpan);
     const parentId = parentResolve.parentId;
     const chartMismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
     const macroW1ValidNote = structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1' && String(timeframe).toUpperCase() === 'W1'
@@ -4090,10 +4360,15 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const saveBlockReason = useMemo(() => {
     if (!getCurrentMappingCaseRef().hasCase) return 'Create or select a mapping case first (Case tab).';
+    const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
+    if (mappingActive) {
+      const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
+      if (mismatch) return mismatch;
+    }
     if (!rhAnchor.price || !rlAnchor.price) return 'Set Range High and Range Low first.';
     if (parentLinkResolve.error) return parentLinkResolve.error;
     return null;
-  }, [parentLinkResolve.error, rhAnchor.price, rlAnchor.price, activeCaseId, rawActiveCaseId]);
+  }, [parentLinkResolve.error, rhAnchor.price, rlAnchor.price, activeCaseId, rawActiveCaseId, chartFullscreen, rightDeckTab, markWorkspaceMode, timeframe, structureLayer, sourceTimeframe]);
 
   const chartStatusLine = useMemo(() => {
     if (saveBlockReason) {
@@ -4164,7 +4439,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     const params = appendMappingCaseParams(new URLSearchParams({ symbol, limit:'5000' }), mappingCase);
     const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/ranges?${params.toString()}`);
-    const rows = safeArray<StructuralRange>(data.ranges);
+    const rows = visibleStructuralRanges(safeArray<StructuralRange>(data.ranges));
     setSavedStructuralRanges(rows);
     return rows;
   };
@@ -4175,19 +4450,26 @@ function MapStudio({ symbol }: { symbol:string }) {
     setActiveStructuralRangeId(id);
     const nextLayer = normalizeStructureLayer(range.structure_layer || range.layer) || structureLayer;
     setStructureLayer(nextLayer);
+    setRangeScope(normalizeRangeScope(range.range_scope));
     if (range.source_timeframe || range.timeframe) setSourceTimeframe(String(range.source_timeframe || range.timeframe).toUpperCase());
     if (range.parent_range_id !== undefined && range.parent_range_id !== null) setSelectedParentRangeId(String(range.parent_range_id));
     const high = range.range_high_price ?? range.range_high;
     const low = range.range_low_price ?? range.range_low;
+    const nextRh = { price:String(high ?? ''), time:String(range.range_high_time || ''), candle:null as Candle|null };
+    const nextRl = { price:String(low ?? ''), time:String(range.range_low_time || ''), candle:null as Candle|null };
     if (high !== undefined && high !== null && high !== '') {
-      const next = { price:String(high), time:String(range.range_high_time || ''), candle:null };
-      setRhAnchor(next);
+      setRhAnchor(nextRh);
       setRangeHigh(String(high));
     }
     if (low !== undefined && low !== null && low !== '') {
-      const next = { price:String(low), time:String(range.range_low_time || ''), candle:null };
-      setRlAnchor(next);
+      setRlAnchor(nextRl);
       setRangeLow(String(low));
+    }
+    if (nextLayer && (nextRh.price || nextRl.price)) {
+      setStructuralAnchorsByLayer(prev => ({
+        ...prev,
+        [nextLayer]: { rh: nextRh, rl: nextRl },
+      }));
     }
     setRangeWindowByTf(prev => ({ ...prev, [timeframe]: { ...(prev[timeframe] || {}), start:range.range_start_time || range.range_high_time || prev[timeframe]?.start || '', end:range.range_end_time || range.range_low_time || prev[timeframe]?.end || '' } }));
     setStructuralRangeDraftDirty(false);
@@ -4208,10 +4490,28 @@ function MapStudio({ symbol }: { symbol:string }) {
     [savedStructuralRanges, explorerYearFilter],
   );
 
-  const caseHierarchyForest = useMemo(
-    () => buildCaseHierarchyForest(explorerFilteredRanges),
-    [explorerFilteredRanges],
+  const explorerTreeRanges = useMemo(
+    () => filterRangesForExplorerMode(explorerFilteredRanges as Record<string, unknown>[], explorerMappingMode),
+    [explorerFilteredRanges, explorerMappingMode],
   );
+
+  const mappingGaps = useMemo(
+    () => computeMappingGaps(explorerTreeRanges, explorerMappingMode),
+    [explorerTreeRanges, explorerMappingMode],
+  );
+
+  const caseHierarchyForest = useMemo(
+    () => buildCaseHierarchyForest(explorerTreeRanges),
+    [explorerTreeRanges],
+  );
+
+  useEffect(() => {
+    if (explorerMappingMode !== 'htf') return;
+    setHierarchyPathOnly(true);
+    setHierarchyShowSiblings(false);
+    setHierarchyShowChildren(false);
+    setHierarchyShowAll(false);
+  }, [explorerMappingMode]);
 
   const refreshStructuralRanges = async () => {
     const params = new URLSearchParams({ symbol });
@@ -4233,7 +4533,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     try {
       const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/ranges?${params.toString()}`);
-      const rows = safeArray<StructuralRange>(data.ranges);
+      const rows = visibleStructuralRanges(safeArray<StructuralRange>(data.ranges));
       setStructuralRanges(rows);
       const parentLayer = expectedParentStructureLayer(structureLayer);
       if (parentLayer && rows.length) {
@@ -4302,6 +4602,13 @@ function MapStudio({ symbol }: { symbol:string }) {
         return { ...prev, [timeframe]: { ...(prev[timeframe] || {}), ...(window || { start:candle.time, end:candle.time }) }};
       });
       setStructuralRangeDraftDirty(true);
+      setStructuralAnchorsByLayer(prev => ({
+        ...prev,
+        [structureLayer]: {
+          rh: next,
+          rl: prev[structureLayer]?.rl || rlAnchor,
+        },
+      }));
     }
     if (kind === 'RL') {
       setRlAnchor(next);
@@ -4311,6 +4618,13 @@ function MapStudio({ symbol }: { symbol:string }) {
         return { ...prev, [timeframe]: { ...(prev[timeframe] || {}), ...(window || { start:candle.time, end:candle.time }) }};
       });
       setStructuralRangeDraftDirty(true);
+      setStructuralAnchorsByLayer(prev => ({
+        ...prev,
+        [structureLayer]: {
+          rh: prev[structureLayer]?.rh || rhAnchor,
+          rl: next,
+        },
+      }));
     }
     if (kind === 'BH') {
       setBhAnchor(next);
@@ -4327,6 +4641,11 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const setStructuralPoint = async (kind:'RH'|'RL'|'BH'|'BL') => {
     if (quickEventSaving) return;
+    const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
+    if (mappingActive) {
+      const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
+      if (mismatch) { setMessage(mismatch); return; }
+    }
     if (kind === 'BH') { await saveStructuralBos('UP', { quickButton:true }); return; }
     if (kind === 'BL') { await saveStructuralBos('DOWN', { quickButton:true }); return; }
     const candle = selectedCandle || replayCandle;
@@ -4349,8 +4668,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       RL: 'RANGE_LOW_SELECTED',
     };
     const eventId = crypto.randomUUID();
-    const parentForEvent = expectedParentStructureLayer(structureLayer)
-      ? (resolveParentRangeIdForSave(structureLayer, selectedParentRangeId, savedStructuralRanges, childDraftSpan).parentId || selectedParentRangeId || null)
+    const parentForEvent = (rangeScope === 'MINOR' || expectedParentStructureLayer(structureLayer))
+      ? (resolveParentRangeIdForSave(structureLayer, rangeScope, selectedParentRangeId, savedStructuralRanges, childDraftSpan).parentId || selectedParentRangeId || null)
       : null;
     const payload:any = {
       event_id: eventId,
@@ -4515,18 +4834,18 @@ function MapStudio({ symbol }: { symbol:string }) {
     return { ...dateFields, duration };
   };
 
-  const confirmOrphanSaveIfNeeded = (layer: StructureLayer, parentResolve: ParentResolveResult): boolean => {
+  const confirmOrphanSaveIfNeeded = (layer: StructureLayer, scope: RangeScope, parentResolve: ParentResolveResult): boolean => {
     if (parentResolve.parentId) return true;
-    if (layer === 'MACRO') return true;
-    if (layer === 'WEEKLY') {
+    if (layer === 'MACRO' && scope === 'MAJOR') return true;
+    if (layer === 'WEEKLY' && scope === 'MAJOR') {
       if (parentResolve.orphanWarning && macroRangesInCase.length > 0) {
-        return window.confirm(`${parentResolve.orphanWarning}\n\nSave Weekly range without Macro parent?`);
+        return window.confirm(`${parentResolve.orphanWarning}\n\nSave Weekly MAJOR range without Macro MAJOR parent?`);
       }
       return true;
     }
-    if (structureLayerRequiresParentConfirmation(layer)) {
+    if (structureLayerRequiresParentConfirmation(layer, scope)) {
       return window.confirm(
-        `${parentResolve.orphanWarning || `No matching parent found. Save ${layer} range as orphan?`}\n\nOrphan child ranges may fail audit review.`,
+        `${parentResolve.orphanWarning || `No matching parent found. Save ${layer} ${scope} range as orphan?`}\n\nOrphan child ranges may fail audit review.`,
       );
     }
     return true;
@@ -4543,6 +4862,11 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     const mappingCase = getCurrentMappingCaseRef();
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving a range.'); return; }
+    const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
+    if (mappingActive) {
+      const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
+      if (mismatch) { setMessage(mismatch); return; }
+    }
     if (!rhAnchor.price || !rlAnchor.price) { setMessage('Set Range High and Range Low before saving a structural range.'); return; }
     const activeRangeForSave = activeStructuralRangeId
       ? (selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId))
@@ -4550,7 +4874,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     const activeRangeLayer = activeRangeForSave
       ? normalizeStructureLayer(activeRangeForSave.structure_layer || activeRangeForSave.layer)
       : null;
-    const isUpdate = !!(activeStructuralRangeId && activeRangeLayer === structureLayer);
+    const activeRangeScope = activeRangeForSave ? normalizeRangeScope(activeRangeForSave.range_scope) : null;
+    const isUpdate = !!(activeStructuralRangeId && activeRangeLayer === structureLayer && activeRangeScope === rangeScope);
     if (activeStructuralRangeId && activeRangeLayer && activeRangeLayer !== structureLayer) {
       setMessage(`Active range #${activeStructuralRangeId} is ${activeRangeLayer}. Saving new ${structureLayer} range instead.`);
     }
@@ -4560,15 +4885,16 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     const parentResolve = resolveParentRangeIdForSave(
       structureLayer,
+      rangeScope,
       parentSelectionForSave,
       savedStructuralRanges,
       childDraftSpan,
     );
     if (parentResolve.error) {
-      setMessage(`${parentResolve.error} Click the ${parentStructureLayer || 'parent'} row in Structural Explorer, or save then use Relink.`);
+      setMessage(`${parentResolve.error} Click the ${parentTargetLayerLabel(structureLayer, rangeScope)} row in Structural Explorer, or save then use Relink.`);
       return;
     }
-    if (!confirmOrphanSaveIfNeeded(structureLayer, parentResolve)) return;
+    if (!confirmOrphanSaveIfNeeded(structureLayer, rangeScope, parentResolve)) return;
     if (parentResolve.autoSelected && parentResolve.parentId) {
       setSelectedParentRangeId(String(parentResolve.parentId));
     }
@@ -4589,6 +4915,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         raw_case_id: mappingCase.raw_case_id,
         case_ref: mappingCase.case_ref,
         symbol,
+        range_scope: rangeScope,
         ...structuralMappingScopeFields(structureLayer, sourceTimeframe, timeframe),
         parent_range_id: parentResolve.parentId,
         range_high_price: Number(rhAnchor.price),
@@ -4618,6 +4945,13 @@ function MapStudio({ symbol }: { symbol:string }) {
         range_low_price: data.range?.range_low_price ?? payload.range_low_price,
       };
       setLastSavedRangeConfirmation(confirmation);
+      setStructuralAnchorsByLayer(prev => ({
+        ...prev,
+        [structureLayer]: {
+          rh: { price: String(rhAnchor.price), time: String(rhAnchor.time || ''), candle: rhAnchor.candle || null },
+          rl: { price: String(rlAnchor.price), time: String(rlAnchor.time || ''), candle: rlAnchor.candle || null },
+        },
+      }));
       setMessage(`${isUpdate ? 'Updated selected' : 'Saved new'} ${confirmation.structure_layer} range #${id || '?'} · ${confirmation.source_timeframe} · parent ${confirmation.parent_range_id || 'none'} · RH ${confirmation.range_high_price} / RL ${confirmation.range_low_price}`);
       try { await refreshSavedRangesForCurrentCase(); } catch (refreshErr:any) { setMessage(`Saved range #${id || '?'}; saved-ranges refresh failed: ${refreshErr?.message || refreshErr}`); }
       try { await refreshStructuralRanges(); } catch {}
@@ -4656,6 +4990,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         raw_case_id: mappingCase.raw_case_id,
         case_ref: mappingCase.case_ref,
         symbol,
+        range_scope: normalizeRangeScope(selectedSavedRange?.range_scope || activeRange?.range_scope || rangeScope),
         ...structuralMappingScopeFields(structureLayer, sourceTimeframe, timeframe),
         parent_range_id: parentRangeId,
         old_range_id: Number(oldRangeId),
@@ -4744,6 +5079,11 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
     const mappingCase = getCurrentMappingCaseRef();
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving Break Up/Break Down.'); return; }
+    const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
+    if (mappingActive) {
+      const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
+      if (mismatch) { setMessage(mismatch); return; }
+    }
     const candle = selectedCandle || replayCandle;
     const quickAnchor = candle && options?.quickButton
       ? { price: Number(direction === 'UP' ? candle.high : candle.low).toFixed(2), time: candle.time, candle }
@@ -4764,6 +5104,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     const hasActiveRangeParent = activeRangeParentId !== null && activeRangeParentId !== undefined && String(activeRangeParentId) !== '';
     const parentResolve = resolveParentRangeIdForSave(
       structureLayer,
+      normalizeRangeScope(activeRange?.range_scope) || rangeScope,
       parentSelectionForSave,
       savedStructuralRanges,
       childDraftSpan,
@@ -4959,7 +5300,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       structuralFetchJson(`${BASE_URL}/api/v1/map/range-tree?${appendMappingCaseParams(new URLSearchParams({ symbol }), mappingCase).toString()}`),
       structuralFetchJson(`${BASE_URL}/api/v1/map/hierarchy-audit?${appendMappingCaseParams(new URLSearchParams({ symbol }), mappingCase).toString()}`),
     ]);
-    const refreshedSavedRanges = safeArray<StructuralRange>(rangesData.ranges);
+    const refreshedSavedRanges = visibleStructuralRanges(safeArray<StructuralRange>(rangesData.ranges));
     setSavedStructuralRanges(refreshedSavedRanges);
     const eventParams = appendMappingCaseParams(new URLSearchParams({ symbol, limit:'5000' }), mappingCase);
     const eventsData = await structuralFetchJson(`${BASE_URL}/api/v1/map/events?${eventParams.toString()}`);
@@ -5268,6 +5609,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     setCandleReplayCursorTime(c.time);
     setSelectedCandle(c);
     setPendingMarkerRoles([]);
+    setReplaySelectBarMode(false);
+    setReplayStartMenuOpen(false);
     // v082: replay stepping must NOT mutate jumpDate or fitToken.
     // Those controls intentionally reset/recenter the map, which made every replay step zoom out.
     // Replay cursor is data state; chart camera is user state. Keep them decoupled.
@@ -5287,6 +5630,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     setCandleReplayCursorTime(c.time);
     setSelectedCandle(c);
     setPendingMarkerRoles([]);
+    setReplaySelectBarMode(false);
+    setReplayStartMenuOpen(false);
     setMessage(`Replay scrubbed to ${shortTime(c.time, timeframe)} · ${safe + 1}/${candles.length}`);
   };
 
@@ -5361,6 +5706,34 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
+  const activateMappingGap = (gap: MappingGap) => {
+    const parent = gap.parentRange;
+    const childLayer = normalizeStructureLayer(gap.expectedChildLayer) || structureLayer;
+    const parentId = String(parent.range_id || parent.id || '');
+    if (!parentId) return;
+
+    setStructureLayer(childLayer);
+    setRangeScope('MAJOR');
+    setSourceTimeframe(defaultSourceTimeframeForStructureLayer(childLayer));
+    setSelectedParentRangeId(parentId);
+    setActiveStructuralRangeId('');
+    setRhAnchor({ price: '', time: '', candle: null });
+    setRlAnchor({ price: '', time: '', candle: null });
+    setStructuralRangeDraftDirty(false);
+
+    const childChartTf = defaultChartTimeframeForStructureLayer(childLayer);
+    if (childChartTf !== String(timeframe).toUpperCase()) {
+      activeTimeframeRef.current = childChartTf;
+      setTimeframe(childChartTf);
+    }
+
+    jumpToStructuralRange(parent);
+    setRightDeckTab('mark');
+    setMarkWorkspaceMode('htf');
+    setWorkspacePanelOpen(true);
+    setMessage(`Map ${childLayer} under ${gap.parentLayer} #${parentId} — parent set, chart jumped.`);
+  };
+
   const editStructuralRangeFromTree = (range: any) => {
     selectSavedStructuralRange(range);
     setRightDeckTab('mark');
@@ -5373,12 +5746,13 @@ function MapStudio({ symbol }: { symbol:string }) {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
     const layer = normalizeStructureLayer(range.structure_layer || range.layer);
-    const parentLayer = layer ? expectedParentStructureLayer(layer) : null;
-    if (!layer || !parentLayer) return;
-    const candidates = parentLayerCandidates(layer, savedStructuralRanges);
+    const scope = normalizeRangeScope(range.range_scope);
+    const parentLayer = layer ? (scope === 'MINOR' ? layer : expectedParentStructureLayer(layer)) : null;
+    if (!layer || (scope === 'MAJOR' && !parentLayer)) return;
+    const candidates = parentLayerCandidates(layer, savedStructuralRanges, scope);
     const hint = candidates.slice(0, 8).map(formatStructuralRangeOptionLabel).join('\n');
     const raw = window.prompt(
-      `Relink #${id} ${layer} to ${parentLayer} parent id.\n\nCandidates:\n${hint || '(none)'}\n\nEnter parent range id or leave empty for orphan:`,
+      `Relink #${id} ${layer} ${scope} to ${parentLayer} MAJOR parent id.\n\nCandidates:\n${hint || '(none)'}\n\nEnter parent range id or leave empty for orphan:`,
       String(range?.parent_range_id || ''),
     );
     if (raw === null) return;
@@ -5434,7 +5808,10 @@ function MapStudio({ symbol }: { symbol:string }) {
     const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || 'WEEKLY';
     const layerKey = layer.toLowerCase();
     const isActive = id === String(activeStructuralRangeId);
-    const isParentContext = id === String(selectedParentRangeId) && expectedParentStructureLayer(structureLayer) === layer;
+    const isParentContext = id === String(selectedParentRangeId) && (
+      (rangeScope === 'MINOR' && normalizeStructureLayer(range?.structure_layer || range?.layer) === structureLayer && isRangeMajor(range))
+      || (rangeScope === 'MAJOR' && expectedParentStructureLayer(structureLayer) === layer)
+    );
     const lines = formatExplorerRowLines(range, node.children.length);
     const hasChildren = node.children.length > 0;
     const collapsed = hierarchyCollapsedIds.includes(id);
@@ -5507,9 +5884,31 @@ function MapStudio({ symbol }: { symbol:string }) {
   const structuralExplorerPanelEl = (scrollClass = 'explorerTreeScroll') => (
     <div className="structuralExplorerPanel">
       <div className="structuralExplorerHeader">
-        <b>Structural Explorer</b>
-        <span>{explorerFilteredRanges.length} / {savedStructuralRanges.length} ranges</span>
+        <b>Market Memory Navigator</b>
+        <span>{explorerTreeRanges.length} shown · {savedStructuralRanges.length} total</span>
       </div>
+      <div className="explorerModeRow">
+        <span className="explorerOverlayLabel">Mode</span>
+        <button
+          type="button"
+          className={`explorerModeBtn ${explorerMappingMode === 'htf' ? 'active' : ''}`}
+          onClick={() => setExplorerMappingMode('htf')}
+        >
+          HTF Memory
+        </button>
+        <button
+          type="button"
+          className={`explorerModeBtn ${explorerMappingMode === 'ltf' ? 'active' : ''}`}
+          onClick={() => setExplorerMappingMode('ltf')}
+        >
+          LTF Fill
+        </button>
+      </div>
+      <p className="explorerModeHint mutedSmall">
+        {explorerMappingMode === 'htf'
+          ? 'Macro → Weekly → Daily MAJOR containers. Gap queue lists missing cross-layer MAJOR children.'
+          : 'Full tree. Gap queue lists missing Intraday / Micro MAJOR children.'}
+      </p>
       <div className="explorerYearFilterRow">
         <label className="explorerYearLabel">Year
           <select value={explorerYearFilter} onChange={e => setExplorerYearFilter(e.target.value)}>
@@ -5518,18 +5917,51 @@ function MapStudio({ symbol }: { symbol:string }) {
           </select>
         </label>
       </div>
+      {mappingGaps.length > 0 && (
+        <div className={`explorerGapQueue ${gapQueueOpen ? 'open' : 'collapsed'}`}>
+          <button
+            type="button"
+            className="explorerGapHeader"
+            onClick={() => setGapQueueOpen(!gapQueueOpen)}
+            aria-expanded={gapQueueOpen}
+          >
+            <span className="explorerGapHeaderMain">
+              <span className="explorerGapToggle" aria-hidden="true">{gapQueueOpen ? '▼' : '▶'}</span>
+              <b>Gap queue</b>
+            </span>
+            <span>{mappingGaps.length} missing</span>
+          </button>
+          {gapQueueOpen && (
+            <div className="explorerGapList">
+              {mappingGaps.slice(0, 12).map((gap) => (
+                <button
+                  key={`${gap.parentLayer}-${gap.parentId}-${gap.expectedChildLayer}`}
+                  type="button"
+                  className="explorerGapBtn"
+                  onClick={() => activateMappingGap(gap)}
+                >
+                  {gap.label}
+                </button>
+              ))}
+              {mappingGaps.length > 12 && (
+                <span className="mutedSmall">+ {mappingGaps.length - 12} more in tree</span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div className="explorerTreeControls">
         <button type="button" className="hierarchyCtrlBtn" onClick={() => refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`))}>Refresh</button>
         <button type="button" className="hierarchyCtrlBtn" onClick={() => setHierarchyCollapsedIds([])}>Expand All</button>
         <button type="button" className="hierarchyCtrlBtn" onClick={() => setHierarchyCollapsedIds(hierarchyBranchIds)}>Collapse All</button>
         <span className="explorerOverlayLabel">Chart:</span>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyPathOnly && !hierarchyShowAll} disabled={hierarchyShowAll} onChange={e => setHierarchyPathOnly(e.target.checked)} /> Path only</label>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowSiblings} disabled={hierarchyShowAll || hierarchyPathOnly} onChange={e => setHierarchyShowSiblings(e.target.checked)} /> Siblings</label>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowChildren} disabled={hierarchyShowAll || hierarchyPathOnly} onChange={e => setHierarchyShowChildren(e.target.checked)} /> Children</label>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowAll} onChange={e => setHierarchyShowAll(e.target.checked)} /> All</label>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyPathOnly && !hierarchyShowAll} disabled={hierarchyShowAll || explorerMappingMode === 'htf'} onChange={e => setHierarchyPathOnly(e.target.checked)} /> Path only</label>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowSiblings} disabled={hierarchyShowAll || hierarchyPathOnly || explorerMappingMode === 'htf'} onChange={e => setHierarchyShowSiblings(e.target.checked)} /> Siblings</label>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowChildren} disabled={hierarchyShowAll || hierarchyPathOnly || explorerMappingMode === 'htf'} onChange={e => setHierarchyShowChildren(e.target.checked)} /> Children</label>
+        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowAll} disabled={explorerMappingMode === 'htf'} onChange={e => setHierarchyShowAll(e.target.checked)} /> All</label>
       </div>
       <div className={scrollClass}>
-        {!explorerFilteredRanges.length && <div className="caseLedgerEmpty">{savedStructuralRanges.length ? 'No ranges match this year filter.' : 'No saved structural ranges for this case yet.'}</div>}
+        {!explorerTreeRanges.length && <div className="caseLedgerEmpty">{savedStructuralRanges.length ? 'No ranges match this filter.' : 'No saved structural ranges for this case yet.'}</div>}
         {!!caseHierarchyForest.roots.length && renderExplorerTreeNodes(caseHierarchyForest.roots)}
         {!!caseHierarchyForest.orphans.length && <>
           <div className="hierarchyOrphanHeader">Unlinked / Orphans</div>
@@ -5542,6 +5974,59 @@ function MapStudio({ symbol }: { symbol:string }) {
   const jumpCandleReplayLatest = () => {
     if (!candles.length) return;
     setCandleReplayFrame(candles.length - 1);
+  };
+
+  const toggleBarReplay = () => {
+    if (candleReplayMode) {
+      setCandleReplayPlaying(false);
+      setCandleReplayMode(false);
+      setReplaySelectBarMode(false);
+      setReplayStartMenuOpen(false);
+      setMessage('Bar Replay off.');
+      return;
+    }
+    setCandleReplayMode(true);
+    setCandleReplayPlaying(false);
+    setToolMode('scrub');
+    setReplaySelectBarMode(true);
+    if (!candleReplayCursorTime && candles.length) {
+      setCandleReplayFrame(candles.length - 1);
+    }
+    setMessage('Bar Replay on — click a candle or use Select bar to scrub.');
+  };
+
+  const pickRandomReplayBar = () => {
+    if (!candles.length) return;
+    const idx = Math.floor(Math.random() * candles.length);
+    setCandleReplayFrame(idx);
+    setReplaySelectBarMode(false);
+    setReplayStartMenuOpen(false);
+  };
+
+  const jumpReplayToDate = () => {
+    if (!jumpDate || !candles.length) {
+      setMessage('Pick a date first (Case panel or navigator).');
+      return;
+    }
+    const target = candles.find((c) => String(c.time).slice(0, 10) >= jumpDate) || candles[candles.length - 1];
+    setCandleReplayFrameByTime(target.time);
+    setReplaySelectBarMode(false);
+    setReplayStartMenuOpen(false);
+  };
+
+  const exitBarReplayToLive = () => {
+    if (candles.length) jumpCandleReplayLatest();
+    setCandleReplayPlaying(false);
+    setCandleReplayMode(false);
+    setReplaySelectBarMode(false);
+    setReplayStartMenuOpen(false);
+    setMessage('Replay ended — showing latest candles.');
+  };
+
+  const toggleCandleReplayPlay = () => {
+    if (!candles.length) return;
+    setCandleReplayMode(true);
+    setCandleReplayPlaying((x) => !x);
   };
 
   const captureSeedAnchor = (key:string, mode:'high'|'low') => {
@@ -5599,7 +6084,14 @@ function MapStudio({ symbol }: { symbol:string }) {
       Object.keys(next).forEach(k => { if (String(k).includes(`_${tf}`) || String(k).startsWith('global_')) delete next[k]; });
       return next;
     });
-    setMessage('Active case and local draft window cleared. Next Save Case starts fresh; raw event ledger remains untouched.');
+    setMessage('Active case cleared. Use New Case to start the next quarter.');
+  };
+
+  const startNewCase = () => {
+    resetActiveCase();
+    const name = buildQuarterCaseNameFromCandle();
+    setSeedName(name);
+    setMessage(`New case draft: "${name}". Map your anchors, then Create Case.`);
   };
 
   // v087.27: when a case is first saved after H/L were plotted before the case existed,
@@ -5620,18 +6112,28 @@ function MapStudio({ symbol }: { symbol:string }) {
     } catch { /* anchor auto-link is helpful, not a hostage situation */ }
   };
 
-  const saveSeedIdea = async (_saveAsNew = false) => {
+  const saveSeedIdea = async (saveAsNew = false) => {
     if (caseSaving) return;
+    if (!cleanCaseDisplayName(seedName)) {
+      setMessage('Enter a case name first (e.g. XAUUSD 2020 Q1).');
+      return;
+    }
     setCaseSaving(true);
     setCaseSavedNotice('');
     try {
-      const rawId = await ensureRawCase();
+      if (saveAsNew) {
+        setRawActiveCaseId('');
+        setActiveCaseId(null);
+        setActiveCaseLabel('');
+      }
+      const rawId = await ensureRawCase({ forceNew: saveAsNew });
       if (!rawId) throw new Error('No raw case id returned');
-      const savedMsg = `Raw ${scopeLabel(caseScope)} case ready: ${rawId.slice(0,8)}.`;
+      const savedName = cleanCaseDisplayName(seedName);
+      const savedMsg = `Case saved: ${savedName}`;
       setCaseSavedNotice(savedMsg);
       await loadSavedCasesFromBackend();
       setSeedIdeas(prev => mergeSavedCases(prev, rawCaseRecentRow(rawId)));
-      setMessage(`${savedMsg} Case Save now creates/uses raw_mapping_cases only. It does not send old bundled map events.`);
+      setMessage(`${savedMsg} — pick it anytime from Saved cases below.`);
       setTimeout(()=>setCaseSavedNotice(''), 6000);
     } catch (err:any) {
       setMessage(`Raw case save failed: ${err?.message || err}`);
@@ -5651,6 +6153,11 @@ function MapStudio({ symbol }: { symbol:string }) {
       const rawRows = safeArray<any>(rawList?.cases).map((c:any) => rawCaseRowFromBackend(c));
       const merged = mergeSavedCases([...legacyRows, ...rawRows]);
       setSeedIdeas(merged);
+
+      const hasActiveRaw = rawActiveCaseId && merged.some((idea:any) => String(idea?.raw_case_id || idea?.id || '') === String(rawActiveCaseId));
+      const hasActiveLegacy = activeCaseId != null && merged.some((idea:any) => Number(idea?.id) === Number(activeCaseId));
+      if (rawActiveCaseId && !hasActiveRaw) setRawActiveCaseId('');
+      if (activeCaseId != null && !hasActiveLegacy) setActiveCaseId(null);
 
       const rawCount = rawRows.length;
       const legacyCount = legacyRows.length;
@@ -5780,6 +6287,31 @@ function MapStudio({ symbol }: { symbol:string }) {
     setTimeframe(tf);
   };
 
+  const showStructuralMappingRibbon = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
+  const mappingAllowedChartTfs = useMemo(
+    () => allowedChartTimeframesForStructureLayer(structureLayer),
+    [structureLayer],
+  );
+  const chartLayerMismatch = useMemo(
+    () => showStructuralMappingRibbon ? chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe) : '',
+    [showStructuralMappingRibbon, timeframe, structureLayer, sourceTimeframe],
+  );
+
+  useEffect(() => {
+    if (!showStructuralMappingRibbon) return;
+    if (isChartTimeframeAllowedForLayer(timeframe, structureLayer)) return;
+    switchTimeframePreserveCase(defaultChartTimeframeForStructureLayer(structureLayer));
+  }, [showStructuralMappingRibbon, structureLayer, timeframe]);
+
+  const handleChartTfSwitch = (nextTf: string) => {
+    const tf = String(nextTf || timeframe).toUpperCase();
+    if (showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf)) {
+      setMessage(`Chart ${tf} is blocked while mapping ${structureLayer}. Use ${mappingAllowedChartTfs.join(' or ')} — or change scope first.`);
+      return;
+    }
+    switchTimeframePreserveCase(tf);
+  };
+
   const openSavedCase = async (idea:any, preferredTf?:string) => {
     if (!idea?.id) return;
     if (idea?.is_raw_mapping_case || idea?.raw_case_id) {
@@ -5789,8 +6321,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       const nextScope = String(idea.case_scope || timeframeToScope(nextTf) || caseScope).toUpperCase() as CaseScope;
       setRawActiveCaseId(rawId);
       setActiveCaseId(null);
-      setActiveCaseLabel(`${idea.seed_name || 'Raw Case'} · ${rawId.slice(0, 8)}`);
-      setSeedName(idea.seed_name || seedName);
+      setActiveCaseLabel(cleanCaseDisplayName(idea.seed_name) || 'Raw Case');
+      setSeedName(cleanCaseDisplayName(idea.seed_name) || seedName);
       setSeedNotes(idea.notes || '');
       setCaseScope(nextScope);
       setSeedAnchors((prev:any)=>({ ...prev, case_scope: nextScope, case_timeframe: nextTf }));
@@ -5806,8 +6338,8 @@ function MapStudio({ symbol }: { symbol:string }) {
     const id = Number(idea.id);
     setRawActiveCaseId('');
     setActiveCaseId(id);
-    setActiveCaseLabel(`#${id} ${idea.seed_name || 'Case'}`);
-    setSeedName(idea.seed_name || seedName);
+    setActiveCaseLabel(cleanCaseDisplayName(idea.seed_name) || `Case #${id}`);
+    setSeedName(cleanCaseDisplayName(idea.seed_name) || seedName);
     setSeedNotes(idea.notes || '');
     const anchors = { ...(idea.anchors || {}) };
     const w = savedCaseWindow(idea);
@@ -5894,6 +6426,37 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (idx !== candleReplayIndex) setCandleReplayIndex(idx);
     }
   }, [candles, candleReplayCursorTime]);
+
+  useEffect(() => {
+    setChartDrawings(loadChartDrawings(chartDrawingsKey));
+    setSelectedDrawingId(null);
+    const savedReplay = loadReplayCursorForKey(chartDrawingsKey);
+    if (savedReplay && !replayCursorByKey[chartDrawingsKey]) {
+      setReplayCursorByKey((prev) => ({ ...prev, [chartDrawingsKey]: savedReplay }));
+    }
+  }, [chartDrawingsKey]);
+
+  useEffect(() => {
+    saveChartDrawings(chartDrawingsKey, chartDrawings);
+  }, [chartDrawingsKey, chartDrawings]);
+
+  useEffect(() => {
+    const onKeyDown = (evt: KeyboardEvent) => {
+      if (!selectedDrawingId) return;
+      const tag = String((evt.target as HTMLElement | null)?.tagName || '').toUpperCase();
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (evt.key === 'Delete' || evt.key === 'Backspace') {
+        setChartDrawings((prev) => prev.filter((d) => d.id !== selectedDrawingId));
+        setSelectedDrawingId(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [selectedDrawingId]);
+
+  const updateChartDrawings = (updater: ChartDrawing[] | ((prev: ChartDrawing[]) => ChartDrawing[])) => {
+    setChartDrawings((prev) => (typeof updater === 'function' ? updater(prev) : updater));
+  };
 
   useEffect(()=>{
     if (!candleReplayPlaying || !candleReplayMode || candles.length === 0) return;
@@ -6036,36 +6599,91 @@ function MapStudio({ symbol }: { symbol:string }) {
     };
   }, [symbol, timeframe]);
 
-  const showStructuralMappingRibbon = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
   const selectStructureLayer = (layer: StructureLayer) => {
+    const nextAnchorsByLayer: Partial<Record<StructureLayer, LayerAnchorPair>> = {
+      ...structuralAnchorsByLayer,
+      [structureLayer]: { rh: rhAnchor, rl: rlAnchor },
+    };
+    setStructuralAnchorsByLayer(nextAnchorsByLayer);
+
     const nextParentLayer = expectedParentStructureLayer(layer);
     if (nextParentLayer) {
       const selectedRow = selectedParentRangeId
         ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(selectedParentRangeId))
         : null;
       const selectedRowLayer = selectedRow ? normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) : null;
-      if (selectedRowLayer && selectedRowLayer !== nextParentLayer) {
+      const parentRange = latestSavedRangeForLayer(nextParentLayer, savedStructuralRanges, selectedParentRangeId || undefined);
+      if (parentRange) {
+        setSelectedParentRangeId(String(parentRange.range_id || parentRange.id));
+      } else if (selectedRowLayer && selectedRowLayer !== nextParentLayer) {
         setSelectedParentRangeId('');
       }
     } else {
       setSelectedParentRangeId('');
     }
+
+    const stored = nextAnchorsByLayer[layer];
+    if (stored?.rh?.price || stored?.rl?.price) {
+      setRhAnchor(stored.rh || { price:'', time:'', candle:null });
+      setRlAnchor(stored.rl || { price:'', time:'', candle:null });
+      setRangeHigh(stored.rh?.price || '');
+      setRangeLow(stored.rl?.price || '');
+      setStructuralRangeDraftDirty(!!(stored.rh?.price && stored.rl?.price));
+    } else {
+      setRhAnchor({ price:'', time:'', candle:null });
+      setRlAnchor({ price:'', time:'', candle:null });
+      setRangeHigh('');
+      setRangeLow('');
+      setStructuralRangeDraftDirty(false);
+    }
+
     setStructureLayer(layer);
     setSourceTimeframe(defaultSourceTimeframeForStructureLayer(layer));
+    const targetChartTf = defaultChartTimeframeForStructureLayer(layer);
+    if (String(timeframe).toUpperCase() !== targetChartTf) {
+      switchTimeframePreserveCase(targetChartTf);
+      setMessage(`Scope ${layer}: chart locked to ${targetChartTf}. Parent HTF ranges stay visible as context lines.`);
+    }
+  };
+  const selectRangeScope = (scope: RangeScope) => {
+    setRangeScope(scope);
+    if (scope === 'MINOR') {
+      const major = latestSavedRangeForLayer(structureLayer, savedStructuralRanges, selectedParentRangeId, true);
+      if (major) setSelectedParentRangeId(String(major.range_id || major.id));
+    } else {
+      const parentLayer = expectedParentStructureLayer(structureLayer);
+      if (parentLayer) {
+        const parent = latestSavedRangeForLayer(parentLayer, savedStructuralRanges, selectedParentRangeId, true);
+        if (parent) setSelectedParentRangeId(String(parent.range_id || parent.id));
+      } else {
+        setSelectedParentRangeId('');
+      }
+    }
   };
   const structuralMappingRibbonEl = (
     <div className={`structuralMappingRibbon ${chartFullscreen ? 'ribbonDocked ribbonCompact' : 'ribbonInline'}`} aria-label="Structural mapping scope">
       {!chartFullscreen && <div className="ribbonScopeRow">
-        <span className="ribbonLabel">Scope</span>
+        <span className="ribbonLabel">Layer</span>
         <div className="markModeStrip compact ribbonScopeStrip">
           {STRUCTURE_LAYERS.map(layer => (
             <button key={layer} type="button" className={structureLayer === layer ? 'active' : ''} onClick={() => selectStructureLayer(layer)}>{layer}</button>
           ))}
         </div>
       </div>}
+      {!chartFullscreen && <div className="ribbonScopeRow">
+        <span className="ribbonLabel">Role</span>
+        <div className="markModeStrip compact ribbonScopeStrip">
+          {RANGE_SCOPES.map(scope => (
+            <button key={scope} type="button" className={rangeScope === scope ? 'active' : ''} onClick={() => selectRangeScope(scope)}>{scope}</button>
+          ))}
+        </div>
+      </div>}
       {chartFullscreen && <div className="ribbonScopeStrip ribbonScopeChips" role="group" aria-label="Mapping scope">
         {STRUCTURE_LAYERS.map(layer => (
           <button key={layer} type="button" className={`scopeChip ${structureLayer === layer ? 'active' : ''}`} title={layer} onClick={() => selectStructureLayer(layer)}>{STRUCTURE_LAYER_CHIP[layer]}</button>
+        ))}
+        {RANGE_SCOPES.map(scope => (
+          <button key={scope} type="button" className={`scopeChip ${rangeScope === scope ? 'active' : ''}`} title={scope} onClick={() => selectRangeScope(scope)}>{scope === 'MAJOR' ? 'Maj' : 'Min'}</button>
         ))}
       </div>}
       <label className="ribbonSourceTf" title="Structural source timeframe">{chartFullscreen ? '' : 'Source TF '}
@@ -6081,6 +6699,9 @@ function MapStudio({ symbol }: { symbol:string }) {
           {parentLinkContextLabel.parentLine.replace(/^Parent:\s*/, '')}
         </span>
       )}
+      <span className="ribbonChartLock" title={`RH/RL plotting locked to ${mappingAllowedChartTfs.join('/')} chart for ${structureLayer} scope`}>
+        {chartFullscreen ? `Plot ${mappingAllowedChartTfs.join('/')}` : `Plot chart: ${mappingAllowedChartTfs.join(' / ')}`}
+      </span>
       {saveBlockReason && (
         <span className="ribbonSaveBlock" title={saveBlockReason}>{saveBlockReason}</span>
       )}
@@ -6126,12 +6747,15 @@ function MapStudio({ symbol }: { symbol:string }) {
 
     <div className={`mapStudioToolbar compactMapToolbar ${topRibbonCollapsed ? 'collapsedRibbon' : ''}`}>
       <button className="ribbonToggle" onClick={()=>setTopRibbonCollapsed(v=>!v)}>{topRibbonCollapsed ? 'Show ribbon' : 'Hide ribbon'}</button>
-      <div className="tfTabs">{MAP_TIMEFRAMES.map(tf=><button key={tf} className={timeframe===tf?'active':''} onClick={()=>switchTimeframePreserveCase(tf)}>{tf}</button>)}</div>
+      <div className="tfTabs">{MAP_TIMEFRAMES.map(tf=>{
+        const locked = showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
+        return <button key={tf} type="button" className={`${timeframe===tf?'active':''}${locked?' tfLocked':''}`} disabled={locked} title={locked ? `Blocked while mapping ${structureLayer}. Change scope or use ${mappingAllowedChartTfs.join('/')}.` : `Switch to ${tf}`} onClick={()=>handleChartTfSwitch(tf)}>{tf}</button>;
+      })}</div>
       {!topRibbonCollapsed && <>
       <button className={scaleMode==='auto'?'active':''} onClick={()=>setScaleMode('auto')}>Auto</button>
       <button className={scaleMode==='range'?'active':''} onClick={()=>setScaleMode('range')}>Range</button>
       <button className={gpsMode==='active'?'active':''} onClick={()=>setGpsMode('active')}>GPS</button>
-      <button className={candleReplayMode?'active replayActiveBtn':''} onClick={()=>setCandleReplayMode(x=>!x)}>Replay</button>
+      <button className={candleReplayMode?'active replayActiveBtn':''} onClick={toggleBarReplay} title="TradingView-style bar replay">Bar Replay</button>
       <button className={chartFullscreen?'active':''} onClick={()=>setChartFullscreen(v=>!v)}>{chartFullscreen ? 'Exit Full' : 'Full Chart'}</button>
       <select className="cameraModeSelect" value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)} title="Camera mode"><option value="AUTO">Auto cam</option><option value="LOCKED">Locked cam</option><option value="CASE">Case cam</option><option value="REPLAY">Replay cam</option></select>
       <div className="scaleNudges"><button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}x</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button><button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}x</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button><button onClick={resetCameraScale}>Reset</button></div>
@@ -6162,9 +6786,9 @@ function MapStudio({ symbol }: { symbol:string }) {
 
     {cursor && <div className="crosshairReadout">
       <b>{shortTime(cursor.time, timeframe)}</b>
-      <span>Price {cursor.price?.toFixed(2)}</span>
+      <span>{cursor.ohlc ? `C ${cursor.ohlc.close.toFixed(2)}` : `Price ${cursor.price?.toFixed(2)}`}</span>
+      {cursor.ohlc && <span>O {cursor.ohlc.open.toFixed(2)} · H {cursor.ohlc.high.toFixed(2)} · L {cursor.ohlc.low.toFixed(2)}</span>}
       <span>{cursor.zone || 'No range'}{cursor.pct !== undefined ? ` · ${cursor.pct.toFixed(2)}%` : ''}</span>
-      {cursor.ohlc && <span>O {cursor.ohlc.open.toFixed(2)} H {cursor.ohlc.high.toFixed(2)} L {cursor.ohlc.low.toFixed(2)} C {cursor.ohlc.close.toFixed(2)}</span>}
     </div>}
 
     <div className={`d3Workspace ${chartFullscreen ? 'chartFullscreenMode' : ''}`}>
@@ -6180,13 +6804,12 @@ function MapStudio({ symbol }: { symbol:string }) {
           <div><strong>{currentPlaybackFrame.lookahead_result || 'RAW'}</strong><span>{currentPlaybackFrame.trigger_event}</span></div>
         </div>}
         {candleReplayMode && replayCandle && <div className="chartReplayOverlay">
-          <b>{timeframe} replay</b>
+          <b>Bar Replay · {timeframe}</b>
           <span>{effectiveReplayIndex + 1}/{candles.length} · {shortTime(replayCandle.time, timeframe)}</span>
-          <span>O {replayCandle.open.toFixed(2)} · H {replayCandle.high.toFixed(2)} · L {replayCandle.low.toFixed(2)} · C {replayCandle.close.toFixed(2)}</span>
-          <span>{selectedCandle ? `Selected ${shortTime(selectedCandle.time, timeframe)}` : 'Replay cursor active · inspect-click any candle to scrub back'}</span>
+          <span>{replaySelectBarMode ? 'Scrub tool: click chart to set replay bar' : candleReplayPlaying ? 'Playing…' : 'Use Scrub tool to move replay cursor'}</span>
         </div>}
         {activeParentRangeOverlay.length > 0 && <div className="parentRangeMiniBar" title="Parent range reference only. Jump/replay controls moved out of the chart body because apparently buttons enjoy standing in front of candles.">
-          <b>{activeParentRangeOverlay[0]?.timeframe} parent</b>
+          <b>{activeParentRangeOverlay[0]?.structureLayer || activeParentRangeOverlay[0]?.timeframe} parent</b>
           <span>{activeParentRangeOverlay.map(x=>`${x.kind.toUpperCase()} ${Number(x.price).toFixed(2)}`).join(' · ')}</span>
         </div>}
         {!chartFullscreen && showStructuralMappingRibbon && structuralMappingRibbonEl}
@@ -6207,17 +6830,41 @@ function MapStudio({ symbol }: { symbol:string }) {
           {(structuralRangeDraftDirty || structuralBosDraftDirty) && <span className="quickDraftStatus dirty" title="Unsaved draft">draft</span>}
           {lastSavedQuickEvent && <span className="quickDraftStatus saved" title={`Last: ${lastSavedQuickEvent.role} ${lastSavedQuickEvent.source_timeframe}`}>{lastSavedQuickEvent.role}</span>}
           <span className="quickAnchorDivider" />
-          <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')} title="Select tool">Sel</button>
-          <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')} title="Scrub replay">Scrub</button>
+          <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')} title="Select candle for mapping">Sel</button>
+          <button className={toolMode==='scrub'?'active':''} onClick={()=>setToolMode('scrub')} disabled={!candleReplayMode} title="Scrub replay cursor">Scrub</button>
+          <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')} title="Pan chart">Pan</button>
           <button onClick={()=>setChartFullscreen(false)} title="Exit fullscreen">Exit</button>
         </div>
         </div>}
         {chartFullscreen && <div className="fullscreenTfDock" aria-label="Fullscreen timeframe controls">
-          {(['MN1','W1','D1','H4','H1','M15'] as string[]).map(tf => <button key={tf} className={timeframe===tf?'active':''} onClick={()=>switchTimeframePreserveCase(tf)}>{tf}</button>)}
+          {(['MN1','W1','D1','H4','H1','M15'] as string[]).map(tf => {
+            const locked = showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
+            return <button key={tf} type="button" className={`${timeframe===tf?'active':''}${locked?' tfLocked':''}`} disabled={locked} title={locked ? `Blocked while mapping ${structureLayer}` : tf} onClick={()=>handleChartTfSwitch(tf)}>{tf}</button>;
+          })}
           <select value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)}><option value="AUTO">Auto</option><option value="LOCKED">Lock</option><option value="CASE">Case</option><option value="REPLAY">Replay</option></select>
         </div>}
         <div className="chartMapStage">
-        <div className="chartGestureHint" aria-hidden="true">Drag to pan · Pinch or scroll to zoom · Drag green price strip up/down</div>
+        {cursor && <div className="chartCrosshairHud" aria-live="polite">
+          <b>{shortTime(cursor.time, timeframe)}</b>
+          <span>{cursor.ohlc ? `C ${cursor.ohlc.close.toFixed(2)}` : `Price ${cursor.price?.toFixed(2)}`}</span>
+          {cursor.ohlc && <span>O {cursor.ohlc.open.toFixed(2)} · H {cursor.ohlc.high.toFixed(2)} · L {cursor.ohlc.low.toFixed(2)}</span>}
+        </div>}
+        <div className="chartGestureHint" aria-hidden="true">Drag to pan · Scroll to zoom · Price strip drag · Draw tools save per case/timeframe</div>
+        <div className="chartDrawToolbar" aria-label="Chart drawing tools">
+          <button type="button" className={chartDrawTool === 'off' && toolMode === 'inspect' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('inspect'); }} title="Pan chart">Pan</button>
+          <button type="button" className={toolMode === 'select' && chartDrawTool === 'off' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('select'); }} title="Select candle">Sel</button>
+          <button type="button" className={toolMode === 'scrub' && chartDrawTool === 'off' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('scrub'); }} disabled={!candleReplayMode} title="Scrub replay bar">Scrub</button>
+          <span className="chartDrawDivider" />
+          <button type="button" className={chartDrawTool === 'hline' ? 'active' : ''} onClick={() => setChartDrawTool('hline')} title="Horizontal line (resize width in Edit mode)">H</button>
+          <button type="button" className={chartDrawTool === 'vline' ? 'active' : ''} onClick={() => setChartDrawTool('vline')} title="Vertical line (resize in Edit mode)">V</button>
+          <button type="button" className={chartDrawTool === 'text' ? 'active' : ''} onClick={() => setChartDrawTool('text')} title="Text label">Txt</button>
+          <button type="button" className={chartDrawTool === 'edit' ? 'active' : ''} onClick={() => setChartDrawTool('edit')} title="Move / resize drawings">Edit</button>
+          <span className="chartDrawDivider" />
+          {CHART_DRAWING_COLORS.map((c) => (
+            <button key={c} type="button" className={`drawColorSwatch${chartDrawColor === c ? ' active' : ''}`} style={{ background: c }} onClick={() => setChartDrawColor(c)} title={`Color ${c}`} aria-label={`Color ${c}`} />
+          ))}
+          <button type="button" className="chartDrawClearBtn" disabled={!chartDrawings.length} onClick={() => { setChartDrawings([]); setSelectedDrawingId(null); }} title="Clear drawings for this case/timeframe">Clear</button>
+        </div>
         <D3CandleMap
           candles={candles}
           replayCutTime={candleReplayMode && replayCandle ? replayCandle.time : null}
@@ -6232,19 +6879,25 @@ function MapStudio({ symbol }: { symbol:string }) {
           caseHigh={activeCaseLedger?.high || ''}
           caseLow={activeCaseLedger?.low || ''}
           parentOverlays={[]}
-          savedRangeOverlays={chartSavedRangeOverlays}
-          draftRangeOverlay={chartDraftRangeOverlay}
+          savedRangeOverlays={[]}
+          draftRangeOverlay={null}
           showFibOverlays={false}
           events={visibleEvents}
           selectedCandleTime={selectedCandle?.time || null}
           selectedCandlePrice={selectedCandlePoint?.price ?? null}
           eventType={eventType}
           toolMode={toolMode}
+          chartDrawings={chartDrawings}
+          chartDrawTool={chartDrawTool}
+          chartDrawColor={chartDrawColor}
+          selectedDrawingId={selectedDrawingId}
+          onDrawingsChange={updateChartDrawings}
+          onSelectedDrawingChange={setSelectedDrawingId}
           scaleMode={scaleMode}
           jumpLatestToken={jumpToken}
           fitAllToken={fitToken}
           goDate={jumpDate}
-          replayCursorEnabled={candleReplayMode}
+          replayCursorEnabled={candleReplayMode && toolMode === 'scrub'}
           onReplayCursorChange={setCandleReplayFrameByTime}
           onCursor={setCursor}
           onAddEvent={addEventAt}
@@ -6264,7 +6917,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           candleWidthScale={candleWidthScale}
           priceZoomScale={priceZoomScale}
           onCameraDomainChange={(dom)=>{ if (cameraMode === 'LOCKED') setCameraDomainByCaseTf(prev=>({ ...prev, [cameraKey]: dom })); }}
-          onVisibleDomainChange={(dom)=>{ visibleCameraDomainRef.current = dom; setVisibleBarCount(Number(dom.visibleBars || 0)); }}
+          onVisibleDomainChange={(dom)=>{ visibleCameraDomainRef.current = dom; const next = Number(dom.visibleBars || 0); setVisibleBarCount(prev => (prev === next ? prev : next)); }}
           onRangeChange={({high, low, start, end})=>{
             if (typeof high === 'number' && Number.isFinite(high)) setRangeHigh(String(Number(high.toFixed(2))));
             if (typeof low === 'number' && Number.isFinite(low)) setRangeLow(String(Number(low.toFixed(2))));
@@ -6277,7 +6930,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       {chartFullscreen && <div className="fullscreenBottomBar" aria-label="Fullscreen chart controls">
         <div className="fullscreenReplayDock" aria-label="Fullscreen replay controls">
           <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0}>◀</button>
-          <button className={candleReplayPlaying?'active':''} onClick={()=>{ setCandleReplayMode(true); setCandleReplayPlaying(x=>!x); }} disabled={!candles.length}>{candleReplayPlaying ? 'Pause' : 'Play'}</button>
+          <button className={candleReplayPlaying?'active':''} onClick={toggleCandleReplayPlay} disabled={!candles.length}>{candleReplayPlaying ? 'Pause' : 'Play'}</button>
           <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex + 1)} disabled={!candles.length || effectiveReplayIndex >= candles.length - 1}>▶</button>
           <button onClick={jumpToParentRangeStart} disabled={!activeParentRangeOverlay.length}>Parent</button>
           <button onClick={startChildReplayFromParentStart} disabled={!activeParentRangeOverlay.length}>Child Replay</button>
@@ -6467,6 +7120,7 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <div className="markModeStrip compact">
                   <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')}>Pan</button>
                   <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')}>Click Candle</button>
+                  <button className={toolMode==='scrub'?'active':''} onClick={()=>setToolMode('scrub')} disabled={!candleReplayMode}>Scrub Replay</button>
                 </div>
                 <div className="markQueueChips">
                   <b>Queue</b>
@@ -6494,9 +7148,10 @@ function MapStudio({ symbol }: { symbol:string }) {
 
           {markWorkspaceMode === 'case' && <div className="markModePane caseQuickPane">
             <div className="caseQuickHeader"><div><h3>Case Save</h3><p className="mutedSmall">Update Case saves the container only. Use Save Range for RH/RL.</p></div></div>
-            <div className="activeCaseCard"><span>Active Case</span><b>{activeCaseDisplayId ? activeCaseLabel || `#${activeCaseDisplayId}` : 'None selected'}</b><button onClick={resetActiveCase} disabled={!activeCaseDisplayId}>Clear Active</button></div>
+            <div className="activeCaseCard"><span>Active Case</span><b>{activeCaseDisplayId ? (cleanCaseDisplayName(seedName) || cleanCaseDisplayName(activeCaseLabel)) : 'None'}</b><button onClick={resetActiveCase} disabled={!activeCaseDisplayId}>Clear Active</button></div>
             <div className="caseActionRow">
-              <button className="gpsSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case'}</button>
+              <button className="gpsSaveBtn" onClick={startNewCase}>New Case</button>
+              <button className="gpsSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? 'Saving...' : (getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case')}</button>
               <button className="gpsSaveBtn danger" onClick={deleteActiveCase} disabled={!activeCaseId}>Delete Active</button>
             </div>
             {caseSavedNotice && <div className="caseSavedNotice">✓ {caseSavedNotice}</div>}
@@ -6504,7 +7159,7 @@ function MapStudio({ symbol }: { symbol:string }) {
               {(['MACRO','WEEKLY','DAILY','INTRADAY','MICRO'] as CaseScope[]).map(scope=><button key={scope} className={caseScope===scope?'active':''} onClick={()=>setCaseScope(scope)}>{scopeLabel(scope)}</button>)}
             </div>
             <div className="seedGrid compactCaseGrid">
-              <label>Case Name<input value={seedName} onChange={e=>setSeedName(e.target.value)} /></label>
+              <label>Case Name<input value={seedName} onChange={e=>setSeedName(e.target.value)} placeholder="XAUUSD 2020 Q1" /></label>
               <label>Replay Candle<input readOnly value={activeReplayCandle ? `${shortTime(activeReplayCandle.time, timeframe)} · C ${activeReplayCandle.close.toFixed(2)}` : 'No candle selected'} /></label>
               <label>Case High<input value={caseHigh || ''} onChange={e=>setSeedAnchors((p:any)=>({...p, case_high:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} /></label>
               <label>Case Low<input value={caseLow || ''} onChange={e=>setSeedAnchors((p:any)=>({...p, case_low:e.target.value, case_scope:caseScope, case_timeframe:caseTimeframe}))} /></label>
@@ -6515,6 +7170,7 @@ function MapStudio({ symbol }: { symbol:string }) {
               <button onClick={autoFillCaseAnchors}>Auto-fill All HTF Marks</button>
               <button onClick={()=>captureCaseAnchor('high')}>Use Candle High as Case H</button>
               <button onClick={()=>captureCaseAnchor('low')}>Use Candle Low as Case L</button>
+              <button onClick={applyQuarterCaseName}>Name Quarter</button>
               <button onClick={buildCaseNameFromWindow}>Name From Window</button>
               <button onClick={buildYtdCaseName}>Name YTD</button>
             </div>
@@ -6537,10 +7193,27 @@ function MapStudio({ symbol }: { symbol:string }) {
       <div className="activeCaseCard compactActiveCase">
         <div className="activeCaseMain">
           <span>Active Case</span>
-          <b>{activeCaseDisplayId ? activeCaseLabel || `#${activeCaseDisplayId}` : 'None selected'}</b>
+          <b>{activeCaseDisplayId ? (cleanCaseDisplayName(seedName) || cleanCaseDisplayName(activeCaseLabel) || activeCaseDisplayId.slice(0, 8)) : 'None — start below'}</b>
+        </div>
+        <label className="caseNameField">Case name
+          <input value={seedName} onChange={e=>setSeedName(e.target.value)} placeholder="XAUUSD 2020 Q1" />
+        </label>
+        <div className="caseNameQuickRow">
+          <button type="button" className="caseToolbarBtn caseToolbarBtnMaster" onClick={applyMasterCaseName} title="One master tree 2019–2026">
+            Master 2019–2026
+          </button>
+          <button type="button" className="caseToolbarBtn" onClick={applyQuarterCaseName} title="Name from selected/replay candle quarter">Name Quarter</button>
+          {[1, 2, 3, 4].map((q) => {
+            const anchor = quarterFromTime(selectedCandle?.time || replayCandle?.time || activeReplayCandle?.time);
+            const year = anchor?.year || new Date().getFullYear();
+            return (
+              <button key={q} type="button" className="caseToolbarBtn caseQuarterChip" onClick={() => applyQuarterCaseNameFor(year, q)}>{year} Q{q}</button>
+            );
+          })}
         </div>
         <div className="caseManagerToolbar">
-          <button type="button" className="caseToolbarBtn" onClick={resetActiveCase} disabled={!activeCaseDisplayId}>Clear Active</button>
+          <button type="button" className="caseToolbarBtn" onClick={startNewCase}>New Case</button>
+          <button type="button" className="caseToolbarBtn" onClick={resetActiveCase} disabled={!activeCaseDisplayId && !cleanCaseDisplayName(seedName)}>Clear Active</button>
           <button type="button" className="caseToolbarBtn primary" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? '…' : (getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case')}</button>
         </div>
       </div>
@@ -6561,10 +7234,12 @@ function MapStudio({ symbol }: { symbol:string }) {
         {savedCaseIdeas.map((x:any) => {
           const caseKey = String(x.raw_case_id || x.id || '');
           const isActive = caseKey === String(activeCaseDisplayId || '');
-          const label = x.is_raw_mapping_case ? `Raw ${caseKey.slice(0, 8)}` : `#${x.id}`;
+          const displayName = cleanCaseDisplayName(x.seed_name || x.raw_case?.case_name) || 'Unnamed case';
+          const tf = String(x.case_timeframe || x.replay_timeframe || x.raw_case?.base_timeframe || 'W1').toUpperCase();
           return (
-            <button key={caseKey} type="button" className={isActive ? 'active' : ''} onClick={() => openSavedCase(x)}>
-              {label} {x.seed_name} · {shortTime(x.replay_candle_time, x.case_timeframe || x.replay_timeframe)}
+            <button key={caseKey} type="button" className={`savedCaseRow ${isActive ? 'active' : ''}`} onClick={() => openSavedCase(x)}>
+              <span className="savedCaseName">{displayName}</span>
+              <span className="savedCaseMeta">{tf}{x.replay_candle_time ? ` · ${shortTime(x.replay_candle_time, tf)}` : ''}</span>
             </button>
           );
         })}
@@ -6588,6 +7263,7 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button type="button" onClick={autoFillCaseAnchors}>Auto-fill HTF</button>
           <button type="button" onClick={()=>captureCaseAnchor('high')}>Case H</button>
           <button type="button" onClick={()=>captureCaseAnchor('low')}>Case L</button>
+          <button type="button" onClick={applyQuarterCaseName}>Name Quarter</button>
           <button type="button" onClick={buildCaseNameFromWindow}>Name Window</button>
           <button type="button" onClick={buildYtdCaseName}>Name YTD</button>
         </div>
@@ -6608,19 +7284,56 @@ function MapStudio({ symbol }: { symbol:string }) {
       </div>
     </div>
 
-    {candleReplayMode && <div className="fixedBottomReplayDock">
-      <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0}>◀</button>
-      <button className={candleReplayPlaying?'active':''} onClick={()=>setCandleReplayPlaying(x=>!x)} disabled={!candles.length}>{candleReplayPlaying ? 'Pause' : 'Play'}</button>
-      <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex + 1)} disabled={!candles.length || effectiveReplayIndex >= candles.length - 1}>▶</button>
-      <input className="replaySlider dockReplaySlider" type="range" min={0} max={Math.max(0, candles.length - 1)} value={Math.min(effectiveReplayIndex, Math.max(0, candles.length - 1))} onChange={e=>setCandleReplayFrame(Number(e.target.value))} disabled={!candles.length} />
-      <label className="speedInput dockSpeedInput">Speed<input type="number" min={120} step={50} value={candleReplaySpeedMs} onChange={e=>setCandleReplaySpeedMs(Math.max(120, Number(e.target.value)||550))} /></label>
-      <button onClick={jumpCandleReplayLatest} disabled={!candles.length}>Latest</button>
-      <span className="dockMetaText">{candles.length ? `Cursor ${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)} · C ${replayCandle.close.toFixed(2)}` : ''}</span>
+    {candleReplayMode && <div className="fixedBottomReplayDock tvReplayDock" aria-label="Bar replay controls">
+      <div className="tvReplayStartGroup">
+        <button
+          type="button"
+          className={`tvReplaySelectBar${replaySelectBarMode ? ' active' : ''}`}
+          onClick={() => { setReplayStartMenuOpen((o) => !o); setReplaySelectBarMode(true); }}
+          disabled={!candles.length}
+          title="Select starting point"
+        >
+          Select bar {replayStartMenuOpen ? '▾' : '▴'}
+        </button>
+        {replayStartMenuOpen && <div className="tvReplayStartMenu" role="menu">
+          <button type="button" role="menuitem" onClick={() => { setReplaySelectBarMode(true); setReplayStartMenuOpen(false); setMessage('Click any candle on the chart to set replay start.'); }}>Bar — click chart</button>
+          <button type="button" role="menuitem" onClick={jumpReplayToDate}>Date… (use jump date)</button>
+          <button type="button" role="menuitem" onClick={() => { setCandleReplayFrame(0); setReplayStartMenuOpen(false); }}>First available date</button>
+          <button type="button" role="menuitem" onClick={pickRandomReplayBar}>Random bar</button>
+        </div>}
+      </div>
+      <button type="button" onClick={() => setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0} title="Step back one bar">⏮</button>
+      <button type="button" className={candleReplayPlaying ? 'active' : ''} onClick={toggleCandleReplayPlay} disabled={!candles.length} title="Play / pause">{candleReplayPlaying ? 'Pause' : 'Play'}</button>
+      <button type="button" onClick={() => setCandleReplayFrame(effectiveReplayIndex + 1)} disabled={!candles.length || effectiveReplayIndex >= candles.length - 1} title="Step forward one bar">⏭</button>
+      <select
+        className="tvReplaySpeed"
+        value={replaySpeedLabel}
+        onChange={(e) => {
+          const opt = REPLAY_SPEED_OPTIONS.find((o) => o.label === e.target.value);
+          if (opt) setCandleReplaySpeedMs(opt.ms);
+        }}
+        title="Playback speed"
+      >
+        {REPLAY_SPEED_OPTIONS.map((o) => <option key={o.label} value={o.label}>{o.label}</option>)}
+      </select>
+      <span className="tvReplayTf">{timeframe}</span>
+      <input
+        className="replaySlider dockReplaySlider tvReplaySlider"
+        type="range"
+        min={0}
+        max={Math.max(0, candles.length - 1)}
+        value={Math.min(effectiveReplayIndex, Math.max(0, candles.length - 1))}
+        onChange={(e) => setCandleReplayFrame(Number(e.target.value))}
+        disabled={!candles.length}
+        title="Scrub replay cursor"
+      />
+      <span className="dockMetaText">{candles.length ? `${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)}` : ''}</span>
+      <button type="button" className="tvReplayExit" onClick={exitBarReplayToLive} disabled={!candles.length} title="Exit replay and jump to latest">⏩|</button>
     </div>}
   </div>;
 }
 
-type ParentRangeOverlayLine = { timeframe:string; kind:'high'|'low'; price:number; label:string; rangeId?:string|number|null; direction?:string; start?:string; end?:string; };
+type ParentRangeOverlayLine = { timeframe:string; structureLayer?:StructureLayer; kind:'high'|'low'; price:number; label:string; rangeId?:string|number|null; direction?:string; start?:string; end?:string; };
 
 function structureLayerLineColor(layer: StructureLayer): string {
   const map: Record<StructureLayer, string> = {
@@ -6633,22 +7346,26 @@ function structureLayerLineColor(layer: StructureLayer): string {
   return map[layer] || '#94a3b8';
 }
 
-function savedRangeLineStyle(status: string, opts?: { isParentContext?: boolean; isActive?: boolean }) {
+function savedRangeLineStyle(status: string, opts?: { isParentContext?: boolean; isActive?: boolean; rangeScope?: RangeScope }) {
   const s = String(status || 'ACTIVE').toUpperCase();
   const broken = s === 'BROKEN' || s === 'ABANDONED' || s === 'INACTIVE' || s === 'REPLACED';
+  const isMinor = opts?.rangeScope === 'MINOR';
 
-  if (opts?.isActive && !broken) {
-    return { opacity: 0.95, dash: '', width: 2.4 };
-  }
-  if (broken) {
+  if (opts?.isParentContext) {
     return {
-      opacity: opts?.isParentContext ? 0.22 : 0.4,
-      dash: '5 5',
-      width: opts?.isParentContext ? 1.0 : 1.25,
+      opacity: broken ? 0.84 : 0.95,
+      dash: broken ? '8 5' : (isMinor ? '4 4' : ''),
+      width: isMinor ? 1.8 : 2.2,
     };
   }
-  if (opts?.isParentContext) {
-    return { opacity: 0.3, dash: '4 7', width: 1.1 };
+  if (opts?.isActive && !broken) {
+    return { opacity: 0.95, dash: isMinor ? '5 4' : '', width: isMinor ? 2.2 : 2.4 };
+  }
+  if (broken) {
+    return { opacity: 0.4, dash: '5 5', width: 1.25 };
+  }
+  if (isMinor) {
+    return { opacity: 0.72, dash: '4 5', width: 1.35 };
   }
   return { opacity: 0.62, dash: '3 6', width: 1.5 };
 }
@@ -6678,12 +7395,18 @@ type D3CandleMapProps = {
   selectedCandleTime?:string|null;
   selectedCandlePrice?:number|null;
   eventType:string;
-  toolMode:'inspect'|'plot'|'drag'|'range'|'select';
+  toolMode:'inspect'|'plot'|'drag'|'range'|'select'|'scrub';
+  chartDrawings?:ChartDrawing[];
+  chartDrawTool?:ChartDrawTool;
+  chartDrawColor?:string;
+  selectedDrawingId?:string|null;
+  onDrawingsChange?:(drawings:ChartDrawing[])=>void;
+  onSelectedDrawingChange?:(id:string|null)=>void;
   scaleMode:'auto'|'range';
   jumpLatestToken:number;
   fitAllToken:number;
   goDate:string;
-  onCursor:(v:any)=>void;
+  onCursor:(v:{time?:string; price?:number; zone?:string; pct?:number; ohlc?:Candle|null}|null)=>void;
   onAddEvent:(info:{time?:string; price:number; candle?:Candle|null})=>void;
   onCandleSelect?:(info:{candle:Candle; price:number; clientX:number; clientY:number})=>void;
   replayCursorEnabled?:boolean;
@@ -6816,6 +7539,62 @@ function clampChartPlotXY(mx: number, my: number, metrics: ChartSurfaceMetrics):
   };
 }
 
+type CrosshairSnap = {
+  cx: number;
+  cy: number;
+  candle: Candle;
+  price: number;
+  priceTag: string;
+  dateText: string;
+};
+
+function nearestVisibleCandle(date: Date, candles: Candle[]): Candle | null {
+  if (!candles.length) return null;
+  const t = date.getTime();
+  let best = candles[0];
+  let dist = Math.abs(candleTimeMs(best.time) - t);
+  for (const c of candles) {
+    const d = Math.abs(candleTimeMs(c.time) - t);
+    if (d < dist) { best = c; dist = d; }
+  }
+  return best;
+}
+
+function snapCrosshairToCandle(
+  mx: number,
+  my: number,
+  visible: Candle[],
+  renderData: Candle[],
+  zx: d3.ScaleTime<number, number>,
+  y: d3.ScaleLinear<number, number>,
+  metrics: ChartSurfaceMetrics,
+  timeframe: string,
+): CrosshairSnap | null {
+  const { x: sx, y: sy } = clampChartPlotXY(mx, my, metrics);
+  const pool = visible.length ? visible : renderData;
+  const c = nearestVisibleCandle(zx.invert(sx), pool);
+  if (!c) return null;
+  const cx = snapChartStrokePx(zx(candleTimeDate(c.time)));
+  const rawPrice = y.invert(sy);
+  const candidates = [
+    { price: c.close, tag: 'C' },
+    { price: c.open, tag: 'O' },
+    { price: c.high, tag: 'H' },
+    { price: c.low, tag: 'L' },
+  ];
+  const pick = candidates.reduce((best, cur) =>
+    Math.abs(cur.price - rawPrice) < Math.abs(best.price - rawPrice) ? cur : best,
+  );
+  return {
+    cx,
+    cy: snapChartPx(y(pick.price)),
+    candle: c,
+    price: pick.price,
+    priceTag: pick.tag,
+    dateText: shortTime(c.time, timeframe),
+  };
+}
+
 function priceLineY(yScale: d3.ScaleLinear<number, number>, price: number): number {
   return snapChartStrokePx(yScale(Number(price)));
 }
@@ -6846,17 +7625,13 @@ function D3CandleMap(props:D3CandleMapProps) {
   const layoutMetricsRef = useRef<ChartSurfaceMetrics | null>(null);
   const cursorRafRef = useRef<number | null>(null);
   const latestCursorPayloadRef = useRef<any>(null);
+  const hoverActiveRef = useRef(false);
+  const hoverPointerRef = useRef<{ mx: number; my: number } | null>(null);
+  const lastCursorNotifyKeyRef = useRef('');
+  const manualZoomRef = useRef(false);
+  const lastReplayPanTimeRef = useRef('');
 
-  const nearestCandle = (date:Date, data:Candle[]) => {
-    if (!data.length) return null;
-    const t = date.getTime();
-    let best = data[0], dist = Math.abs(new Date(data[0].time).getTime()-t);
-    for (const c of data) {
-      const d = Math.abs(new Date(c.time).getTime()-t);
-      if (d < dist) { best = c; dist = d; }
-    }
-    return best;
-  };
+  const nearestCandle = (date:Date, data:Candle[]) => nearestVisibleCandle(date, data);
 
   const scheduleDraw = () => {
     if (drawRafRef.current != null) return;
@@ -6881,7 +7656,10 @@ function D3CandleMap(props:D3CandleMapProps) {
     const svgEl = svgRef.current;
     if (!svgEl) return;
     const metrics = getChartSurfaceMetrics(svgEl);
-    if (!metrics) return;
+    if (!metrics) {
+      scheduleDraw();
+      return;
+    }
     layoutMetricsRef.current = metrics;
     const p = latestProps.current;
     const data = p.candles || [];
@@ -6904,15 +7682,16 @@ function D3CandleMap(props:D3CandleMapProps) {
       return;
     }
 
-    const dateDomainSource = data;
+    const dateDomainSource = renderData;
     const dates = dateDomainSource.map(d => candleTimeDate(d.time)).filter(d => Number.isFinite(d.getTime()));
     const x0 = d3.scaleTime().domain(d3.extent(dates) as [Date,Date]).range([margin.left, margin.left+innerW]);
     let zx = transformRef.current.rescaleX(x0);
     let domain = zx.domain();
-    let visible = renderData.filter(d => {
+    const inDomain = (d: any) => {
       const dt = candleTimeDate(d.time);
       return Number.isFinite(dt.getTime()) && dt >= domain[0] && dt <= domain[1];
-    });
+    };
+    let visible = renderData.filter(inDomain);
     if (!visible.length && renderData.length) {
       const fitBars = targetVisibleBarsForTimeframe(p.timeframe) * 2;
       const tail = renderData.slice(-Math.min(renderData.length, fitBars));
@@ -6923,16 +7702,9 @@ function D3CandleMap(props:D3CandleMapProps) {
         transformRef.current = d3.zoomIdentity;
         zx = transformRef.current.rescaleX(x0);
         domain = zx.domain();
-        visible = renderData.filter(d => {
-          const dt = candleTimeDate(d.time);
-          return Number.isFinite(dt.getTime()) && dt >= domain[0] && dt <= domain[1];
-        });
+        visible = renderData.filter(inDomain);
       }
     }
-    // v081: Do NOT fallback to renderData.slice(-120) when replay cursor moves outside the camera.
-    // That fallback made candle stepping feel like the whole map view reset. The camera/zoom transform
-    // must remain sovereign; if the replay cursor is offscreen, the viewport stays put until the user
-    // pans, clicks Latest/Fit, or uses the slider intentionally.
     const v = visible;
     // v078/v081: auto-scale should breathe around the active viewport, not get pinned by old giant candles.
     // If there are no visible candles after a replay cut, preserve the last y-domain instead of
@@ -7013,12 +7785,13 @@ function D3CandleMap(props:D3CandleMapProps) {
     if (savedRanges.length) {
       const sg = plot.append('g').attr('class','savedRangeLines').attr('pointer-events','none');
       const savedRows = savedRanges.flatMap((r) => {
-        const style = savedRangeLineStyle(r.status, { isParentContext: r.isParentContext, isActive: r.isActive });
+        const style = savedRangeLineStyle(r.status, { isParentContext: r.isParentContext, isActive: r.isActive, rangeScope: r.rangeScope });
         const color = structureLayerLineColor(r.structureLayer);
         const prefix = r.isParentContext ? 'ctx ' : '';
+        const scopeLabel = r.rangeScope === 'MINOR' ? ' MINOR' : '';
         return [
-          { kind:'high' as const, price:r.high, label:`${prefix}#${r.rangeId} ${r.structureLayer} RH`, color, style, rangeId:r.rangeId },
-          { kind:'low' as const, price:r.low, label:`${prefix}#${r.rangeId} ${r.structureLayer} RL`, color, style, rangeId:r.rangeId },
+          { kind:'high' as const, price:r.high, label:`${prefix}#${r.rangeId} ${r.structureLayer}${scopeLabel} RH`, color, style, rangeId:r.rangeId },
+          { kind:'low' as const, price:r.low, label:`${prefix}#${r.rangeId} ${r.structureLayer}${scopeLabel} RL`, color, style, rangeId:r.rangeId },
         ];
       });
       sg.selectAll('line.savedRangeLine').data(savedRows).join('line')
@@ -7032,6 +7805,41 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('stroke-width', (d:any)=>d.style.width)
         .attr('stroke-dasharray', (d:any)=>d.style.dash || null);
       drawRangeLineLabels(sg, savedRows);
+    }
+
+    const parentOverlayLines = safeArray<ParentRangeOverlayLine>(p.parentOverlays || []);
+    if (parentOverlayLines.length) {
+      const pg = plot.append('g').attr('class','parentRangeLines').attr('pointer-events','none');
+      const parentStyle = savedRangeLineStyle('ACTIVE', { isParentContext: true });
+      const savedPriceKeys = new Set(
+        savedRanges.flatMap((r) => [Number(r.high).toFixed(2), Number(r.low).toFixed(2)]),
+      );
+      const parentRows = parentOverlayLines
+        .filter((x) => !savedPriceKeys.has(Number(x.price).toFixed(2)))
+        .map((x) => {
+          const layer = x.structureLayer || 'WEEKLY';
+          const color = structureLayerLineColor(layer);
+          return {
+            kind: x.kind,
+            price: x.price,
+            label: x.label,
+            color,
+            style: parentStyle,
+          };
+        });
+      if (parentRows.length) {
+        pg.selectAll('line.parentRangeLine').data(parentRows).join('line')
+          .attr('class','parentRangeLine')
+          .attr('x1', margin.left)
+          .attr('x2', margin.left + innerW)
+          .attr('y1', (d:any)=>priceLineY(y, Number(d.price)))
+          .attr('y2', (d:any)=>priceLineY(y, Number(d.price)))
+          .attr('stroke', (d:any)=>d.color)
+          .attr('stroke-opacity', (d:any)=>d.style.opacity)
+          .attr('stroke-width', (d:any)=>d.style.width)
+          .attr('stroke-dasharray', (d:any)=>d.style.dash || null);
+        drawRangeLineLabels(pg, parentRows);
+      }
     }
 
     if (p.draftRangeOverlay?.visible) {
@@ -7059,6 +7867,20 @@ function D3CandleMap(props:D3CandleMapProps) {
     const slotW = barSpacingPx;
     const widthScale = Math.max(0.35, Math.min(4, Number(p.candleWidthScale || 1)));
     const candleW = Math.max(2, Math.min(48, snapChartPx(slotW * 0.8 * widthScale)));
+
+    let restoreCrosshairSnap: CrosshairSnap | null = null;
+    if (hoverActiveRef.current && hoverPointerRef.current) {
+      restoreCrosshairSnap = snapCrosshairToCandle(
+        hoverPointerRef.current.mx,
+        hoverPointerRef.current.my,
+        v,
+        renderData,
+        zx,
+        y,
+        metrics,
+        p.timeframe,
+      );
+    }
 
     if (!v.length) {
       svg.append('text')
@@ -7139,6 +7961,28 @@ function D3CandleMap(props:D3CandleMapProps) {
           .attr('fill', color);
       });
 
+    if (replayCutMs && Number.isFinite(replayCutMs) && p.replayCutTime) {
+      const replayCandle = renderData.find((d) => candleTimeMs(d.time) === replayCutMs) || renderData[renderData.length - 1];
+      if (replayCandle) {
+        const cutDate = candleTimeDate(p.replayCutTime);
+        if (Number.isFinite(cutDate.getTime()) && cutDate >= domain[0] && cutDate <= domain[1]) {
+          const cutX = snapChartStrokePx(zx(cutDate));
+          const yHigh = snapChartPx(y(replayCandle.high));
+          const yLow = snapChartPx(y(replayCandle.low));
+          plot.append('rect')
+            .attr('class', 'replayCandleHighlight')
+            .attr('pointer-events', 'none')
+            .attr('x', snapChartPx(cutX - candleW / 2 - 3))
+            .attr('y', yHigh - 3)
+            .attr('width', candleW + 6)
+            .attr('height', Math.max(4, yLow - yHigh + 6))
+            .attr('fill', 'rgba(0,212,170,.08)')
+            .attr('stroke', '#00d4aa')
+            .attr('stroke-width', 2);
+        }
+      }
+    }
+
     // Auto trajectory line intentionally hidden in v048. Route paths should be plotted/refined as saved map coordinates, not drawn as a giant spaghetti noodle.
 
     const xAxis = d3.axisBottom(zx).ticks(8).tickFormat((d:any)=>shortTime(d.toISOString?.() || d, p.timeframe) as any);
@@ -7147,14 +7991,99 @@ function D3CandleMap(props:D3CandleMapProps) {
 
     if (p.selectedCandleTime) {
       const selectedDate = candleTimeDate(p.selectedCandleTime);
+      const isReplayBar = !!(p.replayCutTime && p.selectedCandleTime === p.replayCutTime);
       if (selectedDate >= domain[0] && selectedDate <= domain[1]) {
         const sx = zx(selectedDate);
         const sy = Number.isFinite(Number(p.selectedCandlePrice)) ? y(Number(p.selectedCandlePrice)) : margin.top + innerH / 2;
         const selG = plot.append('g').attr('class','selectedCandleMarker').attr('pointer-events','none');
-        selG.append('line').attr('x1', sx).attr('x2', sx).attr('y1', margin.top).attr('y2', margin.top+innerH).attr('stroke','rgba(255,191,47,.28)').attr('stroke-width',1.5).attr('stroke-dasharray','4 7');
-        selG.append('circle').attr('cx', sx).attr('cy', sy).attr('r',5).attr('fill','#ffbf2f').attr('stroke','#020308').attr('stroke-width',2);
-        selG.append('text').attr('x', sx + 8).attr('y', sy - 8).attr('fill','#ffdf76').attr('font-size',10).attr('font-weight',900).text('SELECTED');
+        if (!isReplayBar) {
+          selG.append('circle').attr('cx', sx).attr('cy', sy).attr('r',5).attr('fill','#ffbf2f').attr('stroke','#020308').attr('stroke-width',2);
+        }
       }
+    }
+
+    const chartDrawings = safeArray<ChartDrawing>(p.chartDrawings || []);
+    const drawTool = p.chartDrawTool || 'off';
+    const drawColor = p.chartDrawColor || CHART_DRAWING_COLORS[0];
+    const selectedDrawId = p.selectedDrawingId || null;
+    if (chartDrawings.length) {
+      const dg = plot.append('g').attr('class', 'userChartDrawings');
+      const plotTop = margin.top;
+      const plotBottom = margin.top + innerH;
+      const plotH = innerH;
+      const yFromRatio = (ratio: number) => plotTop + Math.max(0, Math.min(1, ratio)) * plotH;
+      const xFromRatio = (ratio: number) => margin.left + Math.max(0, Math.min(1, ratio)) * innerW;
+
+      chartDrawings.forEach((raw) => {
+        if (raw.kind === 'hline') {
+          const hd = normalizeHLineDrawing(raw);
+          const py = priceLineY(y, Number(hd.price));
+          const x1 = xFromRatio(hd.xLeftRatio ?? 0);
+          const x2 = xFromRatio(hd.xRightRatio ?? 1);
+          const sel = hd.id === selectedDrawId;
+          const g = dg.append('g').attr('class', 'userDrawing hline').attr('data-id', hd.id);
+          g.append('line')
+            .attr('x1', x1).attr('x2', x2)
+            .attr('y1', py).attr('y2', py)
+            .attr('stroke', hd.color).attr('stroke-width', sel ? 2.4 : 1.8)
+            .attr('stroke-opacity', sel ? 1 : 0.88);
+          g.append('text')
+            .attr('x', x1 + 6).attr('y', py - 4)
+            .attr('fill', hd.color).attr('font-size', 10).attr('font-weight', 800)
+            .text(Number(hd.price).toFixed(2));
+          if (sel && drawTool === 'edit') {
+            g.append('rect').attr('class', 'hlineHandle left')
+              .attr('x', x1 - 5).attr('y', py - 5).attr('width', 10).attr('height', 10)
+              .attr('fill', hd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+            g.append('rect').attr('class', 'hlineHandle right')
+              .attr('x', x2 - 5).attr('y', py - 5).attr('width', 10).attr('height', 10)
+              .attr('fill', hd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+          }
+        } else if (raw.kind === 'vline') {
+          const vd = normalizeVLineDrawing(raw);
+          const t = candleTimeDate(vd.time);
+          if (!Number.isFinite(t.getTime()) || t < domain[0] || t > domain[1]) return;
+          const vx = snapChartStrokePx(zx(t));
+          const y1 = yFromRatio(vd.yTopRatio);
+          const y2 = yFromRatio(vd.yBottomRatio);
+          const sel = vd.id === selectedDrawId;
+          const g = dg.append('g').attr('class', 'userDrawing vline').attr('data-id', vd.id);
+          g.append('line')
+            .attr('x1', vx).attr('x2', vx)
+            .attr('y1', y1).attr('y2', y2)
+            .attr('stroke', vd.color).attr('stroke-width', sel ? 2.4 : 1.8)
+            .attr('stroke-opacity', sel ? 1 : 0.88);
+          if (sel && drawTool === 'edit') {
+            g.append('rect').attr('class', 'vlineHandle top')
+              .attr('x', vx - 5).attr('y', y1 - 5).attr('width', 10).attr('height', 10)
+              .attr('fill', vd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+            g.append('rect').attr('class', 'vlineHandle bottom')
+              .attr('x', vx - 5).attr('y', y2 - 5).attr('width', 10).attr('height', 10)
+              .attr('fill', vd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+          }
+        } else if (raw.kind === 'text') {
+          const t = candleTimeDate(raw.time);
+          if (!Number.isFinite(t.getTime())) return;
+          const tx = zx(t);
+          const ty = y(Number(raw.price));
+          const sel = raw.id === selectedDrawId;
+          const g = dg.append('g').attr('class', 'userDrawing textbox').attr('data-id', raw.id);
+          const label = String(raw.text || '');
+          const boxW = Math.max(48, label.length * 6.8 + 16);
+          g.append('rect')
+            .attr('x', tx + 4).attr('y', ty - 18)
+            .attr('width', boxW).attr('height', 22).attr('rx', 5)
+            .attr('fill', 'rgba(2,6,23,.82)')
+            .attr('stroke', raw.color)
+            .attr('stroke-width', sel ? 2 : 1.2);
+          g.append('text')
+            .attr('x', tx + 12).attr('y', ty - 3)
+            .attr('fill', raw.color).attr('font-size', 11).attr('font-weight', 800)
+            .text(label);
+        }
+      });
+
+      dg.attr('pointer-events', 'none');
     }
 
     const eventG = plot.append('g').attr('class','events');
@@ -7285,61 +8214,169 @@ Date: ${shortTime(d.time,p.timeframe)}`);
         resetPricePan();
       });
 
-    const overlay = svg.append('rect').attr('class','chartPanSurface').attr('x',margin.left).attr('y',margin.top).attr('width',innerW).attr('height',innerH).attr('fill','transparent').attr('cursor', p.toolMode==='plot'?'crosshair':(p.toolMode==='select'?'pointer':'grab')).attr('pointer-events', (p.toolMode==='range' || p.toolMode==='drag') ? 'none' : 'all');
-    const crossG = svg.append('g').attr('pointer-events','none').style('display','none');
-    crossG.append('line').attr('class','cx').attr('y1',margin.top).attr('y2',margin.top+innerH).attr('stroke','rgba(255,255,255,.28)').attr('stroke-dasharray','5 7');
-    crossG.append('line').attr('class','cy').attr('x1',margin.left).attr('x2',margin.left+innerW).attr('stroke','rgba(255,255,255,.28)').attr('stroke-dasharray','5 7');
+    const overlay = svg.append('rect').attr('class','chartPanSurface').attr('x',margin.left).attr('y',margin.top).attr('width',innerW).attr('height',innerH).attr('fill','transparent').attr('cursor', (() => {
+      const dt = p.chartDrawTool || 'off';
+      if (dt === 'hline' || dt === 'vline' || dt === 'text') return 'crosshair';
+      if (dt === 'edit') return 'default';
+      if (p.toolMode==='scrub') return 'crosshair';
+      if (p.toolMode==='plot') return 'crosshair';
+      if (p.toolMode==='select') return 'pointer';
+      return 'grab';
+    })()).attr('pointer-events', (() => {
+      if (drawTool === 'edit') return 'none';
+      return (p.toolMode==='range' || p.toolMode==='drag') ? 'none' : 'all';
+    })());
+    const crossG = svg.append('g').attr('class','chartCrosshair').attr('pointer-events','none').style('display','none');
+    crossG.append('line').attr('class','cx').attr('y1',margin.top).attr('y2',margin.top+innerH).attr('stroke','rgba(255,255,255,.55)').attr('stroke-width',1).attr('stroke-dasharray','4 6');
+    crossG.append('line').attr('class','cy').attr('x1',margin.left).attr('x2',margin.left+innerW).attr('stroke','rgba(0,255,208,.55)').attr('stroke-width',1).attr('stroke-dasharray','4 6');
     const priceBubble = crossG.append('g').attr('class','priceBubble');
-    priceBubble.append('rect').attr('x',4).attr('width',64).attr('height',24).attr('rx',7).attr('fill','rgba(0,0,0,.78)').attr('stroke','rgba(0,255,208,.45)');
-    priceBubble.append('text').attr('x',36).attr('y',16).attr('text-anchor','middle').attr('fill','#00ffd0').attr('font-size',11).attr('font-weight',900);
+    priceBubble.append('rect').attr('x',4).attr('width',88).attr('height',26).attr('rx',7).attr('fill','rgba(2,6,23,.92)').attr('stroke','rgba(0,255,208,.65)').attr('stroke-width',1.2);
+    priceBubble.append('text').attr('x',48).attr('y',17).attr('text-anchor','middle').attr('fill','#00ffd0').attr('font-size',12).attr('font-weight',900);
     const dateBubble = crossG.append('g').attr('class','dateBubble');
-    dateBubble.append('rect').attr('y',height-margin.bottom+22).attr('width',92).attr('height',24).attr('rx',7).attr('fill','rgba(0,0,0,.78)').attr('stroke','rgba(255,191,47,.45)');
-    dateBubble.append('text').attr('y',height-margin.bottom+38).attr('text-anchor','middle').attr('fill','#ffdf76').attr('font-size',11).attr('font-weight',900);
-    overlay.on('mousemove', (event:any)=>{
-      const [mx, my] = chartPointer(event, svgEl);
-      const { x: sx, y: sy } = clampChartPlotXY(mx, my, metrics);
-      const price = y.invert(sy);
-      const date = zx.invert(sx);
-      const c = nearestCandle(date, renderData);
-      const pct = p.hasRange ? zonePercent(price, p.rangeLow, p.rangeHigh) : null;
-      crossG.style('display', null); crossG.select('.cx').attr('x1',sx).attr('x2',sx); crossG.select('.cy').attr('y1',sy).attr('y2',sy);
-      crossG.select('.priceBubble').attr('transform',`translate(0,${sy-12})`);
-      crossG.select('.priceBubble text').text(price.toFixed(2));
-      const dateText = shortTime(c?.time || date.toISOString(), p.timeframe);
-      const dateX = Math.max(margin.left+46, Math.min(margin.left+innerW-46, sx));
-      crossG.select('.dateBubble').attr('transform',`translate(${dateX-46},0)`);
-      crossG.select('.dateBubble text').attr('x',46).text(dateText);
-      latestCursorPayloadRef.current = { time:c?.time || date.toISOString(), price, zone:zoneLabel(pct), pct: pct ?? undefined, ohlc:c };
+    dateBubble.append('rect').attr('y',height-margin.bottom+18).attr('width',118).attr('height',26).attr('rx',7).attr('fill','rgba(2,6,23,.92)').attr('stroke','rgba(255,191,47,.65)').attr('stroke-width',1.2);
+    dateBubble.append('text').attr('y',height-margin.bottom+35).attr('text-anchor','middle').attr('fill','#ffdf76').attr('font-size',12).attr('font-weight',900);
+    const ohlcBubble = crossG.append('g').attr('class','ohlcBubble');
+    ohlcBubble.append('rect').attr('width',220).attr('height',24).attr('rx',7).attr('fill','rgba(2,6,23,.88)').attr('stroke','rgba(148,163,184,.35)').attr('stroke-width',1);
+    ohlcBubble.append('text').attr('x',110).attr('y',16).attr('text-anchor','middle').attr('fill','#e2e8f0').attr('font-size',11).attr('font-weight',800);
+
+    const paintCrosshair = (snap: CrosshairSnap) => {
+      const c = snap.candle;
+      crossG.style('display', null);
+      crossG.selectAll('.hoverCandleHighlight').remove();
+      const yHigh = snapChartPx(y(c.high));
+      const yLow = snapChartPx(y(c.low));
+      crossG.insert('rect', '.cx')
+        .attr('class', 'hoverCandleHighlight')
+        .attr('x', snapChartPx(snap.cx - candleW / 2 - 2))
+        .attr('y', yHigh - 2)
+        .attr('width', candleW + 4)
+        .attr('height', Math.max(4, yLow - yHigh + 4))
+        .attr('fill', 'none')
+        .attr('stroke', 'rgba(255,191,47,.85)')
+        .attr('stroke-width', 1.5);
+      crossG.select('.cx').attr('x1', snap.cx).attr('x2', snap.cx);
+      crossG.select('.cy').attr('y1', snap.cy).attr('y2', snap.cy);
+      crossG.select('.priceBubble').attr('transform', `translate(0,${snap.cy - 13})`);
+      crossG.select('.priceBubble text').text(`${snap.priceTag} ${snap.price.toFixed(2)}`);
+      const dateW = Math.max(118, snap.dateText.length * 7.2 + 18);
+      const dateX = Math.max(margin.left + dateW / 2, Math.min(margin.left + innerW - dateW / 2, snap.cx));
+      crossG.select('.dateBubble rect').attr('width', dateW);
+      crossG.select('.dateBubble').attr('transform', `translate(${dateX - dateW / 2}, 0)`);
+      crossG.select('.dateBubble text').attr('x', dateW / 2).text(snap.dateText);
+      const ohlcText = `O ${c.open.toFixed(2)}  H ${c.high.toFixed(2)}  L ${c.low.toFixed(2)}  C ${c.close.toFixed(2)}`;
+      const ohlcW = Math.max(220, ohlcText.length * 6.4 + 16);
+      crossG.select('.ohlcBubble rect').attr('width', ohlcW);
+      crossG.select('.ohlcBubble').attr('transform', `translate(${Math.max(margin.left + 6, Math.min(margin.left + innerW - ohlcW - 6, snap.cx - ohlcW / 2))}, ${margin.top + 8})`);
+      crossG.select('.ohlcBubble text').attr('x', ohlcW / 2).text(ohlcText);
+    };
+
+    const notifyCrosshair = (snap: CrosshairSnap) => {
+      const key = `${snap.candle.time}:${snap.priceTag}:${snap.price.toFixed(2)}`;
+      if (key === lastCursorNotifyKeyRef.current) return;
+      lastCursorNotifyKeyRef.current = key;
+      const pct = p.hasRange ? zonePercent(snap.price, p.rangeLow, p.rangeHigh) : null;
+      latestCursorPayloadRef.current = {
+        time: snap.candle.time,
+        price: snap.price,
+        zone: zoneLabel(pct),
+        pct: pct ?? undefined,
+        ohlc: snap.candle,
+      };
       if (cursorRafRef.current == null) {
         cursorRafRef.current = window.requestAnimationFrame(() => {
           cursorRafRef.current = null;
           latestProps.current.onCursor(latestCursorPayloadRef.current);
         });
       }
-    }).on('mouseleave', ()=>crossG.style('display','none'))
+    };
+
+    const handleCrosshairPointer = (mx: number, my: number) => {
+      if (!Number.isFinite(mx) || !Number.isFinite(my)) return;
+      const snap = snapCrosshairToCandle(mx, my, v, renderData, zx, y, metrics, p.timeframe);
+      if (!snap) {
+        hoverActiveRef.current = false;
+        hoverPointerRef.current = null;
+        crossG.style('display', 'none');
+        return;
+      }
+      hoverActiveRef.current = true;
+      hoverPointerRef.current = { mx, my };
+      paintCrosshair(snap);
+      notifyCrosshair(snap);
+    };
+
+    const clearCrosshair = () => {
+      hoverActiveRef.current = false;
+      hoverPointerRef.current = null;
+      lastCursorNotifyKeyRef.current = '';
+      crossG.style('display', 'none');
+      latestProps.current.onCursor(null);
+    };
+
+    overlay
+      .on('pointermove', (event:any) => {
+        const [mx, my] = chartPointer(event, svgEl);
+        handleCrosshairPointer(mx, my);
+      })
+      .on('pointerleave', clearCrosshair)
+      .on('pointercancel', clearCrosshair)
       .on('click', (event:any)=>{
         const [mx, my] = chartPointer(event, svgEl);
-        const { x: sx, y: sy } = clampChartPlotXY(mx, my, metrics);
-        const date = zx.invert(sx);
-        const c = nearestCandle(date, renderData);
-        const rawPrice = y.invert(sy);
-        const price = c ? (Math.abs(rawPrice - c.high) < Math.abs(rawPrice - c.low) ? c.high : c.low) : rawPrice;
-        if (latestProps.current.replayCursorEnabled && latestProps.current.toolMode === 'inspect' && c && latestProps.current.onReplayCursorChange) {
-          latestProps.current.onReplayCursorChange(c.time);
+        const snap = snapCrosshairToCandle(mx, my, v, renderData, zx, y, metrics, p.timeframe);
+        const drawTool = latestProps.current.chartDrawTool || 'off';
+        const drawColorNow = latestProps.current.chartDrawColor || CHART_DRAWING_COLORS[0];
+        const { x: px, y: py } = clampChartPlotXY(mx, my, metrics);
+        const price = snap?.price ?? y.invert(py);
+        const c = snap?.candle || nearestCandle(zx.invert(px), renderData);
+
+        if (drawTool === 'edit') {
           return;
         }
-        if (latestProps.current.toolMode !== 'plot' && latestProps.current.toolMode !== 'select') return;
+        if (drawTool === 'hline' && latestProps.current.onDrawingsChange) {
+          const xRatio = Math.max(0, Math.min(1, (px - margin.left) / innerW));
+          latestProps.current.onDrawingsChange([
+            ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
+            { id: newDrawingId(), kind: 'hline', price: Number(price.toFixed(2)), xLeftRatio: Math.max(0, xRatio - 0.35), xRightRatio: Math.min(1, xRatio + 0.35), color: drawColorNow },
+          ]);
+          return;
+        }
+        if (drawTool === 'vline' && latestProps.current.onDrawingsChange && c) {
+          latestProps.current.onDrawingsChange([
+            ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
+            { id: newDrawingId(), kind: 'vline', time: c.time, yTopRatio: 0.15, yBottomRatio: 0.85, color: drawColorNow },
+          ]);
+          return;
+        }
+        if (drawTool === 'text' && latestProps.current.onDrawingsChange && c) {
+          const text = window.prompt('Label text', '')?.trim();
+          if (!text) return;
+          latestProps.current.onDrawingsChange([
+            ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
+            { id: newDrawingId(), kind: 'text', time: c.time, price: Number(price.toFixed(2)), text, color: drawColorNow },
+          ]);
+          return;
+        }
+
+        const scrubActive = latestProps.current.replayCursorEnabled && latestProps.current.toolMode === 'scrub';
+        if (scrubActive && latestProps.current.onReplayCursorChange) {
+          if (c) {
+            latestProps.current.onReplayCursorChange(c.time);
+            return;
+          }
+        }
         if (latestProps.current.toolMode === 'select' && c && latestProps.current.onCandleSelect) {
           latestProps.current.onCandleSelect({ candle:c, price, clientX:event.clientX, clientY:event.clientY });
           return;
         }
-        latestProps.current.onAddEvent({ time:c?.time || date.toISOString(), price, candle:c });
+        if (latestProps.current.toolMode !== 'plot') return;
+        latestProps.current.onAddEvent({ time:c?.time || '', price, candle:c });
       });
 
     const zoomed = (event:any) => {
       if (suppressZoomDrawRef.current) return;
       const next = event.transform;
       transformRef.current = d3.zoomIdentity.translate(next.x, 0).scale(next.k);
+      manualZoomRef.current = true;
       try {
         const pp = latestProps.current;
         if (pp.cameraMode === 'LOCKED') {
@@ -7358,8 +8395,16 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     if (!zoomBehaviorRef.current) {
       zoomBehaviorRef.current = d3.zoom<SVGRectElement, unknown>()
         .scaleExtent([0.35, Math.max(120, data.length / 8)])
-        .wheelDelta((event:any)=> -event.deltaY * (event.deltaMode ? 0.24 : 0.008))
+        .wheelDelta((event:any)=> {
+          const delta = event.deltaMode === 1 ? event.deltaY * 120 : event.deltaY;
+          return -delta * 0.0025;
+        })
         .filter((event:any) => {
+          const drawTool = latestProps.current.chartDrawTool || 'off';
+          if (drawTool === 'hline' || drawTool === 'vline' || drawTool === 'text' || drawTool === 'edit') {
+            if (event.type === 'wheel') return true;
+            return false;
+          }
           const mode = latestProps.current.toolMode;
           if (mode === 'range' || mode === 'drag') return false;
           if (event.type === 'wheel') return true;
@@ -7375,13 +8420,159 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       .translateExtent([[-freePad, 0], [width + freePad, height]])
       .extent([[margin.left, margin.top], [margin.left + innerW, margin.top + innerH]]);
     overlay.call(zoom as any);
+    svg.call(zoom as any);
     applyOverlayZoomTransform(overlay);
     priceStripG.raise();
+    crossG.raise();
+
+    if (drawTool === 'edit' && chartDrawings.length && p.onDrawingsChange) {
+      const plotTop = margin.top;
+      const plotH = innerH;
+      const yFromRatio = (ratio: number) => plotTop + Math.max(0, Math.min(1, ratio)) * plotH;
+      const xFromRatio = (ratio: number) => margin.left + Math.max(0, Math.min(1, ratio)) * innerW;
+      const ig = svg.append('g').attr('class', 'userChartDrawingsInteractive').attr('pointer-events', 'all');
+      chartDrawings.forEach((raw) => {
+        if (raw.kind === 'hline') {
+          const hd = normalizeHLineDrawing(raw);
+          const py = priceLineY(y, Number(hd.price));
+          const x1 = xFromRatio(hd.xLeftRatio ?? 0);
+          const x2 = xFromRatio(hd.xRightRatio ?? 1);
+          const g = ig.append('g').attr('data-id', hd.id);
+          g.append('line')
+            .attr('x1', x1).attr('x2', x2)
+            .attr('y1', py).attr('y2', py)
+            .attr('stroke', 'transparent').attr('stroke-width', 14);
+          if (raw.id === selectedDrawId) {
+            g.append('rect').attr('class', 'hlineHandle left')
+              .attr('x', x1 - 6).attr('y', py - 6).attr('width', 12).attr('height', 12)
+              .attr('fill', hd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+            g.append('rect').attr('class', 'hlineHandle right')
+              .attr('x', x2 - 6).attr('y', py - 6).attr('width', 12).attr('height', 12)
+              .attr('fill', hd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+          }
+        } else if (raw.kind === 'vline') {
+          const vd = normalizeVLineDrawing(raw);
+          const t = candleTimeDate(vd.time);
+          if (!Number.isFinite(t.getTime()) || t < domain[0] || t > domain[1]) return;
+          const vx = snapChartStrokePx(zx(t));
+          const y1 = yFromRatio(vd.yTopRatio);
+          const y2 = yFromRatio(vd.yBottomRatio);
+          const g = ig.append('g').attr('data-id', vd.id);
+          g.append('line')
+            .attr('x1', vx).attr('x2', vx)
+            .attr('y1', y1).attr('y2', y2)
+            .attr('stroke', 'transparent').attr('stroke-width', 14);
+          if (raw.id === selectedDrawId) {
+            g.append('rect').attr('class', 'vlineHandle top')
+              .attr('x', vx - 6).attr('y', y1 - 6).attr('width', 12).attr('height', 12)
+              .attr('fill', vd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+            g.append('rect').attr('class', 'vlineHandle bottom')
+              .attr('x', vx - 6).attr('y', y2 - 6).attr('width', 12).attr('height', 12)
+              .attr('fill', vd.color).attr('stroke', '#020308').attr('stroke-width', 1);
+          }
+        } else if (raw.kind === 'text') {
+          const t = candleTimeDate(raw.time);
+          if (!Number.isFinite(t.getTime())) return;
+          const tx = zx(t);
+          const ty = y(Number(raw.price));
+          const label = String(raw.text || '');
+          const boxW = Math.max(48, label.length * 6.8 + 16);
+          ig.append('rect')
+            .attr('data-id', raw.id)
+            .attr('x', tx + 4).attr('y', ty - 18)
+            .attr('width', boxW).attr('height', 22)
+            .attr('fill', 'transparent');
+        }
+      });
+      ig.selectAll<SVGGElement, unknown>('g[data-id]').each(function () {
+        const node = d3.select(this);
+        const id = String(node.attr('data-id') || '');
+        node.style('cursor', 'grab');
+        node.call(d3.drag<any, unknown>()
+          .on('start', () => { latestProps.current.onSelectedDrawingChange?.(id); })
+          .on('drag', (event: any) => {
+            const pp = latestProps.current;
+            if (!pp.onDrawingsChange) return;
+            const [mx, my] = chartPointer(event.sourceEvent || event, svgEl);
+            const { x: px, y: py } = clampChartPlotXY(mx, my, metrics);
+            const price = y.invert(py);
+            const date = zx.invert(px);
+            const c = nearestCandle(date, renderData);
+            pp.onDrawingsChange(safeArray<ChartDrawing>(pp.chartDrawings || []).map((d) => {
+              if (d.id !== id) return d;
+              if (d.kind === 'hline') return { ...normalizeHLineDrawing(d), price: Number(price.toFixed(2)) };
+              if (d.kind === 'vline') return { ...d, time: c?.time || date.toISOString() };
+              if (d.kind === 'text') return { ...d, time: c?.time || date.toISOString(), price: Number(price.toFixed(2)) };
+              return d;
+            }));
+          }) as any);
+      });
+      ig.selectAll<SVGRectElement, unknown>('rect[data-id]').each(function () {
+        const node = d3.select(this);
+        const id = String(node.attr('data-id') || '');
+        node.style('cursor', 'grab');
+        node.call(d3.drag<any, unknown>()
+          .on('start', () => { latestProps.current.onSelectedDrawingChange?.(id); })
+          .on('drag', (event: any) => {
+            const pp = latestProps.current;
+            if (!pp.onDrawingsChange) return;
+            const [mx, my] = chartPointer(event.sourceEvent || event, svgEl);
+            const { x: px, y: py } = clampChartPlotXY(mx, my, metrics);
+            const price = y.invert(py);
+            const date = zx.invert(px);
+            const c = nearestCandle(date, renderData);
+            pp.onDrawingsChange(safeArray<ChartDrawing>(pp.chartDrawings || []).map((d) => {
+              if (d.id !== id) return d;
+              if (d.kind === 'text') return { ...d, time: c?.time || date.toISOString(), price: Number(price.toFixed(2)) };
+              return d;
+            }));
+          }) as any);
+      });
+      ig.selectAll('rect.vlineHandle').each(function () {
+        const handle = d3.select(this);
+        const parent = d3.select((this as SVGRectElement).parentNode as SVGGElement);
+        const id = String(parent.attr('data-id') || '');
+        const isTop = handle.classed('top');
+        handle.style('cursor', 'ns-resize').call(d3.drag<any, unknown>()
+          .on('drag', (event: any) => {
+            const pp = latestProps.current;
+            if (!pp.onDrawingsChange) return;
+            const [, my] = chartPointer(event.sourceEvent || event, svgEl);
+            const ratio = Math.max(0, Math.min(1, (my - plotTop) / plotH));
+            pp.onDrawingsChange(safeArray<ChartDrawing>(pp.chartDrawings || []).map((d) => {
+              if (d.id !== id || d.kind !== 'vline') return d;
+              const next = normalizeVLineDrawing(d);
+              return isTop ? { ...next, yTopRatio: ratio } : { ...next, yBottomRatio: ratio };
+            }));
+          }) as any);
+      });
+      ig.selectAll('rect.hlineHandle').each(function () {
+        const handle = d3.select(this);
+        const parent = d3.select((this as SVGRectElement).parentNode as SVGGElement);
+        const id = String(parent.attr('data-id') || '');
+        const isLeft = handle.classed('left');
+        handle.style('cursor', 'ew-resize').call(d3.drag<any, unknown>()
+          .on('drag', (event: any) => {
+            const pp = latestProps.current;
+            if (!pp.onDrawingsChange) return;
+            const [mx] = chartPointer(event.sourceEvent || event, svgEl);
+            const ratio = Math.max(0, Math.min(1, (mx - margin.left) / innerW));
+            pp.onDrawingsChange(safeArray<ChartDrawing>(pp.chartDrawings || []).map((d) => {
+              if (d.id !== id || d.kind !== 'hline') return d;
+              const next = normalizeHLineDrawing(d);
+              return isLeft ? { ...next, xLeftRatio: ratio } : { ...next, xRightRatio: ratio };
+            }));
+          }) as any);
+      });
+      ig.raise();
+    }
+    if (restoreCrosshairSnap) paintCrosshair(restoreCrosshairSnap);
     svg.on('wheel.priceZoom', null);
   };
 
   const savedOverlaysKey = (props.savedRangeOverlays || []).map((r) => `${r.rangeId}:${r.high}:${r.low}:${r.isActive}:${r.isParentContext}`).join('|');
   const draftOverlayKey = props.draftRangeOverlay?.visible ? `${props.draftRangeOverlay.high}:${props.draftRangeOverlay.low}:${props.draftRangeOverlay.structureLayer}` : '';
+  const drawingsKey = (props.chartDrawings || []).map((d) => `${d.id}:${d.kind}`).join('|');
 
   useEffect(() => {
     const svgEl = svgRef.current;
@@ -7412,10 +8603,11 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
     }
     draw();
-  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays]);
+  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays, drawingsKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor]);
 
   useEffect(()=>{
     if (!svgRef.current || !props.candles.length) return;
+    manualZoomRef.current = false;
     const svg = d3.select(svgRef.current);
     const metrics = getChartSurfaceMetrics(svgRef.current);
     if (!metrics) return;
@@ -7433,6 +8625,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     if (!svgRef.current || !props.candles.length) return;
     const key = `${props.timeframe}:${props.candles.length}:${props.replayCutTime || ''}:${props.cameraKey || ''}`;
     if (readableZoomKeyRef.current === key) return;
+    if (manualZoomRef.current) {
+      readableZoomKeyRef.current = key;
+      return;
+    }
     const currentK = Number(transformRef.current?.k || 1);
     if (currentK > 1.12) {
       readableZoomKeyRef.current = key;
@@ -7471,6 +8667,29 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     transformRef.current = d3.zoomIdentity.translate(targetRight - k * (metrics.margin.left + metrics.innerW), 0).scale(k);
     draw();
   }, [props.candles.length, props.timeframe, props.replayCutTime, props.cameraKey, props.selectedCandleTime]);
+
+  useEffect(() => {
+    if (!svgRef.current || !props.replayCutTime || !props.candles.length) return;
+    if (lastReplayPanTimeRef.current === props.replayCutTime) return;
+    lastReplayPanTimeRef.current = props.replayCutTime;
+    const metrics = getChartSurfaceMetrics(svgRef.current);
+    if (!metrics) return;
+    const cutMs = new Date(String(props.replayCutTime)).getTime();
+    if (!Number.isFinite(cutMs)) return;
+    const data = safeArray(props.candles).filter((d: any) => new Date(d.time).getTime() <= cutMs);
+    if (!data.length) return;
+    const x0 = chartXScaleFromData(data, metrics);
+    const baseX = x0(new Date(String(props.replayCutTime)));
+    const x = transformRef.current.applyX(baseX);
+    const leftPad = metrics.margin.left + metrics.innerW * 0.2;
+    const rightPad = metrics.margin.left + metrics.innerW * 0.8;
+    if (x >= leftPad && x <= rightPad) return;
+    const targetX = x < leftPad ? leftPad : rightPad;
+    const dx = targetX - x;
+    const k = transformRef.current.k || 1;
+    transformRef.current = transformRef.current.translate(dx / k, 0);
+    draw();
+  }, [props.replayCutTime]);
 
   useEffect(()=>{
     const command = props.cameraCommand;
@@ -7701,8 +8920,8 @@ Date: ${shortTime(d.time,p.timeframe)}`);
   return <svg ref={svgRef} className="d3CandleSvg" />;
 }
 
-function pageTitle(p: Page) { return ({ visual:'Saved Range Maps', mapstudio:'Map Studio', ideas:'Trade Ideas', brain:'Lifecycle Catch-Up', live:'Live Trade', journal:'Journal Reports', sql:'SQL / Backend', settings:'Display Settings', data:'Data Collection', historical:'Historical Lifecycle Builder' } as any)[p]; }
-function pageSubtitle(p: Page) { return ({ visual:'Weekly and Daily stay clean. Intraday gets the execution room it actually deserves.', mapstudio:'OHLC candles, range overlay, trajectory path, and event coordinates. Finally, candles with memory.', ideas:'Pre-plan the narrative before the market starts whispering nonsense.', brain:'Manually catch the machine up with Macro → Weekly → Daily → Intraday → Micro lifecycle state.', live:'Active trade state, TP status, and linked idea.', journal:'Historical live trades and future data collection view.', sql:'Backend status and recent records.', settings:'Set ranges, mitigation states, tick intervals, and editable map paths.', data:'Scenario calculator and sample stress testing.', historical:'Create date-aware Weekly/Daily/Intraday lifecycle bundles. The machine links context by symbol + date.' } as any)[p]; }
+function pageTitle(p: Page) { return ({ visual:'Saved Range Maps', mapstudio:'Map Studio', ideas:'Trade Ideas', brain:'Lifecycle Catch-Up', live:'Live Trade', journal:'Journal Reports', sql:'SQL / Backend', settings:'Display Settings', data:'Data Collection Statistics', historical:'Historical Lifecycle Builder' } as any)[p]; }
+function pageSubtitle(p: Page) { return ({ visual:'Weekly and Daily stay clean. Intraday gets the execution room it actually deserves.', mapstudio:'OHLC candles, range overlay, trajectory path, and event coordinates. Finally, candles with memory.', ideas:'Pre-plan the narrative before the market starts whispering nonsense.', brain:'Manually catch the machine up with Macro → Weekly → Daily → Intraday → Micro lifecycle state.', live:'Active trade state, TP status, and linked idea.', journal:'Historical live trades and future data collection view.', sql:'Backend status and recent records.', settings:'Set ranges, mitigation states, tick intervals, and editable map paths.', data:'Run the local Python analyst on selected packages and review structural statistics.', historical:'Create date-aware Weekly/Daily/Intraday lifecycle bundles. The machine links context by symbol + date.' } as any)[p]; }
 
 function XYTrajectoryPanel({ title, layerKey, layer, visual, updateVisual, accent, intraday, livePrice, readOnly = false, compact = false }: { title: string; layerKey: LayerKey; layer?: Layer; visual: VisualLayer; updateVisual: (k: LayerKey, p: Partial<VisualLayer>) => void; accent: string; intraday?: any; livePrice?: number | null; readOnly?: boolean; compact?: boolean }) {
   const currentZone = visual.currentZone || layer?.auto_location || layer?.location || (intraday?.phase_label || 'Fair');
@@ -8056,51 +9275,6 @@ function EventStream({ events }: any) {
   const rows = Array.isArray(events) ? events.slice(-8).reverse() : [];
   return <div className="eventStream"><b>Forensic Event Stream</b>{rows.length === 0 && <p>No backend event stream yet.</p>}{rows.map((e:any,i:number)=><div className="eventRow" key={e.id || e.idempotency_key || i}><span>{String(e.timestamp_utc || e.created_at || '').slice(11,19) || '-'}</span><b>{e.event_type || e.type || '-'}</b><em>{e.event_reason || e.notes || ''}</em></div>)}</div>;
 }
-function DataCollectionPage() {
-  const [form, setForm] = useState<any>({
-    symbol: 'XAUUSD', scenario_name: 'Manual lifecycle stress test', expected_status: 'FORMING', timeframe: 'DAILY',
-    range_high: '', range_low: '', current_price: '', prev_high: '', prev_low: '', bos_direction: 'WAITING', bos_level: '', new_ext_locked: 'NO', phase_type: 'CHOCH',
-    reclaim_status: 'WAITING', retrace_depth_pct: '', reclaim_depth_pct: '', range_status: 'ACTIVE', order_flow: 'PRO_TREND', profile: 'SND_DEEP_RETRACE',
-    inducement: 'NO', inducement_direction: 'BULLISH', inducement_high: '', inducement_low: '', inducement_result: 'WAITING',
-    weekly_bias: 'BULLISH', weekly_state: 'WEEKLY_CONTEXT_ACTIVE', daily_bias: 'BULLISH', daily_objective: 'FAIR_PRICE_M1',
-    intraday_state: 'INTRADAY_P1_BOS_CONFIRMED', favourable_trade: 'P2_CONTINUATION', retest_status: 'RETEST_PENDING', micro_confirmation: 'WAITING',
-    mitigation_sequence: ['', '', '', '', ''], final_outcome: '', notes: ''
-  });
-  const [result, setResult] = useState<any>(null);
-  const update = (k:string, v:any) => setForm((x:any)=>({ ...x, [k]: v }));
-  const updateSeq = (idx:number, val:string) => setForm((x:any)=>{ const seq=[...(x.mitigation_sequence||[])]; seq[idx]=val; return {...x, mitigation_sequence: seq}; });
-  const payload = () => ({
-    symbol: form.symbol,
-    scenario_name: form.scenario_name,
-    expected_status: form.expected_status,
-    timeframe: form.timeframe,
-    range_high: form.range_high, range_low: form.range_low, current_price: form.current_price,
-    prev_high: form.prev_high, prev_low: form.prev_low,
-    bos_direction: form.bos_direction, bos_level: form.bos_level, new_ext_locked: form.new_ext_locked,
-    phase_type: form.phase_type, reclaim_status: form.reclaim_status, retrace_depth_pct: form.retrace_depth_pct, reclaim_depth_pct: form.reclaim_depth_pct,
-    range_status: form.range_status, order_flow: form.order_flow,
-    inducement: form.inducement === 'YES', inducement_direction: form.inducement_direction, inducement_high: form.inducement_high, inducement_low: form.inducement_low, inducement_result: form.inducement_result,
-    mitigation_sequence: (form.mitigation_sequence || []).filter(Boolean), final_outcome: form.final_outcome,
-    weekly: { weekly_bias: form.weekly_bias, weekly_state: form.weekly_state },
-    daily: { daily_bias: form.daily_bias, daily_profile: form.profile, daily_objective: form.daily_objective, bos_direction: form.bos_direction, phase_type: form.phase_type, reclaim_status: form.reclaim_status, range_status: form.range_status, order_flow: form.order_flow, inducement: form.inducement === 'YES', mitigation_sequence: (form.mitigation_sequence || []).filter(Boolean) },
-    intraday: { intraday_state: form.intraday_state, favourable_trade: form.favourable_trade, retest_status: form.retest_status },
-    micro: { confirmation: form.micro_confirmation },
-    notes: form.notes,
-  });
-  const run = async () => { const r = await fetch(`${BASE_URL}/api/v1/lifecycle/scenario/calculate`, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload())}).then(x=>x.json()); setResult(r); };
-  return <div className="card largeCard"><div className="cardHeader tight"><div><h3>Lifecycle Scenario Calculator</h3><p>Clean scenario form: range → BOS/reclaim → profile → inducement → mitigation path → machine output. No JSON cave drawings.</p></div><Database className="blueIcon" size={22}/></div>
-    <div className="dataSteps"><div><b>1</b><span>Range context</span></div><div><b>2</b><span>BOS/reclaim</span></div><div><b>3</b><span>Profile + inducement</span></div><div><b>4</b><span>Mitigation path</span></div><div><b>5</b><span>Machine hint</span></div></div>
-    <div className="formSection"><h4>Context</h4><div className="scenarioForm"><label>Scenario Name<input value={form.scenario_name} onChange={e=>update('scenario_name', e.target.value)} /></label><label>Expected Status<select value={form.expected_status} onChange={e=>update('expected_status', e.target.value)}>{['NO_TRADE','WATCHING','FORMING','READY','EXECUTE_ALLOWED','ADD_RISK_READY','BLOCKED','INVALIDATED'].map(x=><option key={x}>{x}</option>)}</select></label><label>Timeframe<select value={form.timeframe} onChange={e=>update('timeframe',e.target.value)}>{['MACRO','WEEKLY','DAILY','INTRADAY'].map(x=><option key={x}>{x}</option>)}</select></label></div></div>
-    <div className="formSection"><h4>Range + structure</h4><div className="scenarioForm"><label>High / EXT_H<input value={form.range_high} onChange={e=>update('range_high',e.target.value)} /></label><label>Low / EXT_L<input value={form.range_low} onChange={e=>update('range_low',e.target.value)} /></label><label>Current Price<input value={form.current_price} onChange={e=>update('current_price',e.target.value)} /></label><label>Prev High<input value={form.prev_high} onChange={e=>update('prev_high',e.target.value)} /></label><label>Prev Low<input value={form.prev_low} onChange={e=>update('prev_low',e.target.value)} /></label><label>BOS Direction<select value={form.bos_direction} onChange={e=>update('bos_direction',e.target.value)}>{['WAITING','UP','DOWN'].map(x=><option key={x}>{x}</option>)}</select></label><label>BOS Level<input value={form.bos_level} onChange={e=>update('bos_level',e.target.value)} /></label><label>New EXT Locked<select value={form.new_ext_locked} onChange={e=>update('new_ext_locked',e.target.value)}>{['NO','YES'].map(x=><option key={x}>{x}</option>)}</select></label></div></div>
-    <div className="formSection"><h4>Phase, reclaim and profile</h4><div className="scenarioForm"><label>Phase Type<select value={form.phase_type} onChange={e=>update('phase_type',e.target.value)}>{['CHOCH','P1','P2','P3','P3_FAIL','NEW_P1','PROFILE_FLIP'].map(x=><option key={x}>{x}</option>)}</select></label><label>Reclaim Status<select value={form.reclaim_status} onChange={e=>update('reclaim_status',e.target.value)}>{['WAITING','CONFIRMED','FAILED','ABANDONED','LATER_RECLAIMED'].map(x=><option key={x}>{x}</option>)}</select></label><label>Retrace Depth %<input value={form.retrace_depth_pct} onChange={e=>update('retrace_depth_pct',e.target.value)} /></label><label>Reclaim Depth %<input value={form.reclaim_depth_pct} onChange={e=>update('reclaim_depth_pct',e.target.value)} /></label><label>Range Status<select value={form.range_status} onChange={e=>update('range_status',e.target.value)}>{['ACTIVE','ABANDONED','RETEST_PENDING','RETESTED','INVALIDATED'].map(x=><option key={x}>{x}</option>)}</select></label><label>Order Flow<select value={form.order_flow} onChange={e=>update('order_flow',e.target.value)}>{['PRO_TREND','CORRECTIVE','COUNTER_TREND','WAITING'].map(x=><option key={x}>{x}</option>)}</select></label><label>Profile<select value={form.profile} onChange={e=>update('profile', e.target.value)}>{[...DAILY_PROFILES,'NO_RETRACE','COMPRESSION','PROFILE_FLIP'].map(x=><option key={x}>{x}</option>)}</select></label></div></div>
-    <div className="formSection"><h4>Inducement</h4><div className="scenarioForm"><label>Inducement<select value={form.inducement} onChange={e=>update('inducement',e.target.value)}>{['NO','YES'].map(x=><option key={x}>{x}</option>)}</select></label><label>Direction<select value={form.inducement_direction} onChange={e=>update('inducement_direction',e.target.value)}>{['BULLISH','BEARISH'].map(x=><option key={x}>{x}</option>)}</select></label><label>Inducement High<input value={form.inducement_high} onChange={e=>update('inducement_high',e.target.value)} /></label><label>Inducement Low<input value={form.inducement_low} onChange={e=>update('inducement_low',e.target.value)} /></label><label>Result<select value={form.inducement_result} onChange={e=>update('inducement_result',e.target.value)}>{['WAITING','HELD','FAILED'].map(x=><option key={x}>{x}</option>)}</select></label></div></div>
-    <div className="formSection"><h4>Mitigation sequence</h4><div className="sequenceRow">{[0,1,2,3,4].map(i=><label key={i}>Step {i+1}<select value={form.mitigation_sequence?.[i] || ''} onChange={e=>updateSeq(i,e.target.value)}><option value="">-</option>{[...MITIGATION_TARGETS,'NEW_BOS_UP','NEW_BOS_DOWN','PROFILE_FLIP','INVALIDATED'].map(x=><option key={x}>{x}</option>)}</select></label>)}</div></div>
-    <div className="formSection"><h4>Bias + execution context</h4><div className="scenarioForm"><label>Weekly Bias<select value={form.weekly_bias} onChange={e=>update('weekly_bias', e.target.value)}>{['BULLISH','BEARISH','WATCHING'].map(x=><option key={x}>{x}</option>)}</select></label><label>Weekly State<input value={form.weekly_state} onChange={e=>update('weekly_state', e.target.value)} /></label><label>Daily Bias<select value={form.daily_bias} onChange={e=>update('daily_bias', e.target.value)}>{['BULLISH','BEARISH','WATCHING'].map(x=><option key={x}>{x}</option>)}</select></label><label>Daily Objective<select value={form.daily_objective} onChange={e=>update('daily_objective', e.target.value)}>{OBJECTIVE_TYPES.map(x=><option key={x}>{x}</option>)}</select></label><label>Intraday State<select value={form.intraday_state} onChange={e=>update('intraday_state', e.target.value)}>{['INTRADAY_PRE_CHOCH','INTRADAY_CHOCH_CONFIRMED','INTRADAY_P1_BOS_CONFIRMED','INTRADAY_P2_RETEST_PENDING','INTRADAY_P2_RETEST_ACTIVE','INTRADAY_P2_RETEST_COMPLETE','INTRADAY_ADD_RISK_READY','INTRADAY_INVALIDATED'].map(x=><option key={x}>{x}</option>)}</select></label><label>Favourable Trade<select value={form.favourable_trade} onChange={e=>update('favourable_trade', e.target.value)}>{['NO_FAVOURABLE_TRADE','P1_CONTINUATION','P2_CONTINUATION','P3_FAILURE_REVERSAL','NEW_P1_PROFILE_FLIP'].map(x=><option key={x}>{x}</option>)}</select></label><label>Retest Status<select value={form.retest_status} onChange={e=>update('retest_status', e.target.value)}>{['WAITING','RETEST_PENDING','RETEST_ACTIVE','RETEST_COMPLETE','RETEST_FAILED'].map(x=><option key={x}>{x}</option>)}</select></label><label>Micro Confirmation<select value={form.micro_confirmation} onChange={e=>update('micro_confirmation', e.target.value)}>{['WAITING','CONFIRMED','REF_CANDLE_CONFIRMED','INVALID'].map(x=><option key={x}>{x}</option>)}</select></label><label>Final Outcome<input value={form.final_outcome} onChange={e=>update('final_outcome',e.target.value)} placeholder="what market actually did" /></label><label>Notes<textarea value={form.notes} onChange={e=>update('notes', e.target.value)} /></label></div></div>
-    <button className="primaryBtn solo" onClick={run}>Run Scenario Calculator</button>
-    <div className="scenarioResult"><b>Result</b>{!result && <p className="emptyText">Run a scenario to see the lifecycle hint.</p>}{result && <><div className="resultBadge">{result.participation?.participation_status || 'UNKNOWN'}</div><p className="machineText"><b>Machine:</b> {result.participation?.machine_message || result.participation?.reason || '-'}</p><InfoLine label="Execution Allowed" value={result.participation?.execution_allowed ? 'YES' : 'NO'} /><InfoLine label="Next Step" value={result.participation?.next_required_step || '-'} /></>}</div>
-  </div>;
-}
-
 function HistoricalLifecycleBuilder({ symbol, visuals }: { symbol: string; visuals: VisualStore }) {
   const today = new Date().toISOString().slice(0,10);
   const [form, setForm] = useState<any>({

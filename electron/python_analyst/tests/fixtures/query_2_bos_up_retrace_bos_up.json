@@ -1,0 +1,13 @@
+{
+  "schema_version": "mediator_query_v1",
+  "query_id": "audit_2_bos_up_retrace_bos_up",
+  "symbol": "XAUUSD",
+  "year_labels": ["2019_Q3-2021_Q1", "2020", "2020-2021", "2026"],
+  "child_layer": "DAILY",
+  "bos_direction": "UP",
+  "question_type": "impulse_pair_audit",
+  "row_limit": 2,
+  "random_sample": true,
+  "include_source_rows": true,
+  "metrics": ["sample_size", "average_retracement", "median_retracement"]
+}

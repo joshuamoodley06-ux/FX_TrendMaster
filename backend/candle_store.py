@@ -346,6 +346,7 @@ def init_db() -> None:
             ("broken_by_event_id", "INTEGER"),
             ("structure_version", "TEXT"),
             ("parent_link_status", "TEXT DEFAULT 'NEEDS_REVIEW'"),
+            ("range_scope", "TEXT NOT NULL DEFAULT 'MAJOR'"),
             ("meta_json", "TEXT"),
             ("updated_at", "TEXT"),
         ], "Phase 1 range hierarchy migration")
@@ -997,6 +998,15 @@ def _expected_parent_layer(layer: str) -> str | None:
     return None
 
 
+def _normalise_range_scope(value: Any) -> str:
+    scope = str(value or "MAJOR").strip().upper()
+    return scope if scope in {"MAJOR", "MINOR"} else "MAJOR"
+
+
+def _range_scope(row: sqlite3.Row | dict[str, Any]) -> str:
+    return _normalise_range_scope(_row_dict(row).get("range_scope"))
+
+
 def _parse_time_ms(value: Any) -> int | None:
     if value in (None, ""):
         return None
@@ -1063,6 +1073,42 @@ def _child_lifecycle_contradiction_for_parent(
     if c_end is not None and c_end > p_end:
         return "child range ends after parent inactive window"
     return None
+
+
+def _child_lifecycle_span(row: sqlite3.Row | dict[str, Any]) -> tuple[int | None, int | None]:
+    """Lifecycle window for a range (active_from → inactive when terminal)."""
+    d = _row_dict(row)
+    start_candidates = [d.get("active_from_time"), d.get("range_start_time")]
+    starts = [x for x in (_parse_time_ms(v) for v in start_candidates) if x is not None]
+    c_start = min(starts) if starts else None
+    status = _normalize_range_status(d.get("status"))
+    c_end: int | None = None
+    if status in {"BROKEN", "ABANDONED", "ARCHIVED"}:
+        c_end = _parse_time_ms(d.get("inactive_from_time"))
+    return c_start, c_end
+
+
+def _child_lifecycle_window_warnings(
+    child: sqlite3.Row | dict[str, Any],
+    parent: sqlite3.Row | dict[str, Any],
+) -> list[str]:
+    """Lifecycle-window timing notes for MINOR → same-layer MAJOR parents."""
+    warnings: list[str] = []
+    p_start, p_end = _parent_lifecycle_window(parent)
+    c_start, c_end = _child_lifecycle_span(child)
+    if p_start is None and p_end is None:
+        return warnings
+    if c_start is None and c_end is None:
+        return warnings
+    if p_start is not None and c_start is not None and c_start < p_start:
+        warnings.append("child range starts before parent lifecycle window")
+    if p_end is not None and c_end is not None and c_end > p_end:
+        warnings.append("child range ends after parent lifecycle window")
+    if p_start is not None and c_end is not None and c_end < p_start:
+        warnings.append("child range ends before parent lifecycle window starts")
+    if p_end is not None and c_start is not None and c_start > p_end:
+        warnings.append("child range starts after parent lifecycle window ends")
+    return warnings
 
 
 def _child_boundary_time_informational_warnings(
@@ -1149,6 +1195,55 @@ def _has_parent_cycle(conn: sqlite3.Connection, child_id: int, parent_id: int) -
     return False
 
 
+def _warn_active_minor_conflict(
+    conn: sqlite3.Connection,
+    *,
+    child_id: int | None,
+    parent_id: int,
+    structure_layer: str,
+    range_scope: str,
+    symbol: str,
+    case_id: Any,
+    raw_case_id: Any = None,
+    case_ref: Any = None,
+    status: str | None,
+) -> list[str]:
+    """Soft rule: at most one ACTIVE minor per parent major per layer."""
+    if _normalise_range_scope(range_scope) != "MINOR":
+        return []
+    if _normalize_range_status(status) != "ACTIVE":
+        return []
+    clauses = [
+        "parent_range_id=?",
+        "COALESCE(structure_layer, layer)=?",
+        "UPPER(COALESCE(range_scope, 'MAJOR'))='MINOR'",
+        "UPPER(COALESCE(status, 'ACTIVE'))='ACTIVE'",
+        "symbol=?",
+    ]
+    args: list[Any] = [parent_id, _normalise_structure_layer(structure_layer), symbol]
+    if case_id not in (None, ""):
+        clauses.append("case_id=?")
+        args.append(case_id)
+    if raw_case_id not in (None, ""):
+        clauses.append("raw_case_id=?")
+        args.append(str(raw_case_id))
+    if case_ref not in (None, ""):
+        clauses.append("case_ref=?")
+        args.append(str(case_ref))
+    if child_id is not None:
+        clauses.append("id<>?")
+        args.append(int(child_id))
+    row = conn.execute(
+        f"SELECT id FROM map_ranges WHERE {' AND '.join(clauses)} ORDER BY id ASC LIMIT 1",
+        args,
+    ).fetchone()
+    if row is None:
+        return []
+    return [
+        f"another ACTIVE {structure_layer} MINOR (#{row['id']}) already exists under parent #{parent_id}"
+    ]
+
+
 def _validate_parent_link(
     conn: sqlite3.Connection,
     *,
@@ -1159,8 +1254,10 @@ def _validate_parent_link(
     case_ref: Any = None,
     structure_layer: str,
     parent_range_id: Any,
+    range_scope: str = "MAJOR",
 ) -> tuple[str, list[str], sqlite3.Row | None]:
     layer = _normalise_structure_layer(structure_layer)
+    scope = _normalise_range_scope(range_scope)
     parent_id: int | None
     try:
         parent_id = int(parent_range_id) if parent_range_id not in (None, "") else None
@@ -1168,11 +1265,11 @@ def _validate_parent_link(
         return "INVALID_PARENT", ["parent_range_id is not an integer"], None
 
     if parent_id is None:
-        if layer == "MACRO":
+        if layer == "MACRO" and scope == "MAJOR":
             return "VALID", [], None
         return "ORPHAN", [], None
-    if layer == "MACRO":
-        return "NEEDS_REVIEW", ["MACRO range should not have parent_range_id"], None
+    if layer == "MACRO" and scope == "MAJOR":
+        return "NEEDS_REVIEW", ["MACRO MAJOR should not have parent_range_id"], None
     if child_id is not None and int(child_id) == parent_id:
         return "INVALID_PARENT", ["range cannot be its own parent"], None
 
@@ -1193,10 +1290,19 @@ def _validate_parent_link(
     if case_ref not in (None, "") and parent_case_ref not in (None, "") and str(parent_case_ref) != str(case_ref):
         return "INVALID_PARENT", ["parent case_ref does not match child case_ref"], parent
 
-    expected_parent = _expected_parent_layer(layer)
     parent_layer = _range_layer(parent)
-    if expected_parent and parent_layer != expected_parent:
-        return "INVALID_PARENT", [f"{layer} parent must be {expected_parent}, got {parent_layer}"], parent
+    parent_scope = _range_scope(parent)
+    if scope == "MINOR":
+        if parent_layer != layer:
+            return "INVALID_PARENT", [f"{layer} MINOR parent must be same-layer MAJOR, got {parent_layer}"], parent
+        if parent_scope != "MAJOR":
+            return "INVALID_PARENT", [f"{layer} MINOR parent must have range_scope MAJOR"], parent
+    else:
+        expected_parent = _expected_parent_layer(layer)
+        if expected_parent and parent_layer != expected_parent:
+            return "INVALID_PARENT", [f"{layer} MAJOR parent must be {expected_parent}, got {parent_layer}"], parent
+        if parent_scope != "MAJOR":
+            return "NEEDS_REVIEW", [f"{layer} MAJOR parent should link to {expected_parent} MAJOR, parent scope is {parent_scope}"], parent
     if child_id is not None and _has_parent_cycle(conn, int(child_id), parent_id):
         return "INVALID_PARENT", ["parent link would create a circular chain"], parent
 
@@ -1208,7 +1314,10 @@ def _validate_parent_link(
         lifecycle_issue = _child_lifecycle_contradiction_for_parent(child_row, parent)
         if lifecycle_issue:
             return "NEEDS_REVIEW", [lifecycle_issue], parent
-        link_warnings.extend(_child_boundary_time_informational_warnings(child_row, parent))
+        if scope == "MINOR":
+            link_warnings.extend(_child_lifecycle_window_warnings(child_row, parent))
+        else:
+            link_warnings.extend(_child_boundary_time_informational_warnings(child_row, parent))
         price_ok, price_warning = _child_price_overlaps_parent(child_row, parent)
         if not price_ok and price_warning:
             return "NEEDS_REVIEW", link_warnings + [price_warning], parent
@@ -1231,6 +1340,7 @@ def _range_row_to_structural_dict(row: sqlite3.Row | dict[str, Any]) -> dict[str
         "source_timeframe": source_tf,
         "range_high_price": high,
         "range_low_price": low,
+        "range_scope": _range_scope(d),
         "parent_link_status": d.get("parent_link_status") or "NEEDS_REVIEW",
     })
     return out
@@ -2266,6 +2376,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
     chart_timeframe = normalise_timeframe(str(payload.get("chart_timeframe") or payload.get("timeframe") or source_timeframe))
     timeframe = source_timeframe
     structure_layer = _normalise_structure_layer(payload.get("structure_layer") or payload.get("layer"), source_timeframe)
+    range_scope = _normalise_range_scope(payload.get("range_scope"))
     range_key = str(payload.get("range_key") or "active")
     high_price = parse_float(payload.get("range_high_price", payload.get("range_high")), None)
     low_price = parse_float(payload.get("range_low_price", payload.get("range_low")), None)
@@ -2310,7 +2421,27 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
             case_ref=case_ref,
             structure_layer=structure_layer,
             parent_range_id=parent_range_id,
+            range_scope=range_scope,
         )
+        if parent is not None and parent_range_id not in (None, ""):
+            try:
+                warn_parent_id = int(parent_range_id)
+            except Exception:
+                warn_parent_id = int(parent["id"])
+            validation_warnings.extend(
+                _warn_active_minor_conflict(
+                    conn,
+                    child_id=child_id,
+                    parent_id=warn_parent_id,
+                    structure_layer=structure_layer,
+                    range_scope=range_scope,
+                    symbol=symbol,
+                    case_id=case_id,
+                    raw_case_id=raw_case_id,
+                    case_ref=case_ref,
+                    status=str(payload.get("status") or (existing["status"] if existing else None) or "ACTIVE"),
+                )
+            )
         if parent is not None:
             parent_timeframe = parent_timeframe or _range_source_timeframe(parent)
             parent_case_id = parent_case_id or parent["case_id"]
@@ -2369,6 +2500,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     parent_case_id=COALESCE(?, parent_case_id), created_by_event_id=COALESCE(?, created_by_event_id), broken_by_event_id=COALESCE(?, broken_by_event_id),
                     direction_of_break=COALESCE(?, direction_of_break), active_from_time=COALESCE(?, active_from_time), inactive_from_time=COALESCE(?, inactive_from_time),
                     old_range_id=COALESCE(?, old_range_id), new_range_id=COALESCE(?, new_range_id), structure_version=COALESCE(?, structure_version),
+                    range_scope=COALESCE(?, range_scope),
                     parent_link_status=?, meta_json=COALESCE(?, meta_json), updated_at=?
                 WHERE id=?
                 """,
@@ -2413,6 +2545,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                     payload.get("old_range_id"),
                     payload.get("new_range_id"),
                     payload.get("structure_version") or "STRUCTURE_ONLY_V1",
+                    range_scope,
                     parent_link_status,
                     meta_json,
                     now,
@@ -2442,8 +2575,8 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
         # If only one anchor exists, store 0 for missing side and let frontend replace it later.
         cur = conn.execute(
             """
-            INSERT INTO map_ranges(symbol,timeframe,name,range_high,range_low,range_high_price,range_low_price,range_high_time,range_low_time,break_high_price,break_low_price,break_high_time,break_low_time,range_start_time,range_end_time,duration_minutes,ref_high_price,ref_high_time,ref_low_price,ref_low_time,bias,destination,status,range_key,notes,source,case_id,raw_case_id,case_ref,parent_range_id,layer,structure_layer,chart_timeframe,source_timeframe,parent_timeframe,parent_case_id,created_by_event_id,broken_by_event_id,direction_of_break,active_from_time,inactive_from_time,old_range_id,new_range_id,structure_version,parent_link_status,meta_json,created_at,updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO map_ranges(symbol,timeframe,name,range_high,range_low,range_high_price,range_low_price,range_high_time,range_low_time,break_high_price,break_low_price,break_high_time,break_low_time,range_start_time,range_end_time,duration_minutes,ref_high_price,ref_high_time,ref_low_price,ref_low_time,bias,destination,status,range_key,notes,source,case_id,raw_case_id,case_ref,parent_range_id,layer,structure_layer,chart_timeframe,source_timeframe,parent_timeframe,parent_case_id,created_by_event_id,broken_by_event_id,direction_of_break,active_from_time,inactive_from_time,old_range_id,new_range_id,structure_version,range_scope,parent_link_status,meta_json,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 symbol,
@@ -2490,6 +2623,7 @@ def upsert_map_range(payload: dict[str, Any]) -> dict[str, Any]:
                 payload.get("old_range_id"),
                 payload.get("new_range_id"),
                 payload.get("structure_version") or "STRUCTURE_ONLY_V1",
+                range_scope,
                 parent_link_status,
                 meta_json,
                 now,
@@ -2582,6 +2716,7 @@ def list_map_ranges(symbol: str = "XAUUSD", timeframe: str | None = None, case_i
                 case_ref=d.get("case_ref"),
                 structure_layer=str(d.get("structure_layer") or ""),
                 parent_range_id=d.get("parent_range_id"),
+                range_scope=str(d.get("range_scope") or "MAJOR"),
             )
             d["parent_link_status"] = d.get("parent_link_status") if d.get("parent_link_status") not in (None, "", "NEEDS_REVIEW") else status
             if warnings:
@@ -2645,6 +2780,7 @@ def reparent_map_range(child_range_id: int, parent_range_id: int | None) -> dict
             case_ref=child["case_ref"] if "case_ref" in child.keys() else None,
             structure_layer=_range_layer(child),
             parent_range_id=parent_range_id,
+            range_scope=_range_scope(child),
         )
         if status == "INVALID_PARENT":
             return {"ok": False, "status": 400, "error": "Invalid parent_range_id", "warnings": warnings, "parent_link_status": status}
@@ -2716,6 +2852,7 @@ def hierarchy_audit(symbol: str = "XAUUSD", case_id: int | None = None, raw_case
                 case_ref=r.get("case_ref"),
                 structure_layer=layer,
                 parent_range_id=r.get("parent_range_id"),
+                range_scope=str(r.get("range_scope") or "MAJOR"),
             )
             r["parent_link_status"] = status
             if warnings:
@@ -2893,6 +3030,7 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         merged = {**existing_d, **(payload or {})}
         case_id, raw_case_id, case_ref = _case_refs_from_payload(merged)
         structure_layer = _normalise_structure_layer(merged.get("structure_layer") or merged.get("layer"), merged.get("source_timeframe") or merged.get("timeframe"))
+        range_scope = _normalise_range_scope(merged.get("range_scope"))
         parent_range_id = merged.get("parent_range_id")
         status, warnings, parent = _validate_parent_link(
             conn,
@@ -2903,9 +3041,27 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
             case_ref=case_ref,
             structure_layer=structure_layer,
             parent_range_id=parent_range_id,
+            range_scope=range_scope,
         )
         if status == "INVALID_PARENT":
             return {"ok": False, "status": 400, "error": "Invalid parent_range_id", "warnings": warnings, "parent_link_status": status}
+        if parent is not None and parent_range_id not in (None, ""):
+            try:
+                warn_parent_id = int(parent_range_id)
+            except Exception:
+                warn_parent_id = int(parent["id"])
+            warnings = list(warnings) + _warn_active_minor_conflict(
+                conn,
+                child_id=int(range_id),
+                parent_id=warn_parent_id,
+                structure_layer=structure_layer,
+                range_scope=range_scope,
+                symbol=str(merged.get("symbol") or existing_d.get("symbol")),
+                case_id=case_id,
+                raw_case_id=raw_case_id,
+                case_ref=case_ref,
+                status=str(merged.get("status") or existing_d.get("status") or "ACTIVE"),
+            )
 
         lifecycle_status, lifecycle_warnings, lifecycle_resolved = _validate_range_lifecycle_fields(
             conn,
@@ -2960,7 +3116,7 @@ def patch_map_range(range_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         text_fields = {
             "range_high_time", "range_low_time", "break_high_time", "break_low_time", "structure_layer",
             "chart_timeframe", "source_timeframe", "direction_of_break", "case_ref", "raw_case_id",
-            "inactive_from_time", "active_from_time",
+            "inactive_from_time", "active_from_time", "range_scope",
         }
         int_fields = {"parent_range_id", "case_id", "old_range_id", "new_range_id", "broken_by_event_id", "created_by_event_id"}
         passthrough_fields = {"meta_json"}

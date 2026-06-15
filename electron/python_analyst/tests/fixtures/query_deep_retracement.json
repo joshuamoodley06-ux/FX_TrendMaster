@@ -1,0 +1,17 @@
+{
+  "schema_version": "mediator_query_v1",
+  "query_id": "acceptance_deep_daily_retracement",
+  "symbol": "XAUUSD",
+  "year_labels": ["2020"],
+  "child_layer": "DAILY",
+  "retracement_class": "DEEP",
+  "question_type": "continuation_rate",
+  "metrics": [
+    "sample_size",
+    "continued_count",
+    "failed_count",
+    "abandoned_count",
+    "unresolved_count",
+    "continuation_rate"
+  ]
+}

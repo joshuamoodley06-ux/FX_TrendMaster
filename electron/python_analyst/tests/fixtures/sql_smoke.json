@@ -1,0 +1,4 @@
+{
+  "sql": "SELECT range_id, structure_layer, range_high_price, range_low_price FROM ranges WHERE structure_layer = 'WEEKLY' LIMIT 2",
+  "symbol": "XAUUSD"
+}

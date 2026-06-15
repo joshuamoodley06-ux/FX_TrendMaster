@@ -21,7 +21,7 @@ button,select,input,textarea{font:inherit}
 .brandLogo{width:54px;height:54px;border-radius:14px;object-fit:cover;flex-shrink:0;box-shadow:0 0 28px rgba(255,191,47,.35)}
 h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font-size:12px}
 .navGroup{display:flex;flex-direction:column;gap:10px}.navItem{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid transparent;border-radius:16px;color:#9aa8b7}.navItem.active{color:#071014;background:linear-gradient(135deg,var(--gold),#ffe18a);font-weight:900;box-shadow:0 0 22px rgba(255,191,47,.14)}
-.sidebarFooter{margin-top:auto;padding:14px;border:1px solid var(--border);border-radius:18px;background:#060a10}.muted{color:var(--muted);margin:0}.apiText{font-size:12px;color:#b7c4d8;word-break:break-all}.statusDot{display:flex;align-items:center;gap:8px;font-weight:900;font-size:13px}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}.online{background:var(--green);box-shadow:0 0 12px var(--green)}.offline{background:var(--red);box-shadow:0 0 12px var(--red)}
+.sidebarFooter{margin-top:auto;padding:14px;border:1px solid var(--border);border-radius:18px;background:#060a10}.muted{color:var(--muted);margin:0}.sidebarInfo{color:#b7c4d8;font-size:11px;margin:6px 0 0;line-height:1.4}.sidebarInfoOptional{color:#94a3b8;font-size:11px;margin:6px 0 0;line-height:1.4}.apiText{font-size:12px;color:#b7c4d8;word-break:break-all}.statusDot{display:flex;align-items:center;gap:8px;font-weight:900;font-size:13px}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}.online{background:var(--green);box-shadow:0 0 12px var(--green)}.offline{background:var(--red);box-shadow:0 0 12px var(--red)}
 .mainArea{flex:1;padding:20px 22px 30px;overflow:auto}.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.topbar h2{margin:0;font-size:30px}.topbar p{margin:4px 0 0;color:var(--muted)}.topActions{display:flex;align-items:center;gap:10px}.topActions select,.topActions button,.timePill{background:#07101a;border:1px solid var(--border);color:var(--text);border-radius:14px;padding:11px 13px}.topActions button{display:flex;align-items:center;gap:8px;cursor:pointer}.timePill{color:var(--cyan);font-weight:900}.errorBox{display:flex;gap:8px;align-items:center;border:1px solid var(--red);background:#2a0b13;color:#ffd5dc;border-radius:16px;padding:12px;margin-bottom:14px}
 .gridLayout{display:grid;grid-template-columns:minmax(620px,1.45fr) minmax(380px,.85fr);gap:18px}.leftStack,.rightStack{display:flex;flex-direction:column;gap:14px}.panelTitle{display:flex;align-items:center;gap:8px;color:#dbeafe;font-weight:900;letter-spacing:.3px}
 .card,.trajectoryCard{background:linear-gradient(180deg,rgba(11,17,26,.96),rgba(5,9,14,.96));border:1px solid var(--border);border-radius:22px;padding:16px;box-shadow:0 16px 48px rgba(0,0,0,.28)}.cardHeader{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}.cardHeader.tight h3,.cardHeader h3{margin:0;font-size:18px}.cardHeader p{margin:4px 0 0;color:var(--muted);font-size:13px}.locationBadge{padding:8px 12px;border-radius:999px;background:#050b12;border:1px solid #29415a;color:var(--gold);font-weight:900;white-space:nowrap}
@@ -642,6 +642,64 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
     stroke-width:3;
   }
 }
+.chartDrawToolbar{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px;
+  margin:0 0 8px;
+  padding:8px 10px;
+  border:1px solid rgba(88,166,255,.18);
+  border-radius:12px;
+  background:rgba(7,13,24,.72);
+}
+.chartDrawToolbar button{
+  min-width:34px;
+  height:30px;
+  padding:0 8px;
+  border:1px solid rgba(148,163,184,.22);
+  border-radius:8px;
+  background:rgba(15,23,42,.85);
+  color:#e2e8f0;
+  font-size:11px;
+  font-weight:800;
+  cursor:pointer;
+}
+.chartDrawToolbar button.active{
+  border-color:rgba(0,212,170,.65);
+  background:rgba(0,212,170,.14);
+  color:#00ffd0;
+}
+.chartDrawToolbar button:disabled{opacity:.45;cursor:not-allowed}
+.chartDrawDivider{
+  width:1px;
+  height:22px;
+  margin:0 2px;
+  background:rgba(148,163,184,.25);
+}
+.drawColorSwatch{
+  width:18px !important;
+  min-width:18px !important;
+  height:18px !important;
+  padding:0 !important;
+  border-radius:999px !important;
+  border:2px solid rgba(255,255,255,.25) !important;
+}
+.drawColorSwatch.active{
+  border-color:#fff !important;
+  box-shadow:0 0 0 2px rgba(0,212,170,.45);
+}
+.chartDrawClearBtn{font-size:10px !important;color:#94a3b8 !important}
+.mapStudioShell.chartFullscreenActive .chartDrawToolbar{
+  margin:0 0 6px;
+  padding:6px 8px;
+  gap:4px;
+}
+.mapStudioShell.chartFullscreenActive .chartDrawToolbar button{
+  min-width:30px;
+  height:26px;
+  font-size:10px;
+}
 .d3Side{min-height:680px;overflow:auto}
 .d3Side .routeList{max-height:270px;overflow:auto;padding-right:4px}
 .d3Side .routeList div{display:flex;justify-content:space-between;gap:10px;padding:12px 14px;margin:8px 0;border:1px solid rgba(88,166,255,.18);border-radius:14px;background:rgba(7,13,24,.72)}
@@ -1030,6 +1088,17 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   font-size:12px;
 }
 .d3MapStudio .tfTabs{padding:4px;gap:5px;border-radius:12px;}
+.d3MapStudio .tfTabs button.tfLocked,
+.d3MapStudio .tfTabs button:disabled{
+  opacity:.32;
+  cursor:not-allowed;
+  filter:grayscale(.35);
+}
+.fullscreenTfDock button.tfLocked,
+.fullscreenTfDock button:disabled{
+  opacity:.32;
+  cursor:not-allowed;
+}
 .d3MapStudio .loadedPill{font-size:12px;margin-left:4px;}
 .d3MapStudio .candleReplayToolbar{
   position:sticky;
@@ -2675,6 +2744,94 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   background:rgba(15,23,42,.9);
   color:#e2e8f0;border-radius:6px;padding:3px 8px;font-size:11px;font-weight:700;
 }
+.explorerModeRow{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:8px 0 4px;
+  flex-wrap:wrap;
+}
+.explorerModeBtn{
+  border:1px solid #243044;
+  background:#0b1220;
+  color:#9fb0c7;
+  border-radius:999px;
+  padding:4px 12px;
+  font-size:11px;
+  font-weight:800;
+  cursor:pointer;
+}
+.explorerModeBtn.active{
+  border-color:#ffbf2f;
+  color:#ffbf2f;
+  background:#1a1408;
+}
+.explorerModeHint{
+  margin:0 0 8px;
+  line-height:1.35;
+}
+.explorerGapQueue{
+  margin:0 0 10px;
+  padding:8px 10px;
+  border:1px solid #243044;
+  border-radius:10px;
+  background:#060b12;
+}
+.explorerGapQueue.collapsed{
+  padding-bottom:8px;
+}
+.explorerGapHeader{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  width:100%;
+  margin:0;
+  padding:0;
+  border:none;
+  background:transparent;
+  color:#9fb0c7;
+  font-size:11px;
+  cursor:pointer;
+  text-align:left;
+}
+.explorerGapHeader:hover{
+  color:#dbeafe;
+}
+.explorerGapHeaderMain{
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+.explorerGapToggle{
+  font-size:10px;
+  color:#7b8794;
+  width:12px;
+  flex-shrink:0;
+}
+.explorerGapList{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  margin-top:8px;
+}
+.explorerGapBtn{
+  text-align:left;
+  border:1px solid #1e2c3b;
+  background:#0b1220;
+  color:#dbeafe;
+  border-radius:8px;
+  padding:6px 8px;
+  font-size:11px;
+  cursor:pointer;
+}
+.explorerGapBtn:hover{
+  border-color:#ffbf2f;
+  color:#ffbf2f;
+}
+.caseToolbarBtnMaster{
+  border-color:#ffbf2f;
+  color:#ffbf2f;
+}
 .explorerTreeControls{
   display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:8px;
 }
@@ -2803,6 +2960,16 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .compactCaseList button{font-size:11px;padding:6px 8px;}
 .savedCasesPanel{margin:10px 0 14px;padding:10px;border:1px solid #1e3a52;border-radius:14px;background:rgba(6,14,24,.72);}
+.savedCaseRow{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;text-align:left;padding:10px 12px;border:1px solid rgba(148,163,184,.16);border-radius:12px;background:rgba(8,14,24,.82);cursor:pointer;}
+.savedCaseRow.active{border-color:rgba(0,255,208,.45);background:rgba(0,255,208,.08);box-shadow:0 0 0 1px rgba(0,255,208,.18);}
+.savedCaseName{font-size:14px;font-weight:900;color:#f8fafc;line-height:1.25;}
+.savedCaseMeta{font-size:11px;color:#94a3b8;font-weight:700;}
+.caseNameField{display:grid;gap:6px;margin:10px 0 0;font-size:12px;font-weight:800;color:#94a3b8;}
+.caseNameField input{width:100%;padding:10px 12px;border-radius:12px;border:1px solid rgba(88,166,255,.28);background:#071018;color:#f8fafc;font-size:15px;font-weight:800;}
+.caseNameQuickRow{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px;}
+.caseQuarterChip{min-width:58px;padding:6px 8px !important;font-size:11px !important;}
+.compactCaseList .savedCaseRow{margin-bottom:6px;}
+.compactCaseList button.savedCaseRow{font-size:inherit;padding:10px 12px;}
 .savedCasesHeader{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px;}
 .savedCasesHeader b{color:#ffbf2f;}
 .activeCaseCard{
@@ -3492,6 +3659,17 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   line-height:1.25;
   white-space:normal;
 }
+.ribbonChartLock{
+  display:inline-flex;
+  padding:2px 7px;
+  border-radius:999px;
+  border:1px solid rgba(239,68,68,.32);
+  background:rgba(127,29,29,.18);
+  color:#fca5a5;
+  font-size:9px;
+  font-weight:800;
+  white-space:nowrap;
+}
 .ribbonSaveHint{
   display:inline-flex;
   max-width:min(280px,42vw);
@@ -3747,4 +3925,128 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 .fullscreenTfDock select{height:30px;border-radius:10px;border:1px solid rgba(148,163,184,.25);background:#07111f;color:#e8eef7;font-weight:900;padding:0 6px;font-size:11px}
 .chartFullscreenMode .d3CandleSvg{height:100%!important;min-height:0!important}
 .chartMapStage{position:relative;width:100%;min-height:420px}
+.chartCrosshairHud{
+  position:absolute;
+  top:10px;
+  left:10px;
+  z-index:6;
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px 14px;
+  align-items:center;
+  padding:8px 12px;
+  border:1px solid rgba(0,255,208,.28);
+  background:rgba(2,6,23,.88);
+  border-radius:12px;
+  color:#e2e8f0;
+  font-size:12px;
+  font-weight:800;
+  pointer-events:none;
+  box-shadow:0 8px 24px rgba(0,0,0,.35);
+}
+.chartCrosshairHud b{color:#ffdf76;font-size:13px}
+.chartCrosshairHud span{color:#cbd5e1}
 .chartMapStage .d3CandleSvg{width:100%;height:620px;display:block}
+
+/* Analyst Research View */
+.researchStack{display:flex;flex-direction:column;gap:16px;max-width:1180px}
+.researchHero .researchFlow{display:flex;align-items:center;gap:6px;margin-top:14px;font-weight:900;color:var(--gold);font-size:13px}
+.researchHero .mutedFlow{color:var(--muted)}
+.researchSamplerGrid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.validationCard{background:#060b12;border:1px solid #1e2c3b;border-radius:16px;padding:16px;margin-top:10px}
+.validationTitle{font-size:16px;font-weight:1000;color:var(--gold);margin-bottom:12px}
+.validationRow{display:grid;grid-template-columns:90px 1fr auto;gap:8px;align-items:center;padding:8px 0;border-bottom:1px solid #142231}
+.validationRow:last-child{border-bottom:0}
+.validationRow b{font-size:18px;font-weight:1000}
+.validationRow em{color:var(--muted);font-size:12px;font-style:normal}
+.passBtn{background:linear-gradient(135deg,#1a4d32,#42e68a)!important;color:#041208!important}
+.reviewBtn{background:linear-gradient(135deg,#4a3520,#ffbf2f)!important;color:#1a1204!important}
+.insightGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-top:12px}
+.insightCard{background:#060b12;border:1px solid #1e2c3b;border-radius:16px;padding:14px}
+.insightCard b{display:block;color:#dbeafe;font-size:14px;margin-bottom:8px}
+.insightLine{color:#b7c4d8;font-size:13px;margin:4px 0;line-height:1.4}
+.presetChips{display:flex;flex-wrap:wrap;gap:8px}
+.presetChip{background:#07101a;border:1px solid #29415a;color:#dbeafe;border-radius:14px;padding:10px 14px;font-weight:800;font-size:12px;cursor:pointer;text-align:left}
+.presetChip:hover{border-color:var(--gold);color:var(--gold)}
+.presetChip:disabled{opacity:.45;cursor:not-allowed}
+.humanResultCard{background:#060b12;border:1px solid rgba(66,230,138,.25);border-radius:16px;padding:14px;margin-bottom:12px}
+.humanResultCard b{display:block;color:var(--green);margin-bottom:8px}
+.analystModeBar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap}
+.analystModeBtn{background:#07101a;border:1px solid #26364a;color:#dbeafe;border-radius:14px;padding:12px 18px;font-weight:1000;cursor:pointer}
+.analystModeBtn.active{background:linear-gradient(135deg,var(--gold),#ffe18a);color:#071014;border-color:transparent}
+.mapDataFold{margin-bottom:16px}
+
+/* TradingView-style bar replay dock */
+.tvReplayDock{
+  position:relative;
+  gap:8px;
+  z-index:40;
+}
+.tvReplayStartGroup{
+  position:relative;
+  flex:0 0 auto;
+}
+.tvReplaySelectBar{
+  min-width:118px !important;
+  font-weight:900;
+}
+.tvReplayStartMenu{
+  position:absolute;
+  left:0;
+  bottom:calc(100% + 8px);
+  min-width:220px;
+  padding:6px;
+  border-radius:14px;
+  border:1px solid rgba(88,166,255,.28);
+  background:linear-gradient(180deg,rgba(9,16,27,.98),rgba(4,9,17,.99));
+  box-shadow:0 12px 32px rgba(0,0,0,.45);
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  z-index:50;
+}
+.tvReplayStartMenu button{
+  min-width:0 !important;
+  width:100%;
+  height:36px;
+  text-align:left;
+  padding:0 12px;
+  border-radius:10px;
+  font-weight:800;
+  font-size:12px;
+}
+.tvReplaySpeed{
+  height:36px;
+  min-width:58px;
+  border-radius:12px;
+  border:1px solid rgba(148,163,184,.28);
+  background:#07111f;
+  color:#e8eef7;
+  font-weight:900;
+  padding:0 8px;
+}
+.tvReplayTf{
+  flex:0 0 auto;
+  min-width:42px;
+  text-align:center;
+  color:#94a3b8;
+  font-weight:900;
+  font-size:12px;
+  border:1px solid rgba(148,163,184,.2);
+  border-radius:10px;
+  padding:8px 6px;
+  background:rgba(15,23,42,.55);
+}
+.tvReplaySlider{
+  min-width:180px !important;
+}
+.tvReplayExit{
+  min-width:44px !important;
+  font-weight:1000;
+}
+.replayActiveBtn{
+  background:linear-gradient(135deg,#0d4a3a,#00d4aa) !important;
+  color:#041208 !important;
+  border-color:#00d4aa !important;
+}
+@media(max-width:1100px){.researchSamplerGrid{grid-template-columns:1fr}}
