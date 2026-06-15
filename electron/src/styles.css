@@ -4099,3 +4099,45 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
   border-color:#00d4aa !important;
 }
 @media(max-width:1100px){.researchSamplerGrid{grid-template-columns:1fr}}
+
+.tradeIdeaTabPanel{display:flex;flex-direction:column;gap:12px;overflow:auto;padding-bottom:12px}
+.tradeIdeaContextCard{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:12px;border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.55)}
+.tradeIdeaContextCard b{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8}
+.tradeIdeaContextCard span{color:#e2e8f0;font-weight:800}
+.tradeIdeaContextCard em{color:#64748b;font-size:12px;font-style:normal}
+.tradeIdeaPickGrid{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+.tradeIdeaPickBtn{border:1px solid rgba(148,163,184,.28);background:rgba(15,23,42,.88);color:#dbeafe;border-radius:10px;padding:10px 6px;font-weight:900;cursor:pointer}
+.tradeIdeaPickBtn.active{border-color:#60a5fa;background:rgba(96,165,250,.18);color:#fff;box-shadow:0 0 18px rgba(96,165,250,.18)}
+.tradeIdeaPickBtn.entry.active{border-color:#fff}
+.tradeIdeaPickBtn.sl.active{border-color:#ff5b6e;background:rgba(255,91,110,.16)}
+.tradeIdeaPickBtn.tp1.active,.tradeIdeaPickBtn.tp2.active,.tradeIdeaPickBtn.tp3.active{border-color:#35e783;background:rgba(53,231,131,.14)}
+.tradeIdeaHint{padding:8px 10px;border-radius:10px;background:rgba(96,165,250,.12);border:1px solid rgba(96,165,250,.28);color:#dbeafe;font-size:12px}
+.tradeIdeaDraftCard{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border-radius:12px;border:1px solid rgba(148,163,184,.18);background:rgba(2,6,23,.45)}
+.tradeIdeaDraftRow{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:#94a3b8}
+.tradeIdeaDraftRow strong{color:#e2e8f0;font-size:12px;text-align:right}
+.tradeIdeaDraftRow strong.long{color:#60a5fa}
+.tradeIdeaDraftRow strong.short{color:#f472b6}
+.tradeIdeaDraftRow strong.sl{color:#ff5b6e}
+.tradeIdeaDraftRow strong.tp{color:#35e783}
+.tradeIdeaMetrics{display:flex;flex-wrap:wrap;gap:8px;margin-top:4px;padding-top:8px;border-top:1px solid rgba(148,163,184,.14)}
+.tradeIdeaMetrics span{font-size:11px;font-weight:800;color:#cbd5e1;background:rgba(15,23,42,.75);border:1px solid rgba(148,163,184,.18);border-radius:999px;padding:4px 8px}
+.tradeIdeaNotes{display:flex;flex-direction:column;gap:6px;font-size:12px;color:#94a3b8}
+.tradeIdeaNotes textarea{min-height:72px;border-radius:10px;border:1px solid rgba(148,163,184,.24);background:#07111f;color:#e2e8f0;padding:8px 10px;resize:vertical}
+.tradeIdeaActions{display:flex;flex-wrap:wrap;gap:8px}
+.tradeIdeaSaveBtn,.tradeIdeaClearBtn,.tradeIdeaExportBtn{border-radius:10px;padding:10px 12px;font-weight:900;cursor:pointer;border:1px solid rgba(148,163,184,.24)}
+.tradeIdeaSaveBtn{flex:1 1 160px;background:linear-gradient(135deg,#0d4a3a,#00d4aa);color:#041208;border-color:#00d4aa}
+.tradeIdeaSaveBtn:disabled{opacity:.45;cursor:not-allowed}
+.tradeIdeaClearBtn,.tradeIdeaExportBtn{background:rgba(15,23,42,.88);color:#dbeafe}
+.tradeIdeaSavedList{display:flex;flex-direction:column;gap:8px}
+.tradeIdeaSavedList>b{font-size:12px;color:#94a3b8;text-transform:uppercase;letter-spacing:.06em}
+.tradeIdeaSavedRow{display:grid;grid-template-columns:auto 1fr auto;gap:6px 10px;align-items:center;text-align:left;padding:10px 12px;border-radius:12px;border:1px solid rgba(148,163,184,.2);background:rgba(15,23,42,.55);cursor:pointer;color:inherit}
+.tradeIdeaSavedRow.active{border-color:#ffbf2f;background:rgba(255,191,47,.08)}
+.tradeIdeaSavedRow .dir{font-size:10px;font-weight:1000;padding:4px 6px;border-radius:999px;border:1px solid rgba(148,163,184,.24)}
+.tradeIdeaSavedRow .dir.long{color:#60a5fa;border-color:rgba(96,165,250,.35)}
+.tradeIdeaSavedRow .dir.short{color:#f472b6;border-color:rgba(244,114,182,.35)}
+.tradeIdeaSavedRow strong{grid-column:2;font-size:12px;color:#e2e8f0}
+.tradeIdeaSavedRow em{grid-column:2;font-style:normal;font-size:11px;color:#64748b}
+.tradeIdeaDelete{grid-row:1 / span 2;grid-column:3;width:24px;height:24px;display:grid;place-items:center;border-radius:8px;color:#94a3b8;font-size:18px;line-height:1}
+.tradeIdeaDelete:hover{color:#ff5b6e;background:rgba(255,91,110,.12)}
+.chartTradeIdeas .chartTradeIdea.selected line{filter:drop-shadow(0 0 4px rgba(255,191,47,.35))}
+.chartTradeIdeas .chartTradeIdea.draft{opacity:.92}

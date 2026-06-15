@@ -24,6 +24,23 @@ import {
   saveChartDrawings,
   saveReplayCursorForKey,
 } from './chartDrawings';
+import {
+  type ChartTradeIdea,
+  type ChartTradeIdeaDraft,
+  type TradeIdeaPickKind,
+  TRADE_IDEA_COLORS,
+  buildTradeIdeaFromDraft,
+  downloadTradeIdeasJson,
+  emptyTradeIdeaDraft,
+  loadChartTradeIdeas,
+  overlaySpecFromDraft,
+  overlaySpecFromIdea,
+  saveChartTradeIdeas,
+  tradeIdeasStorageKey,
+  tradeIdeaEndDate,
+  type TradeIdeaOverlaySpec,
+} from './chartTradeIdeas';
+import { MapTradeIdeaPanel } from './mapTradeIdeaPanel';
 import './styles.css';
 
 const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
@@ -2152,7 +2169,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [playbackIndex, setPlaybackIndex] = useState(0);
   const [replayMode, setReplayMode] = useState(false);
   const [playbackPlaying, setPlaybackPlaying] = useState(false);
-  const [rightDeckTab, setRightDeckTab] = useState<'narrative'|'gps'|'mark'|'seed'>('narrative');
+  const [rightDeckTab, setRightDeckTab] = useState<'narrative'|'gps'|'mark'|'seed'|'trade'>('narrative');
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
   const [markWorkspaceMode, setMarkWorkspaceMode] = useLocalStorage<'htf'|'manual'|'case'>('fx_tm_mark_workspace_mode_v087_9', 'htf');
   const [topRibbonCollapsed, setTopRibbonCollapsed] = useLocalStorage<boolean>('fx_tm_top_ribbon_collapsed_v087_24', false);
@@ -2279,6 +2296,13 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [chartDrawTool, setChartDrawTool] = useState<ChartDrawTool>('off');
   const [chartDrawColor, setChartDrawColor] = useState<string>(CHART_DRAWING_COLORS[0]);
   const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+  const tradeIdeasKey = tradeIdeasStorageKey(symbol, timeframe, activeCaseDisplayId || 'global');
+  const [chartTradeIdeas, setChartTradeIdeas] = useState<ChartTradeIdea[]>([]);
+  const [tradeIdeaDraft, setTradeIdeaDraft] = useState<ChartTradeIdeaDraft>(() => emptyTradeIdeaDraft());
+  const [tradePickMode, setTradePickMode] = useState<TradeIdeaPickKind | null>(null);
+  const [selectedTradeIdeaId, setSelectedTradeIdeaId] = useState<string | null>(null);
+  const [tradeIdeaNotes, setTradeIdeaNotes] = useState('');
+  const [tradeIdeaSaving, setTradeIdeaSaving] = useState(false);
   const lockedCameraDomain = cameraDomainByCaseTf[cameraKey] || null;
   const caseSaveInFlightRef = useRef<Set<string>>(new Set());
   const [bundleSaving, setBundleSaving] = useState(false);
@@ -2864,6 +2888,10 @@ function MapStudio({ symbol }: { symbol:string }) {
       setReplayCursorByKey({});
       setChartDrawings([]);
       setSelectedDrawingId(null);
+      setChartTradeIdeas([]);
+      setTradeIdeaDraft(emptyTradeIdeaDraft());
+      setSelectedTradeIdeaId(null);
+      setTradePickMode(null);
       setRangeByTf({});
       setRangeWindowByTf({});
       setMeasurementRangeByTf({});
@@ -2872,6 +2900,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       eventsByTfRef.current = {};
       setEventsByTf({});
       try { localStorage.removeItem('fx_tm_chart_drawings_v1'); } catch { /* ignore */ }
+      try { localStorage.removeItem('fx_tm_chart_trade_ideas_v1'); } catch { /* ignore */ }
       try { localStorage.removeItem('fx_tm_replay_cursor_time_v087_22'); } catch { /* ignore */ }
 
       await loadSavedCasesFromBackend();
@@ -3029,6 +3058,13 @@ function MapStudio({ symbol }: { symbol:string }) {
       end: rlAnchor.time || null,
     };
   }, [rhAnchor.price, rlAnchor.time, rlAnchor.price, rhAnchor.time, structureLayer, activeStructuralRangeId, savedStructuralRanges, structuralRangeDraftDirty]);
+
+  const linkedTradeRangeLabel = useMemo(() => {
+    if (!activeStructuralRangeId) return 'No range selected — pick a range in Structural Map to link context';
+    const r = safeArray<any>(savedStructuralRanges).find((x) => String(x.range_id || x.id) === String(activeStructuralRangeId));
+    const scope = String(r?.range_scope || rangeScope || 'MAJOR');
+    return `#${activeStructuralRangeId} · ${structureLayer} · ${scope}`;
+  }, [activeStructuralRangeId, savedStructuralRanges, structureLayer, rangeScope]);
 
   const htfSemiAuto = useMemo(() => analyseHTFSemiAuto({
     timeframe,
@@ -6480,6 +6516,25 @@ function MapStudio({ symbol }: { symbol:string }) {
   }, [chartDrawingsKey, chartDrawings]);
 
   useEffect(() => {
+    setChartTradeIdeas(loadChartTradeIdeas(tradeIdeasKey));
+    setSelectedTradeIdeaId(null);
+    setTradeIdeaDraft(emptyTradeIdeaDraft());
+    setTradePickMode(null);
+  }, [tradeIdeasKey]);
+
+  useEffect(() => {
+    saveChartTradeIdeas(tradeIdeasKey, chartTradeIdeas);
+  }, [tradeIdeasKey, chartTradeIdeas]);
+
+  useEffect(() => {
+    if (rightDeckTab === 'trade') setChartDrawTool('off');
+  }, [rightDeckTab]);
+
+  useEffect(() => {
+    if (tradePickMode) setChartDrawTool('off');
+  }, [tradePickMode]);
+
+  useEffect(() => {
     const onKeyDown = (evt: KeyboardEvent) => {
       if (!selectedDrawingId) return;
       const tag = String((evt.target as HTMLElement | null)?.tagName || '').toUpperCase();
@@ -6495,6 +6550,72 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const updateChartDrawings = (updater: ChartDrawing[] | ((prev: ChartDrawing[]) => ChartDrawing[])) => {
     setChartDrawings((prev) => (typeof updater === 'function' ? updater(prev) : updater));
+  };
+
+  const handleTradeLevelPick = (payload: { kind: TradeIdeaPickKind; time: string; price: number }) => {
+    setTradeIdeaDraft((prev) => ({ ...prev, [payload.kind]: { time: payload.time, price: payload.price } }));
+    setTradePickMode(null);
+    setMessage(`Trade ${payload.kind.toUpperCase()} set at ${payload.price.toFixed(2)} · ${shortTime(payload.time, timeframe)}`);
+  };
+
+  const handleSaveTradeIdea = async () => {
+    const idea = buildTradeIdeaFromDraft({
+      draft: tradeIdeaDraft,
+      symbol,
+      timeframe,
+      rangeId: activeStructuralRangeId || null,
+      rangeScope,
+      structureLayer,
+      caseRef: activeCaseDisplayId || null,
+      caseLabel: seedName || activeCaseLabel || null,
+      notes: tradeIdeaNotes,
+    });
+    if (!idea) {
+      setMessage('Entry, SL, and TP1 are required before saving a trade idea.');
+      return;
+    }
+    setTradeIdeaSaving(true);
+    try {
+      const next = [idea, ...chartTradeIdeas];
+      setChartTradeIdeas(next);
+      saveChartTradeIdeas(tradeIdeasKey, next);
+      setTradeIdeaDraft(emptyTradeIdeaDraft());
+      setTradeIdeaNotes('');
+      setSelectedTradeIdeaId(idea.id);
+      try {
+        await fetch(`${BASE_URL}/api/v1/trade-ideas/quick`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: idea.id,
+            symbol,
+            direction: idea.direction === 'LONG' ? 'BUY' : 'SELL',
+            setup_type: `Chart Trade Idea · ${structureLayer}`,
+            sl_price: idea.sl?.price,
+            notes: JSON.stringify({ chartTradeIdea: idea, range_id: idea.rangeId, analystExport: idea.analystExport }),
+            source: 'map_studio_chart',
+          }),
+        });
+      } catch { /* local save is source of truth for chart ideas */ }
+      const rr = idea.analystExport.rrTp1 != null ? `${idea.analystExport.rrTp1.toFixed(2)}R TP1` : 'saved';
+      setMessage(`Trade idea saved · ${idea.direction} ${idea.entry.price.toFixed(2)} · ${rr}`);
+    } finally {
+      setTradeIdeaSaving(false);
+    }
+  };
+
+  const handleDeleteTradeIdea = (id: string) => {
+    setChartTradeIdeas((prev) => {
+      const next = prev.filter((x) => x.id !== id);
+      saveChartTradeIdeas(tradeIdeasKey, next);
+      return next;
+    });
+    if (selectedTradeIdeaId === id) setSelectedTradeIdeaId(null);
+  };
+
+  const handleExportTradeIdeas = () => {
+    downloadTradeIdeasJson(tradeIdeasKey, chartTradeIdeas);
+    setMessage(`Exported ${chartTradeIdeas.length} trade idea(s) for analyst.`);
   };
 
   useEffect(()=>{
@@ -6938,6 +7059,11 @@ function MapStudio({ symbol }: { symbol:string }) {
           selectedDrawingId={selectedDrawingId}
           onDrawingsChange={updateChartDrawings}
           onSelectedDrawingChange={setSelectedDrawingId}
+          chartTradeIdeas={chartTradeIdeas}
+          tradeIdeaDraft={tradeIdeaDraft}
+          tradePickMode={tradePickMode}
+          selectedTradeIdeaId={selectedTradeIdeaId}
+          onTradeLevelPick={handleTradeLevelPick}
           scaleMode={scaleMode}
           jumpLatestToken={jumpToken}
           fitAllToken={fitToken}
@@ -7002,10 +7128,11 @@ function MapStudio({ symbol }: { symbol:string }) {
         <button className={rightDeckTab==='gps' && workspacePanelOpen ? 'active' : ''} title="GPS" onClick={()=>{ setRightDeckTab('gps'); setWorkspacePanelOpen(prev => rightDeckTab === 'gps' ? !prev : true); }}>G</button>
         <button className={rightDeckTab==='mark' && workspacePanelOpen ? 'active' : ''} title="Mark" onClick={()=>{ setRightDeckTab('mark'); setToolMode('select'); setWorkspacePanelOpen(prev => rightDeckTab === 'mark' ? !prev : true); }}>M</button>
         <button className={rightDeckTab==='seed' && workspacePanelOpen ? 'active' : ''} title="Case" onClick={()=>{ setRightDeckTab('seed'); setWorkspacePanelOpen(prev => rightDeckTab === 'seed' ? !prev : true); }}>C</button>
+        <button className={rightDeckTab==='trade' && workspacePanelOpen ? 'active' : ''} title="Trade Idea" onClick={()=>{ setRightDeckTab('trade'); setChartDrawTool('off'); setWorkspacePanelOpen(prev => rightDeckTab === 'trade' ? !prev : true); }}>T</button>
       </div>
       <div className={`mapSidePanel d3Side compactSideDeck floatingWorkspacePanel ${workspacePanelOpen ? 'open' : 'closed'}`}>
         <div className="floatingPanelChrome">
-          <div><b>{rightDeckTab === 'narrative' ? 'Narrative' : rightDeckTab === 'gps' ? 'Market GPS' : rightDeckTab === 'mark' ? 'Mark Event' : 'Case Manager'}</b><span>{symbol} · {timeframe}</span></div>
+          <div><b>{rightDeckTab === 'narrative' ? 'Narrative' : rightDeckTab === 'gps' ? 'Market GPS' : rightDeckTab === 'mark' ? 'Mark Event' : rightDeckTab === 'trade' ? 'Trade Idea' : 'Case Manager'}</b><span>{symbol} · {timeframe}</span></div>
           <button onClick={()=>setWorkspacePanelOpen(false)} title="Close panel">×</button>
         </div>
         {rightDeckTab === 'narrative' && <div className="rightTabPanel narrativeTabPanel ledgerViewerPanel">
@@ -7327,6 +7454,25 @@ function MapStudio({ symbol }: { symbol:string }) {
       </details>
     </div>
         </div>}
+        {rightDeckTab === 'trade' && <MapTradeIdeaPanel
+          symbol={symbol}
+          timeframe={timeframe}
+          draft={tradeIdeaDraft}
+          pickMode={tradePickMode}
+          setPickMode={setTradePickMode}
+          savedIdeas={chartTradeIdeas}
+          selectedIdeaId={selectedTradeIdeaId}
+          setSelectedIdeaId={setSelectedTradeIdeaId}
+          linkedRangeLabel={linkedTradeRangeLabel}
+          notes={tradeIdeaNotes}
+          setNotes={setTradeIdeaNotes}
+          onClearDraft={() => { setTradeIdeaDraft(emptyTradeIdeaDraft()); setTradePickMode(null); }}
+          onSave={handleSaveTradeIdea}
+          onDelete={handleDeleteTradeIdea}
+          onExport={handleExportTradeIdeas}
+          saving={tradeIdeaSaving}
+          shortTime={shortTime}
+        />}
       </div>
     </div>
 
@@ -7420,6 +7566,107 @@ function draftRangeLineStyle() {
   return { opacity: 0.55, dash: '4 6', width: 1.6 };
 }
 
+function paintChartTradeIdea(
+  plot: d3.Selection<SVGGElement, unknown, null, undefined>,
+  spec: TradeIdeaOverlaySpec,
+  zx: d3.ScaleTime<number, number>,
+  y: d3.ScaleLinear<number, number>,
+  defaultBarMs: number,
+) {
+  if (!spec.entry) return;
+  const entryDate = candleTimeDate(spec.entry.time);
+  if (!Number.isFinite(entryDate.getTime())) return;
+  const x1 = snapChartStrokePx(zx(entryDate));
+  const endDate = tradeIdeaEndDate(spec.entry, [spec.tp1, spec.tp2, spec.tp3], defaultBarMs);
+  const x2 = snapChartStrokePx(zx(endDate));
+  if (!Number.isFinite(x1) || !Number.isFinite(x2) || x2 <= x1) return;
+
+  const entryY = y(spec.entry.price);
+  const opacity = spec.draft ? 0.72 : spec.selected ? 1 : 0.9;
+  const dash = spec.draft ? '6 4' : undefined;
+  const g = plot.append('g')
+    .attr('class', `chartTradeIdea${spec.draft ? ' draft' : ''}${spec.selected ? ' selected' : ''}`)
+    .attr('data-id', spec.id || 'draft')
+    .attr('pointer-events', 'none');
+
+  if (spec.sl) {
+    const slY = y(spec.sl.price);
+    const yTop = Math.min(entryY, slY);
+    const yBot = Math.max(entryY, slY);
+    g.append('rect')
+      .attr('x', x1).attr('y', yTop)
+      .attr('width', Math.max(2, x2 - x1))
+      .attr('height', Math.max(1, yBot - yTop))
+      .attr('fill', TRADE_IDEA_COLORS.riskFill)
+      .attr('opacity', opacity);
+  }
+
+  const tpPrices = [spec.tp1, spec.tp2, spec.tp3].filter(Boolean).map((tp) => tp!.price);
+  if (tpPrices.length) {
+    const rewardEdge = spec.direction === 'LONG'
+      ? Math.max(spec.entry.price, ...tpPrices)
+      : Math.min(spec.entry.price, ...tpPrices);
+    const yA = y(rewardEdge);
+    const yB = y(spec.entry.price);
+    const yTop = Math.min(yA, yB);
+    const yBot = Math.max(yA, yB);
+    g.append('rect')
+      .attr('x', x1).attr('y', yTop)
+      .attr('width', Math.max(2, x2 - x1))
+      .attr('height', Math.max(1, yBot - yTop))
+      .attr('fill', TRADE_IDEA_COLORS.rewardFill)
+      .attr('opacity', opacity * 0.9);
+  }
+
+  const line = (price: number, color: string, label: string, rr?: string | null) => {
+    const py = y(price);
+    g.append('line')
+      .attr('x1', x1).attr('x2', x2)
+      .attr('y1', py).attr('y2', py)
+      .attr('stroke', color)
+      .attr('stroke-width', spec.selected ? 2.2 : 1.6)
+      .attr('stroke-dasharray', dash || null)
+      .attr('opacity', opacity);
+    g.append('text')
+      .attr('x', x2 + 4).attr('y', py + 4)
+      .attr('fill', color)
+      .attr('font-size', 10)
+      .attr('font-weight', 800)
+      .text(rr ? `${label} ${price.toFixed(2)} (${rr})` : `${label} ${price.toFixed(2)}`);
+  };
+
+  line(
+    spec.entry.price,
+    spec.direction === 'LONG' ? TRADE_IDEA_COLORS.longEntry : TRADE_IDEA_COLORS.shortEntry,
+    'Entry',
+  );
+  if (spec.sl) line(spec.sl.price, TRADE_IDEA_COLORS.sl, 'SL');
+  if (spec.tp1) {
+    line(
+      spec.tp1.price,
+      TRADE_IDEA_COLORS.tp,
+      'TP1',
+      spec.analystExport?.rrTp1 != null ? `${spec.analystExport.rrTp1.toFixed(2)}R` : null,
+    );
+  }
+  if (spec.tp2) {
+    line(
+      spec.tp2.price,
+      TRADE_IDEA_COLORS.tp,
+      'TP2',
+      spec.analystExport?.rrTp2 != null ? `${spec.analystExport.rrTp2.toFixed(2)}R` : null,
+    );
+  }
+  if (spec.tp3) {
+    line(
+      spec.tp3.price,
+      TRADE_IDEA_COLORS.tp,
+      'TP3',
+      spec.analystExport?.rrTp3 != null ? `${spec.analystExport.rrTp3.toFixed(2)}R` : null,
+    );
+  }
+}
+
 type D3CandleMapProps = {
   candles:Candle[];
   replayCutTime?:string|null;
@@ -7448,6 +7695,11 @@ type D3CandleMapProps = {
   selectedDrawingId?:string|null;
   onDrawingsChange?:(drawings:ChartDrawing[])=>void;
   onSelectedDrawingChange?:(id:string|null)=>void;
+  chartTradeIdeas?:ChartTradeIdea[];
+  tradeIdeaDraft?:ChartTradeIdeaDraft|null;
+  tradePickMode?:TradeIdeaPickKind|null;
+  selectedTradeIdeaId?:string|null;
+  onTradeLevelPick?:(payload:{kind:TradeIdeaPickKind; time:string; price:number})=>void;
   scaleMode:'auto'|'range';
   jumpLatestToken:number;
   fitAllToken:number;
@@ -8087,6 +8339,19 @@ function D3CandleMap(props:D3CandleMapProps) {
       }
     }
 
+    const defaultBarMs = renderData.length >= 2
+      ? Math.max(3600000, Math.abs(candleTimeMs(renderData[1].time) - candleTimeMs(renderData[0].time)))
+      : 86400000;
+    const savedTradeIdeas = safeArray<ChartTradeIdea>(p.chartTradeIdeas || []);
+    const draftTradeSpec = p.tradeIdeaDraft ? overlaySpecFromDraft(p.tradeIdeaDraft, true) : null;
+    if (savedTradeIdeas.length || draftTradeSpec) {
+      const tiG = plot.append('g').attr('class', 'chartTradeIdeas').attr('pointer-events', 'none');
+      for (const idea of savedTradeIdeas) {
+        paintChartTradeIdea(tiG, overlaySpecFromIdea(idea, idea.id === (p.selectedTradeIdeaId || '')), zx, y, defaultBarMs);
+      }
+      if (draftTradeSpec) paintChartTradeIdea(tiG, draftTradeSpec, zx, y, defaultBarMs);
+    }
+
     const chartDrawings = safeArray<ChartDrawing>(p.chartDrawings || []);
     const drawTool = p.chartDrawTool || 'off';
     const drawColor = p.chartDrawColor || CHART_DRAWING_COLORS[0];
@@ -8408,10 +8673,17 @@ Date: ${shortTime(d.time,p.timeframe)}`);
         const [mx, my] = chartPointer(event, svgEl);
         const snap = snapCrosshairToCandle(mx, my, v, renderData, zx, y, metrics, p.timeframe);
         const drawTool = latestProps.current.chartDrawTool || 'off';
+        const tradePick = latestProps.current.tradePickMode;
         const drawColorNow = latestProps.current.chartDrawColor || CHART_DRAWING_COLORS[0];
         const { x: px, y: py } = clampChartPlotXY(mx, my, metrics);
         const price = snap?.price ?? y.invert(py);
         const c = snap?.candle || nearestCandle(zx.invert(px), renderData);
+
+        if (tradePick && latestProps.current.onTradeLevelPick) {
+          if (!c) return;
+          latestProps.current.onTradeLevelPick({ kind: tradePick, time: c.time, price: Number(price.toFixed(2)) });
+          return;
+        }
 
         if (drawTool === 'edit') {
           return;
@@ -8484,6 +8756,11 @@ Date: ${shortTime(d.time,p.timeframe)}`);
           return -delta * 0.0025;
         })
         .filter((event:any) => {
+          const tradePick = latestProps.current.tradePickMode;
+          if (tradePick) {
+            if (event.type === 'wheel') return true;
+            return false;
+          }
           const drawTool = latestProps.current.chartDrawTool || 'off';
           if (drawTool === 'hline' || drawTool === 'vline' || drawTool === 'text' || drawTool === 'edit') {
             if (event.type === 'wheel') return true;
@@ -8657,6 +8934,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
   const savedOverlaysKey = (props.savedRangeOverlays || []).map((r) => `${r.rangeId}:${r.high}:${r.low}:${r.start}:${r.end}:${r.isActive}:${r.isParentContext}`).join('|');
   const draftOverlayKey = props.draftRangeOverlay?.visible ? `${props.draftRangeOverlay.high}:${props.draftRangeOverlay.low}:${props.draftRangeOverlay.start}:${props.draftRangeOverlay.end}:${props.draftRangeOverlay.structureLayer}` : '';
   const drawingsKey = (props.chartDrawings || []).map((d) => `${d.id}:${d.kind}`).join('|');
+  const tradeIdeasRenderKey = (props.chartTradeIdeas || []).map((i) => `${i.id}:${i.updatedAt}`).join('|')
+    + '|draft:' + JSON.stringify(props.tradeIdeaDraft || null)
+    + '|sel:' + String(props.selectedTradeIdeaId || '')
+    + '|pick:' + String(props.tradePickMode || '');
 
   useEffect(() => {
     const svgEl = svgRef.current;
@@ -8687,7 +8968,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
     }
     draw();
-  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays, drawingsKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor]);
+  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays, drawingsKey, tradeIdeasRenderKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor, props.tradePickMode]);
 
   useEffect(()=>{
     if (!svgRef.current || !props.candles.length) return;
