@@ -4141,3 +4141,36 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 .tradeIdeaDelete:hover{color:#ff5b6e;background:rgba(255,91,110,.12)}
 .chartTradeIdeas .chartTradeIdea.selected line{filter:drop-shadow(0 0 4px rgba(255,191,47,.35))}
 .chartTradeIdeas .chartTradeIdea.draft{opacity:.92}
+
+.explorerLineToggle{
+  flex:0 0 auto;
+  min-width:38px;
+  height:24px;
+  padding:0 6px;
+  border-radius:8px;
+  border:1px solid rgba(148,163,184,.28);
+  background:rgba(15,23,42,.82);
+  color:#94a3b8;
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:.02em;
+  cursor:pointer;
+}
+.explorerLineToggle.on{
+  color:#041208;
+  border-color:#00d4aa;
+  background:linear-gradient(135deg,#0d4a3a,#00d4aa);
+}
+.explorerLineToggle.off{
+  color:#64748b;
+  border-color:rgba(148,163,184,.18);
+  background:rgba(2,6,23,.55);
+  text-decoration:line-through;
+}
+.explorerTreeRow{
+  display:flex;
+  align-items:flex-start;
+  gap:6px;
+}
+.explorerTreeRow .explorerTreeRowMain{flex:1 1 auto;min-width:0}
+.line.savedRangeLine{shape-rendering:geometricPrecision}

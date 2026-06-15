@@ -458,6 +458,42 @@ function expectedChildStructureLayer(layer: StructureLayer): StructureLayer | nu
 function directChildCountLabel(parentLayer: StructureLayer): string | null {
   return ({ MACRO: 'Weekly', WEEKLY: 'Daily', DAILY: 'Intraday', INTRADAY: 'Micro', MICRO: null } as Record<StructureLayer, string | null>)[parentLayer];
 }
+function hierarchyChildCountLabel(parent: any, children: any[]): string | null {
+  if (!children.length) return null;
+  const pLayer = normalizeStructureLayer(parent?.structure_layer || parent?.layer);
+  const first = children[0];
+  const cLayer = normalizeStructureLayer(first?.structure_layer || first?.layer);
+  if (cLayer === pLayer && !isRangeMajor(first)) return 'Minor';
+  return directChildCountLabel(pLayer);
+}
+function directHierarchyChildren(parent: any, nodes: any[]): any[] {
+  const pid = String(parent?.range_id || parent?.id || '');
+  if (!pid) return [];
+  const linked = nodes.filter((c:any) => String(c.parent_range_id || '') === pid);
+  const pLayer = normalizeStructureLayer(parent.structure_layer || parent.layer);
+  const pMajor = isRangeMajor(parent);
+
+  if (pMajor) {
+    const minors = linked.filter((c:any) =>
+      normalizeStructureLayer(c.structure_layer || c.layer) === pLayer && !isRangeMajor(c),
+    );
+    if (minors.length) return minors.sort(compareRangesByStartDate);
+
+    const nextLayer = expectedChildStructureLayer(pLayer);
+    if (nextLayer) {
+      return linked.filter((c:any) =>
+        normalizeStructureLayer(c.structure_layer || c.layer) === nextLayer && isRangeMajor(c),
+      ).sort(compareRangesByStartDate);
+    }
+    return [];
+  }
+
+  const nextLayer = expectedChildStructureLayer(pLayer);
+  if (!nextLayer) return [];
+  return linked.filter((c:any) =>
+    normalizeStructureLayer(c.structure_layer || c.layer) === nextLayer && isRangeMajor(c),
+  ).sort(compareRangesByStartDate);
+}
 function rangeYearBucket(range: any): number | null {
   const activeFrom = parseStructuralTimeMs(range?.active_from_time);
   if (activeFrom !== null) return new Date(activeFrom).getUTCFullYear();
@@ -511,12 +547,18 @@ function formatRangeLayerScopeLabel(range: any): string {
   const id = range?.range_id || range?.id || '?';
   return `${layer} ${scope} #${id}`;
 }
-function formatExplorerRowLines(range: any, directChildCount: number): { line1: string; line2: string; spanNote: string | null } {
+function formatExplorerRowLines(
+  range: any,
+  directChildCount: number,
+  childCountLabel?: string | null,
+): { line1: string; line2: string; spanNote: string | null } {
   const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || '?';
   const scope = normalizeRangeScope(range?.range_scope);
   const id = range?.range_id || range?.id || '?';
   const statusPart = rangeStatusDirectionLabel(range);
-  const childLabel = scope === 'MAJOR' ? directChildCountLabel(layer as StructureLayer) : null;
+  const childLabel = scope === 'MAJOR' && directChildCount > 0
+    ? (childCountLabel || directChildCountLabel(layer as StructureLayer))
+    : null;
   const high = Number(range?.range_high_price ?? range?.range_high);
   const low = Number(range?.range_low_price ?? range?.range_low);
   const rh = Number.isFinite(high) ? high.toFixed(2) : '?';
@@ -753,7 +795,7 @@ function collectHierarchyBranchIds(nodes: CaseHierarchyTreeNode[]): string[] {
   return ids;
 }
 
-type CaseHierarchyTreeNode = { range: any; depth: number; children: CaseHierarchyTreeNode[] };
+type CaseHierarchyTreeNode = { range: any; depth: number; children: CaseHierarchyTreeNode[]; childCountLabel?: string | null };
 
 function compareRangesByStartDate(a: any, b: any): number {
   const aMs = parseStructuralTimeMs(rangeLabelStartDate(a) === '?' ? null : rangeLabelStartDate(a)) ?? 0;
@@ -791,11 +833,9 @@ function buildCaseHierarchyForest(ranges: any[]): { roots: CaseHierarchyTreeNode
   const buildTree = (r: any, depth: number): CaseHierarchyTreeNode => {
     const id = String(r.range_id || r.id);
     visited.add(id);
-    const children = nodes
-      .filter((c:any) => String(c.parent_range_id || '') === id)
-      .sort(compareRangesByStartDate)
-      .map((c:any) => buildTree(c, depth + 1));
-    return { range: r, depth, children };
+    const childRanges = directHierarchyChildren(r, nodes);
+    const children = childRanges.map((c:any) => buildTree(c, depth + 1));
+    return { range: r, depth, children, childCountLabel: hierarchyChildCountLabel(r, childRanges) };
   };
 
   const rootCandidates = hasMacro
@@ -2338,6 +2378,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [hierarchyShowChildren, setHierarchyShowChildren] = useLocalStorage<boolean>('fx_tm_hierarchy_show_children_v1', false);
   const [hierarchyShowAll, setHierarchyShowAll] = useLocalStorage<boolean>('fx_tm_hierarchy_show_all_v1', false);
   const [hierarchyCollapsedIds, setHierarchyCollapsedIds] = useState<string[]>([]);
+  const [rangeLineHiddenByCase, setRangeLineHiddenByCase] = useLocalStorage<Record<string, string[]>>('fx_tm_range_line_hidden_v1', {});
   const [explorerMappingMode, setExplorerMappingMode] = useLocalStorage<ExplorerMappingMode>(
     'fx_tm_explorer_mapping_mode_v1',
     'htf',
@@ -2946,97 +2987,22 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const chartSavedRangeOverlays = useMemo<SavedRangeChartLine[]>(() => {
     const allRanges = safeArray<any>(savedStructuralRanges);
-    const overlayIds = new Set<string>();
+    const hiddenIds = new Set(rangeLineHiddenByCase[activeCaseDisplayId || 'global'] || []);
     const overlays: SavedRangeChartLine[] = [];
     const selectedId = String(activeStructuralRangeId || '');
-    const currentRank = structureLayerRank(structureLayer);
 
-    const pushRange = (r: any, opts?: { isParentContext?: boolean; isActive?: boolean; isSibling?: boolean }) => {
+    for (const r of allRanges) {
       const id = String(r?.range_id || r?.id || '');
-      if (!id || overlayIds.has(id)) return;
-      const overlayLayer = normalizeStructureLayer(r.structure_layer || r.layer);
-      if (explorerMappingMode === 'htf' && (overlayLayer === 'INTRADAY' || overlayLayer === 'MICRO')) return;
+      if (!id || hiddenIds.has(id)) continue;
       const line = structuralRangeToChartLine(r, activeStructuralRangeId, {
-        isParentContext: opts?.isParentContext || opts?.isSibling,
+        isParentContext: id !== selectedId,
       });
-      if (!line) return;
-      if (opts?.isActive) line.isActive = true;
-      overlayIds.add(id);
+      if (!line) continue;
+      line.isActive = id === selectedId;
       overlays.push(line);
-    };
-
-    const pushParentDraftForLayer = (layer: StructureLayer) => {
-      const draftKey = `draft-${layer}`;
-      if (overlayIds.has(draftKey)) return;
-      const anchors = structuralAnchorsByLayer[layer];
-      const hi = parseNum(anchors?.rh?.price);
-      const lo = parseNum(anchors?.rl?.price);
-      if (!Number.isFinite(hi) || !Number.isFinite(lo) || hi <= lo) return;
-      overlayIds.add(draftKey);
-      overlays.push({
-        rangeId: draftKey,
-        structureLayer: layer,
-        rangeScope: 'MAJOR' as RangeScope,
-        status: 'ACTIVE',
-        high: hi,
-        low: lo,
-        start: anchors?.rh?.time || null,
-        end: anchors?.rl?.time || null,
-        isActive: false,
-        isParentContext: true,
-      });
-    };
-
-    if (hierarchyShowAll) {
-      for (const r of allRanges) {
-        const layer = normalizeStructureLayer(r.structure_layer || r.layer);
-        const isAncestor = layer ? structureLayerRank(layer) < currentRank : false;
-        pushRange(r, {
-          isActive: String(r.range_id || r.id) === selectedId && !isAncestor,
-          isParentContext: isAncestor,
-        });
-      }
-      return overlays;
-    }
-
-    for (const ancestorLayer of STRUCTURE_LAYERS) {
-      if (structureLayerRank(ancestorLayer) >= currentRank) continue;
-      const preferredId = ancestorLayer === expectedParentStructureLayer(structureLayer) ? selectedParentRangeId : undefined;
-      const ancestorRange = latestSavedRangeForLayer(ancestorLayer, allRanges, preferredId || undefined, true);
-      if (ancestorRange) {
-        pushRange(ancestorRange, { isParentContext: true, isActive: false });
-      } else {
-        pushParentDraftForLayer(ancestorLayer);
-      }
-    }
-
-    const pathIds = selectedId ? getContextStackPathIds(selectedId, allRanges) : fallbackContextPathIds(allRanges);
-    for (const id of pathIds) {
-      const r = allRanges.find((x:any) => String(x.range_id || x.id) === id);
-      if (!r) continue;
-      const layer = normalizeStructureLayer(r.structure_layer || r.layer);
-      if (layer && structureLayerRank(layer) < currentRank) continue;
-      const isCurrentLayer = layer === structureLayer;
-      pushRange(r, {
-        isParentContext: !isCurrentLayer && id !== selectedId,
-        isActive: isCurrentLayer && !!selectedId && id === selectedId,
-      });
-    }
-
-    if (!hierarchyPathOnly && hierarchyShowSiblings && selectedId) {
-      for (const sid of collectSiblingRangeIds(selectedId, allRanges)) {
-        const r = allRanges.find((x:any) => String(x.range_id || x.id) === sid);
-        if (r) pushRange(r, { isSibling: true });
-      }
-    }
-    if (!hierarchyPathOnly && hierarchyShowChildren && selectedId) {
-      for (const cid of collectDirectChildRangeIds(selectedId, allRanges)) {
-        const r = allRanges.find((x:any) => String(x.range_id || x.id) === cid);
-        if (r) pushRange(r, { isSibling: true });
-      }
     }
     return overlays;
-  }, [savedStructuralRanges, activeStructuralRangeId, structureLayer, selectedParentRangeId, structuralAnchorsByLayer, hierarchyPathOnly, hierarchyShowSiblings, hierarchyShowChildren, hierarchyShowAll, explorerMappingMode]);
+  }, [savedStructuralRanges, activeStructuralRangeId, activeCaseDisplayId, rangeLineHiddenByCase]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
     const draftHigh = parseNum(rhAnchor.price);
@@ -4565,14 +4531,16 @@ function MapStudio({ symbol }: { symbol:string }) {
     [savedStructuralRanges, explorerYearFilter],
   );
 
-  const explorerTreeRanges = useMemo(
+  const explorerTreeRanges = explorerFilteredRanges;
+
+  const gapQueueRanges = useMemo(
     () => filterRangesForExplorerMode(explorerFilteredRanges as Record<string, unknown>[], explorerMappingMode),
     [explorerFilteredRanges, explorerMappingMode],
   );
 
   const mappingGaps = useMemo(
-    () => computeMappingGaps(explorerTreeRanges, explorerMappingMode),
-    [explorerTreeRanges, explorerMappingMode],
+    () => computeMappingGaps(gapQueueRanges, explorerMappingMode),
+    [gapQueueRanges, explorerMappingMode],
   );
 
   const caseHierarchyForest = useMemo(
@@ -5876,6 +5844,30 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
+  const caseLineHiddenKey = activeCaseDisplayId || 'global';
+  const hiddenRangeLineIdSet = useMemo(
+    () => new Set(rangeLineHiddenByCase[caseLineHiddenKey] || []),
+    [rangeLineHiddenByCase, caseLineHiddenKey],
+  );
+  const isRangeLineVisible = (rangeId: string) => !hiddenRangeLineIdSet.has(String(rangeId));
+  const toggleRangeLineVisibility = (rangeId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    const id = String(rangeId);
+    setRangeLineHiddenByCase((prev) => {
+      const current = new Set(prev[caseLineHiddenKey] || []);
+      if (current.has(id)) current.delete(id);
+      else current.add(id);
+      return { ...prev, [caseLineHiddenKey]: Array.from(current) };
+    });
+  };
+  const showAllRangeLines = () => {
+    setRangeLineHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: [] }));
+  };
+  const hideAllRangeLines = () => {
+    const ids = savedStructuralRanges.map((r:any) => String(r.range_id || r.id)).filter(Boolean);
+    setRangeLineHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: ids }));
+  };
+
   const renderExplorerTreeNodes = (nodes: CaseHierarchyTreeNode[]): React.ReactNode => nodes.flatMap((node) => {
     const range = node.range;
     const id = String(range?.range_id || range?.id || '');
@@ -5887,9 +5879,10 @@ function MapStudio({ symbol }: { symbol:string }) {
       (rangeScope === 'MINOR' && normalizeStructureLayer(range?.structure_layer || range?.layer) === structureLayer && isRangeMajor(range))
       || (rangeScope === 'MAJOR' && expectedParentStructureLayer(structureLayer) === layer)
     );
-    const lines = formatExplorerRowLines(range, node.children.length);
+    const lines = formatExplorerRowLines(range, node.children.length, node.childCountLabel);
     const hasChildren = node.children.length > 0;
     const collapsed = hierarchyCollapsedIds.includes(id);
+    const lineVisible = isRangeLineVisible(id);
     const toggleCollapsed = (e: React.MouseEvent) => {
       e.stopPropagation();
       setHierarchyCollapsedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -5905,6 +5898,14 @@ function MapStudio({ symbol }: { symbol:string }) {
             {collapsed ? '▶' : '▼'}
           </button>
         ) : <span className="explorerTreeToggle spacer" />}
+        <button
+          type="button"
+          className={`explorerLineToggle${lineVisible ? ' on' : ' off'}`}
+          title={lineVisible ? 'Hide RH/RL guide lines on chart' : 'Show RH/RL guide lines on chart'}
+          onClick={(e) => toggleRangeLineVisibility(id, e)}
+        >
+          {lineVisible ? 'Lines' : 'Hide'}
+        </button>
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
         <button type="button" className="explorerTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
           <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.line1}</span>
@@ -5930,9 +5931,18 @@ function MapStudio({ symbol }: { symbol:string }) {
     const layerKey = layer.toLowerCase();
     const isActive = id === String(activeStructuralRangeId);
     const lines = formatExplorerRowLines(range, 0);
+    const lineVisible = isRangeLineVisible(id);
     return (
       <div key={`orphan-${id}`} className={`explorerTreeRow orphan ${isActive ? 'active' : ''}`}>
         <span className="explorerTreeToggle spacer" />
+        <button
+          type="button"
+          className={`explorerLineToggle${lineVisible ? ' on' : ' off'}`}
+          title={lineVisible ? 'Hide RH/RL guide lines on chart' : 'Show RH/RL guide lines on chart'}
+          onClick={(e) => toggleRangeLineVisibility(id, e)}
+        >
+          {lineVisible ? 'Lines' : 'Hide'}
+        </button>
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
         <button type="button" className="explorerTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
           <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.line1}</span>
@@ -5981,8 +5991,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       </div>
       <p className="explorerModeHint mutedSmall">
         {explorerMappingMode === 'htf'
-          ? 'Macro → Weekly → Daily MAJOR containers. Gap queue lists missing cross-layer MAJOR children.'
-          : 'Full tree. Gap queue lists missing Intraday / Micro MAJOR children.'}
+          ? 'Full hierarchy tree (Macro → Micro). Gap queue lists missing HTF MAJOR children only.'
+          : 'Full hierarchy tree. Gap queue lists missing Intraday / Micro MAJOR children.'}
       </p>
       <div className="explorerYearFilterRow">
         <label className="explorerYearLabel">Year
@@ -6029,11 +6039,8 @@ function MapStudio({ symbol }: { symbol:string }) {
         <button type="button" className="hierarchyCtrlBtn" onClick={() => refreshSavedRangesForCurrentCase().catch((err:any)=>setMessage(`Load saved ranges failed: ${err?.message || err}`))}>Refresh</button>
         <button type="button" className="hierarchyCtrlBtn" onClick={() => setHierarchyCollapsedIds([])}>Expand All</button>
         <button type="button" className="hierarchyCtrlBtn" onClick={() => setHierarchyCollapsedIds(hierarchyBranchIds)}>Collapse All</button>
-        <span className="explorerOverlayLabel">Chart:</span>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyPathOnly && !hierarchyShowAll} disabled={hierarchyShowAll || explorerMappingMode === 'htf'} onChange={e => setHierarchyPathOnly(e.target.checked)} /> Path only</label>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowSiblings} disabled={hierarchyShowAll || hierarchyPathOnly || explorerMappingMode === 'htf'} onChange={e => setHierarchyShowSiblings(e.target.checked)} /> Siblings</label>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowChildren} disabled={hierarchyShowAll || hierarchyPathOnly || explorerMappingMode === 'htf'} onChange={e => setHierarchyShowChildren(e.target.checked)} /> Children</label>
-        <label className="hierarchyFilterChip"><input type="checkbox" checked={hierarchyShowAll} disabled={explorerMappingMode === 'htf'} onChange={e => setHierarchyShowAll(e.target.checked)} /> All</label>
+        <button type="button" className="hierarchyCtrlBtn" onClick={showAllRangeLines} title="Show RH/RL guide lines for all ranges">Lines All</button>
+        <button type="button" className="hierarchyCtrlBtn" onClick={hideAllRangeLines} title="Hide all range guide lines on chart">Lines None</button>
       </div>
       <div className={scrollClass}>
         {!explorerTreeRanges.length && <div className="caseLedgerEmpty">{savedStructuralRanges.length ? 'No ranges match this filter.' : 'No saved structural ranges for this case yet.'}</div>}
@@ -7545,25 +7552,25 @@ function savedRangeLineStyle(status: string, opts?: { isParentContext?: boolean;
 
   if (opts?.isParentContext) {
     return {
-      opacity: broken ? 0.84 : 0.95,
+      opacity: broken ? 0.88 : 0.96,
       dash: broken ? '8 5' : (isMinor ? '4 4' : ''),
-      width: isMinor ? 1.8 : 2.2,
+      width: isMinor ? 2.8 : 3.4,
     };
   }
   if (opts?.isActive && !broken) {
-    return { opacity: 0.95, dash: isMinor ? '5 4' : '', width: isMinor ? 2.2 : 2.4 };
+    return { opacity: 0.98, dash: isMinor ? '5 4' : '', width: isMinor ? 3.4 : 4.2 };
   }
   if (broken) {
-    return { opacity: 0.4, dash: '5 5', width: 1.25 };
+    return { opacity: 0.55, dash: '5 5', width: 2.2 };
   }
   if (isMinor) {
-    return { opacity: 0.72, dash: '4 5', width: 1.35 };
+    return { opacity: 0.88, dash: '4 5', width: 2.6 };
   }
-  return { opacity: 0.62, dash: '3 6', width: 1.5 };
+  return { opacity: 0.9, dash: '3 6', width: 3.0 };
 }
 
 function draftRangeLineStyle() {
-  return { opacity: 0.55, dash: '4 6', width: 1.6 };
+  return { opacity: 0.78, dash: '4 6', width: 3.2 };
 }
 
 function paintChartTradeIdea(
@@ -7918,16 +7925,24 @@ function rangeSpanX(
     if (Number.isFinite(xA) && Number.isFinite(xB)) {
       const x1 = clampX(Math.min(xA, xB));
       const x2 = clampX(Math.max(xA, xB));
-      return x2 - x1 >= 2 ? { x1, x2 } : { x1: clampX(xA - 12), x2: clampX(xA + 12) };
+      if (x2 - x1 >= 24) return { x1, x2 };
     }
   }
   if (aOk) {
     const xA = zx(a!);
-    if (Number.isFinite(xA)) return { x1: clampX(xA - innerW * 0.12), x2: clampX(xA + innerW * 0.12) };
+    if (Number.isFinite(xA)) {
+      const x1 = clampX(xA - innerW * 0.2);
+      const x2 = clampX(xA + innerW * 0.2);
+      if (x2 - x1 >= 24) return { x1, x2 };
+    }
   }
   if (bOk) {
     const xB = zx(b!);
-    if (Number.isFinite(xB)) return { x1: clampX(xB - innerW * 0.12), x2: clampX(xB + innerW * 0.12) };
+    if (Number.isFinite(xB)) {
+      const x1 = clampX(xB - innerW * 0.2);
+      const x2 = clampX(xB + innerW * 0.2);
+      if (x2 - x1 >= 24) return { x1, x2 };
+    }
   }
   return full;
 }
@@ -8109,7 +8124,7 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('x', 8).attr('y', 13)
         .attr('fill', (d:any)=>d.color)
         .attr('fill-opacity', (d:any)=> (d.style?.opacity ?? 0.5) * 0.85)
-        .attr('font-size', 10)
+        .attr('font-size', 11)
         .attr('font-weight', 900)
         .text((d:any)=>d.label);
     };
@@ -8375,7 +8390,7 @@ function D3CandleMap(props:D3CandleMapProps) {
           g.append('line')
             .attr('x1', x1).attr('x2', x2)
             .attr('y1', py).attr('y2', py)
-            .attr('stroke', hd.color).attr('stroke-width', sel ? 2.4 : 1.8)
+            .attr('stroke', hd.color).attr('stroke-width', sel ? 3.2 : 2.6)
             .attr('stroke-opacity', sel ? 1 : 0.88);
           g.append('text')
             .attr('x', x1 + 6).attr('y', py - 4)
@@ -8401,7 +8416,7 @@ function D3CandleMap(props:D3CandleMapProps) {
           g.append('line')
             .attr('x1', vx).attr('x2', vx)
             .attr('y1', y1).attr('y2', y2)
-            .attr('stroke', vd.color).attr('stroke-width', sel ? 2.4 : 1.8)
+            .attr('stroke', vd.color).attr('stroke-width', sel ? 3.2 : 2.6)
             .attr('stroke-opacity', sel ? 1 : 0.88);
           if (sel && drawTool === 'edit') {
             g.append('rect').attr('class', 'vlineHandle top')
