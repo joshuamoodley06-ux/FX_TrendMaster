@@ -4969,6 +4969,8 @@ def detection_brain_suggestions_list(
     parent_range_id: int | None = None,
     status: str = "PENDING",
     limit: int = 100,
+    detection_run_id: str | None = None,
+    replay_until_time_ms: int | None = None,
 ):
     if market_memory is None:
         return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
@@ -4982,6 +4984,8 @@ def detection_brain_suggestions_list(
             parent_range_id=parent_range_id,
             status=status,
             limit=limit,
+            detection_run_id=detection_run_id,
+            replay_until_time_ms=replay_until_time_ms,
         )
     except Exception as exc:
         return {"ok": False, "error": "DETECTION_BRAIN_LIST_FAILED", "detail": str(exc)}

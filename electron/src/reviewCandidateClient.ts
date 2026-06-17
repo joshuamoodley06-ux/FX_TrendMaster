@@ -49,6 +49,8 @@ export async function fetchPendingSuggestions(
     source_timeframe?: string;
     parent_range_id?: number | null;
     limit?: number;
+    detection_run_id?: string | null;
+    replay_until_time_ms?: number | null;
   },
 ): Promise<{ ok: boolean; suggestions?: DetectorSuggestionRow[]; count?: number; error?: string }> {
   const url = new URL(`${apiBase.replace(/\/$/, '')}/api/v1/detection-brain/suggestions`);
@@ -60,6 +62,10 @@ export async function fetchPendingSuggestions(
     url.searchParams.set('parent_range_id', String(filters.parent_range_id));
   }
   if (filters.limit) url.searchParams.set('limit', String(filters.limit));
+  if (filters.detection_run_id) url.searchParams.set('detection_run_id', filters.detection_run_id);
+  if (filters.replay_until_time_ms != null && filters.replay_until_time_ms > 0) {
+    url.searchParams.set('replay_until_time_ms', String(filters.replay_until_time_ms));
+  }
   const res = await fetch(url.toString());
   const data = await parseJson<{ ok: boolean; suggestions?: DetectorSuggestionRow[]; count?: number; error?: string; detail?: string }>(res);
   if (!res.ok || !data.ok) {
@@ -73,24 +79,49 @@ export async function runDetectorV1(
   payload: {
     symbol: string;
     source_timeframe: string;
+    structure_layer?: string;
     range_high?: number | null;
     range_low?: number | null;
     range_scale?: string;
+    range_role?: string | null;
     active_index?: number;
+    replay_until_time_ms?: number;
+    replay_until_time?: string;
+    visible_from_time_ms?: number;
+    visible_from_time?: string;
     active_candle_time_ms?: number;
     active_candle_time?: string;
     parent_range_id?: number | null;
     active_range_id?: number | null;
+    seed_from_electron?: boolean;
     case_ref?: string | null;
+    detection_run_id?: string;
     limit?: number;
   },
-): Promise<{ ok: boolean; written_count?: number; error?: string }> {
+): Promise<{
+  ok: boolean;
+  written_count?: number;
+  detection_run_id?: string;
+  replay_until_time_ms?: number | null;
+  detection_context?: Record<string, unknown>;
+  debug_summary?: Record<string, unknown>;
+  error?: string;
+}> {
   const res = await fetch(`${apiBase.replace(/\/$/, '')}/api/v1/detection-brain/run-detector`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   });
-  const data = await parseJson<{ ok: boolean; written_count?: number; error?: string; detail?: string }>(res);
+  const data = await parseJson<{
+    ok: boolean;
+    written_count?: number;
+    detection_run_id?: string;
+    replay_until_time_ms?: number | null;
+    detection_context?: Record<string, unknown>;
+    debug_summary?: Record<string, unknown>;
+    error?: string;
+    detail?: string;
+  }>(res);
   if (!res.ok || !data.ok) {
     return { ok: false, error: data.error || data.detail || res.statusText };
   }

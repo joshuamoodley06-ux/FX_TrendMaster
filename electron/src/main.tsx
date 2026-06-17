@@ -7301,9 +7301,19 @@ function MapStudio({ symbol }: { symbol:string }) {
                 parentRangeId={savePreview.parent_range_id != null ? Number(savePreview.parent_range_id) : null}
                 activeRangeId={activeStructuralRangeId ? Number(activeStructuralRangeId) : null}
                 caseRef={savePreview.case_ref || null}
-                rangeHigh={parseNum(rhAnchor.price) ?? parseNum(rangeHigh) ?? null}
-                rangeLow={parseNum(rlAnchor.price) ?? parseNum(rangeLow) ?? null}
+                rangeHigh={activeStructuralRangeId ? (parseNum(rhAnchor.price) ?? parseNum(rangeHigh) ?? null) : null}
+                rangeLow={activeStructuralRangeId ? (parseNum(rlAnchor.price) ?? parseNum(rangeLow) ?? null) : null}
                 rangeScale={rangeScope}
+                rangeRole={
+                  selectedSavedRange
+                    ? String(
+                        selectedSavedRange.range_role
+                        || (String(selectedSavedRange.range_scope || rangeScope).toUpperCase() === 'MINOR'
+                          ? 'INTERNAL_LEG'
+                          : 'ACTIVE_CONTAINER'),
+                      )
+                    : null
+                }
                 activeCandleTimeMs={detectorContextCandle?.time ? candleTimeMs(detectorContextCandle.time) : null}
                 activeCandleTimeLabel={detectorContextCandle?.time ? shortTime(detectorContextCandle.time, sourceTimeframe) : null}
                 replayMode={candleReplayMode}

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from detector.break_rules import break_rule_for_timeframe, normalise_timeframe, structure_layer_for_timeframe
+from detector.range_state import RangeSeedContext
 
 
 @dataclass(frozen=True)
@@ -76,13 +77,20 @@ class DetectionContext:
     range_high: float | None = None
     range_low: float | None = None
     range_scale: str = "MAJOR"
+    range_role: str | None = None
     structure_layer: str | None = None
     chart_timeframe: str | None = None
     parent_range_id: int | None = None
     active_range_id: int | None = None
     case_ref: str | None = None
     session_id: str | None = None
+    detection_run_id: str | None = None
+    replay_until_time_ms: int | None = None
+    visible_from_time_ms: int | None = None
+    detection_window_meta: dict[str, Any] = field(default_factory=dict)
     swings: list[SwingPoint] = field(default_factory=list)
+    range_seed: RangeSeedContext | None = None
+    range_seed_meta: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.source_timeframe = normalise_timeframe(self.source_timeframe)

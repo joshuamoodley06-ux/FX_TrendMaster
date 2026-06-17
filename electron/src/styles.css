@@ -2945,6 +2945,7 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .structuralExplorerSection{
   flex:0 0 auto;
   min-width:0;
+  overflow:hidden;
 }
 .structuralExplorerSection .structuralExplorerPanel{
   max-height:min(34vh, 300px);
@@ -4193,10 +4194,76 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
   border-radius:12px;
   background:rgba(2,6,23,.72);
   overflow:hidden;
+  min-width:0;
+  max-width:100%;
 }
+.reviewCandidatePanelCollapsed{
+  padding:0;
+  border:none;
+  background:transparent;
+}
+.reviewCandidateChip{
+  display:inline-flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px 10px;
+  padding:6px 12px;
+  border-radius:999px;
+  border:1px solid rgba(0,212,170,.35);
+  background:rgba(2,6,23,.85);
+  color:#e2e8f0;
+  cursor:pointer;
+  font-size:11px;
+  max-width:100%;
+  text-align:left;
+}
+.reviewCandidateChip:hover{border-color:#00d4aa;background:rgba(13,74,58,.35)}
+.reviewCandidateChipTitle{font-weight:600;color:#00d4aa}
+.reviewCandidateChipContext{color:#94a3b8;font-size:10px}
+.reviewCandidatePanelCompact{
+  padding:8px 10px;
+  max-height:min(42vh, 360px);
+  display:flex;
+  flex-direction:column;
+  overflow:hidden;
+}
+.reviewCandidatePanelExpanded{
+  position:relative;
+}
+.reviewCandidateCompactHeader{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:8px;
+  min-width:0;
+}
+.reviewCandidateCompactTitle{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  min-width:0;
+  font-size:11px;
+}
+.reviewCandidateCompactTitle strong{font-size:12px;color:#00d4aa}
+.reviewCollapseBtn{
+  flex-shrink:0;
+  width:24px;
+  height:24px;
+  border-radius:6px;
+  border:1px solid rgba(148,163,184,.25);
+  background:rgba(15,23,42,.8);
+  color:#e2e8f0;
+  cursor:pointer;
+  font-size:14px;
+  line-height:1;
+  padding:0;
+}
+.reviewCollapseBtn:hover{border-color:#00d4aa}
 .reviewCandidateHeader h4{margin:0 0 4px;font-size:13px;color:#00d4aa}
 .reviewCandidateHeader .mutedSmall{margin:0;line-height:1.35}
 .reviewCandidateToolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.reviewCandidateToolbarCompact{margin-top:6px;gap:6px}
+.reviewCandidateToolbarCompact button{font-size:11px;padding:4px 8px}
 .reviewCandidateFilters{
   margin:8px 0 0;
   padding:6px 8px;
@@ -4212,6 +4279,90 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
   gap:10px;
   margin-top:10px;
 }
+.reviewCandidateCompactBody{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  margin-top:6px;
+  min-width:0;
+  overflow:hidden;
+  flex:1 1 auto;
+}
+.reviewCandidateCompactList{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  max-height:120px;
+  overflow-y:auto;
+  overflow-x:hidden;
+  min-width:0;
+}
+.reviewCandidateCompactCard{
+  display:grid;
+  grid-template-columns:minmax(0,1.1fr) minmax(0,.6fr) minmax(0,1.2fr) minmax(0,.7fr) minmax(0,.45fr);
+  gap:4px 6px;
+  align-items:center;
+  padding:5px 8px;
+  border-radius:6px;
+  border:1px solid rgba(148,163,184,.18);
+  background:rgba(15,23,42,.65);
+  color:#e2e8f0;
+  cursor:pointer;
+  text-align:left;
+  width:100%;
+  min-width:0;
+  font-size:10px;
+}
+.reviewCandidateCompactCard.active{border-color:#00d4aa;background:rgba(13,74,58,.4)}
+.reviewCardKind{font-weight:600;color:#00d4aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reviewCardScale,.reviewCardVersion,.reviewCardConf{color:#94a3b8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reviewCardPrice{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.reviewSelectedSummary{
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px 8px;
+  font-size:10px;
+  color:#cbd5e1;
+  padding:4px 0;
+  border-top:1px solid rgba(148,163,184,.12);
+}
+.reviewSummaryKind{font-weight:600;color:#00d4aa}
+.reviewEmptyState{padding:4px 0}
+.reviewCandidateExpandedDrawer{
+  margin-top:8px;
+  padding-top:8px;
+  border-top:1px solid rgba(0,212,170,.22);
+  max-height:min(50vh, 420px);
+  overflow-y:auto;
+  overflow-x:hidden;
+  min-width:0;
+}
+.reviewExpandedHeader{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-bottom:8px;
+  font-size:11px;
+  color:#00d4aa;
+}
+.reviewRejectSelect{
+  font-size:10px;
+  max-width:120px;
+  min-width:0;
+  flex:1 1 100px;
+}
+.reviewRejectNotes{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  font-size:10px;
+  color:#94a3b8;
+  margin:8px 0;
+}
+.reviewRejectNotes input{max-width:100%}
+.reviewDetailsBtn{font-size:10px}
+.reviewActionRowCompact{gap:6px}
 .reviewCandidateList{display:flex;flex-direction:column;gap:6px;max-height:140px;overflow:auto}
 .reviewCandidateListItem{
   display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;
@@ -4242,4 +4393,10 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 .floatingWorkspacePanel .reviewCandidateBody{grid-template-columns:1fr}
 .floatingWorkspacePanel .reviewEditFields{grid-template-columns:1fr}
 .floatingWorkspacePanel .reviewDetailGrid{grid-template-columns:1fr}
+.floatingWorkspacePanel .reviewCandidateCompactCard{
+  grid-template-columns:1fr;
+  gap:2px;
+}
 .reviewActiveCandle strong{color:#e2e8f0}
+.reviewDetectionContext{font-size:10px;color:#94a3b8}
+.reviewDetectionContext strong{color:#e2e8f0}

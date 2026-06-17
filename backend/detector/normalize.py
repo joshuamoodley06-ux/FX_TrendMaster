@@ -83,14 +83,35 @@ def normalize_candles(rows: list[dict[str, Any]], timeframe: str) -> list[Normal
     return out
 
 
+def filter_candles_by_window(
+    candles: list[NormalizedCandle],
+    *,
+    visible_from_time_ms: int | None = None,
+    replay_until_time_ms: int | None = None,
+) -> list[NormalizedCandle]:
+    """Bound detector input to replay-visible candle window (no future leakage)."""
+    has_window = (
+        (replay_until_time_ms is not None and replay_until_time_ms > 0)
+        or (visible_from_time_ms is not None and visible_from_time_ms > 0)
+    )
+    if not has_window:
+        return candles
+    trimmed = list(candles)
+    if replay_until_time_ms is not None and replay_until_time_ms > 0:
+        trimmed = [c for c in trimmed if c.time_ms <= replay_until_time_ms]
+    if visible_from_time_ms is not None and visible_from_time_ms > 0:
+        trimmed = [c for c in trimmed if c.time_ms >= visible_from_time_ms]
+    if not trimmed:
+        return []
+    return [replace(c, index=i) for i, c in enumerate(trimmed)]
+
+
 def truncate_candles_at_or_before(
     candles: list[NormalizedCandle],
     active_candle_time_ms: int | None,
 ) -> list[NormalizedCandle]:
     """Keep only candles visible at replay/market-time cut (no future leakage)."""
-    if active_candle_time_ms is None or active_candle_time_ms <= 0:
-        return candles
-    trimmed = [c for c in candles if c.time_ms <= active_candle_time_ms]
-    if not trimmed:
-        return candles
-    return [replace(c, index=i) for i, c in enumerate(trimmed)]
+    return filter_candles_by_window(
+        candles,
+        replay_until_time_ms=active_candle_time_ms,
+    )

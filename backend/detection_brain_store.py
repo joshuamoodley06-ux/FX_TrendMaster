@@ -387,6 +387,39 @@ def supersede_pending_suggestion(conn: sqlite3.Connection, suggestion_id: str) -
     return cur.rowcount > 0
 
 
+def supersede_pending_in_scope(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    structure_layer: str,
+    source_timeframe: str,
+    parent_range_id: int | None,
+) -> int:
+    """Supersede all pending suggestions in detector scope before a new contextual run."""
+    now_ms = utc_now_ms()
+    clauses = [
+        "status = 'PENDING'",
+        "symbol = ?",
+        "structure_layer = ?",
+        "source_timeframe = ?",
+    ]
+    params: list[Any] = [symbol.upper(), structure_layer.upper(), source_timeframe.upper()]
+    if parent_range_id is None:
+        clauses.append("parent_range_id IS NULL")
+    else:
+        clauses.append("parent_range_id = ?")
+        params.append(int(parent_range_id))
+    cur = conn.execute(
+        f"""
+        UPDATE detector_suggestions
+        SET status = 'SUPERSEDED', updated_at_utc_ms = ?
+        WHERE {' AND '.join(clauses)}
+        """,
+        [now_ms, *params],
+    )
+    return int(cur.rowcount or 0)
+
+
 def get_suggestion(conn: sqlite3.Connection, suggestion_id: str) -> dict[str, Any] | None:
     row = conn.execute(
         "SELECT * FROM detector_suggestions WHERE suggestion_id = ?",

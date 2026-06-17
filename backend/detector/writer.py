@@ -11,11 +11,19 @@ from detection_brain_store import (
     insert_suggestion,
     list_suggestions,
     new_uuid,
+    supersede_pending_in_scope,
     supersede_pending_suggestion,
     utc_now_ms,
 )
 from detector.models import DetectionContext, SuggestionDraft
 from detector.versions import ENGINE_SOURCE
+
+
+def _merge_meta(draft: SuggestionDraft, ctx: DetectionContext) -> dict[str, Any]:
+    meta = dict(draft.meta_json or {})
+    if ctx.detection_window_meta:
+        meta.update(ctx.detection_window_meta)
+    return meta
 
 
 def draft_to_suggestion(draft: SuggestionDraft, ctx: DetectionContext) -> DetectorSuggestion:
@@ -51,7 +59,7 @@ def draft_to_suggestion(draft: SuggestionDraft, ctx: DetectionContext) -> Detect
         derived_event_code=draft.derived_event_code,
         confidence=draft.confidence,
         reason_text=draft.reason_text,
-        meta_json=draft.meta_json or None,
+        meta_json=_merge_meta(draft, ctx) or None,
     )
 
 
@@ -107,7 +115,16 @@ def write_suggestions(
     ctx: DetectionContext,
     *,
     supersede_on_conflict: bool = True,
+    supersede_scope_before_write: bool = True,
 ) -> list[dict[str, Any]]:
+    if supersede_scope_before_write and drafts:
+        supersede_pending_in_scope(
+            conn,
+            symbol=ctx.symbol,
+            structure_layer=ctx.structure_layer or "WEEKLY",
+            source_timeframe=ctx.source_timeframe,
+            parent_range_id=ctx.parent_range_id,
+        )
     saved: list[dict[str, Any]] = []
     for draft in drafts:
         saved.append(

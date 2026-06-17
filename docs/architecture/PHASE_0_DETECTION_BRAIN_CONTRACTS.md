@@ -384,7 +384,7 @@ Weekly MAJOR
 
 | Domain | Example | Owns |
 |--------|---------|------|
-| `RANGE` | `RANGE_V1` | Swing/range candidate detection |
+| `RANGE` | `RANGE_V1` | Swing/range candidate detection (bootstrap only — see §3.5) |
 | `SWING` | `SWING_V1` | Swing pivot candidates |
 | `BOS` | `BOS_V1` | Break of structure |
 | `SWEEP` | `SWEEP_V1` | Liquidity sweep |
@@ -406,7 +406,15 @@ Weekly MAJOR
 | No silent cross-domain reuse | BOS detector bump does not imply RANGE bump unless documented. |
 | Legacy mapping | Electron `logic_version` values map forward to `detector_version` until Python replaces in-process detection. |
 
-### 3.3 Optional registry table (Phase 1)
+### 3.3 RANGE detector doctrine (V1 vs V2)
+
+**`RANGE_V1` is non-doctrinal** and retained only for detector-loop smoke testing (suggestion → review → promotion → corrections). It pairs latest swing high + latest swing low and must **not** be improved through threshold tuning or treated as final range doctrine.
+
+**`RANGE_V2` doctrine is LOCKED** — `RANGE_V2_DOCTRINE_LOCKED = TRUE` (2026-06-17). See `docs/architecture/RANGE_V2_DOCTRINE_CONTRACT.md`. Event-driven sequence: existing range or seed anchors → BOS → reclaim → opposite swing boundary → range suggestion.
+
+**`RANGE_V2` code is not authorized yet.** Prerequisite order (§11.3 of doctrine contract): (1) replay-context bug fix, (2) Review Candidate compact/collapsible UI fix, (3) implementation plan, (4) code.
+
+### 3.4 Optional registry table (Phase 1)
 
 ```sql
 CREATE TABLE detector_version_registry (
@@ -420,7 +428,7 @@ CREATE TABLE detector_version_registry (
 );
 ```
 
-### 3.4 Improvement loop (Phase 8 target, contracted now)
+### 3.5 Improvement loop (Phase 8 target, contracted now)
 
 ```text
 User correction logged → error_category recorded → rules adjusted manually
@@ -1035,6 +1043,8 @@ import              -- bulk import
 ## 12. References
 
 - `docs/architecture/ARCHITECTURE_LOCK.md` — raw ledger doctrine
+- `docs/architecture/RANGE_V2_DOCTRINE_CONTRACT.md` — RANGE_V2 event-driven range doctrine (**LOCKED** 2026-06-17)
+- `docs/architecture/RANGE_V2_IMPLEMENTATION_PLAN.md` — RANGE_V2 coding plan (pending review)
 - `project rules.md` — solo-user, strong structural storage
 - `electron/src/rawMapping.ts` — raw event types and payload rules
 - `backend/candle_store.py` — existing `map_ranges` / `map_events` / `raw_mapping_events`
