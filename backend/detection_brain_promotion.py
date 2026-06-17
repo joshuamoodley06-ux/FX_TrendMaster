@@ -153,7 +153,7 @@ def _patch_event_detection_fields(
             suggestion_id,
             suggestion_id,
             detector_version,
-            "ACCEPTED" if user_action == "APPROVE" else "EDITED",
+            "ACCEPTED" if user_action in {"APPROVE", "BATCH_APPROVE"} else "EDITED",
             candle_store.now_iso(),
             event_row_id,
         ),
@@ -192,7 +192,7 @@ def _promote_range(
         "active_from_time": _ms_to_time_text(final.get("suggested_rh_time_ms")),
         "status": "ACTIVE",
         "source": "python_detector",
-        "range_key": f"detector_{suggestion['suggestion_id'][:8]}",
+        "range_key": f"detector_{suggestion['suggestion_id']}",
         "meta_json": {
             "promoted_from": "detector_suggestions",
             "suggestion_id": suggestion["suggestion_id"],
@@ -333,22 +333,39 @@ def review_suggestion(
     error_category: str | None = None,
     notes: str = "",
 ) -> dict[str, Any]:
-    """APPROVE | EDIT | REJECT a pending suggestion."""
+    """APPROVE | BATCH_APPROVE | EDIT | REJECT | AUDIT_PASS | AUDIT_FAIL a suggestion."""
     action_u = str(action or "").strip().upper()
-    if action_u not in {"APPROVE", "EDIT", "REJECT"}:
+    if action_u not in {"APPROVE", "BATCH_APPROVE", "EDIT", "REJECT", "AUDIT_PASS", "AUDIT_FAIL"}:
         raise PromotionError(f"invalid action: {action}")
 
     suggestion = get_suggestion(conn, suggestion_id)
     if not suggestion:
         raise PromotionError("suggestion not found", 404)
 
-    if suggestion.get("status") in {"APPROVED", "EDITED", "REJECTED"}:
+    if action_u in {"AUDIT_PASS", "AUDIT_FAIL"}:
+        return _record_audit_only(conn, suggestion, action_u, notes=notes)
+
+    if action_u in {"APPROVE", "BATCH_APPROVE", "EDIT", "REJECT"} and suggestion.get("status") in {"APPROVED", "EDITED", "REJECTED"}:
         return {
             "ok": True,
             "duplicate": True,
             "suggestion": suggestion,
             "message": "suggestion already reviewed",
         }
+
+    if action_u in {"APPROVE", "BATCH_APPROVE", "EDIT"}:
+        existing = conn.execute(
+            "SELECT id FROM map_ranges WHERE confirmed_from_suggestion_id = ? LIMIT 1",
+            (suggestion_id,),
+        ).fetchone()
+        if existing:
+            return {
+                "ok": True,
+                "duplicate": True,
+                "promoted_range_id": int(existing["id"]),
+                "suggestion": suggestion,
+                "message": "range already promoted for suggestion",
+            }
 
     if suggestion.get("status") != "PENDING":
         raise PromotionError(f"suggestion status {suggestion.get('status')} is not reviewable")
@@ -361,7 +378,7 @@ def review_suggestion(
     promoted_event_id: int | None = None
     status = "REJECTED" if action_u == "REJECT" else ("EDITED" if action_u == "EDIT" else "APPROVED")
 
-    if action_u in {"APPROVE", "EDIT"}:
+    if action_u in {"APPROVE", "BATCH_APPROVE", "EDIT"}:
         kind = str(suggestion.get("candidate_kind") or "").upper()
         if kind in RANGE_KINDS:
             promoted_range_id = _promote_range(conn, suggestion, final, action_u)
@@ -370,7 +387,7 @@ def review_suggestion(
         else:
             status = "APPROVED" if action_u == "APPROVE" else "EDITED"
 
-    if action_u == "APPROVE":
+    if action_u in {"APPROVE", "BATCH_APPROVE"}:
         category = "NO_ERROR"
     else:
         category = str(error_category or "OTHER").strip().upper()
@@ -398,7 +415,7 @@ def review_suggestion(
             error_category=category,
             notes=notes,
             suggested_snapshot_json=suggested_snapshot,
-            final_snapshot_json=final_snapshot if action_u in {"APPROVE", "EDIT"} else None,
+            final_snapshot_json=final_snapshot if action_u in {"APPROVE", "BATCH_APPROVE", "EDIT"} else None,
             promoted_range_id=promoted_range_id,
             promoted_event_id=promoted_event_id,
             created_at_utc_ms=utc_now_ms(),
@@ -427,6 +444,52 @@ def review_suggestion(
         "promoted_range_id": promoted_range_id,
         "promoted_event_id": promoted_event_id,
         "suggestion": refreshed,
+    }
+
+
+def _record_audit_only(
+    conn: sqlite3.Connection,
+    suggestion: dict[str, Any],
+    action_u: str,
+    *,
+    notes: str = "",
+) -> dict[str, Any]:
+    """Visual audit pass/fail — correction log only, no promotion."""
+    import uuid
+
+    suggested_snapshot = _snapshot_from_suggestion(suggestion)
+    category = "NO_ERROR" if action_u == "AUDIT_PASS" else "OTHER"
+    if action_u == "AUDIT_FAIL" and not notes:
+        notes = "visual audit failed"
+    correction_id = str(uuid.uuid4())
+    insert_correction(
+        conn,
+        DetectorCorrection(
+            correction_id=correction_id,
+            suggestion_id=str(suggestion["suggestion_id"]),
+            session_id=suggestion.get("session_id"),
+            candidate_kind=str(suggestion.get("candidate_kind")),
+            detector_version=str(suggestion.get("detector_version")),
+            symbol=str(suggestion.get("symbol")),
+            structure_layer=str(suggestion.get("structure_layer")),
+            source_timeframe=str(suggestion.get("source_timeframe")),
+            user_action=action_u,
+            error_category=category,
+            notes=notes,
+            suggested_snapshot_json=suggested_snapshot,
+            final_snapshot_json=None,
+            promoted_range_id=suggestion.get("promoted_range_id"),
+            promoted_event_id=suggestion.get("promoted_event_id"),
+            created_at_utc_ms=utc_now_ms(),
+        ),
+    )
+    conn.commit()
+    return {
+        "ok": True,
+        "action": action_u,
+        "audit_only": True,
+        "correction_id": correction_id,
+        "suggestion": get_suggestion(conn, str(suggestion["suggestion_id"])),
     }
 
 

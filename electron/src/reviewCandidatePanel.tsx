@@ -1,11 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   type DetectorSuggestionRow,
+  type RangeAuditSample,
+  type RangeAuditViewTarget,
   type ReviewAction,
   type ReviewEdits,
+  auditSampleToViewTarget,
   fetchPendingSuggestions,
+  fetchRandomAuditSamples,
+  recordAuditVerdict,
   reviewSuggestion,
   runDetectorV1,
+  suggestionToViewTarget,
 } from './reviewCandidateClient';
 
 type Props = {
@@ -24,6 +30,7 @@ type Props = {
   activeCandleTimeLabel?: string | null;
   replayMode?: boolean;
   onPromoted?: () => void | Promise<void>;
+  onViewOnChart?: (target: RangeAuditViewTarget) => void;
   setMessage: (msg: string) => void;
 };
 
@@ -104,6 +111,10 @@ export function ReviewCandidatePanel(props: Props) {
   const [contextReplayUntilMs, setContextReplayUntilMs] = useState<number | null>(null);
   const [contextLabel, setContextLabel] = useState<string | null>(null);
   const [lastDebugSummary, setLastDebugSummary] = useState<Record<string, unknown> | null>(null);
+  const [auditQueue, setAuditQueue] = useState<RangeAuditSample[]>([]);
+  const [auditIndex, setAuditIndex] = useState(0);
+  const [auditSource, setAuditSource] = useState<'suggestions' | 'confirmed_ranges'>('suggestions');
+  const [auditBusy, setAuditBusy] = useState(false);
 
   const selected = useMemo(
     () => suggestions.find(s => s.suggestion_id === selectedId) || null,
@@ -284,6 +295,90 @@ export function ReviewCandidatePanel(props: Props) {
     }
   };
 
+  const viewSelectedOnChart = () => {
+    if (!selected || !props.onViewOnChart) return;
+    const target = suggestionToViewTarget(selected);
+    if (!target) {
+      props.setMessage('Cannot view on chart: invalid RH/RL on selected candidate.');
+      return;
+    }
+    props.onViewOnChart(target);
+  };
+
+  const loadRandomAuditSample = async () => {
+    setAuditBusy(true);
+    try {
+      const out = await fetchRandomAuditSamples(props.apiBase, {
+        symbol: props.symbol,
+        structure_layer: props.structureLayer,
+        source_timeframe: props.sourceTimeframe,
+        limit: 1,
+        source: auditSource,
+        detection_run_id: lastDetectionRunId ?? undefined,
+      });
+      if (!out.ok || !out.samples?.length) {
+        props.setMessage(`Random audit load failed: ${out.error || 'no samples in pool'}`);
+        return;
+      }
+      setAuditQueue(out.samples);
+      setAuditIndex(0);
+      const target = auditSampleToViewTarget(out.samples[0]);
+      if (target && props.onViewOnChart) props.onViewOnChart(target);
+      props.setMessage(`Loaded random audit sample (${auditSource}) · pool=${out.pool_size ?? '?'}`);
+    } finally {
+      setAuditBusy(false);
+    }
+  };
+
+  const nextAuditSample = () => {
+    if (!auditQueue.length) {
+      void loadRandomAuditSample();
+      return;
+    }
+    const next = (auditIndex + 1) % auditQueue.length;
+    setAuditIndex(next);
+    const target = auditSampleToViewTarget(auditQueue[next]);
+    if (target && props.onViewOnChart) props.onViewOnChart(target);
+  };
+
+  const markAudit = async (pass: boolean) => {
+    const sample = auditQueue[auditIndex];
+    const suggestionId = sample?.suggestion_id || (sample?.source === 'suggestions' ? sample?.id : null);
+    if (!suggestionId) {
+      props.setMessage('Cannot record audit verdict: no suggestion_id on sample.');
+      return;
+    }
+    setAuditBusy(true);
+    try {
+      const out = await recordAuditVerdict(props.apiBase, {
+        suggestion_id: suggestionId,
+        action: pass ? 'AUDIT_PASS' : 'AUDIT_FAIL',
+        notes: pass ? 'visual audit pass' : 'visual audit needs review',
+      });
+      if (!out.ok) {
+        props.setMessage(`Audit verdict failed: ${out.error || 'unknown'}`);
+        return;
+      }
+      props.setMessage(pass ? 'Marked audit pass.' : 'Marked audit fail / needs review.');
+      nextAuditSample();
+    } finally {
+      setAuditBusy(false);
+    }
+  };
+
+  const activeAuditSample = auditQueue[auditIndex] || null;
+  const auditContextLabel = activeAuditSample
+    ? [
+        activeAuditSample.candidate_kind || 'RANGE_CANDIDATE',
+        `RH ${activeAuditSample.rh ?? activeAuditSample.range_high_price ?? '—'}`,
+        `RL ${activeAuditSample.rl ?? activeAuditSample.range_low_price ?? '—'}`,
+        activeAuditSample.detector_version || '—',
+        activeAuditSample.replay_until_time || '—',
+        activeAuditSample.lifecycle_state || '—',
+        activeAuditSample.boundary_selection_reason || '—',
+      ].join(' · ')
+    : null;
+
   const displayContextLabel = contextLabel
     || (selected?.meta_json?.replay_until_time as string | undefined)
     || fmtContextDate(contextReplayUntilMs ?? props.activeCandleTimeMs);
@@ -309,6 +404,14 @@ export function ReviewCandidatePanel(props: Props) {
     <div className="reviewActionRow reviewActionRowCompact">
       <button type="button" className="approveBtn" disabled={busy || !selected} onClick={() => void submitReview('APPROVE')}>
         Confirm Valid
+      </button>
+      <button
+        type="button"
+        className="viewChartBtn"
+        disabled={busy || !selected || !props.onViewOnChart}
+        onClick={viewSelectedOnChart}
+      >
+        View on chart
       </button>
       <button
         type="button"
@@ -445,7 +548,33 @@ export function ReviewCandidatePanel(props: Props) {
           {runningDetector ? 'Running…' : 'Run Python Detector'}
         </button>
         <button type="button" onClick={() => void refresh()} disabled={loading || busy}>Refresh</button>
+        <select
+          value={auditSource}
+          disabled={auditBusy || busy}
+          onChange={e => setAuditSource(e.target.value as 'suggestions' | 'confirmed_ranges')}
+          aria-label="Audit sample source"
+        >
+          <option value="suggestions">Audit: suggestions</option>
+          <option value="confirmed_ranges">Audit: confirmed ranges</option>
+        </select>
+        <button type="button" onClick={() => void loadRandomAuditSample()} disabled={auditBusy || busy}>
+          Load random audit sample
+        </button>
       </div>
+
+      {auditContextLabel && (
+        <div className="reviewAuditContext mutedSmall">
+          <strong>Audit context:</strong> {auditContextLabel}
+        </div>
+      )}
+
+      {auditQueue.length > 0 && (
+        <div className="reviewAuditActions">
+          <button type="button" onClick={nextAuditSample} disabled={auditBusy || busy}>Next sample</button>
+          <button type="button" className="approveBtn" onClick={() => void markAudit(true)} disabled={auditBusy || busy}>Mark pass</button>
+          <button type="button" className="rejectBtn" onClick={() => void markAudit(false)} disabled={auditBusy || busy}>Mark fail</button>
+        </div>
+      )}
 
       <div className="reviewCandidateCompactBody">
         {loading && <div className="mutedSmall">Loading…</div>}

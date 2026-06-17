@@ -2,7 +2,15 @@
 
 **Status:** **PLANNING ONLY** — no code, no schema migration, no detector changes authorized.  
 **Date:** 2026-06-17  
-**Prerequisites:** Generic range detection (`RANGE_CANDIDATE`, `range_scale=UNKNOWN`) ✓ · Review confirms validity only ✓  
+**Prerequisites:** Generic range detection (`RANGE_CANDIDATE`, `range_scale=UNKNOWN`) ✓ · Review confirms validity only ✓ · **Batch promote + visual audit** (see below) required before profile analytics  
+
+**Before profile analytics:** Historical `RANGE_CANDIDATE` suggestions must be batch-promoted to confirmed generic ranges (`range_scale=UNKNOWN`) and visually audited using the chart loader. Profile stats (abandoned, shallow/deep reclaim, etc.) run only after that dataset exists.
+
+| Step | Tool |
+|------|------|
+| Batch save | `POST /api/v1/detection-brain/ranges/batch-promote` or `backend/batch_range_promote.py` (dry-run default; `--confirm` to commit) |
+| Visual audit | Electron **View on chart** + **Load random audit sample**; `POST /api/v1/detection-brain/ranges/random-audit` |
+| Profile analytics | **Not started** — this plan only |
 **Related docs:** `RANGE_V2_IMPLEMENTATION_PLAN.md` §17 · `PHASE_0_DETECTION_BRAIN_CONTRACTS.md` §5 · `PYTHON_ANALYST_V1_1_PLAN.md` · `range_analytics_classifier.py` (stub)
 
 > **Scope:** After valid ranges exist across a date period, analytics classifies **what happened after each range formed**. Detection and review are frozen. This plan defines Layer 3 measurement only.

@@ -239,3 +239,96 @@ def review_suggestion_action(payload: dict[str, Any]) -> dict[str, Any]:
             )
     except PromotionError as exc:
         return {"ok": False, "status": exc.status, "error": str(exc)}
+
+
+def _parse_optional_date_ms(payload: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        raw = payload.get(key)
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, (int, float)):
+            return int(raw)
+        try:
+            from detector.range_scan_runner import parse_scan_date_ms
+
+            return parse_scan_date_ms(str(raw))
+        except Exception:
+            continue
+    return None
+
+
+def batch_promote_range_candidates_action(payload: dict[str, Any]) -> dict[str, Any]:
+    from detection_brain_batch_promote import (
+        BatchPromoteFilters,
+        batch_promote_range_candidates,
+        batch_promote_result_to_dict,
+    )
+
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    source_timeframe = str(payload.get("source_timeframe") or payload.get("timeframe") or "").strip().upper()
+    structure_layer = str(payload.get("structure_layer") or "").strip().upper()
+    if not symbol or not source_timeframe or not structure_layer:
+        return {
+            "ok": False,
+            "status": 400,
+            "error": "symbol, source_timeframe, and structure_layer are required",
+        }
+
+    confirm = bool(payload.get("confirm"))
+    filters = BatchPromoteFilters(
+        symbol=symbol,
+        source_timeframe=source_timeframe,
+        structure_layer=structure_layer,
+        date_from_ms=_parse_optional_date_ms(payload, "date_from_ms", "date_from"),
+        date_to_ms=_parse_optional_date_ms(payload, "date_to_ms", "date_to"),
+        candidate_kind=str(payload.get("candidate_kind") or "RANGE_CANDIDATE").upper(),
+        status=str(payload.get("status") or "PENDING").upper(),
+        detector_version=str(payload.get("detector_version") or "").strip() or None,
+        detection_run_id=str(payload.get("detection_run_id") or "").strip() or None,
+    )
+    try:
+        with _connect() as conn:
+            init_detection_brain_schema(conn)
+            result = batch_promote_range_candidates(conn, filters, confirm=confirm)
+        out = batch_promote_result_to_dict(result)
+        out["status"] = 200 if result.ok else 400
+        return out
+    except Exception as exc:
+        return {"ok": False, "status": 500, "error": "BATCH_PROMOTE_FAILED", "detail": str(exc)}
+
+
+def random_range_audit_action(payload: dict[str, Any]) -> dict[str, Any]:
+    from detection_brain_random_audit import RandomAuditFilters, sample_random_audit_rows
+
+    symbol = str(payload.get("symbol") or "").strip().upper()
+    source_timeframe = str(payload.get("source_timeframe") or payload.get("timeframe") or "").strip().upper()
+    structure_layer = str(payload.get("structure_layer") or "").strip().upper()
+    if not symbol or not source_timeframe or not structure_layer:
+        return {
+            "ok": False,
+            "status": 400,
+            "error": "symbol, source_timeframe, and structure_layer are required",
+        }
+
+    source = str(payload.get("source") or "suggestions").strip().lower()
+    if source not in {"suggestions", "confirmed_ranges"}:
+        return {"ok": False, "status": 400, "error": "source must be suggestions or confirmed_ranges"}
+
+    filters = RandomAuditFilters(
+        symbol=symbol,
+        source_timeframe=source_timeframe,
+        structure_layer=structure_layer,
+        date_from_ms=_parse_optional_date_ms(payload, "date_from_ms", "date_from"),
+        date_to_ms=_parse_optional_date_ms(payload, "date_to_ms", "date_to"),
+        limit=int(payload.get("limit") or payload.get("n") or 5),
+        source=source,  # type: ignore[arg-type]
+        candidate_kind=str(payload.get("candidate_kind") or "RANGE_CANDIDATE").upper(),
+        detector_version=str(payload.get("detector_version") or "").strip() or None,
+        detection_run_id=str(payload.get("detection_run_id") or "").strip() or None,
+    )
+    try:
+        with _connect() as conn:
+            init_detection_brain_schema(conn)
+            return sample_random_audit_rows(conn, filters)
+    except Exception as exc:
+        return {"ok": False, "status": 500, "error": "RANDOM_AUDIT_FAILED", "detail": str(exc)}

@@ -752,7 +752,34 @@ python historical_range_scan.py --symbol XAUUSD --timeframe W1 --layer WEEKLY --
 
 **Env (optional):** `DETECTOR_RANGE_MODE=doctrine_v2`, `DETECTOR_RANGE_SCALE_MODE=generic`
 
-**Not in scope:** profile analytics, derived major/minor, auto-approval, Electron batch UI.
+**Not in scope (scan runner):** profile analytics, derived major/minor, auto-approval.
+
+---
+
+## 19. Batch Promote + Visual Audit (pre-profile gate)
+
+**Status:** Implemented 2026-06-17.
+
+**Purpose:** After historical scan, promote trusted `RANGE_CANDIDATE` rows to confirmed `map_ranges` (`range_scale=UNKNOWN`) and visually audit RH/RL on the chart before profile analytics.
+
+| Item | Detail |
+|------|--------|
+| Batch promote API | `POST /api/v1/detection-brain/ranges/batch-promote` — dry-run unless `confirm=true` |
+| Batch promote CLI | `backend/batch_range_promote.py` — `--confirm` to commit |
+| Core | `backend/detection_brain_batch_promote.py` |
+| Idempotent | Re-run skips already-promoted suggestions; no duplicate `map_ranges` |
+| Corrections | `user_action=BATCH_APPROVE`, `error_category=NO_ERROR` |
+| Random audit API | `POST /api/v1/detection-brain/ranges/random-audit` — `source=suggestions\|confirmed_ranges` |
+| Electron | Review panel: **View on chart**, **Load random audit sample**, Next / Pass / Fail |
+
+**Before profile analytics:** Batch-promote historical suggestions and complete visual audit. Profile classification (abandoned, shallow/deep reclaim) is **deferred** — see `RANGE_PROFILE_ANALYTICS_PLAN.md`.
+
+**Example batch promote:**
+
+```bash
+python batch_range_promote.py --symbol XAUUSD --timeframe W1 --layer WEEKLY --from 2024-01-01 --to 2026-12-31
+python batch_range_promote.py --symbol XAUUSD --timeframe W1 --layer WEEKLY --from 2024-01-01 --to 2026-12-31 --confirm
+```
 
 ---
 

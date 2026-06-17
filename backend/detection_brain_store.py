@@ -19,7 +19,7 @@ RANGE_ROLES = frozenset({"ACTIVE_CONTAINER", "INTERNAL_LEG", "EXPANSION_LEG"})
 INTERNAL_STRUCTURE_STATUSES = frozenset({"HAS_MINORS", "NO_MINOR_STRUCTURE", "UNKNOWN"})
 ENGINE_SOURCES = frozenset({"python_detector", "electron_legacy", "manual", "import"})
 SUGGESTION_STATUSES = frozenset({"PENDING", "APPROVED", "REJECTED", "EDITED", "SUPERSEDED", "EXPIRED"})
-USER_ACTIONS = frozenset({"APPROVE", "EDIT", "REJECT", "SKIP"})
+USER_ACTIONS = frozenset({"APPROVE", "BATCH_APPROVE", "EDIT", "REJECT", "SKIP", "AUDIT_PASS", "AUDIT_FAIL"})
 ERROR_CATEGORIES = frozenset({
     "NO_ERROR",
     "MISSED_SWING",
@@ -278,10 +278,10 @@ def _validate_correction(record: DetectorCorrection) -> None:
     category = str(record.error_category).strip().upper()
     if category not in ERROR_CATEGORIES:
         raise DetectionBrainStoreError(f"invalid error_category: {record.error_category}")
-    if action == "APPROVE" and category != "NO_ERROR":
-        raise DetectionBrainStoreError("APPROVE requires error_category = NO_ERROR")
-    if action in {"EDIT", "REJECT"} and category == "NO_ERROR":
-        raise DetectionBrainStoreError("EDIT/REJECT cannot use error_category = NO_ERROR")
+    if action in {"APPROVE", "BATCH_APPROVE", "AUDIT_PASS"} and category != "NO_ERROR":
+        raise DetectionBrainStoreError(f"{action} requires error_category = NO_ERROR")
+    if action in {"EDIT", "REJECT", "AUDIT_FAIL"} and category == "NO_ERROR":
+        raise DetectionBrainStoreError(f"{action} cannot use error_category = NO_ERROR")
 
 
 def insert_suggestion(conn: sqlite3.Connection, record: DetectorSuggestion) -> dict[str, Any]:

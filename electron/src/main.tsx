@@ -42,6 +42,7 @@ import {
 } from './chartTradeIdeas';
 import { MapTradeIdeaPanel } from './mapTradeIdeaPanel';
 import { ReviewCandidatePanel } from './reviewCandidatePanel';
+import type { RangeAuditViewTarget } from './reviewCandidateClient';
 import './styles.css';
 
 const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
@@ -5789,6 +5790,77 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
+  const loadRangeAuditOnChart = (target: RangeAuditViewTarget) => {
+    const chartTf = String(target.chart_timeframe || target.source_timeframe || timeframe).toUpperCase();
+    const layer = normalizeStructureLayer(target.structure_layer) || structureLayer;
+    const srcTf = String(target.source_timeframe || sourceTimeframe).toUpperCase();
+    const startStr = String(target.range_start_time || target.replay_until_time || '');
+    const endStr = String(target.range_end_time || target.replay_until_time || startStr || '');
+    const rhText = String(Number(target.rh.toFixed(2)));
+    const rlText = String(Number(target.rl.toFixed(2)));
+
+    if (layer && layer !== structureLayer) setStructureLayer(layer);
+    if (srcTf && srcTf !== sourceTimeframe) setSourceTimeframe(srcTf);
+
+    setRhAnchor({ price: rhText, time: startStr || endStr || '', candle: null });
+    setRlAnchor({ price: rlText, time: endStr || startStr || '', candle: null });
+    setRangeHigh(rhText);
+    setRangeLow(rlText);
+    if (startStr || endStr) {
+      setRangeWindow({ start: startStr || endStr, end: endStr || startStr });
+      setRangeWindowByTf(prev => ({
+        ...prev,
+        [chartTf]: { start: startStr || endStr, end: endStr || startStr },
+      }));
+    }
+
+    const fitRange = {
+      range_high_price: target.rh,
+      range_low_price: target.rl,
+      range_high: target.rh,
+      range_low: target.rl,
+      range_start_time: startStr || null,
+      range_end_time: endStr || null,
+      range_high_time: startStr || null,
+      range_low_time: endStr || null,
+      structure_layer: layer,
+    };
+    const needsTfSwitch = chartTf !== String(timeframe).toUpperCase();
+    const fitWindow = structuralRangeFitDomain(fitRange, needsTfSwitch ? [] : candles);
+
+    if (needsTfSwitch) {
+      pendingCameraIntentRef.current = {
+        intent: 'FIT_STRUCTURAL_RANGE',
+        targetTime: startStr || selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null,
+        reason: 'audit-jump-fit',
+        fitWindow,
+      };
+      activeTimeframeRef.current = chartTf;
+      setTimeframe(chartTf);
+    } else {
+      if (startStr) {
+        setCandleReplayFrameByTime(startStr);
+        setJumpDate(startStr.slice(0, 10));
+      }
+      if (fitWindow) {
+        applyCameraCommand('FIT_STRUCTURAL_RANGE', startStr || null, 'audit-jump-fit', undefined, fitWindow);
+      } else if (startStr) {
+        applyCameraCommand('PRESERVE_OR_NEAREST_TIME', startStr, 'audit-jump');
+      }
+    }
+
+    const label = [
+      target.kind === 'suggestion' ? 'Range candidate' : 'Confirmed range',
+      `RH ${rhText}`,
+      `RL ${rlText}`,
+      target.detector_version || '—',
+      target.replay_until_time || '—',
+      target.lifecycle_state || '—',
+      target.boundary_selection_reason || '—',
+    ].join(' · ');
+    setMessage(`Audit view loaded · ${label}`);
+  };
+
   const activateMappingGap = (gap: MappingGap) => {
     const parent = gap.parentRange;
     const childLayer = normalizeStructureLayer(gap.expectedChildLayer) || structureLayer;
@@ -7322,6 +7394,7 @@ function MapStudio({ symbol }: { symbol:string }) {
                   try { await refreshStructuralRanges(); } catch {}
                   try { await refreshHierarchyAudit(); } catch {}
                 }}
+                onViewOnChart={loadRangeAuditOnChart}
                 setMessage={setMessage}
               />
             </section>

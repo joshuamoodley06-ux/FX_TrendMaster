@@ -5036,3 +5036,35 @@ def detection_brain_suggestion_review(response: Response, payload: dict[str, Any
     except Exception as exc:
         response.status_code = 500
         return {"ok": False, "error": "DETECTION_BRAIN_REVIEW_FAILED", "detail": str(exc)}
+
+
+@app.post("/api/v1/detection-brain/ranges/batch-promote")
+def detection_brain_batch_promote_ranges(response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    try:
+        from detection_brain_api import batch_promote_range_candidates_action
+
+        result = batch_promote_range_candidates_action(payload or {})
+        response.status_code = int(result.get("status") or (200 if result.get("ok") else 400))
+        return result
+    except Exception as exc:
+        response.status_code = 500
+        return {"ok": False, "error": "BATCH_PROMOTE_FAILED", "detail": str(exc)}
+
+
+@app.post("/api/v1/detection-brain/ranges/random-audit")
+def detection_brain_random_range_audit(response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    try:
+        from detection_brain_api import random_range_audit_action
+
+        result = random_range_audit_action(payload or {})
+        response.status_code = int(result.get("status") or (200 if result.get("ok") else 400))
+        return result
+    except Exception as exc:
+        response.status_code = 500
+        return {"ok": False, "error": "RANDOM_AUDIT_FAILED", "detail": str(exc)}
