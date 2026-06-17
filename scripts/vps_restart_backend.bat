@@ -16,8 +16,11 @@ if not exist "%REPO%\.git" (
 )
 
 echo Copying updated backend files...
-copy /Y "%REPO%\backend\main.py" "%APP%\main.py"
-copy /Y "%REPO%\backend\candle_store.py" "%APP%\candle_store.py"
+copy /Y "%REPO%\backend\*.py" "%APP%\"
+if exist "%REPO%\backend\detector" (
+  echo Copying detector package...
+  xcopy /E /I /Y "%REPO%\backend\detector" "%APP%\detector\"
+)
 
 set "DATABASE_PATH=%APP%\market_memory.db"
 set "RAW_MAPPING_DB_PATH=%ROOT%\trading_gate\data\raw_mapping_v159.db"

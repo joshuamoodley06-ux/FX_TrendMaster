@@ -25,6 +25,8 @@ Automated preflight against production VPS shows a **deploy blocker** (not a cod
 | `/api/v1/candles/status` | HTTP 200 but **`detection_brain` block missing** |
 | `/api/v1/detection-brain/*` | **HTTP 404** — routes not on VPS |
 
+**Follow-up (same day):** routes returned 200 but `ModuleNotFoundError` — `vps_restart_backend.bat` only copied `main.py` + `candle_store.py`. Fixed: bat now copies all `backend/*.py` and `backend/detector/`. **Re-run restart bat after pulling this fix.**
+
 **Action required before Electron smoke test:** deploy latest `backend/` to VPS and restart FastAPI. Re-run:
 
 ```bash
@@ -38,7 +40,7 @@ All three Step 2/5/6 checks must PASS before opening Electron.
 ### Deploy checklist (before smoke test)
 
 1. Push/pull latest `backend/` to VPS (includes `detection_brain_*`, `detector/`, `detector_performance.py`).
-2. Restart FastAPI service (`systemctl restart` or your process manager).
+2. Restart FastAPI via `scripts/vps_restart_backend.bat` — copies **all** `backend/*.py` + `backend/detector/` into `trading_gate/app/`.
 3. Confirm new routes exist (404 = not deployed):
    - `GET /api/v1/detection-brain/suggestions`
    - `POST /api/v1/detection-brain/run-detector`
