@@ -4395,8 +4395,10 @@ import os as _os
 import sys as _sys
 from pathlib import Path as _Path
 _backend_dir = str(_Path(__file__).resolve().parent)
-if _backend_dir not in _sys.path:
-    _sys.path.insert(0, _backend_dir)
+_repo_backend = str(_Path(__file__).resolve().parent.parent.parent / "FX_TrendMaster" / "backend")
+for _path in (_backend_dir, _repo_backend):
+    if _path not in _sys.path and _os.path.isdir(_path):
+        _sys.path.insert(0, _path)
 
 _market_memory_error = None
 try:
@@ -4925,6 +4927,38 @@ def mos_seed_ideas(symbol: str = "XAUUSD", limit: int = 50):
 
 
 # --- Detection Brain (Phase 3 review shell) ---
+
+
+@app.get("/api/v1/detection-brain/deploy-check")
+def detection_brain_deploy_check():
+    """Smoke helper: confirm detection-brain modules are importable on this host."""
+    app_dir = _Path(__file__).resolve().parent
+    repo_backend = app_dir.parent.parent / "FX_TrendMaster" / "backend"
+    module_names = (
+        "detection_brain_schema",
+        "detection_brain_store",
+        "detection_brain_api",
+        "detection_brain_promotion",
+        "detector.pipeline",
+    )
+    imports: dict[str, str] = {}
+    ok = True
+    for name in module_names:
+        try:
+            __import__(name)
+            imports[name] = "ok"
+        except Exception as exc:
+            imports[name] = repr(exc)
+            ok = False
+    files = {
+        "app_detection_brain_api": str(app_dir / "detection_brain_api.py"),
+        "app_detection_brain_api_exists": (app_dir / "detection_brain_api.py").is_file(),
+        "repo_detection_brain_api": str(repo_backend / "detection_brain_api.py"),
+        "repo_detection_brain_api_exists": (repo_backend / "detection_brain_api.py").is_file(),
+        "repo_detector_pipeline": str(repo_backend / "detector" / "pipeline.py"),
+        "repo_detector_pipeline_exists": (repo_backend / "detector" / "pipeline.py").is_file(),
+    }
+    return {"ok": ok, "imports": imports, "files": files, "sys_path_head": _sys.path[:6]}
 
 
 @app.get("/api/v1/detection-brain/suggestions")

@@ -24,6 +24,13 @@ if exist "%REPO%\backend\detector" (
 
 set "DATABASE_PATH=%APP%\market_memory.db"
 set "RAW_MAPPING_DB_PATH=%ROOT%\trading_gate\data\raw_mapping_v159.db"
+set "PYTHONPATH=%APP%;%REPO%\backend;%PYTHONPATH%"
+
+echo Verifying detection-brain modules...
+if exist "%APP%\detection_brain_api.py" (echo   OK app\detection_brain_api.py) else (echo   MISSING app\detection_brain_api.py)
+if exist "%REPO%\backend\detection_brain_api.py" (echo   OK repo\backend\detection_brain_api.py) else (echo   MISSING repo\backend\detection_brain_api.py)
+if exist "%APP%\detector\pipeline.py" (echo   OK app\detector\pipeline.py) else (echo   MISSING app\detector\pipeline.py)
+if exist "%REPO%\backend\detector\pipeline.py" (echo   OK repo\backend\detector\pipeline.py) else (echo   MISSING repo\backend\detector\pipeline.py)
 
 echo Stopping anything on port 8000...
 powershell -NoProfile -Command "$p = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique; if ($p) { $p | ForEach-Object { Write-Host ('  Killing PID ' + $_); Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } } else { Write-Host '  Port 8000 is free.' }"
