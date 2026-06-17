@@ -2713,7 +2713,7 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .structuralHierarchyPanel,
 .structuralExplorerPanel{
-  flex:1;
+  flex:0 0 auto;
   min-height:0;
   display:flex;
   flex-direction:column;
@@ -2723,8 +2723,9 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   border:1px solid rgba(148,163,184,.14);
   border-radius:12px;
   padding:10px;
-  margin-bottom:8px;
+  margin-bottom:0;
   background:rgba(8,16,28,.55);
+  overflow:hidden;
 }
 .structuralExplorerHeader{
   display:flex;align-items:center;justify-content:space-between;gap:8px;
@@ -2932,9 +2933,25 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   margin-top:4px;
 }
 .htfEnginePane.structuralMapClean{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
   max-height:calc(100vh - 180px);
-  overflow:auto;
+  overflow-y:auto;
+  overflow-x:hidden;
   padding-right:2px;
+}
+.structuralReviewSection,
+.structuralExplorerSection{
+  flex:0 0 auto;
+  min-width:0;
+}
+.structuralExplorerSection .structuralExplorerPanel{
+  max-height:min(34vh, 300px);
+}
+.structuralExplorerSection .explorerTreeScrollMark{
+  max-height:min(22vh, 180px);
+  min-height:72px;
 }
 .caseMetadataDetails{
   border:1px solid rgba(148,163,184,.14);
@@ -4167,37 +4184,62 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
   background:rgba(2,6,23,.55);
   text-decoration:line-through;
 }
-.explorerTreeRow{
-  display:flex;
-  align-items:flex-start;
-  gap:6px;
-}
-.explorerTreeRow .explorerTreeRowMain{flex:1 1 auto;min-width:0}
 .line.savedRangeLine{shape-rendering:geometricPrecision}
 
 .reviewCandidatePanel{
-  margin:10px 0 12px;
-  padding:10px;
-  border:1px solid rgba(0,212,170,.25);
-  border-radius:10px;
-  background:rgba(2,6,23,.55);
+  margin:0;
+  padding:12px;
+  border:1px solid rgba(0,212,170,.28);
+  border-radius:12px;
+  background:rgba(2,6,23,.72);
+  overflow:hidden;
 }
-.reviewCandidateHeader h4{margin:0 0 4px;font-size:13px}
+.reviewCandidateHeader h4{margin:0 0 4px;font-size:13px;color:#00d4aa}
+.reviewCandidateHeader .mutedSmall{margin:0;line-height:1.35}
 .reviewCandidateToolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.reviewCandidateBody{display:grid;grid-template-columns:minmax(120px,34%) 1fr;gap:10px;margin-top:10px}
-.reviewCandidateList{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
-.reviewCandidateListItem{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:8px;border-radius:8px;border:1px solid rgba(148,163,184,.2);background:rgba(15,23,42,.7);color:#e2e8f0;cursor:pointer;text-align:left}
+.reviewCandidateFilters{
+  margin:8px 0 0;
+  padding:6px 8px;
+  border-radius:8px;
+  background:rgba(15,23,42,.55);
+  font-size:10px;
+  line-height:1.4;
+  word-break:break-word;
+}
+.reviewCandidateBody{
+  display:grid;
+  grid-template-columns:minmax(0,1fr);
+  gap:10px;
+  margin-top:10px;
+}
+.reviewCandidateList{display:flex;flex-direction:column;gap:6px;max-height:140px;overflow:auto}
+.reviewCandidateListItem{
+  display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:8px;
+  padding:8px 10px;border-radius:8px;border:1px solid rgba(148,163,184,.2);
+  background:rgba(15,23,42,.7);color:#e2e8f0;cursor:pointer;text-align:left;width:100%;
+}
 .reviewCandidateListItem.active{border-color:#00d4aa;background:rgba(13,74,58,.45)}
-.reviewCandidateListItem strong{font-size:12px}
-.reviewCandidateListItem span,.reviewCandidateListItem em{font-size:10px;color:#94a3b8}
+.reviewCandidateListItem strong{font-size:12px;display:block}
+.reviewCandidateListMain{display:flex;flex-direction:column;gap:2px;min-width:0}
+.reviewCandidateListItem span,.reviewCandidateListItem em{font-size:10px;color:#94a3b8;flex-shrink:0}
+.reviewCandidateDetail{
+  border-top:1px solid rgba(148,163,184,.16);
+  padding-top:10px;
+  min-width:0;
+}
 .reviewDetailGrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;font-size:11px}
 .reviewDetailGrid span{display:block;color:#94a3b8;font-size:10px}
 .reviewReason{font-size:11px;color:#cbd5e1;margin:8px 0}
-.reviewMetaDetails pre{font-size:10px;max-height:120px;overflow:auto;background:rgba(0,0,0,.25);padding:8px;border-radius:6px}
+.reviewMetaDetails pre{font-size:10px;max-height:100px;overflow:auto;background:rgba(0,0,0,.25);padding:8px;border-radius:6px}
 .reviewEditFields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
 .reviewEditFields label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:#94a3b8}
-.reviewEditFields input,.reviewEditFields select{font-size:12px}
+.reviewEditFields input,.reviewEditFields select{font-size:12px;max-width:100%}
 .reviewActionRow,.reviewRejectBlock{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:8px}
-.reviewRejectBlock label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:#94a3b8}
+.reviewRejectBlock label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:#94a3b8;min-width:0}
+.reviewRejectBlock input,.reviewRejectBlock select{max-width:100%}
 .reviewCandidatePanel .approveBtn{border-color:#00d4aa}
 .reviewCandidatePanel .rejectBtn{border-color:#f87171}
+.floatingWorkspacePanel .reviewCandidateBody{grid-template-columns:1fr}
+.floatingWorkspacePanel .reviewEditFields{grid-template-columns:1fr}
+.floatingWorkspacePanel .reviewDetailGrid{grid-template-columns:1fr}
+.reviewActiveCandle strong{color:#e2e8f0}

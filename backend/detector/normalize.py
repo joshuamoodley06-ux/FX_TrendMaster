@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -80,3 +81,16 @@ def normalize_candles(rows: list[dict[str, Any]], timeframe: str) -> list[Normal
         if candle is not None:
             out.append(candle)
     return out
+
+
+def truncate_candles_at_or_before(
+    candles: list[NormalizedCandle],
+    active_candle_time_ms: int | None,
+) -> list[NormalizedCandle]:
+    """Keep only candles visible at replay/market-time cut (no future leakage)."""
+    if active_candle_time_ms is None or active_candle_time_ms <= 0:
+        return candles
+    trimmed = [c for c in candles if c.time_ms <= active_candle_time_ms]
+    if not trimmed:
+        return candles
+    return [replace(c, index=i) for i, c in enumerate(trimmed)]

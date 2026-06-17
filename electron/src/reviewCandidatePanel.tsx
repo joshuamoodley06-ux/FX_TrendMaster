@@ -19,7 +19,9 @@ type Props = {
   rangeHigh?: number | null;
   rangeLow?: number | null;
   rangeScale?: string;
-  activeCandleIndex?: number | null;
+  activeCandleTimeMs?: number | null;
+  activeCandleTimeLabel?: string | null;
+  replayMode?: boolean;
   onPromoted?: () => void | Promise<void>;
   setMessage: (msg: string) => void;
 };
@@ -119,13 +121,15 @@ export function ReviewCandidatePanel(props: Props) {
         parent_range_id: props.parentRangeId ?? undefined,
         active_range_id: props.activeRangeId ?? undefined,
         case_ref: props.caseRef ?? undefined,
-        active_index: props.activeCandleIndex ?? undefined,
+        active_candle_time_ms: props.activeCandleTimeMs ?? undefined,
+        active_candle_time: props.activeCandleTimeLabel ?? undefined,
       });
       if (!out.ok) {
         props.setMessage(`Detector run failed: ${out.error || 'unknown'}`);
         return;
       }
-      props.setMessage(`Python detector wrote ${out.written_count ?? 0} suggestion(s).`);
+      const at = props.activeCandleTimeLabel ? ` @ ${props.activeCandleTimeLabel}` : '';
+      props.setMessage(`Python detector wrote ${out.written_count ?? 0} suggestion(s)${at}.`);
       await refresh();
     } finally {
       setRunningDetector(false);
@@ -200,6 +204,14 @@ export function ReviewCandidatePanel(props: Props) {
         {props.symbol} · {props.structureLayer} · {props.sourceTimeframe}
         {props.parentRangeId != null ? ` · parent #${props.parentRangeId}` : ' · no parent filter'}
         {' · '}PENDING only · engine: python_detector
+        {props.activeCandleTimeLabel ? (
+          <span className="reviewActiveCandle">
+            {' · '}detect at: <strong>{props.activeCandleTimeLabel}</strong>
+            {props.replayMode ? ' (replay)' : ''}
+          </span>
+        ) : (
+          <span className="reviewActiveCandle"> · detect at: latest candle</span>
+        )}
       </div>
 
       <div className="reviewCandidateBody">
@@ -213,8 +225,10 @@ export function ReviewCandidatePanel(props: Props) {
               className={`reviewCandidateListItem${selectedId === row.suggestion_id ? ' active' : ''}`}
               onClick={() => setSelectedId(row.suggestion_id)}
             >
-              <strong>{row.candidate_kind}</strong>
-              <span>{row.detector_version}</span>
+              <div className="reviewCandidateListMain">
+                <strong>{row.candidate_kind}</strong>
+                <span>{row.detector_version}</span>
+              </div>
               <em>{row.confidence || 'MEDIUM'}</em>
             </button>
           ))}

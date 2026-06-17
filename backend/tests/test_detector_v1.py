@@ -67,6 +67,22 @@ class BreakRuleTests(unittest.TestCase):
         self.assertEqual(break_rule_for_timeframe("M15"), BODY_CLOSE)
 
 
+class ReplayContextTests(unittest.TestCase):
+    def test_active_candle_time_truncates_future_bars(self) -> None:
+        rows = _candles_from_ohlc(_swing_sequence())
+        cut_ms = int(rows[5]["time_ms"])
+        ctx = build_context(
+            symbol="XAUUSD",
+            source_timeframe="D1",
+            candles=rows,
+            active_index=99,
+            active_candle_time_ms=cut_ms,
+        )
+        self.assertEqual(len(ctx.candles), 6)
+        self.assertEqual(ctx.active_index, 5)
+        self.assertEqual(ctx.candles[-1].time_ms, cut_ms)
+
+
 class BosDetectorTests(unittest.TestCase):
     def test_wick_bos_up_on_d1(self) -> None:
         rows = _swing_sequence() + [(110, 112, 109, 109.5)]  # wick above 110, close inside

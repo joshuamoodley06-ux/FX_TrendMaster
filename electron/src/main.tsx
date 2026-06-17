@@ -2406,6 +2406,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   }, [candles, candleReplayMode, candleReplayCursorTime, candleReplayIndex]);
   const replayCandle = candles.length ? candles[clamp(effectiveReplayIndex, 0, candles.length - 1)] : null;
   const activeReplayCandle = selectedCandle || replayCandle;
+  const detectorContextCandle = (candleReplayMode && replayCandle) ? replayCandle : (selectedCandle || replayCandle);
   const visibleCandles = useMemo(() => {
     if (!candleReplayMode || !candles.length || !replayCandle) return candles;
     const cut = new Date(String(replayCandle.time)).getTime();
@@ -7291,27 +7292,33 @@ function MapStudio({ symbol }: { symbol:string }) {
 
             {parentLinkHint && <div className={`parentLinkHint ${parentLinkResolve.error ? 'warningBadge' : 'compactBadge'}`}>{parentLinkHint}</div>}
 
-            {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollMark')}
+            <section className="structuralReviewSection">
+              <ReviewCandidatePanel
+                apiBase={BASE_URL}
+                symbol={symbol}
+                structureLayer={structureLayer}
+                sourceTimeframe={sourceTimeframe}
+                parentRangeId={savePreview.parent_range_id != null ? Number(savePreview.parent_range_id) : null}
+                activeRangeId={activeStructuralRangeId ? Number(activeStructuralRangeId) : null}
+                caseRef={savePreview.case_ref || null}
+                rangeHigh={parseNum(rhAnchor.price) ?? parseNum(rangeHigh) ?? null}
+                rangeLow={parseNum(rlAnchor.price) ?? parseNum(rangeLow) ?? null}
+                rangeScale={rangeScope}
+                activeCandleTimeMs={detectorContextCandle?.time ? candleTimeMs(detectorContextCandle.time) : null}
+                activeCandleTimeLabel={detectorContextCandle?.time ? shortTime(detectorContextCandle.time, sourceTimeframe) : null}
+                replayMode={candleReplayMode}
+                onPromoted={async () => {
+                  try { await refreshSavedRangesForCurrentCase(); } catch {}
+                  try { await refreshStructuralRanges(); } catch {}
+                  try { await refreshHierarchyAudit(); } catch {}
+                }}
+                setMessage={setMessage}
+              />
+            </section>
 
-            <ReviewCandidatePanel
-              apiBase={BASE_URL}
-              symbol={symbol}
-              structureLayer={structureLayer}
-              sourceTimeframe={sourceTimeframe}
-              parentRangeId={savePreview.parent_range_id != null ? Number(savePreview.parent_range_id) : null}
-              activeRangeId={activeStructuralRangeId ? Number(activeStructuralRangeId) : null}
-              caseRef={savePreview.case_ref || null}
-              rangeHigh={parseNum(rhAnchor.price) ?? parseNum(rangeHigh) ?? null}
-              rangeLow={parseNum(rlAnchor.price) ?? parseNum(rangeLow) ?? null}
-              rangeScale={rangeScope}
-              activeCandleIndex={activeReplayCandle ? Math.max(0, visibleCandles.findIndex(c => String(c.time) === String(activeReplayCandle.time))) : null}
-              onPromoted={async () => {
-                try { await refreshSavedRangesForCurrentCase(); } catch {}
-                try { await refreshStructuralRanges(); } catch {}
-                try { await refreshHierarchyAudit(); } catch {}
-              }}
-              setMessage={setMessage}
-            />
+            <section className="structuralExplorerSection">
+              {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollMark')}
+            </section>
 
             <details className="structuralPanelDetails collapsedSection">
               <summary>Save Preview · {savePreview.actionLabel}</summary>

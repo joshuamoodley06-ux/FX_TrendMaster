@@ -51,10 +51,24 @@ def get_suggestion_by_id(suggestion_id: str) -> dict[str, Any]:
 
 
 def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
+    from detector.normalize import parse_time_to_ms
+
     symbol = str(payload.get("symbol") or "XAUUSD").upper()
     timeframe = str(payload.get("source_timeframe") or payload.get("timeframe") or "D1").upper()
     active_index = payload.get("active_index")
     limit = int(payload.get("limit") or 500)
+
+    active_candle_time_ms: int | None = None
+    for key in ("active_candle_time_ms", "candle_time_utc_ms"):
+        raw = payload.get(key)
+        if raw not in (None, ""):
+            n = int(raw)
+            active_candle_time_ms = n if n > 1_000_000_000_000 else n * 1000
+            break
+    if active_candle_time_ms is None and payload.get("active_candle_time"):
+        active_candle_time_ms = parse_time_to_ms(payload.get("active_candle_time"))
+    if active_candle_time_ms:
+        limit = max(limit, 2000)
 
     if payload.get("candles"):
         ctx = build_context(
@@ -69,12 +83,14 @@ def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
             active_range_id=payload.get("active_range_id"),
             case_ref=payload.get("case_ref"),
             session_id=payload.get("session_id"),
+            active_candle_time_ms=active_candle_time_ms,
         )
     else:
         ctx = load_context_from_db(
             symbol=symbol,
             source_timeframe=timeframe,
             active_index=int(active_index) if active_index is not None else None,
+            active_candle_time_ms=active_candle_time_ms,
             limit=limit,
             range_high=payload.get("range_high"),
             range_low=payload.get("range_low"),

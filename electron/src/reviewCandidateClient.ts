@@ -77,6 +77,8 @@ export async function runDetectorV1(
     range_low?: number | null;
     range_scale?: string;
     active_index?: number;
+    active_candle_time_ms?: number;
+    active_candle_time?: string;
     parent_range_id?: number | null;
     active_range_id?: number | null;
     case_ref?: string | null;
