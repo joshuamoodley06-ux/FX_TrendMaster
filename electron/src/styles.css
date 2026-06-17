@@ -4174,3 +4174,30 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 }
 .explorerTreeRow .explorerTreeRowMain{flex:1 1 auto;min-width:0}
 .line.savedRangeLine{shape-rendering:geometricPrecision}
+
+.reviewCandidatePanel{
+  margin:10px 0 12px;
+  padding:10px;
+  border:1px solid rgba(0,212,170,.25);
+  border-radius:10px;
+  background:rgba(2,6,23,.55);
+}
+.reviewCandidateHeader h4{margin:0 0 4px;font-size:13px}
+.reviewCandidateToolbar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.reviewCandidateBody{display:grid;grid-template-columns:minmax(120px,34%) 1fr;gap:10px;margin-top:10px}
+.reviewCandidateList{display:flex;flex-direction:column;gap:6px;max-height:220px;overflow:auto}
+.reviewCandidateListItem{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:8px;border-radius:8px;border:1px solid rgba(148,163,184,.2);background:rgba(15,23,42,.7);color:#e2e8f0;cursor:pointer;text-align:left}
+.reviewCandidateListItem.active{border-color:#00d4aa;background:rgba(13,74,58,.45)}
+.reviewCandidateListItem strong{font-size:12px}
+.reviewCandidateListItem span,.reviewCandidateListItem em{font-size:10px;color:#94a3b8}
+.reviewDetailGrid{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px;font-size:11px}
+.reviewDetailGrid span{display:block;color:#94a3b8;font-size:10px}
+.reviewReason{font-size:11px;color:#cbd5e1;margin:8px 0}
+.reviewMetaDetails pre{font-size:10px;max-height:120px;overflow:auto;background:rgba(0,0,0,.25);padding:8px;border-radius:6px}
+.reviewEditFields{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.reviewEditFields label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:#94a3b8}
+.reviewEditFields input,.reviewEditFields select{font-size:12px}
+.reviewActionRow,.reviewRejectBlock{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-top:8px}
+.reviewRejectBlock label{display:flex;flex-direction:column;gap:4px;font-size:10px;color:#94a3b8}
+.reviewCandidatePanel .approveBtn{border-color:#00d4aa}
+.reviewCandidatePanel .rejectBtn{border-color:#f87171}

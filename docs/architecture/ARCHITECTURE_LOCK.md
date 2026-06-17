@@ -69,3 +69,37 @@ candle_time_utc_ms = market timeline order
 ```
 
 Processor should first resolve intent order, then build market timeline.
+
+## Detection Brain (Phase 0 — contracts only)
+
+The Python Detection & Research Brain adds a suggestion → confirm → promote layer on top of the raw ledger.
+
+Phase 0 contracts are locked in:
+
+```text
+docs/architecture/PHASE_0_DETECTION_BRAIN_CONTRACTS.md
+```
+
+**Phase 0:** `PHASE_0_CONTRACTS_LOCKED = TRUE`
+
+**Phase 1:** Storage foundations only (see `PHASE_0_DETECTION_BRAIN_CONTRACTS.md` §10).
+
+- Detector tables + `map_ranges`/`map_events` column migrations
+- No Python Detector V1 implementation yet
+- No Electron guided-mapping UI
+- Existing `analyseHTFSemiAuto` in Electron remains untouched
+
+**Phase 2:** Python Detector V1 (suggestions only) — `backend/detector/`
+
+**Phase 3:** Electron Review Candidate Panel + promotion API — suggest → decide → save truth
+
+**Phase 3.5:** Detector performance measurement — `backend/detector_performance.py`
+
+- Metrics from `detector_corrections` (approval/edit/rejection rates)
+- Analytics view `v_detector_correction_facts`
+- CLI scorecard + health summary
+- Guided Workflow Engine readiness gates (measurement only; no automation)
+
+**Phase 4 (future):** Guided Workflow Engine — machine suggests/navigates; human confirms. Not autopilot.
+
+**Before Phase 4:** Complete production smoke test — `docs/architecture/PRODUCTION_SMOKE_TEST_PLAN_PHASE_0_3_5.md`

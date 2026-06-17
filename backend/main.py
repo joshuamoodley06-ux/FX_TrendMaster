@@ -4922,3 +4922,79 @@ def mos_seed_ideas(symbol: str = "XAUUSD", limit: int = 50):
         return market_memory.get_mos_seed_ideas(symbol=symbol, limit=limit)
     except Exception as exc:
         return {"ok": False, "error": "MOS_SEED_IDEAS_FETCH_FAILED", "detail": str(exc)}
+
+
+# --- Detection Brain (Phase 3 review shell) ---
+
+
+@app.get("/api/v1/detection-brain/suggestions")
+def detection_brain_suggestions_list(
+    symbol: str = "XAUUSD",
+    structure_layer: str | None = None,
+    source_timeframe: str | None = None,
+    parent_range_id: int | None = None,
+    status: str = "PENDING",
+    limit: int = 100,
+):
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    try:
+        from detection_brain_api import list_pending_suggestions
+
+        return list_pending_suggestions(
+            symbol=symbol,
+            structure_layer=structure_layer,
+            source_timeframe=source_timeframe,
+            parent_range_id=parent_range_id,
+            status=status,
+            limit=limit,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": "DETECTION_BRAIN_LIST_FAILED", "detail": str(exc)}
+
+
+@app.get("/api/v1/detection-brain/suggestions/{suggestion_id}")
+def detection_brain_suggestion_get(suggestion_id: str):
+    if market_memory is None:
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    try:
+        from detection_brain_api import get_suggestion_by_id
+
+        result = get_suggestion_by_id(suggestion_id)
+        if not result.get("ok"):
+            return result
+        return result
+    except Exception as exc:
+        return {"ok": False, "error": "DETECTION_BRAIN_GET_FAILED", "detail": str(exc)}
+
+
+@app.post("/api/v1/detection-brain/run-detector")
+def detection_brain_run_detector(response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    try:
+        from detection_brain_api import run_detector_and_store
+
+        result = run_detector_and_store(payload or {})
+        response.status_code = 200 if result.get("ok") else 400
+        return result
+    except Exception as exc:
+        response.status_code = 500
+        return {"ok": False, "error": "DETECTION_BRAIN_RUN_FAILED", "detail": str(exc)}
+
+
+@app.post("/api/v1/detection-brain/suggestions/review")
+def detection_brain_suggestion_review(response: Response, payload: dict[str, Any] = Body(...)):
+    if market_memory is None:
+        response.status_code = 500
+        return {"ok": False, "error": "market memory module unavailable", "detail": _market_memory_error}
+    try:
+        from detection_brain_api import review_suggestion_action
+
+        result = review_suggestion_action(payload or {})
+        response.status_code = int(result.get("status") or (200 if result.get("ok") else 400))
+        return result
+    except Exception as exc:
+        response.status_code = 500
+        return {"ok": False, "error": "DETECTION_BRAIN_REVIEW_FAILED", "detail": str(exc)}

@@ -708,6 +708,12 @@ def init_db() -> None:
                     conn.execute(ddl)
             except Exception:
                 pass
+        try:
+            from detection_brain_schema import init_detection_brain_schema
+
+            init_detection_brain_schema(conn)
+        except Exception as exc:
+            print(f"[detection_brain] schema init skipped: {exc!r}")
         conn.commit()
 
 
@@ -865,7 +871,19 @@ def status() -> dict[str, Any]:
     with connect() as conn:
         total = conn.execute("SELECT COUNT(*) AS n FROM candles").fetchone()["n"]
         by_tf = [dict(r) for r in conn.execute("SELECT symbol,timeframe,COUNT(*) AS count,MIN(time) AS first_time,MAX(time) AS last_time FROM candles GROUP BY symbol,timeframe ORDER BY symbol,timeframe").fetchall()]
-    return {"ok": True, "db": str(DB_PATH), "candles": total, "groups": by_tf}
+        detection_brain: dict[str, Any] | None = None
+        try:
+            from detection_brain_schema import detection_brain_schema_status
+
+            detection_brain = detection_brain_schema_status(conn)
+        except Exception as exc:
+            detection_brain = {"ok": False, "error": repr(exc)}
+    out: dict[str, Any] = {"ok": True, "db": str(DB_PATH), "candles": total, "groups": by_tf}
+    if detection_brain is not None:
+        out["detection_brain"] = detection_brain
+        if not detection_brain.get("ok", True):
+            out["ok"] = False
+    return out
 
 
 def import_csv_file(path: Path, symbol: str | None = None, timeframe: str | None = None) -> dict[str, Any]:

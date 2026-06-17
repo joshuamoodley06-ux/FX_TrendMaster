@@ -41,6 +41,7 @@ import {
   type TradeIdeaOverlaySpec,
 } from './chartTradeIdeas';
 import { MapTradeIdeaPanel } from './mapTradeIdeaPanel';
+import { ReviewCandidatePanel } from './reviewCandidatePanel';
 import './styles.css';
 
 const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
@@ -7291,6 +7292,26 @@ function MapStudio({ symbol }: { symbol:string }) {
             {parentLinkHint && <div className={`parentLinkHint ${parentLinkResolve.error ? 'warningBadge' : 'compactBadge'}`}>{parentLinkHint}</div>}
 
             {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollMark')}
+
+            <ReviewCandidatePanel
+              apiBase={BASE_URL}
+              symbol={symbol}
+              structureLayer={structureLayer}
+              sourceTimeframe={sourceTimeframe}
+              parentRangeId={savePreview.parent_range_id != null ? Number(savePreview.parent_range_id) : null}
+              activeRangeId={activeStructuralRangeId ? Number(activeStructuralRangeId) : null}
+              caseRef={savePreview.case_ref || null}
+              rangeHigh={parseNum(rhAnchor.price) ?? parseNum(rangeHigh) ?? null}
+              rangeLow={parseNum(rlAnchor.price) ?? parseNum(rangeLow) ?? null}
+              rangeScale={rangeScope}
+              activeCandleIndex={activeReplayCandle ? Math.max(0, visibleCandles.findIndex(c => String(c.time) === String(activeReplayCandle.time))) : null}
+              onPromoted={async () => {
+                try { await refreshSavedRangesForCurrentCase(); } catch {}
+                try { await refreshStructuralRanges(); } catch {}
+                try { await refreshHierarchyAudit(); } catch {}
+              }}
+              setMessage={setMessage}
+            />
 
             <details className="structuralPanelDetails collapsedSection">
               <summary>Save Preview · {savePreview.actionLabel}</summary>
