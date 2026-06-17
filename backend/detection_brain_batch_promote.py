@@ -202,6 +202,9 @@ def batch_promote_range_candidates(
     suggestion_ids = [str(c.get("suggestion_id") or "") for c in candidates if c.get("suggestion_id")]
     counts.duplicate_risks = _duplicate_risk_count(conn, suggestion_ids)
 
+    if not dry_run:
+        conn.execute("PRAGMA busy_timeout = 60000")
+
     for suggestion in candidates:
         suggestion_id = str(suggestion.get("suggestion_id") or "")
         bucket, reason, existing_range_id = _classify_candidate(conn, suggestion)
@@ -233,7 +236,7 @@ def batch_promote_range_candidates(
             continue
 
         try:
-            result = review_suggestion(conn, suggestion_id, action="BATCH_APPROVE")
+            result = review_suggestion(conn, suggestion_id, action="BATCH_APPROVE", commit=False)
             if result.get("duplicate"):
                 counts.already_promoted += 1
                 item["bucket"] = "already_promoted"
@@ -251,6 +254,9 @@ def batch_promote_range_candidates(
             item["bucket"] = "error"
             item["reason"] = str(exc)
         items.append(item)
+
+    if not dry_run and (counts.promoted > 0 or counts.already_promoted > 0):
+        conn.commit()
 
     date_range = _date_range_label(filters.date_from_ms, filters.date_to_ms)
     if dry_run:

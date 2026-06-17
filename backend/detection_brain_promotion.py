@@ -332,6 +332,7 @@ def review_suggestion(
     edits: dict[str, Any] | None = None,
     error_category: str | None = None,
     notes: str = "",
+    commit: bool = True,
 ) -> dict[str, Any]:
     """APPROVE | BATCH_APPROVE | EDIT | REJECT | AUDIT_PASS | AUDIT_FAIL a suggestion."""
     action_u = str(action or "").strip().upper()
@@ -434,7 +435,8 @@ def review_suggestion(
     if not updated:
         raise PromotionError("suggestion was already reviewed by another request", 409)
 
-    conn.commit()
+    if commit:
+        conn.commit()
     refreshed = get_suggestion(conn, suggestion_id)
     return {
         "ok": True,
