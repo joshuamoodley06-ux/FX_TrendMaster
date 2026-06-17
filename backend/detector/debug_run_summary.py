@@ -40,7 +40,7 @@ def build_run_debug_summary(
             for d in drafts
             if d.detector_version == "RANGE_V2"
             or d.candidate_kind
-            in {"RANGE_MAJOR", "RANGE_MINOR", "NO_VALID_RANGE", "NO_MINOR_STRUCTURE"}
+            in {"RANGE_MAJOR", "RANGE_MINOR", "RANGE_CANDIDATE", "NO_VALID_RANGE", "NO_MINOR_STRUCTURE"}
         ),
         None,
     )
@@ -79,6 +79,8 @@ def build_run_debug_summary(
     return {
         "detection_run_id": detection_run_id or window.get("detection_run_id"),
         "range_mode": result.range_mode,
+        "range_scale_mode": getattr(result, "range_scale_mode", None),
+        "period_scan": getattr(result, "period_scan", False),
         "draft_count": len(drafts),
         "written_count": len(saved_rows),
         "candidate_kinds": kinds,

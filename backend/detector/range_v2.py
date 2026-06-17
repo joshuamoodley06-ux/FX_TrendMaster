@@ -19,6 +19,11 @@ from detector.range_state import (
     RangeSeedContext,
 )
 from detector.range_seed import SEED_SOURCE_NONE
+from detector.range_scale_mode import (
+    CANDIDATE_KIND_RANGE,
+    RANGE_SCALE_UNKNOWN,
+    is_generic_scale_mode,
+)
 from detector.versions import ENGINE_SOURCE, RANGE_V2
 
 
@@ -271,10 +276,12 @@ def _no_valid_range_draft(
     )
 
 
-def _range_kind_for_scale(scale: str) -> tuple[str, str]:
+def _range_kind_for_scale(scale: str, *, scale_mode: str | None = None) -> tuple[str, str | None, str | None]:
+    if is_generic_scale_mode(scale_mode):
+        return CANDIDATE_KIND_RANGE, RANGE_SCALE_UNKNOWN, None
     if scale == "MINOR":
-        return "RANGE_MINOR", "INTERNAL_LEG"
-    return "RANGE_MAJOR", "ACTIVE_CONTAINER"
+        return "RANGE_MINOR", "MINOR", "INTERNAL_LEG"
+    return "RANGE_MAJOR", "MAJOR", "ACTIVE_CONTAINER"
 
 
 def _boundary_times(
@@ -304,14 +311,32 @@ def _valid_range_draft(
     bos_candidates: list[SuggestionDraft],
     reclaim_candidates: list[SuggestionDraft],
     candidate_kind: str,
-    range_role: str,
+    range_role: str | None,
+    range_scale: str | None,
     internal_structure_status: str,
+    scale_mode: str | None = None,
 ) -> SuggestionDraft:
     assert lifecycle.chain is not None
     chain = lifecycle.chain
     idx, time_ms = _active_draft_anchor(ctx)
     rh_ms, rl_ms = _boundary_times(ctx, chain, boundaries)
-    scale = str(ctx.range_scale or "MAJOR").upper()
+    scale = range_scale or str(ctx.range_scale or RANGE_SCALE_UNKNOWN).upper()
+    if is_generic_scale_mode(scale_mode):
+        scale = RANGE_SCALE_UNKNOWN
+
+    meta = _build_meta_json(
+        ctx,
+        seed=seed,
+        lifecycle=lifecycle,
+        boundaries=boundaries,
+        bos_candidates=bos_candidates,
+        reclaim_candidates=reclaim_candidates,
+        range_scale=scale,
+        range_role=range_role,
+        internal_structure_status=internal_structure_status,
+    )
+    if candidate_kind == CANDIDATE_KIND_RANGE:
+        meta["classification_deferred"] = True
 
     return SuggestionDraft(
         candidate_kind=candidate_kind,
@@ -331,17 +356,7 @@ def _valid_range_draft(
         range_role=range_role,
         confidence=boundaries.confidence,
         reason_text=boundaries.reason_text,
-        meta_json=_build_meta_json(
-            ctx,
-            seed=seed,
-            lifecycle=lifecycle,
-            boundaries=boundaries,
-            bos_candidates=bos_candidates,
-            reclaim_candidates=reclaim_candidates,
-            range_scale=scale,
-            range_role=range_role,
-            internal_structure_status=internal_structure_status,
-        ),
+        meta_json=meta,
     )
 
 
@@ -353,6 +368,7 @@ def detect_range_v2_suggestions(
     swings: list[SwingPoint],
     *,
     strict_seed: bool = False,
+    scale_mode: str | None = None,
 ) -> list[SuggestionDraft]:
     """
     Emit RANGE_V2 SuggestionDraft rows only — no DB writes, no pipeline hook.
@@ -401,7 +417,7 @@ def detect_range_v2_suggestions(
                 )
             ]
 
-        if _internal_structure_status(ctx) == "NO_MINOR_STRUCTURE":
+        if _internal_structure_status(ctx) == "NO_MINOR_STRUCTURE" and not is_generic_scale_mode(scale_mode):
             return [
                 _valid_range_draft(
                     ctx,
@@ -412,11 +428,16 @@ def detect_range_v2_suggestions(
                     reclaim_candidates=reclaim_candidates,
                     candidate_kind="NO_MINOR_STRUCTURE",
                     range_role="EXPANSION_LEG",
+                    range_scale="MAJOR",
                     internal_structure_status="NO_MINOR_STRUCTURE",
+                    scale_mode=scale_mode,
                 )
             ]
 
-        candidate_kind, range_role = _range_kind_for_scale(str(ctx.range_scale or "MAJOR").upper())
+        candidate_kind, range_scale, range_role = _range_kind_for_scale(
+            str(ctx.range_scale or RANGE_SCALE_UNKNOWN).upper(),
+            scale_mode=scale_mode,
+        )
         return [
             _valid_range_draft(
                 ctx,
@@ -427,7 +448,9 @@ def detect_range_v2_suggestions(
                 reclaim_candidates=reclaim_candidates,
                 candidate_kind=candidate_kind,
                 range_role=range_role,
+                range_scale=range_scale,
                 internal_structure_status="HAS_MINORS",
+                scale_mode=scale_mode,
             )
         ]
 

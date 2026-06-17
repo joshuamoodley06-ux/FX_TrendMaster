@@ -689,6 +689,73 @@ RANGE_V2 now receives confirmed active range seed context when available; otherw
 
 ---
 
+## 17. Major/minor classification deferred (2026-06-17)
+
+**Decision:** Range **detection**, **review**, and **classification** are three separate problems.
+
+| Layer | Responsibility |
+|-------|----------------|
+| Detector (now) | Emit generic `RANGE_CANDIDATE` with `range_scale=UNKNOWN` |
+| Review (now) | **Confirm validity only** (RH/RL boundaries) — `range_scale` stays `UNKNOWN` on promote |
+| Analytics classifier (later) | Derive `DERIVED_MAJOR`, `DERIVED_MINOR`, `TRANSITION_RANGE`, `EXPANSION_LEG` |
+
+**Review does not assign MAJOR/MINOR.** Josh confirms whether the candidate range is valid; classification is analytics-only.
+
+**Derived labels (analytics — not `map_ranges.range_scale`):**
+
+| Label | Meaning (planned) |
+|-------|-------------------|
+| `DERIVED_MAJOR` | Outermost / container range from containment + duration + width |
+| `DERIVED_MINOR` | Nested leg inside a derived major |
+| `TRANSITION_RANGE` | BOS/reclaim transition window range |
+| `EXPANSION_LEG` | Major-to-major travel without clean minors |
+
+**Classifier stub:** `backend/detector/range_analytics_classifier.py` — inputs: containment, duration, width, parent/child, BOS/reclaim, retracement.
+
+**Range profile analytics (planning):** `docs/architecture/RANGE_PROFILE_ANALYTICS_PLAN.md` — post-formation behavior profiles and cohort metrics. No implementation yet.
+
+**Config (recommended on VPS):**
+
+```text
+DETECTOR_RANGE_MODE=doctrine_v2
+DETECTOR_RANGE_SCALE_MODE=generic
+```
+
+- `DETECTOR_RANGE_SCALE_MODE=generic` (default) — no auto `RANGE_MAJOR` / `RANGE_MINOR`
+- `DETECTOR_RANGE_SCALE_MODE=legacy` — restores deprecated major/minor selection in RANGE_V1/V2 emitters
+
+**Date-period scan:** `POST /api/v1/detection-brain/run-detector` accepts `date_from`, `date_to`, or `period_scan=true` to collect multiple `RANGE_CANDIDATE` rows across the window. Suggestions only — no auto-promotion.
+
+---
+
+## 18. Historical Range Scan Runner
+
+**Status:** Implemented after `RANGE_CANDIDATE` generic mode (2026-06-17).
+
+**Purpose:** Generate enough range suggestions over a date period (e.g. 2025–2026) for random audit and later profile analytics — without promotion or profile classification.
+
+| Item | Detail |
+|------|--------|
+| CLI | `backend/historical_range_scan.py` |
+| Core | `backend/detector/range_scan_runner.py` |
+| Default modes | `doctrine_v2` + `generic` |
+| Writes | `detector_suggestions` only (`RANGE_CANDIDATE`, `NO_VALID_RANGE`, `NO_MINOR_STRUCTURE`) |
+| Safety | Aborts if `map_ranges` / `map_events` counts change |
+| Audit | `--sample N` prints random `RANGE_CANDIDATE` rows with lifecycle meta |
+| Dry run | `--dry-run` — summary only, no DB writes |
+
+**Example:**
+
+```bash
+python historical_range_scan.py --symbol XAUUSD --timeframe W1 --layer WEEKLY --from 2025-01-01 --to 2026-12-31 --sample 5
+```
+
+**Env (optional):** `DETECTOR_RANGE_MODE=doctrine_v2`, `DETECTOR_RANGE_SCALE_MODE=generic`
+
+**Not in scope:** profile analytics, derived major/minor, auto-approval, Electron batch UI.
+
+---
+
 ## 16. Review gate
 
 | Item | Status |

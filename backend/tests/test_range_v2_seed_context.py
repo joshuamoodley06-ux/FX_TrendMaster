@@ -187,7 +187,8 @@ class DoctrineV2SeedPipelineTests(unittest.TestCase):
         self.assertEqual(meta.get("seed_source"), SEED_SOURCE_EXPLICIT)
         self.assertEqual(meta.get("seed_rh"), 100.0)
         self.assertEqual(meta.get("seed_rl"), 90.0)
-        self.assertEqual(range_drafts[0].candidate_kind, "RANGE_MAJOR")
+        self.assertEqual(range_drafts[0].candidate_kind, "RANGE_CANDIDATE")
+        self.assertEqual(range_drafts[0].range_scale, "UNKNOWN")
 
     def test_no_seed_keeps_no_valid_range(self) -> None:
         ctx = _ctx_with_seed(None)

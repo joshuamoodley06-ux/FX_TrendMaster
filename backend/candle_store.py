@@ -1017,8 +1017,8 @@ def _expected_parent_layer(layer: str) -> str | None:
 
 
 def _normalise_range_scope(value: Any) -> str:
-    scope = str(value or "MAJOR").strip().upper()
-    return scope if scope in {"MAJOR", "MINOR"} else "MAJOR"
+    scope = str(value or "UNKNOWN").strip().upper()
+    return scope if scope in {"MAJOR", "MINOR", "UNKNOWN"} else "UNKNOWN"
 
 
 def _range_scope(row: sqlite3.Row | dict[str, Any]) -> str:
@@ -1310,6 +1310,8 @@ def _validate_parent_link(
 
     parent_layer = _range_layer(parent)
     parent_scope = _range_scope(parent)
+    if scope == "UNKNOWN":
+        return "VALID", ["range_scale UNKNOWN — classify during review"], parent
     if scope == "MINOR":
         if parent_layer != layer:
             return "INVALID_PARENT", [f"{layer} MINOR parent must be same-layer MAJOR, got {parent_layer}"], parent

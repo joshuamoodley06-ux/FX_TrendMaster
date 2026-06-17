@@ -15,6 +15,7 @@ if str(BACKEND_DIR) not in sys.path:
 from detector.context_window import build_detection_window_meta
 from detector.models import DetectionContext, SuggestionDraft, SwingPoint
 from detector.normalize import normalize_candles
+from detector.range_scale_mode import CANDIDATE_KIND_RANGE, RANGE_SCALE_MODE_LEGACY
 from detector.range_candidate import detect_range_suggestions
 from detector.range_state import RangeSeedContext
 from detector.range_v2 import detect_range_v2_suggestions
@@ -163,7 +164,7 @@ class BullishRangeEmitterTests(unittest.TestCase):
     def test_bullish_bos_reclaim_emits_range_major(self) -> None:
         candles, seed, swings, bos, reclaim = self._bullish_setup()
         ctx = _ctx(candles, active_index=8, seed=seed)
-        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings)
+        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings, scale_mode=RANGE_SCALE_MODE_LEGACY)
         self.assertEqual(len(out), 1)
         draft = out[0]
         self.assertEqual(draft.candidate_kind, "RANGE_MAJOR")
@@ -197,7 +198,7 @@ class BearishRangeEmitterTests(unittest.TestCase):
         bos = [_bos_draft("BOS_DOWN", 7, candles[7], suggestion_id="bos-down-main")]
         reclaim = [_reclaim_draft("RECLAIM_UP", 8, candles[8], suggestion_id="reclaim-up-1")]
         ctx = _ctx(candles, active_index=8, seed=seed)
-        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings)
+        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings, scale_mode=RANGE_SCALE_MODE_LEGACY)
         draft = out[0]
         self.assertEqual(draft.candidate_kind, "RANGE_MAJOR")
         self.assertEqual(draft.suggested_rl, 83.0)
@@ -242,7 +243,9 @@ class NoMinorStructureEmitterTests(unittest.TestCase):
             seed=seed,
             extra_meta={"internal_structure_status": "NO_MINOR_STRUCTURE"},
         )
-        out = detect_range_v2_suggestions(ctx, seed, [], [], swings)
+        out = detect_range_v2_suggestions(
+            ctx, seed, [], [], swings, scale_mode=RANGE_SCALE_MODE_LEGACY,
+        )
         draft = out[0]
         self.assertEqual(draft.candidate_kind, "NO_MINOR_STRUCTURE")
         self.assertEqual(draft.range_role, "EXPANSION_LEG")
@@ -269,7 +272,7 @@ class MetaJsonEmitterTests(unittest.TestCase):
         bos = [_bos_draft("BOS_UP", 5, candles[5], suggestion_id="bos-meta")]
         reclaim = [_reclaim_draft("RECLAIM_DOWN", 8, candles[8], suggestion_id="reclaim-meta")]
         ctx = _ctx(candles, active_index=8, seed=seed)
-        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings)
+        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings, scale_mode=RANGE_SCALE_MODE_LEGACY)
         meta = out[0].meta_json
 
         for key in REQUIRED_META_KEYS:
@@ -334,7 +337,7 @@ class RangeV1UntouchedTests(unittest.TestCase):
             range_scale="MAJOR",
             swings=swings,
         )
-        out = detect_range_suggestions(ctx)
+        out = detect_range_suggestions(ctx, scale_mode=RANGE_SCALE_MODE_LEGACY)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0].detector_version, RANGE_V1)
         self.assertEqual(out[0].candidate_kind, "RANGE_MAJOR")

@@ -40,7 +40,7 @@ const ERROR_CATEGORIES = [
 ] as const;
 
 function isRangeKind(kind: string) {
-  return kind === 'RANGE_MAJOR' || kind === 'RANGE_MINOR';
+  return kind === 'RANGE_CANDIDATE' || kind === 'RANGE_MAJOR' || kind === 'RANGE_MINOR';
 }
 
 function fmtTime(ms?: number | null) {
@@ -99,8 +99,6 @@ export function ReviewCandidatePanel(props: Props) {
   const [rejectNotes, setRejectNotes] = useState('');
   const [editRh, setEditRh] = useState('');
   const [editRl, setEditRl] = useState('');
-  const [editScale, setEditScale] = useState('MAJOR');
-  const [editRole, setEditRole] = useState('');
   const [editEventPrice, setEditEventPrice] = useState('');
   const [lastDetectionRunId, setLastDetectionRunId] = useState<string | null>(null);
   const [contextReplayUntilMs, setContextReplayUntilMs] = useState<number | null>(null);
@@ -116,10 +114,8 @@ export function ReviewCandidatePanel(props: Props) {
     if (!row) return;
     setEditRh(row.suggested_rh != null ? String(row.suggested_rh) : '');
     setEditRl(row.suggested_rl != null ? String(row.suggested_rl) : '');
-    setEditScale(String(row.range_scale || props.rangeScale || 'MAJOR'));
-    setEditRole(String(row.range_role || ''));
     setEditEventPrice(row.event_price != null ? String(row.event_price) : '');
-  }, [props.rangeScale]);
+  }, []);
 
   const filterRows = useCallback(
     (rows: DetectorSuggestionRow[]) => {
@@ -193,7 +189,7 @@ export function ReviewCandidatePanel(props: Props) {
         structure_layer: props.structureLayer,
         range_high: props.rangeHigh ?? undefined,
         range_low: props.rangeLow ?? undefined,
-        range_scale: props.rangeScale || 'MAJOR',
+        range_scale: props.rangeScale || 'UNKNOWN',
         range_role: props.rangeRole ?? undefined,
         parent_range_id: props.parentRangeId ?? undefined,
         active_range_id: props.activeRangeId ?? undefined,
@@ -240,8 +236,7 @@ export function ReviewCandidatePanel(props: Props) {
       const rl = parseFloat(editRl);
       if (Number.isFinite(rh)) edits.suggested_rh = rh;
       if (Number.isFinite(rl)) edits.suggested_rl = rl;
-      if (editScale) edits.range_scale = editScale;
-      if (editRole) edits.range_role = editRole;
+      edits.range_scale = 'UNKNOWN';
     } else {
       const ep = parseFloat(editEventPrice);
       if (Number.isFinite(ep)) edits.event_price = ep;
@@ -256,7 +251,12 @@ export function ReviewCandidatePanel(props: Props) {
       const payload = {
         suggestion_id: selected.suggestion_id,
         action: withEdits ? 'EDIT' as const : action,
-        edits: withEdits ? buildEdits() : undefined,
+        edits:
+          withEdits
+            ? buildEdits()
+            : action !== 'REJECT' && isRangeKind(selected.candidate_kind)
+              ? { range_scale: 'UNKNOWN' }
+              : undefined,
         error_category: action === 'REJECT' ? rejectCategory : undefined,
         notes: action === 'REJECT' ? rejectNotes : '',
       };
@@ -271,9 +271,10 @@ export function ReviewCandidatePanel(props: Props) {
         props.setMessage(`Rejected ${selected.candidate_kind} suggestion.`);
       } else {
         props.setMessage(
-          `${withEdits ? 'Edited & approved' : 'Approved'} ${selected.candidate_kind}` +
+          `${withEdits ? 'Confirmed (edited boundaries)' : 'Confirmed range validity'} — ${selected.candidate_kind}` +
           `${out.promoted_range_id ? ` → range #${out.promoted_range_id}` : ''}` +
-          `${out.promoted_event_id ? ` → event #${out.promoted_event_id}` : ''}`,
+          `${out.promoted_event_id ? ` → event #${out.promoted_event_id}` : ''}` +
+          (isRangeKind(selected.candidate_kind) ? ' (scale stays UNKNOWN)' : ''),
         );
       }
       await refresh();
@@ -297,7 +298,7 @@ export function ReviewCandidatePanel(props: Props) {
       onClick={() => setSelectedId(row.suggestion_id)}
     >
       <span className="reviewCardKind">{row.candidate_kind}</span>
-      <span className="reviewCardScale">{row.range_scale || '—'}</span>
+      <span className="reviewCardScale">{row.range_scale || 'UNKNOWN'}</span>
       <span className="reviewCardPrice">{candidatePriceLabel(row)}</span>
       <span className="reviewCardVersion">{row.detector_version}</span>
       <span className="reviewCardConf">{row.confidence || 'MED'}</span>
@@ -307,7 +308,7 @@ export function ReviewCandidatePanel(props: Props) {
   const renderActionRow = (showEditExpand = true) => (
     <div className="reviewActionRow reviewActionRowCompact">
       <button type="button" className="approveBtn" disabled={busy || !selected} onClick={() => void submitReview('APPROVE')}>
-        Approve
+        Confirm Valid
       </button>
       <button
         type="button"
@@ -358,8 +359,8 @@ export function ReviewCandidatePanel(props: Props) {
           <div><span>Detector</span><strong>{selected.detector_version}</strong></div>
           <div><span>Engine</span><strong>{selected.engine_source}</strong></div>
           <div><span>Context</span><strong>{displayContextLabel || '—'}</strong></div>
-          <div><span>Scale</span><strong>{selected.range_scale || '—'}</strong></div>
-          <div><span>Role</span><strong>{selected.range_role || '—'}</strong></div>
+          <div><span>Scale</span><strong>UNKNOWN</strong></div>
+          <div><span>Role</span><strong className="mutedSmall">derived later</strong></div>
           <div><span>RH / RL</span><strong>{selected.suggested_rh ?? '—'} / {selected.suggested_rl ?? '—'}</strong></div>
           <div><span>Event</span><strong>{selected.event_side || '—'} @ {selected.event_price ?? '—'}</strong></div>
           <div><span>Time</span><strong>{fmtTime(selected.candle_time_utc_ms)}</strong></div>
@@ -375,22 +376,9 @@ export function ReviewCandidatePanel(props: Props) {
         )}
         {isRangeKind(selected.candidate_kind) && (
           <div className="reviewEditFields">
+            <p className="mutedSmall">Confirm RH/RL boundaries only. MAJOR/MINOR is derived by analytics — not set here.</p>
             <label>RH <input value={editRh} onChange={e => setEditRh(e.target.value)} /></label>
             <label>RL <input value={editRl} onChange={e => setEditRl(e.target.value)} /></label>
-            <label>Scale
-              <select value={editScale} onChange={e => setEditScale(e.target.value)}>
-                <option value="MAJOR">MAJOR</option>
-                <option value="MINOR">MINOR</option>
-              </select>
-            </label>
-            <label>Role
-              <select value={editRole} onChange={e => setEditRole(e.target.value)}>
-                <option value="">—</option>
-                <option value="ACTIVE_CONTAINER">ACTIVE_CONTAINER</option>
-                <option value="INTERNAL_LEG">INTERNAL_LEG</option>
-                <option value="EXPANSION_LEG">EXPANSION_LEG</option>
-              </select>
-            </label>
           </div>
         )}
         {!isRangeKind(selected.candidate_kind) && (
@@ -475,7 +463,7 @@ export function ReviewCandidatePanel(props: Props) {
         {selected && displayMode === 'compact' && (
           <div className="reviewSelectedSummary">
             <span className="reviewSummaryKind">{selected.candidate_kind}</span>
-            <span>{selected.range_scale || '—'}</span>
+            <span>UNKNOWN</span>
             <span>{candidatePriceLabel(selected)}</span>
             <span>{selected.detector_version}</span>
             <span>{selected.confidence || 'MEDIUM'}</span>

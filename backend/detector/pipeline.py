@@ -13,6 +13,7 @@ from detector.range_mode import (
     build_pipeline_seed_context,
     resolve_range_mode,
 )
+from detector.range_scale_mode import resolve_range_scale_mode
 from detector.range_state import RangeSeedContext
 from detector.range_v2 import detect_range_v2_suggestions
 from detector.reclaim import detect_reclaim_suggestions
@@ -28,6 +29,8 @@ class DetectionResult:
     drafts: list[SuggestionDraft] = field(default_factory=list)
     detector_versions: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_VERSIONS))
     range_mode: str = RANGE_MODE_SMOKE_V1
+    range_scale_mode: str = "generic"
+    period_scan: bool = False
 
     def by_kind(self, kind: str) -> list[SuggestionDraft]:
         return [d for d in self.drafts if d.candidate_kind == kind]
@@ -43,6 +46,7 @@ def _range_drafts_for_mode(
     ctx: DetectionContext,
     *,
     mode: str,
+    scale_mode: str,
     bos_drafts: list[SuggestionDraft],
     reclaim_drafts: list[SuggestionDraft],
 ) -> list[SuggestionDraft]:
@@ -55,17 +59,20 @@ def _range_drafts_for_mode(
             reclaim_drafts,
             ctx.swings or [],
             strict_seed=True,
+            scale_mode=scale_mode,
         )
-    return detect_range_suggestions(ctx)
+    return detect_range_suggestions(ctx, scale_mode=scale_mode)
 
 
 def run_detector_v1(
     ctx: DetectionContext,
     *,
     range_mode: str | None = None,
+    scale_mode: str | None = None,
 ) -> DetectionResult:
     """Run deterministic detectors for the active candle on one timeframe."""
     mode = resolve_range_mode(range_mode)
+    scale = resolve_range_scale_mode(scale_mode)
     versions = dict(DEFAULT_VERSIONS)
     if mode == RANGE_MODE_DOCTRINE_V2:
         versions["RANGE"] = RANGE_V2
@@ -79,7 +86,15 @@ def run_detector_v1(
     sweep_drafts = detect_sweep_suggestions(ctx)
     reclaim_drafts = detect_reclaim_suggestions(ctx)
 
-    drafts.extend(_range_drafts_for_mode(ctx, mode=mode, bos_drafts=bos_drafts, reclaim_drafts=reclaim_drafts))
+    drafts.extend(
+        _range_drafts_for_mode(
+            ctx,
+            mode=mode,
+            scale_mode=scale,
+            bos_drafts=bos_drafts,
+            reclaim_drafts=reclaim_drafts,
+        )
+    )
     drafts.extend(bos_drafts)
     drafts.extend(sweep_drafts)
     drafts.extend(reclaim_drafts)
@@ -90,4 +105,5 @@ def run_detector_v1(
         drafts=drafts,
         detector_versions=versions,
         range_mode=mode,
+        range_scale_mode=scale,
     )

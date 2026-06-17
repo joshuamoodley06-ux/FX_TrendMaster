@@ -18,8 +18,9 @@ from detection_brain_store import (
 )
 from detector.versions import ENGINE_SOURCE
 
-RANGE_KINDS = frozenset({"RANGE_MAJOR", "RANGE_MINOR"})
+RANGE_KINDS = frozenset({"RANGE_MAJOR", "RANGE_MINOR", "RANGE_CANDIDATE"})
 BOS_KINDS = frozenset({"BOS_UP", "BOS_DOWN"})
+CONFIRMED_RANGE_SCALE = "UNKNOWN"
 
 
 class PromotionError(Exception):
@@ -70,11 +71,25 @@ def _final_values(
         "suggested_rl": edits.get("suggested_rl", suggestion.get("suggested_rl")),
         "suggested_rh_time_ms": edits.get("suggested_rh_time_ms", suggestion.get("suggested_rh_time_ms")),
         "suggested_rl_time_ms": edits.get("suggested_rl_time_ms", suggestion.get("suggested_rl_time_ms")),
-        "range_scale": edits.get("range_scale", suggestion.get("range_scale") or "MAJOR"),
+        "range_scale": edits.get("range_scale", suggestion.get("range_scale") or "UNKNOWN"),
         "range_role": edits.get("range_role", suggestion.get("range_role")),
         "event_price": edits.get("event_price", suggestion.get("event_price")),
         "event_side": edits.get("event_side", suggestion.get("event_side")),
     }
+
+
+def _confirmed_range_fields(
+    suggestion: dict[str, Any],
+    final: dict[str, Any],
+) -> tuple[str, str | None]:
+    """
+    Review confirms range validity only — never manual MAJOR/MINOR on promote.
+    Derived labels come from analytics classifier later.
+    """
+    kind = str(suggestion.get("candidate_kind") or "").upper()
+    if kind in RANGE_KINDS:
+        return CONFIRMED_RANGE_SCALE, None
+    return str(final.get("range_scale") or CONFIRMED_RANGE_SCALE).upper(), final.get("range_role")
 
 
 def _patch_range_detection_fields(
@@ -156,7 +171,7 @@ def _promote_range(
     if rh is None or rl is None or float(rh) <= float(rl):
         raise PromotionError("Range promotion requires valid suggested_rh > suggested_rl")
 
-    range_scale = str(final.get("range_scale") or "MAJOR").upper()
+    range_scale, range_role = _confirmed_range_fields(suggestion, final)
     payload = {
         "symbol": suggestion["symbol"],
         "structure_layer": suggestion["structure_layer"],
@@ -200,7 +215,7 @@ def _promote_range(
         detector_version=str(suggestion["detector_version"]),
         user_action=user_action,
         range_scale=range_scale,
-        range_role=final.get("range_role"),
+        range_role=range_role,
     )
     return range_id
 

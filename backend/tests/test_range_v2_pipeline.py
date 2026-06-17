@@ -81,7 +81,7 @@ class DefaultModeTests(unittest.TestCase):
         range_drafts = [
             d
             for d in result.drafts
-            if d.candidate_kind in ("RANGE_MAJOR", "RANGE_MINOR", "NO_VALID_RANGE", "NO_MINOR_STRUCTURE")
+            if d.candidate_kind in ("RANGE_MAJOR", "RANGE_MINOR", "RANGE_CANDIDATE", "NO_VALID_RANGE", "NO_MINOR_STRUCTURE")
         ]
         for draft in range_drafts:
             self.assertEqual(draft.detector_version, RANGE_V1)

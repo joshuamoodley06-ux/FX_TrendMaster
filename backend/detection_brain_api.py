@@ -12,8 +12,10 @@ from detector.break_rules import structure_layer_for_timeframe
 from detector.context_window import meta_matches_context_filter, parse_window_from_payload
 from detector.ohlc_loader import build_context, load_context_from_db
 from detector.debug_run_summary import build_run_debug_summary
+from detector.period_scan import run_detector_period_scan
 from detector.pipeline import run_detector_v1
 from detector.range_mode import RANGE_MODE_SMOKE_V1, resolve_range_mode
+from detector.range_scale_mode import RANGE_SCALE_UNKNOWN, resolve_range_scale_mode
 from detector.range_seed import resolve_detector_seed_context, seed_resolution_to_meta
 from detector.writer import write_suggestions
 
@@ -92,9 +94,20 @@ def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
     active_index = payload.get("active_index")
     limit = int(payload.get("limit") or 500)
     range_mode = resolve_range_mode(payload.get("range_mode"))
+    scale_mode = resolve_range_scale_mode(payload.get("range_scale_mode"))
 
     replay_until_ms, visible_from_ms, detection_run_id = parse_window_from_payload(payload)
     detection_run_id = detection_run_id or new_uuid()
+
+    period_scan = bool(
+        payload.get("period_scan")
+        or payload.get("date_from")
+        or payload.get("date_from_ms")
+        or payload.get("date_to")
+        or payload.get("date_to_ms")
+    )
+    date_from_ms = visible_from_ms
+    date_to_ms = replay_until_ms
 
     if replay_until_ms:
         limit = max(limit, 2000)
@@ -103,7 +116,7 @@ def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
     range_low = _optional_float(payload.get("range_low") or payload.get("range_low_price"))
     parent_range_id = _optional_int(payload.get("parent_range_id"))
     active_range_id = _optional_int(payload.get("active_range_id"))
-    range_scale = str(payload.get("range_scale") or "MAJOR").upper()
+    range_scale = str(payload.get("range_scale") or RANGE_SCALE_UNKNOWN).upper()
     range_role = str(payload.get("range_role") or "").strip() or None
 
     seed_resolution = None
@@ -166,7 +179,17 @@ def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
         ctx.range_seed = seed_resolution.seed
         ctx.range_seed_meta = seed_resolution_to_meta(seed_resolution)
 
-    result = run_detector_v1(ctx, range_mode=range_mode)
+    result = (
+        run_detector_period_scan(
+            ctx,
+            date_from_ms=date_from_ms,
+            date_to_ms=date_to_ms,
+            range_mode=range_mode,
+            scale_mode=scale_mode,
+        )
+        if period_scan
+        else run_detector_v1(ctx, range_mode=range_mode, scale_mode=scale_mode)
+    )
     with _connect() as conn:
         init_detection_brain_schema(conn)
         saved = write_suggestions(conn, result.drafts, ctx)
@@ -192,6 +215,8 @@ def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
         "visible_from_time_ms": visible_from_ms,
         "detection_context": window_meta,
         "range_mode": result.range_mode,
+        "range_scale_mode": result.range_scale_mode,
+        "period_scan": result.period_scan,
         "debug_summary": debug_summary,
     }
 

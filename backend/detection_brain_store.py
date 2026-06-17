@@ -14,7 +14,7 @@ from typing import Any
 
 from detection_brain_schema import DETECTION_BRAIN_SCHEMA
 
-RANGE_SCALES = frozenset({"MAJOR", "MINOR"})
+RANGE_SCALES = frozenset({"MAJOR", "MINOR", "UNKNOWN"})
 RANGE_ROLES = frozenset({"ACTIVE_CONTAINER", "INTERNAL_LEG", "EXPANSION_LEG"})
 INTERNAL_STRUCTURE_STATUSES = frozenset({"HAS_MINORS", "NO_MINOR_STRUCTURE", "UNKNOWN"})
 ENGINE_SOURCES = frozenset({"python_detector", "electron_legacy", "manual", "import"})
@@ -79,8 +79,8 @@ def normalise_range_scale(value: Any, *, row: dict[str, Any] | None = None) -> s
     raw = value
     if raw in (None, "") and row is not None:
         raw = row.get("range_scale") or row.get("range_scope")
-    scale = str(raw or "MAJOR").strip().upper()
-    return scale if scale in RANGE_SCALES else "MAJOR"
+    scale = str(raw or "UNKNOWN").strip().upper()
+    return scale if scale in RANGE_SCALES else "UNKNOWN"
 
 
 def normalise_enum(value: Any, allowed: frozenset[str], default: str) -> str:

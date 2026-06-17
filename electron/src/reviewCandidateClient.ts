@@ -97,6 +97,12 @@ export async function runDetectorV1(
     case_ref?: string | null;
     detection_run_id?: string;
     limit?: number;
+    date_from_ms?: number;
+    date_from?: string;
+    date_to_ms?: number;
+    date_to?: string;
+    period_scan?: boolean;
+    range_scale_mode?: string;
   },
 ): Promise<{
   ok: boolean;

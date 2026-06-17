@@ -51,6 +51,19 @@ def parse_window_from_payload(payload: dict[str, Any]) -> tuple[int | None, int 
             break
     if visible_from_ms is None and payload.get("visible_from_time"):
         visible_from_ms = _coerce_ms(payload.get("visible_from_time"))
+    if visible_from_ms is None:
+        for key in ("date_from_ms", "date_from"):
+            raw = payload.get(key)
+            if raw not in (None, ""):
+                visible_from_ms = _coerce_ms(raw)
+                break
+
+    if replay_until_ms is None:
+        for key in ("date_to_ms", "date_to"):
+            raw = payload.get(key)
+            if raw not in (None, ""):
+                replay_until_ms = _coerce_ms(raw)
+                break
 
     detection_run_id = str(payload.get("detection_run_id") or "").strip() or None
     return replay_until_ms, visible_from_ms, detection_run_id
