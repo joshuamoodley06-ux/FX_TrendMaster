@@ -274,6 +274,22 @@ class LoadActiveRangeSeedTests(MapRangesTestBase):
         self.assertEqual(result.seed_source, SEED_SOURCE_BACKEND)
         self.assertEqual(result.seed.active_range_id, 12)  # type: ignore[union-attr]
 
+    def test_chart_rh_rl_beats_stale_backend_active(self) -> None:
+        """Review Candidate: chart anchors must not lose to stale map_ranges ACTIVE."""
+        self._insert_range(range_id=99, high=2531.0, low=1804.0)
+        result = resolve_detector_seed_context(
+            self.conn,
+            {"range_high": 2650.0, "range_low": 2580.0},
+            symbol="XAUUSD",
+            structure_layer="WEEKLY",
+            source_timeframe="W1",
+        )
+        self.assertEqual(result.seed_source, SEED_SOURCE_ELECTRON)
+        assert result.seed is not None
+        self.assertEqual(result.seed.range_high, 2650.0)
+        self.assertEqual(result.seed.range_low, 2580.0)
+        self.assertTrue(result.seed.is_manual_seed)
+
     def test_multiple_active_sets_lookup_error_in_meta(self) -> None:
         self._insert_range(range_id=20)
         self._insert_range(range_id=21, high=120.0, low=100.0)
@@ -348,6 +364,8 @@ class ApiPayloadTests(MapRangesTestBase):
                             "range_low": 90.0,
                             "candles": candles_payload,
                             "active_index": 8,
+                            "discovery_mode": False,
+                            "allow_map_ranges": True,
                         }
                     )
         self.assertTrue(out.get("ok"))

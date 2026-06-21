@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import unittest
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -24,36 +25,11 @@ from detector.range_scan_runner import (
     run_historical_range_scan,
     sample_scan_suggestions,
 )
-
-
-def _bullish_rows():
-    return [
-        (95, 98, 94, 97),
-        (97, 99, 96, 98),
-        (98, 99, 97, 98),
-        (99, 100, 98, 99),
-        (99, 101, 98, 100),
-        (101, 106, 100, 104),
-        (104, 105, 101, 103),
-        (103, 104, 100, 102),
-        (102, 103, 98, 99),
-    ]
+from tests.test_historical_range_chain import _chain_fixture_rows, _candles_from_rows
 
 
 def _candles(base_ms: int = 1_735_689_600_000):
-    payload = []
-    for i, (o, h, l, c) in enumerate(_bullish_rows()):
-        payload.append(
-            {
-                "time_ms": base_ms + i * 86_400_000,
-                "open": o,
-                "high": h,
-                "low": l,
-                "close": c,
-                "volume": 100,
-            }
-        )
-    return normalize_candles(payload, "D1")
+    return _candles_from_rows(_chain_fixture_rows(), base_ms=base_ms)
 
 
 class HistoricalRangeScanTests(unittest.TestCase):
@@ -68,7 +44,6 @@ class HistoricalRangeScanTests(unittest.TestCase):
         self.candles = _candles()
         self.date_from_ms = self.candles[0].time_ms
         self.date_to_ms = self.candles[-1].time_ms
-        self._insert_active_range()
         self.conn.commit()
 
     def tearDown(self) -> None:
@@ -115,8 +90,8 @@ class HistoricalRangeScanTests(unittest.TestCase):
     def _config(self, **kwargs) -> HistoricalRangeScanConfig:
         base = dict(
             symbol="XAUUSD",
-            source_timeframe="D1",
-            structure_layer="DAILY",
+            source_timeframe="W1",
+            structure_layer="WEEKLY",
             date_from_ms=self.date_from_ms,
             date_to_ms=self.date_to_ms,
             range_mode=RANGE_MODE_DOCTRINE_V2,
@@ -212,9 +187,63 @@ class HistoricalRangeScanTests(unittest.TestCase):
         self.assertIn("id=", text)
         self.assertIn("replay=", text)
 
+    def _insert_candles_into_db(self) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for candle in self.candles:
+            t = datetime.fromtimestamp(candle.time_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            self.conn.execute(
+                """
+                INSERT INTO candles (
+                    symbol, timeframe, time, open, high, low, close, volume, source, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "XAUUSD",
+                    "W1",
+                    t,
+                    candle.open,
+                    candle.high,
+                    candle.low,
+                    candle.close,
+                    candle.volume,
+                    "test",
+                    now,
+                    now,
+                ),
+            )
+        self.conn.commit()
+
+    def test_loads_candles_from_open_connection_without_lock(self) -> None:
+        self._insert_candles_into_db()
+        result = run_historical_range_scan(self.conn, self._config(dry_run=True))
+        self.assertTrue(result.dry_run)
+        self.assertGreater(result.candles_scanned, 0)
+
     def test_parse_scan_date(self) -> None:
         ms = parse_scan_date_ms("2025-01-01")
         self.assertGreater(ms, 0)
+
+    def test_duplicate_range_candidates_deduped_across_steps(self) -> None:
+        """Same RH/RL on consecutive replay weeks should emit one candidate only."""
+        result = run_historical_range_scan(
+            self.conn,
+            self._config(candidate_kind_filter="RANGE_CANDIDATE"),
+            candles=self.candles,
+        )
+        rows = self.conn.execute(
+            """
+            SELECT suggested_rh, suggested_rl
+            FROM detector_suggestions
+            WHERE candidate_kind = 'RANGE_CANDIDATE'
+            ORDER BY candle_time_utc_ms ASC
+            """
+        ).fetchall()
+        seen: set[tuple[float, float]] = set()
+        for row in rows:
+            key = (float(row["suggested_rh"]), float(row["suggested_rl"]))
+            self.assertNotIn(key, seen, "duplicate RANGE_CANDIDATE RH/RL pair")
+            seen.add(key)
+        self.assertEqual(len(rows), result.range_candidate_count)
 
 
 if __name__ == "__main__":

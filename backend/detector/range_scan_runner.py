@@ -11,7 +11,7 @@ from typing import Any
 from detection_brain_store import new_uuid, utc_now_ms
 from detector.context_window import build_detection_window_meta, ms_to_date_label
 from detector.models import DetectionContext, NormalizedCandle, SuggestionDraft
-from detector.ohlc_loader import build_context, load_context_from_db
+from detector.ohlc_loader import build_context, load_context_from_db, make_conn_candle_loader
 from detector.pipeline import run_detector_v1
 from detector.range_mode import RANGE_MODE_DOCTRINE_V2, resolve_range_mode
 from detector.range_scale_mode import (
@@ -19,12 +19,25 @@ from detector.range_scale_mode import (
     RANGE_SCALE_UNKNOWN,
     resolve_range_scale_mode,
 )
-from detector.range_seed import resolve_detector_seed_context, seed_resolution_to_meta
+from detector.range_seed import seed_resolution_to_meta
+from detector.range_state import RangeSeedContext
+from detector.range_step_seed import (
+    SEED_POLICY_DEFAULT,
+    SEED_SOURCE_TEMP_PREVIOUS_CANDIDATE,
+    resolve_historical_scan_step_seed,
+    resolve_range_step_seed,
+)
 from detector.writer import write_suggestion
 
 HISTORICAL_RANGE_KINDS = frozenset(
     {"RANGE_CANDIDATE", "NO_VALID_RANGE", "NO_MINOR_STRUCTURE", CANDIDATE_KIND_RANGE}
 )
+
+# Weekly replay: only emit on the active week (or prior bar) when reclaim completes.
+SCAN_MAX_RECLAIM_LAG_BARS = 1
+# Replay recent bars per step — avoids re-scanning entire history with an advanced seed.
+SCAN_REPLAY_LOOKBACK_BARS = 104
+WORKING_SOURCE_MANUAL = "manual_seed"
 
 
 class HistoricalScanError(Exception):
@@ -50,6 +63,7 @@ class HistoricalRangeScanConfig:
     candle_limit: int = 5000
     max_steps: int | None = None
     dry_run: bool = False
+    seed_policy: str = SEED_POLICY_DEFAULT
 
 
 @dataclass
@@ -226,6 +240,7 @@ def run_historical_range_scan(
             parent_range_id=config.parent_range_id,
             range_scale=RANGE_SCALE_UNKNOWN,
             detection_run_id=run_id,
+            loader=make_conn_candle_loader(conn),
         )
         candles = ctx_boot.candles
 
@@ -255,51 +270,126 @@ def run_historical_range_scan(
     last_ms: int | None = None
     steps = 0
 
+    working_seed: RangeSeedContext | None = None
+    working_source = WORKING_SOURCE_MANUAL
+    last_accepted_rh: float | None = None
+    last_accepted_rl: float | None = None
+    scan_chain_index = 0
+    seed_policy = str(config.seed_policy or SEED_POLICY_DEFAULT).strip().lower()
+
     for idx in range(start_idx, end_idx + 1):
-        window = candles[: idx + 1]
+        # Lookback for BOS context, but range_v2 rejects reclaims before date_from_ms.
+        slice_start = max(0, idx - SCAN_REPLAY_LOOKBACK_BARS)
+        window = candles[slice_start : idx + 1]
         if not window:
             continue
         steps += 1
-        replay_ms = window[idx].time_ms
+        active_index = len(window) - 1
+        replay_ms = window[active_index].time_ms
         ctx = build_context(
             symbol=symbol,
             source_timeframe=tf,
             structure_layer=layer,
             candles=window,
-            active_index=idx,
+            active_index=active_index,
             replay_until_time_ms=replay_ms,
-            visible_from_time_ms=config.date_from_ms,
+            visible_from_time_ms=None,
             detection_run_id=run_id,
             parent_range_id=config.parent_range_id,
             range_scale=RANGE_SCALE_UNKNOWN,
         )
 
-        seed_resolution = resolve_detector_seed_context(
-            conn,
-            {},
-            symbol=symbol,
+        seed_for_step: RangeSeedContext | None = None
+        seed_meta: dict[str, Any] | None = None
+        step_seed = resolve_historical_scan_step_seed(
+            ctx,
+            conn=conn,
+            seed_policy=seed_policy,
+            temp_working_seed=working_seed,
+            period_start_ms=config.date_from_ms,
             structure_layer=layer,
-            source_timeframe=tf,
             parent_range_id=config.parent_range_id,
+            scan_chain_index=scan_chain_index,
         )
-        if seed_resolution.seed is not None:
-            seed = seed_resolution.seed
-            ctx.range_seed = seed
-            ctx.range_seed_meta = seed_resolution_to_meta(seed_resolution)
-            ctx.range_high = seed.range_high
-            ctx.range_low = seed.range_low
-            ctx.active_range_id = seed.active_range_id
-            if seed.parent_range_id is not None:
-                ctx.parent_range_id = seed.parent_range_id
+        if step_seed.seed is not None:
+            seed_for_step = step_seed.seed
+            working_source = step_seed.seed_source
+            seed_meta = dict(step_seed.meta)
+
+        if seed_for_step is not None:
+            ctx.range_seed = seed_for_step
+            ctx.range_seed_meta = seed_meta
+            ctx.range_high = seed_for_step.range_high
+            ctx.range_low = seed_for_step.range_low
+            ctx.active_range_id = seed_for_step.active_range_id
+            if seed_for_step.parent_range_id is not None:
+                ctx.parent_range_id = seed_for_step.parent_range_id
 
         ctx.detection_window_meta = build_detection_window_meta(ctx, detection_run_id=run_id)
         ctx.detection_window_meta["historical_scan"] = True
+        ctx.detection_window_meta["date_from_ms"] = config.date_from_ms
+        ctx.detection_window_meta["date_to_ms"] = config.date_to_ms
+        # After seed rolls forward, ignore reclaim cycles that completed before scan period.
+        if working_seed is not None and config.date_from_ms:
+            ctx.detection_window_meta["min_reclaim_time_ms"] = config.date_from_ms
+        # Reclaim lag only after seed rolls forward — manual-seed phase uses dedupe instead.
+        if working_seed is not None:
+            ctx.detection_window_meta["max_reclaim_lag_bars"] = SCAN_MAX_RECLAIM_LAG_BARS
+        ctx.detection_window_meta["seed_source"] = working_source
+        ctx.detection_window_meta["seed_policy"] = seed_policy
 
         result = run_detector_v1(ctx, range_mode=range_mode, scale_mode=scale_mode)
         range_drafts = _apply_candidate_filter(
             _range_drafts_from_result(result.drafts),
             candidate_kind_filter=config.candidate_kind_filter,
         )
+
+        has_range_candidate = any(
+            str(d.candidate_kind or "").upper() == "RANGE_CANDIDATE" for d in range_drafts
+        )
+        used_rolled_seed = (
+            working_seed is not None
+            and step_seed.seed_source == SEED_SOURCE_TEMP_PREVIOUS_CANDIDATE
+        )
+
+        # Rolled seed from January cannot see March ranges — rediscover from swings.
+        if not has_range_candidate and used_rolled_seed:
+            boot_res = resolve_range_step_seed(
+                ctx,
+                conn=conn,
+                period_start_ms=config.date_from_ms,
+                discovery_mode=True,
+                allow_map_ranges=False,
+                structure_layer=layer,
+                parent_range_id=config.parent_range_id,
+            )
+            if boot_res.seed is not None:
+                seed_for_step = boot_res.seed
+                working_source = boot_res.seed_source
+                seed_meta = seed_resolution_to_meta(boot_res)
+                ctx.range_seed = seed_for_step
+                ctx.range_seed_meta = seed_meta
+                ctx.range_high = seed_for_step.range_high
+                ctx.range_low = seed_for_step.range_low
+                ctx.active_range_id = seed_for_step.active_range_id
+                ctx.detection_window_meta = build_detection_window_meta(ctx, detection_run_id=run_id)
+                ctx.detection_window_meta["historical_scan"] = True
+                ctx.detection_window_meta["date_from_ms"] = config.date_from_ms
+                ctx.detection_window_meta["date_to_ms"] = config.date_to_ms
+                ctx.detection_window_meta["seed_source"] = working_source
+                ctx.detection_window_meta["seed_policy"] = seed_policy
+                ctx.detection_window_meta["bootstrap_retry"] = True
+                result = run_detector_v1(ctx, range_mode=range_mode, scale_mode=scale_mode)
+                range_drafts = _apply_candidate_filter(
+                    _range_drafts_from_result(result.drafts),
+                    candidate_kind_filter=config.candidate_kind_filter,
+                )
+                has_range_candidate = any(
+                    str(d.candidate_kind or "").upper() == "RANGE_CANDIDATE" for d in range_drafts
+                )
+            if not has_range_candidate:
+                working_seed = None
+
         if not range_drafts:
             continue
 
@@ -307,11 +397,26 @@ def run_historical_range_scan(
         for draft in range_drafts:
             kind = str(draft.candidate_kind or "").upper()
             if kind == "RANGE_CANDIDATE":
+                rh = draft.suggested_rh
+                rl = draft.suggested_rl
+                if rh is None or rl is None:
+                    continue
+                new_rh = float(rh)
+                new_rl = float(rl)
+                is_new = (
+                    last_accepted_rh is None
+                    or abs(new_rh - last_accepted_rh) > 1e-9
+                    or abs(new_rl - last_accepted_rl) > 1e-9
+                )
+                if not is_new:
+                    continue
                 range_candidate_count += 1
             elif kind == "NO_VALID_RANGE":
                 no_valid_range_count += 1
             elif kind == "NO_MINOR_STRUCTURE":
                 no_minor_structure_count += 1
+            else:
+                continue
 
             _attach_scan_meta(
                 draft,
@@ -321,8 +426,22 @@ def run_historical_range_scan(
                 date_from_ms=config.date_from_ms,
                 date_to_ms=config.date_to_ms,
             )
+            meta = dict(draft.meta_json or {})
+            meta["seed_source"] = working_source
+            meta["seed_policy"] = seed_policy
+            meta["scan_chain_index"] = scan_chain_index
+            draft.meta_json = meta
 
             if config.dry_run:
+                if kind == "RANGE_CANDIDATE":
+                    last_accepted_rh = new_rh
+                    last_accepted_rl = new_rl
+                    working_seed = RangeSeedContext(
+                        range_high=new_rh,
+                        range_low=new_rl,
+                        is_manual_seed=False,
+                    )
+                    scan_chain_index += 1
                 continue
 
             saved = write_suggestion(
@@ -337,6 +456,16 @@ def run_historical_range_scan(
                 first_ms = t_ms
             if last_ms is None or t_ms > last_ms:
                 last_ms = t_ms
+
+            if kind == "RANGE_CANDIDATE":
+                last_accepted_rh = new_rh
+                last_accepted_rl = new_rl
+                working_seed = RangeSeedContext(
+                    range_high=new_rh,
+                    range_low=new_rl,
+                    is_manual_seed=False,
+                )
+                scan_chain_index += 1
 
     if not config.dry_run:
         conn.commit()

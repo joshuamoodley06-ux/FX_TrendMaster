@@ -31,6 +31,9 @@ const {
   mergeSettings,
   OLLAMA_DEFAULTS,
 } = require('./mediatorAi.cjs');
+const { registerLocalResearchIpc } = require('./localResearchIpc.cjs');
+const { registerCandleCacheIpc } = require('./candleCacheIpc.cjs');
+const { closeCandleCache } = require('./candleCache.cjs');
 
 let activeChild = null;
 
@@ -632,7 +635,12 @@ function createWindow() {
 
 app.whenReady().then(() => {
   registerAnalystIpc();
+  registerLocalResearchIpc();
+  registerCandleCacheIpc();
   createWindow();
+});
+app.on('will-quit', () => {
+  closeCandleCache();
 });
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();

@@ -5,8 +5,10 @@
   "description": "FX TrendMaster Electron cockpit MVP",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron . --dev\"",
-    "build": "vite build",
+    "dev": "npm run build:runner && concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron . --dev\"",
+    "build:runner": "esbuild src/localPythonRunner.ts --bundle --platform=node --format=cjs --outfile=electron/localPythonRunner.cjs",
+    "build": "npm run build:runner && vite build",
+    "test": "npm run build:runner && vitest run",
     "electron": "electron .",
     "dist": "npm run build && electron-builder --win nsis portable",
     "start": "npm run build && electron ."
@@ -14,13 +16,13 @@
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "concurrently": "latest",
+    "d3": "latest",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
     "typescript": "latest",
     "vite": "latest",
-    "wait-on": "latest",
-    "d3": "latest"
+    "wait-on": "latest"
   },
   "build": {
     "appId": "co.za.apex.fxtrendmaster",
@@ -52,7 +54,11 @@
   },
   "devDependencies": {
     "@types/d3": "latest",
+    "@types/node": "latest",
     "electron": "latest",
-    "electron-builder": "latest"
+    "electron-builder": "latest",
+    "esbuild": "latest",
+    "happy-dom": "^20.10.6",
+    "vitest": "latest"
   }
 }

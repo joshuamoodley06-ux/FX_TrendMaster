@@ -1,5 +1,12 @@
 /** Master mapping workflow helpers — UI-side gap queue, no Python. */
 
+import {
+  computeParentChildCoverage,
+  coverageGapSortKey,
+  isCoverageIncomplete,
+  type ParentChildCoverage,
+} from './parentChildCoverage';
+
 export type ExplorerMappingMode = 'htf' | 'ltf';
 
 export type MappingGap = {
@@ -8,6 +15,7 @@ export type MappingGap = {
   parentLayer: string;
   expectedChildLayer: string;
   label: string;
+  coverage?: ParentChildCoverage;
 };
 
 const HTF_LAYERS = ['MACRO', 'WEEKLY', 'DAILY'] as const;
@@ -88,18 +96,50 @@ export function computeMappingGaps(
           String(a.range_id || a.id).localeCompare(String(b.range_id || b.id)),
       );
 
+    const pairGaps: MappingGap[] = [];
+
     for (const parent of parents) {
       const parentId = String(parent.range_id || parent.id || '');
       if (!parentId) continue;
-      if (countDirectChildren(parentId, childLayer, ranges) > 0) continue;
-      gaps.push({
+
+      if (parentLayer === 'MACRO') {
+        if (countDirectChildren(parentId, childLayer, ranges) > 0) continue;
+        pairGaps.push({
+          parentId,
+          parentRange: parent,
+          parentLayer,
+          expectedChildLayer: childLayer,
+          label: `${parentLayer} MAJOR #${parentId} → map ${childLayer} MAJOR`,
+        });
+        continue;
+      }
+
+      const coverage = computeParentChildCoverage(parent, childLayer, ranges);
+      if (!isCoverageIncomplete(coverage.coverage_status)) continue;
+
+      const gapNote = coverage.first_gap_start
+        ? ` · gap ${coverage.first_gap_start.slice(0, 10)} → ${(coverage.first_gap_end || '').slice(0, 10)}`
+        : coverage.coverage_status === 'NO_CHILDREN'
+          ? ''
+          : ` · ${coverage.coverage_percent}% covered`;
+      pairGaps.push({
         parentId,
         parentRange: parent,
         parentLayer,
         expectedChildLayer: childLayer,
-        label: `${parentLayer} MAJOR #${parentId} → map ${childLayer} MAJOR`,
+        label: `${parentLayer} MAJOR #${parentId} → map ${childLayer} MAJOR${gapNote}`,
+        coverage,
       });
     }
+
+    pairGaps.sort((a, b) => {
+      const priA = a.coverage ? coverageGapSortKey(a.coverage) : 0;
+      const priB = b.coverage ? coverageGapSortKey(b.coverage) : 0;
+      if (priA !== priB) return priA - priB;
+      return rangeStartSortKey(a.parentRange) - rangeStartSortKey(b.parentRange)
+        || String(a.parentId).localeCompare(String(b.parentId));
+    });
+    gaps.push(...pairGaps);
   }
 
   return gaps;

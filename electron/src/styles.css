@@ -1,27 +1,68 @@
 :root{
-  --bg:#05070d;
-  --panel:#0b111a;
-  --panel2:#070c13;
-  --border:#203040;
-  --gold:#ffbf2f;
-  --gold2:#f8d67a;
+  --bg-main:#0D1117;
+  --bg-sidebar:#161B22;
+  --text-muted:#8B949E;
+  --action-gold:#E3B341;
+  --border-terminal:#30363d;
+  --bg:var(--bg-main);
+  --panel:var(--bg-sidebar);
+  --panel2:#0D1117;
+  --border:var(--border-terminal);
+  --gold:var(--action-gold);
+  --gold2:#F0CA6B;
   --blue:#2f81ff;
   --cyan:#00ffd0;
   --red:#ff4d67;
   --green:#42e68a;
-  --text:#e8eef7;
-  --muted:#7b8794;
+  --text:#E6EDF3;
+  --muted:var(--text-muted);
 }
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(circle at 40% 0%,#09203b 0%,#05070d 35%,#020308 100%);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif;overflow:hidden}
+body{margin:0;background:var(--bg-main);color:var(--text);font-family:Inter,Segoe UI,Arial,sans-serif;overflow:hidden}
 button,select,input,textarea{font:inherit}
-.appShell{display:flex;height:100vh;width:100vw}
-.sidebar{width:280px;background:linear-gradient(180deg,#070b11,#030407);border-right:1px solid #1b2633;padding:22px;display:flex;flex-direction:column;gap:24px}
-.brandBlock{display:flex;align-items:center;gap:14px}
-.brandLogo{width:54px;height:54px;border-radius:14px;object-fit:cover;flex-shrink:0;box-shadow:0 0 28px rgba(255,191,47,.35)}
-h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font-size:12px}
-.navGroup{display:flex;flex-direction:column;gap:10px}.navItem{display:flex;align-items:center;gap:12px;padding:13px 14px;border:1px solid transparent;border-radius:16px;color:#9aa8b7}.navItem.active{color:#071014;background:linear-gradient(135deg,var(--gold),#ffe18a);font-weight:900;box-shadow:0 0 22px rgba(255,191,47,.14)}
-.sidebarFooter{margin-top:auto;padding:14px;border:1px solid var(--border);border-radius:18px;background:#060a10}.muted{color:var(--muted);margin:0}.sidebarInfo{color:#b7c4d8;font-size:11px;margin:6px 0 0;line-height:1.4}.sidebarInfoOptional{color:#94a3b8;font-size:11px;margin:6px 0 0;line-height:1.4}.apiText{font-size:12px;color:#b7c4d8;word-break:break-all}.statusDot{display:flex;align-items:center;gap:8px;font-weight:900;font-size:13px}.dot{width:10px;height:10px;border-radius:50%;display:inline-block}.online{background:var(--green);box-shadow:0 0 12px var(--green)}.offline{background:var(--red);box-shadow:0 0 12px var(--red)}
+.appShell{display:grid;grid-template-columns:250px 1fr 350px;height:100vh;width:100vw;overflow:hidden;background:var(--bg-main)}
+.navLibrary{grid-column:1;width:250px;min-width:250px;max-width:250px;overflow:auto;background:var(--bg-sidebar);border-right:1px solid var(--border-terminal)}
+.workspaceMain{grid-column:2;min-width:0;min-height:0;overflow:auto;padding:12px;display:flex;flex-direction:column;background:var(--bg-main)}
+.workspaceMain.workspaceMainMapStudio{padding:0;overflow:hidden}
+aside.inspectorPanel,#pilot-inspector-root.inspectorPanel{grid-column:3;width:350px;min-width:350px;max-width:350px;min-height:0;overflow:hidden;display:flex;flex-direction:column;border-left:1px solid var(--border-terminal);background:var(--bg-sidebar)}
+.inspectorPanelInner{display:flex;flex-direction:column;min-height:0;height:100%;width:100%}
+.inspectorTabRail{display:flex;gap:0;padding:0 12px;flex:0 0 auto;border-bottom:1px solid var(--border-terminal);background:var(--bg-sidebar)}
+.inspectorTabRail button{flex:1;min-width:0;padding:10px 12px;border:none;border-left:2px solid transparent;border-radius:0;background:transparent;color:var(--text-muted);font-weight:700;font-size:12px;cursor:pointer}
+.inspectorTabRail button.active{color:var(--text);background:rgba(227,179,65,.08);border-left:2px solid var(--action-gold)}
+.inspectorBody{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;overflow:hidden}
+.inspectorHeader{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;padding:12px;border-bottom:1px solid var(--border-terminal);flex:0 0 auto}
+.inspectorHeader b{display:block;color:var(--action-gold);font-size:13px;line-height:1.2;font-weight:700}
+.inspectorHeader span{display:block;color:var(--text-muted);font-size:11px;font-weight:600;margin-top:2px}
+.inspectorPanelCloseBtn{
+  flex:0 0 auto;
+  align-self:flex-start;
+  min-height:28px;
+  padding:0 10px;
+  border:1px solid var(--border-terminal,#30363d);
+  border-radius:8px;
+  background:rgba(15,23,42,.85);
+  color:var(--text-muted,#8b949e);
+  font-size:11px;
+  font-weight:800;
+  cursor:pointer;
+}
+.inspectorPanelCloseBtn:hover{
+  color:var(--text,#e6edf3);
+  border-color:rgba(148,163,184,.35);
+  background:rgba(30,41,59,.9);
+}
+.inspectorContent{flex:1 1 auto;min-height:0;overflow:auto;padding:12px;position:relative;isolation:isolate}
+.inspectorContent[data-active-tab="mark"] .inspectorOverviewDashboard{display:none!important}
+.inspectorTabPane{min-height:0;height:100%;width:100%}
+.inspectorContextHint{display:block;color:var(--text-muted);font-size:10px;font-weight:600;margin-top:4px;line-height:1.35;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inspectorPlaceholder{display:flex;flex-direction:column;gap:8px;padding:12px;color:var(--text-muted)}
+.inspectorPlaceholder b{color:var(--text);font-size:13px;font-weight:700}
+.sidebar{width:100%;background:var(--bg-sidebar);border-right:1px solid var(--border-terminal);padding:12px;display:flex;flex-direction:column;gap:12px}
+.brandBlock{display:flex;align-items:center;gap:12px}
+.brandLogo{width:48px;height:48px;border-radius:10px;object-fit:cover;flex-shrink:0;box-shadow:none}
+h1{font-size:20px;margin:0;font-weight:700} .brandBlock p{margin:2px 0 0;color:var(--text-muted);font-size:11px}
+.navGroup{display:flex;flex-direction:column;gap:4px}.navItem{display:flex;align-items:center;gap:10px;padding:10px 12px;border:none;border-radius:6px;color:var(--text-muted);background:transparent}.navItem.active{color:var(--text);background:rgba(227,179,65,.1);font-weight:700;box-shadow:none;border-left:2px solid var(--action-gold)}
+.sidebarFooter{margin-top:auto;padding:12px;border:1px solid var(--border-terminal);border-radius:6px;background:var(--bg-main)}.muted{color:var(--text-muted);margin:0}.sidebarInfo{color:var(--text-muted);font-size:11px;margin:6px 0 0;line-height:1.4}.sidebarInfoOptional{color:var(--text-muted);font-size:11px;margin:6px 0 0;line-height:1.4}.apiText{font-size:11px;color:var(--text-muted);word-break:break-all}.statusDot{display:flex;align-items:center;gap:8px;font-weight:700;font-size:12px}.dot{width:8px;height:8px;border-radius:50%;display:inline-block}.online{background:var(--green);box-shadow:none}.offline{background:var(--red);box-shadow:none}
 .mainArea{flex:1;padding:20px 22px 30px;overflow:auto}.topbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}.topbar h2{margin:0;font-size:30px}.topbar p{margin:4px 0 0;color:var(--muted)}.topActions{display:flex;align-items:center;gap:10px}.topActions select,.topActions button,.timePill{background:#07101a;border:1px solid var(--border);color:var(--text);border-radius:14px;padding:11px 13px}.topActions button{display:flex;align-items:center;gap:8px;cursor:pointer}.timePill{color:var(--cyan);font-weight:900}.errorBox{display:flex;gap:8px;align-items:center;border:1px solid var(--red);background:#2a0b13;color:#ffd5dc;border-radius:16px;padding:12px;margin-bottom:14px}
 .gridLayout{display:grid;grid-template-columns:minmax(620px,1.45fr) minmax(380px,.85fr);gap:18px}.leftStack,.rightStack{display:flex;flex-direction:column;gap:14px}.panelTitle{display:flex;align-items:center;gap:8px;color:#dbeafe;font-weight:900;letter-spacing:.3px}
 .card,.trajectoryCard{background:linear-gradient(180deg,rgba(11,17,26,.96),rgba(5,9,14,.96));border:1px solid var(--border);border-radius:22px;padding:16px;box-shadow:0 16px 48px rgba(0,0,0,.28)}.cardHeader{display:flex;justify-content:space-between;align-items:flex-start;gap:14px}.cardHeader.tight h3,.cardHeader h3{margin:0;font-size:18px}.cardHeader p{margin:4px 0 0;color:var(--muted);font-size:13px}.locationBadge{padding:8px 12px;border-radius:999px;background:#050b12;border:1px solid #29415a;color:var(--gold);font-weight:900;white-space:nowrap}
@@ -492,6 +533,22 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .fibDiscount span{font-size:11px!important;}
 
 .lifecycleBrainCard{border:1px solid rgba(0,255,208,.22);box-shadow:0 0 0 1px rgba(0,255,208,.06),0 18px 50px rgba(0,0,0,.28)}
+.lifecycleBrainCompact{padding:12px}.lifecycleBrainCompact .cardHeader{padding-bottom:4px}.lifecycleBrainCompact .cardHeader h3{font-size:13px}.lifecycleBrainCompact .metricGrid{grid-template-columns:1fr 1fr;gap:8px}.lifecycleBrainCompact .metric{padding:8px 10px}.lifecycleBrainCompact .compactMachineMessage{margin-top:8px;padding:8px 10px;font-size:11px}
+.lifecycleStatusBadge{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:12px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);margin-bottom:10px}
+.lifecycleStatusBadge.allowed{border-color:rgba(66,230,138,.35);background:rgba(66,230,138,.08)}
+.lifecycleStatusBadge.waiting{border-color:rgba(255,191,47,.28);background:rgba(255,191,47,.06)}
+.lifecycleStatusBadgeHead{display:flex;align-items:center;gap:8px;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#94a3b8}
+.lifecycleStatusBadge strong{font-size:14px;color:#f8fafc;line-height:1.2}
+.lifecycleStatusBadge em{font-size:11px;color:#94a3b8;font-style:normal;line-height:1.3}
+.inspectorOverviewDashboard{display:flex;flex-direction:column;gap:10px;min-height:0;overflow:auto}
+.inspectorOverviewDashboard.empty{padding:12px}
+.inspectorOverviewLead{margin:0 0 4px;line-height:1.35}
+.inspectorOverviewMapsStack{display:flex;flex-direction:column;gap:10px}
+.inspectorOverviewMapsStack .mapPair,.inspectorOverviewMapsStack .intradayHero{display:block}
+.inspectorOverviewMapsStack .mapPair>*,.inspectorOverviewMapsStack .intradayHero>*{width:100%}
+.inspectorOverviewMapsStack .compactMap .boxedGraph{height:180px}
+.inspectorOverviewActions{display:flex;justify-content:flex-end}
+.dashboardTabPanel{padding:0;overflow:auto;min-height:0;flex:1}
 .machineMessage{margin-top:12px;padding:12px;border:1px solid rgba(255,255,255,.08);border-radius:14px;background:rgba(255,255,255,.035);display:flex;gap:10px;align-items:flex-start;color:#dbeafe}
 .machineMessage b{color:#ffbf2f;white-space:nowrap}.machineMessage span{line-height:1.35}.mutedMessage b{color:#00ffd0}
 .tradeIdeaCard .ideaForm button:not(.primaryBtn){border:1px solid rgba(0,255,208,.2);background:rgba(0,255,208,.08);color:#dff;}
@@ -530,7 +587,7 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 @media(max-width:1050px){.mitigationMatrix{grid-template-columns:1fr}.sequenceRow{grid-template-columns:1fr 1fr}.mLevelRow{grid-template-columns:42px 1fr}}
 
 /* v0.38 Map Studio: candle + coordinate memory workstation */
-.mapStudioShell{display:flex;flex-direction:column;gap:14px;width:100%;height:calc(100vh - 130px);}
+.mapStudioShell{display:flex;flex-direction:column;gap:14px;width:100%;height:100%;min-height:0;flex:1 1 auto;}
 .mapStudioToolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border:1px solid #203040;background:#050b12;border-radius:18px;padding:12px;}
 .tfSwitch{display:flex;gap:6px;background:#02060a;border:1px solid #1b2b3a;border-radius:14px;padding:5px;}
 .tfSwitch button,.mapStudioToolbar button{border:1px solid #26364a;background:#07101a;color:#dbeafe;border-radius:11px;padding:9px 12px;font-weight:900;display:flex;gap:7px;align-items:center;cursor:pointer;}
@@ -604,7 +661,7 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .d3MapStudio .mapInputsGrid{display:grid;grid-template-columns:repeat(4,minmax(180px,1fr));gap:14px;margin:14px 0}
 .d3MapStudio .mapInputsGrid label{display:flex;flex-direction:column;gap:8px;padding:12px;border:1px solid rgba(88,166,255,.18);border-radius:16px;background:rgba(7,13,24,.72)}
 .d3MapStudio .mapInputsGrid span{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8;font-weight:900}
-.d3Workspace{display:grid;grid-template-columns:minmax(740px,1fr) 320px;gap:16px;align-items:stretch}
+.d3Workspace{display:flex;flex-direction:column;flex:1 1 auto;min-height:0;gap:16px;align-items:stretch}
 .d3ChartCard{border:1px solid rgba(88,166,255,.22);border-radius:20px;background:linear-gradient(180deg,rgba(9,16,27,.88),rgba(4,9,17,.96));padding:14px;min-height:680px}
 .chartTitleRow{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}
 .chartTitleRow h3{margin:0;color:#ffbf2f;font-size:26px}
@@ -2557,6 +2614,72 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   display:grid;
   gap:8px;
 }
+.structuralMapWithCommitFooter{
+  display:flex;
+  flex-direction:column;
+  height:100%;
+  min-height:0;
+  gap:0;
+}
+.structuralMapScroll{
+  flex:1 1 auto;
+  min-height:0;
+  overflow:auto;
+  display:grid;
+  gap:8px;
+  padding-bottom:8px;
+}
+.inspectorStructuralCommitFooter{
+  flex:0 0 auto;
+  position:sticky;
+  bottom:0;
+  z-index:12;
+  display:grid;
+  grid-template-columns:1fr auto;
+  gap:10px;
+  align-items:center;
+  margin:0;
+  padding:10px 12px;
+  border-top:1px solid rgba(227,179,65,.28);
+  border-radius:0;
+  background:linear-gradient(180deg,rgba(8,18,28,.98),rgba(3,8,15,.98));
+  box-shadow:0 -10px 24px rgba(0,0,0,.32);
+}
+.inspectorCommitBtn{
+  min-width:108px;
+  min-height:42px;
+  border-radius:12px;
+  border:1px solid rgba(227,179,65,.55);
+  background:linear-gradient(135deg,var(--action-gold),var(--gold2));
+  color:#071014;
+  font-weight:1000;
+  letter-spacing:.04em;
+  cursor:pointer;
+  transition:background .18s ease,border-color .18s ease,box-shadow .18s ease,color .18s ease;
+  box-shadow:0 0 18px rgba(227,179,65,.14);
+}
+.inspectorCommitBtn:hover:not(:disabled){
+  box-shadow:0 0 22px rgba(227,179,65,.28);
+}
+.inspectorCommitBtn:disabled{
+  opacity:.45;
+  cursor:not-allowed;
+}
+.inspectorCommitBtnSuccess{
+  background:linear-gradient(135deg,#22c55e,#16a34a);
+  border-color:rgba(34,197,94,.65);
+  color:#04150a;
+  box-shadow:0 0 20px rgba(34,197,94,.28);
+}
+.structuralDraftBadge{
+  font-size:10px;
+  font-weight:800;
+  color:#fbbf24;
+  padding:2px 6px;
+  border-radius:999px;
+  border:1px solid rgba(251,191,36,.35);
+  background:rgba(251,191,36,.08);
+}
 .structuralMarkToolbar{
   display:flex;
   flex-wrap:wrap;
@@ -2853,22 +2976,67 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .explorerTreeScrollMark{max-height:min(48vh,380px);}
 .explorerTreeScrollCase{max-height:min(38vh,320px);}
+.explorerTreeScrollGps{
+  flex:1 1 auto;
+  min-height:0;
+  max-height:none;
+}
+.gpsHierarchyTabPanel{
+  display:flex;
+  flex-direction:column;
+  flex:1 1 auto;
+  min-height:0;
+  height:100%;
+  overflow:hidden;
+}
+.gpsHierarchyTabPanel .structuralExplorerPanel{
+  flex:1 1 auto;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  border:none;
+  background:transparent;
+  padding:0;
+  border-radius:0;
+  margin-bottom:0;
+}
+.inspectorContent[data-active-tab="gps"]{
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+.inspectorContent[data-active-tab="gps"] .inspectorTabPane{
+  display:flex;
+  flex-direction:column;
+  flex:1 1 auto;
+  min-height:0;
+}
+.gpsHierarchyTabPanel .structuralExplorerHeader b{
+  font-size:11px;
+}
+.gpsHierarchyTabPanel .explorerTreeScroll{
+  padding:8px;
+}
+.gpsHierarchyTabPanel .explorerLineToggle{
+  min-width:42px;
+}
 .explorerTreeRow{
   display:grid;
-  grid-template-columns:16px 6px minmax(0,1fr);
-  gap:4px;
-  align-items:start;
+  grid-template-columns:16px auto 4px minmax(0,1fr);
+  gap:4px 6px;
+  align-items:center;
   border:1px solid rgba(148,163,184,.12);
-  border-radius:8px;
+  border-radius:6px;
   background:rgba(2,6,23,.45);
-  padding:4px 4px 4px 2px;
+  padding:4px 6px;
+  padding-left:calc(6px + var(--tree-depth, 0) * 12px);
   transition:background .12s ease,border-color .12s ease;
 }
 .explorerTreeRow.active{
   border-color:rgba(96,165,250,.85);
   background:rgba(30,58,138,.38);
   box-shadow:0 0 0 1px rgba(96,165,250,.35), 0 0 14px rgba(59,130,246,.22);
-  grid-template-columns:16px 6px minmax(0,1fr) auto;
+  grid-template-columns:16px auto 4px minmax(0,1fr) auto;
 }
 .explorerTreeRow.parentContext{
   border-color:rgba(250,204,21,.45);
@@ -2881,23 +3049,23 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 .explorerTreeRow.orphan{border-style:dashed;}
 .explorerTreeRowMain{
   display:grid;
-  gap:1px;
+  gap:2px;
   border:none;background:transparent;color:inherit;
-  text-align:left;cursor:pointer;padding:2px 4px;min-width:0;
+  text-align:left;cursor:pointer;padding:2px 0;min-width:0;width:100%;
 }
 .explorerTreeLine1{
-  font-size:10px;line-height:1.3;font-weight:800;
+  font-size:10px;line-height:1.25;font-weight:700;
   font-family:ui-monospace,Menlo,monospace;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
+  white-space:normal;
+  overflow:visible;
+  word-break:break-word;
 }
 .explorerTreeLine2{
-  font-size:9px;line-height:1.25;color:#94a3b8;
+  font-size:9px;line-height:1.2;color:#94a3b8;
   font-family:ui-monospace,Menlo,monospace;
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
+  white-space:normal;
+  overflow:visible;
+  word-break:break-word;
 }
 .explorerSpanNote{
   font-size:8px;line-height:1.2;color:#fbbf24;font-weight:700;
@@ -3128,6 +3296,12 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   overflow:auto;
   padding:12px;
 }
+.markModePane.structuralMapWithCommitFooter{
+  overflow:hidden;
+  padding:0;
+  display:flex;
+  flex-direction:column;
+}
 .htfEnginePane{
   display:flex;
   flex-direction:column;
@@ -3262,6 +3436,24 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   grid-template-columns:none !important;
   gap:0 !important;
 }
+/* Pilot shell: chart stays in grid column — never viewport-fixed over the left inspector */
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .d3Workspace.map-studio-chart,
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-chart.d3Workspace{
+  position:relative !important;
+  inset:auto !important;
+  top:auto !important;
+  left:auto !important;
+  right:auto !important;
+  bottom:auto !important;
+  width:auto !important;
+  height:auto !important;
+  min-height:0 !important;
+  max-width:100% !important;
+  z-index:1 !important;
+  display:flex !important;
+  flex-direction:column !important;
+  grid-template-columns:none !important;
+}
 .mapStudioShell.chartFullscreenActive .floatingWorkspaceDock,
 .mapStudioShell.chartFullscreenActive .floatingWorkspacePanel{
   position:fixed !important;
@@ -3309,13 +3501,45 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   flex:0 0 auto !important;
   width:100% !important;
   margin:0 !important;
-  padding:6px 10px 8px !important;
-  gap:5px !important;
+  padding:3px 8px 4px !important;
+  gap:3px !important;
+  flex-direction:row !important;
+  flex-wrap:wrap !important;
+  justify-content:center !important;
   align-items:center !important;
   background:linear-gradient(180deg,rgba(2,6,23,.72),rgba(2,6,23,.96)) !important;
   border-top:1px solid rgba(148,163,184,.16) !important;
   border-radius:0 !important;
-  box-shadow:0 -8px 24px rgba(0,0,0,.28) !important;
+  box-shadow:0 -4px 16px rgba(0,0,0,.22) !important;
+}
+.mapStudioShell.chartFullscreenActive .fullscreenReplayDock,
+.mapStudioShell.chartFullscreenActive .fullscreenCameraDock{
+  width:auto !important;
+  max-width:none !important;
+  flex:0 1 auto !important;
+  padding:2px 5px !important;
+  gap:3px !important;
+  border-radius:8px !important;
+  background:rgba(2,6,23,.55) !important;
+}
+.mapStudioShell.chartFullscreenActive .fullscreenReplayDock button,
+.mapStudioShell.chartFullscreenActive .fullscreenScaleDock button,
+.mapStudioShell.chartFullscreenActive .fullscreenFitDock button{
+  min-height:22px !important;
+  height:22px !important;
+  padding:0 7px !important;
+  font-size:10px !important;
+  border-radius:6px !important;
+  line-height:1 !important;
+}
+.mapStudioShell.chartFullscreenActive .fullscreenReplayDock span,
+.mapStudioShell.chartFullscreenActive .fullscreenScaleDock span{
+  font-size:10px !important;
+  padding:0 2px !important;
+}
+.mapStudioShell.chartFullscreenActive .fullscreenScaleDock,
+.mapStudioShell.chartFullscreenActive .fullscreenFitDock{
+  gap:3px !important;
 }
 .mapStudioShell.chartFullscreenActive .fullscreenCameraDock{
   width:min(980px,100%) !important;
@@ -3491,7 +3715,7 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .mapStudioShell.chartFullscreenActive .structuralMappingDock{
   position:absolute !important;
-  left:8px !important;
+  left:52px !important;
   top:8px !important;
   z-index:10002 !important;
   display:flex !important;
@@ -3759,12 +3983,28 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .structuralMappingRibbon .chainDraftBanner{
   flex-basis:100%;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
   padding:4px 8px;
   border-radius:8px;
   background:rgba(251,191,36,.15);
   border:1px solid rgba(251,191,36,.45);
   color:#fde68a;
   font-weight:700;
+  font-size:11px;
+}
+.structuralMappingRibbon .chainDrillBtn{
+  margin-left:auto;
+  border:1px solid rgba(96,165,250,.45);
+  background:rgba(30,58,138,.35);
+  color:#bfdbfe;
+  border-radius:6px;
+  padding:2px 8px;
+  font-size:10px;
+  font-weight:800;
+  cursor:pointer;
 }
 .structuralParentContext{
   flex-basis:100%;
@@ -3873,6 +4113,33 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
   pointer-events:none;
 }
 .fullscreenBottomBar > *{pointer-events:auto;}
+.fullscreenChromeDock{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  width:100%;
+  padding:6px 10px;
+  border-radius:12px;
+  background:rgba(7,13,24,.88);
+  border:1px solid rgba(148,163,184,.22);
+}
+.fullscreenChromeDock button{
+  min-height:30px;
+  border-radius:10px;
+  border:1px solid rgba(148,163,184,.25);
+  background:#0f172a;
+  color:#e8eef7;
+  font-weight:900;
+  font-size:11px;
+  padding:0 10px;
+  cursor:pointer;
+}
+.fullscreenChromeDock button.active{
+  border-color:rgba(255,207,77,.55);
+  color:#ffdf76;
+}
 .fullscreenCameraDock{
   display:flex;
   flex-wrap:wrap;
@@ -3914,9 +4181,8 @@ h1{font-size:22px;margin:0} .brandBlock p{margin:2px 0 0;color:var(--muted);font
 }
 .mapStudioShell.chartFullscreenActive .fixedBottomReplayDock{display:none !important;}
 body:has(.mapStudioShell.chartFullscreenActive){overflow:hidden !important;}
-body:has(.mapStudioShell.chartFullscreenActive) .sidebar{display:none !important;}
-body:has(.mapStudioShell.chartFullscreenActive) .mainContent{padding:0 !important;margin:0 !important;}
-body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenActive{width:100vw !important;height:100vh !important;}
+body:has(.mapStudioShell.chartFullscreenActive) .workspaceMainMapStudio{padding:0 !important;overflow:hidden !important;}
+body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenActive{width:100% !important;height:100% !important;flex:1 1 auto !important;}
 
 /* v087.27 camera + scale controls */
 .cameraModeSelect{
@@ -4400,3 +4666,819 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 .reviewActiveCandle strong{color:#e2e8f0}
 .reviewDetectionContext{font-size:10px;color:#94a3b8}
 .reviewDetectionContext strong{color:#e2e8f0}
+
+/* Pilot root layout — fixed 250px | 1fr | 350px shell (non-negotiable) */
+.appShell{
+  display:grid !important;
+  grid-template-columns:250px 1fr 350px !important;
+}
+@media (max-width:1250px){
+  .appShell{grid-template-columns:250px 1fr 350px !important;}
+  .sidebar,.navLibrary{width:100% !important;min-width:0 !important;max-width:none !important;}
+}
+.workspaceMainMapStudio .mapStudioShell{
+  height:100% !important;
+  min-height:0 !important;
+  flex:1 1 auto !important;
+}
+.d3Workspace,.d3Workspace.withInspectorDock{
+  display:flex !important;
+  flex-direction:column !important;
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  grid-template-columns:none !important;
+}
+.d3Workspace .d3ChartCard,.d3Workspace.withInspectorDock .d3ChartCard,
+.map-studio-chart .d3ChartCard{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  width:100% !important;
+}
+.floatingWorkspaceDock,
+.floatingWorkspacePanel,
+.floatingPanelChrome{
+  display:none !important;
+}
+body.chartHideInspectorRail .appShell{
+  grid-template-columns:250px minmax(0,1fr) 0 !important;
+}
+body.chartHideInspectorRail #pilot-inspector-root,
+body.chartHideInspectorRail aside.inspectorPanel{
+  display:none !important;
+  width:0 !important;
+  min-width:0 !important;
+  max-width:0 !important;
+  overflow:hidden !important;
+  border:none !important;
+}
+body.chartFocusMode .workspaceMainMapStudio .mapStudioShell{
+  height:100% !important;
+}
+body.chartFocusMode .mapStudioShell .d3Workspace,
+body.chartFocusMode .mapStudioShell .map-studio-chart,
+body.chartFocusMode .mapStudioShell .d3ChartCard,
+body.chartFocusMode .mapStudioShell .chartMapStage,
+body.chartFocusMode .mapStudioShell .chartMapCanvas{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+}
+body.chartFocusMode .mapStudioShell .d3CandleSvg{
+  height:100% !important;
+  min-height:0 !important;
+}
+body.chartFocusMode .mapStudioShell .chartQuickDock{
+  flex:0 0 auto !important;
+}
+body.chartFocusMode .mapStudioShell .mapStudioHeader{
+  display:none !important;
+}
+body:has(.mapStudioShell.chartFullscreenActive) .appShell{
+  grid-template-columns:0 minmax(0,1fr) 0 !important;
+}
+body:has(.mapStudioShell.chartFullscreenActive) .navLibrary,
+body:has(.mapStudioShell.chartFullscreenActive) .sidebar,
+body:has(.mapStudioShell.chartFullscreenActive) .inspectorPanel,
+body:has(.mapStudioShell.chartFullscreenActive) #pilot-inspector-root{
+  display:none !important;
+}
+body.chartLeftInspectorOpen:not(.mapStudioPilot):has(.mapStudioShell.chartFullscreenActive) #pilot-inspector-root,
+body.chartLeftInspectorOpen:not(.mapStudioPilot):has(.mapStudioShell.chartFullscreenActive) aside.inspectorPanel,
+body.chartLeftInspectorOpen:not(.mapStudioPilot):has(.mapStudioShell) #pilot-inspector-root,
+body.chartLeftInspectorOpen:not(.mapStudioPilot):has(.mapStudioShell) aside.inspectorPanel{
+  display:flex !important;
+  position:fixed !important;
+  left:44px !important;
+  right:auto !important;
+  top:0 !important;
+  bottom:0 !important;
+  width:min(420px,42vw) !important;
+  min-width:320px !important;
+  max-width:420px !important;
+  z-index:10004 !important;
+  grid-column:unset !important;
+  overflow:hidden !important;
+  box-shadow:4px 0 28px rgba(0,0,0,.38) !important;
+}
+body.chartLeftInspectorOpen:not(.mapStudioPilot):has(.navOverlayShell.railExpanded) #pilot-inspector-root,
+body.chartLeftInspectorOpen:not(.mapStudioPilot):has(.navOverlayShell.railExpanded) aside.inspectorPanel{
+  left:168px !important;
+}
+body.chartLeftInspectorOpen .inspectorTabRail,
+.inspectorPanelLeftDock .inspectorTabRail{
+  display:none !important;
+}
+body.chartLeftInspectorOpen .inspectorHeader{
+  padding-bottom:8px !important;
+  border-bottom:1px solid var(--border-terminal,#30363d);
+}
+
+/* Midnight Terminal — structural grid polish */
+.appShell,
+.workspaceMain,
+.navLibrary,
+.sidebar,
+aside.inspectorPanel,
+#pilot-inspector-root.inspectorPanel{
+  background:var(--bg-main);
+}
+.navLibrary,
+.sidebar{
+  background:var(--bg-sidebar) !important;
+  border-right:1px solid var(--border-terminal) !important;
+}
+aside.inspectorPanel,
+#pilot-inspector-root.inspectorPanel{
+  background:var(--bg-sidebar) !important;
+  border-left:1px solid var(--border-terminal) !important;
+}
+.workspaceMain{padding:12px !important;}
+.workspaceMain.workspaceMainMapStudio{padding:0 !important;}
+.topbar{margin-bottom:12px;padding:0 12px;}
+.inspectorTabRail button.active{
+  border-left:2px solid var(--action-gold) !important;
+  background:rgba(227,179,65,.08) !important;
+  color:var(--text) !important;
+}
+.mapStudioShell{
+  gap:0 !important;
+  background:var(--bg-main);
+}
+.mapStudioShell .mapStudioHeader,
+.mapStudioShell .panelHeader.mapStudioHeader{
+  margin:0;
+  padding:12px !important;
+  border:none !important;
+  border-bottom:1px solid var(--border-terminal) !important;
+  border-radius:0 !important;
+  background:var(--bg-main) !important;
+  box-shadow:none !important;
+}
+.mapStudioShell .mapStudioHeader h2,
+.mapStudioShell .mapStudioHeader p{
+  margin:0;
+}
+.mapStudioShell .mapStudioHeader h2{
+  font-size:14px !important;
+  font-weight:700;
+  color:var(--text);
+}
+.mapStudioShell .mapStudioHeader p{
+  font-size:11px !important;
+  color:var(--text-muted) !important;
+}
+.mapStudioShell .mapStudioToolbar,
+.mapStudioShell .mapStudioToolbar.compactMapToolbar,
+.d3MapStudio .mapStudioToolbar{
+  margin:0 !important;
+  padding:12px !important;
+  gap:8px !important;
+  border:none !important;
+  border-bottom:1px solid var(--border-terminal) !important;
+  border-radius:0 !important;
+  background:var(--bg-sidebar) !important;
+  box-shadow:none !important;
+}
+.mapStudioShell .ribbonToggle{
+  border:1px solid var(--border-terminal) !important;
+  background:var(--bg-main) !important;
+  color:var(--text-muted) !important;
+  border-radius:4px !important;
+  padding:6px 10px !important;
+  font-size:11px !important;
+}
+.structuralMappingRibbon,
+.structuralMappingRibbon.ribbonCompact,
+.structuralMappingRibbon.ribbonInline{
+  padding:0 !important;
+  margin:0 !important;
+  border:none !important;
+  border-radius:0 !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  backdrop-filter:none !important;
+}
+.mapStudioShell .d3ChartCard,
+.d3Workspace .d3ChartCard,
+.map-studio-chart .d3ChartCard{
+  border:none !important;
+  border-radius:0 !important;
+  box-shadow:none !important;
+  background:var(--bg-main) !important;
+}
+.mapStudioShell .chartTitleRowMap{
+  padding:12px !important;
+  border-bottom:1px solid var(--border-terminal);
+}
+.rightTabPanel,
+.inspectorContent .rightTabPanel{
+  padding:0 !important;
+}
+.inspectorContent .rightTabPanel > h3,
+.inspectorContent .rightTabPanel > p{
+  padding:0;
+  margin:0 0 8px;
+}
+.inspectorTabRail,
+.inspectorHeader,
+.inspectorContent,
+.inspectorPlaceholder,
+.sidebar,
+.navLibrary{
+  padding:12px !important;
+}
+.inspectorTabRail{
+  padding:0 12px !important;
+}
+.inspectorTabRail button{
+  padding:10px 12px !important;
+  border-left:2px solid transparent !important;
+  border-radius:0 !important;
+  background:transparent !important;
+}
+.inspectorTabRail button.active{
+  border-left:2px solid var(--action-gold) !important;
+  background:rgba(227,179,65,.08) !important;
+  color:var(--text) !important;
+}
+
+/* Navigation rail — icon-only primary nav + settings flyout */
+.navRail{
+  display:flex !important;
+  flex-direction:column !important;
+  padding:0 !important;
+  gap:0 !important;
+}
+.navRailBrand{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:12px;
+  border-bottom:1px solid var(--border-terminal);
+  min-height:56px;
+}
+.navRailBrand .brandLogo{
+  width:32px;
+  height:32px;
+  border-radius:6px;
+}
+.navRailBrandText{
+  font-size:13px;
+  font-weight:700;
+  color:var(--text);
+  letter-spacing:.01em;
+}
+.navRailPrimary{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  padding:12px !important;
+  flex:1 1 auto;
+}
+.navRailFooter{
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:8px;
+  padding:12px !important;
+  border-top:1px solid var(--border-terminal);
+}
+.navIconBtn{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:100%;
+  min-height:44px;
+  padding:10px 12px;
+  border:none;
+  border-left:2px solid transparent;
+  border-radius:6px;
+  background:transparent;
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:color .12s ease,background .12s ease,border-color .12s ease;
+}
+.navIconBtn svg{
+  flex:0 0 auto;
+}
+.navIconBtn:hover{
+  color:var(--text);
+  background:rgba(139,148,158,.08);
+}
+.navIconBtn.active,
+.navIconBtn.open{
+  color:var(--text);
+  background:rgba(227,179,65,.08);
+  border-left-color:var(--action-gold);
+}
+.navRailStatus{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:20px;
+}
+.navSettingsFlyout{
+  position:relative;
+}
+.navFlyoutMenu{
+  position:absolute;
+  left:12px;
+  right:12px;
+  bottom:calc(100% + 8px);
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  padding:6px;
+  border:1px solid var(--border-terminal);
+  border-radius:8px;
+  background:var(--bg-sidebar);
+  box-shadow:0 8px 24px rgba(0,0,0,.35);
+  z-index:30;
+}
+.navFlyoutMenu button{
+  display:block;
+  width:100%;
+  padding:8px 10px;
+  border:none;
+  border-radius:4px;
+  background:transparent;
+  color:var(--text-muted);
+  font-size:12px;
+  font-weight:600;
+  text-align:left;
+  cursor:pointer;
+}
+.navFlyoutMenu button:hover{
+  color:var(--text);
+  background:rgba(139,148,158,.1);
+}
+.mapStudioBooting{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  min-height:100%;
+  background:var(--bg-main);
+}
+.mapStudioBootPlaceholder{
+  color:var(--text-muted);
+  font-size:13px;
+  font-weight:600;
+}
+.mapStudioShell .chartQuickDock{
+  margin:0 0 8px;
+  padding:8px 10px;
+  border:1px solid rgba(148,163,184,.18);
+  border-radius:12px;
+  background:rgba(7,13,24,.82);
+}
+.mapStudioShell .chartQuickDock .quickAnchorBar{
+  position:static !important;
+  transform:none !important;
+  width:100% !important;
+  max-width:none !important;
+}
+
+/* O-N-G-M-C-T floating nav overlay — absolute only; never reflows chart */
+.navOverlayShell{
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  z-index:10003;
+  display:flex;
+  flex-direction:row;
+  align-items:stretch;
+  pointer-events:none;
+}
+.navOverlayShell .navOverlay{
+  position:relative;
+  left:auto;
+  top:auto;
+  bottom:auto;
+  height:100%;
+}
+.navOverlay{
+  position:absolute;
+  left:0;
+  top:0;
+  bottom:0;
+  z-index:100;
+  display:block;
+  width:44px;
+  max-width:44px;
+  overflow:hidden;
+  pointer-events:none;
+  border-right:1px solid var(--border-terminal,#30363d);
+  background:rgba(22,27,34,.94);
+  backdrop-filter:blur(8px);
+  box-shadow:4px 0 18px rgba(0,0,0,.28);
+  transition:width .18s ease,max-width .18s ease;
+}
+.navOverlay.expanded{
+  width:168px;
+  max-width:168px;
+}
+.navOverlayRail{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  padding:8px 6px;
+  height:calc(100% - 36px);
+  overflow-y:auto;
+  pointer-events:auto;
+}
+.navOverlayRail button{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  width:100%;
+  min-height:34px;
+  padding:6px 8px;
+  border:1px solid transparent;
+  border-radius:8px;
+  background:transparent;
+  color:var(--text-muted,#8b949e);
+  font-weight:800;
+  font-size:13px;
+  cursor:pointer;
+  text-align:left;
+  white-space:nowrap;
+}
+.navOverlayRail button:hover{
+  color:var(--text,#e6edf3);
+  background:rgba(139,148,158,.12);
+}
+.navOverlayRail button.active{
+  color:var(--text,#e6edf3);
+  border-color:rgba(227,179,65,.35);
+  background:rgba(227,179,65,.1);
+  border-left:2px solid var(--action-gold,#e3b341);
+}
+.navOverlayIcon{
+  flex:0 0 22px;
+  width:22px;
+  text-align:center;
+  font-size:13px;
+  letter-spacing:.02em;
+}
+.navOverlayLabel{
+  flex:1 1 auto;
+  overflow:hidden;
+  opacity:0;
+  max-width:0;
+  font-size:11px;
+  font-weight:700;
+  transition:opacity .15s ease,max-width .18s ease;
+}
+.navOverlay.expanded .navOverlayLabel{
+  opacity:1;
+  max-width:120px;
+}
+.navOverlayPin{
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:0;
+  height:32px;
+  border:0;
+  border-top:1px solid var(--border-terminal,#30363d);
+  background:rgba(13,17,23,.92);
+  color:var(--text-muted,#8b949e);
+  font-size:12px;
+  cursor:pointer;
+  pointer-events:auto;
+}
+.navOverlayPin:hover,
+.navOverlayPin.active{
+  color:var(--action-gold,#e3b341);
+  background:rgba(227,179,65,.08);
+}
+.mapStudioShell.chartFullscreenActive .navOverlay{
+  z-index:10003;
+}
+/* Left inspector open: keep nav rail inside 60px column — expanded rail must not cover panel content */
+body.mapStudioPilot .map-studio-nav-rail .navOverlayShell.panelOpen,
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open) .map-studio-nav-rail{
+  overflow:hidden !important;
+}
+body.mapStudioPilot .map-studio-nav-rail .navOverlayShell.panelOpen{
+  max-width:60px !important;
+}
+body.mapStudioPilot .map-studio-nav-rail .navOverlayShell.panelOpen .navOverlay,
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open) .map-studio-nav-rail .navOverlay{
+  width:44px !important;
+  max-width:60px !important;
+  box-shadow:none !important;
+}
+body.mapStudioPilot .map-studio-nav-rail .navOverlayShell.panelOpen .navOverlay.expanded,
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open) .map-studio-nav-rail .navOverlay.expanded{
+  width:60px !important;
+  max-width:60px !important;
+}
+body.mapStudioPilot .map-studio-nav-rail .navOverlayShell.panelOpen .navOverlay.expanded .navOverlayLabel,
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open) .navOverlay.expanded .navOverlayLabel{
+  opacity:0 !important;
+  max-width:0 !important;
+}
+
+/* ── Pilot grid shell: nav | chart | inspector — chart reflows without absolute hacks ── */
+body.mapStudioPilot .appShell{
+  grid-template-columns:250px minmax(0,1fr) 0 !important;
+}
+body.mapStudioPilot #pilot-inspector-root,
+body.mapStudioPilot aside.inspectorPanel{
+  display:none !important;
+}
+body.mapStudioPilot.chartLeftInspectorOpen #pilot-inspector-root,
+body.mapStudioPilot.chartLeftInspectorOpen aside.inspectorPanel{
+  display:none !important;
+  position:static !important;
+  width:0 !important;
+  min-width:0 !important;
+  max-width:0 !important;
+  overflow:hidden !important;
+  box-shadow:none !important;
+}
+body.mapStudioPilot .workspaceMainMapStudio{
+  min-height:0 !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+body.mapStudioPilot .mapStudioShell{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+body.mapStudioPilot .map-studio-shell{
+  display:grid !important;
+  grid-template-columns:60px minmax(0,1fr) !important;
+  grid-template-rows:minmax(0,1fr) !important;
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  min-width:0 !important;
+  width:100% !important;
+  overflow:hidden !important;
+  position:relative !important;
+}
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen{
+  grid-template-columns:60px 350px minmax(0,1fr) !important;
+}
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open){
+  grid-template-columns:60px 350px minmax(0,1fr) !important;
+}
+/* body.chartLeftInspectorOpen mirrors navOverlayPanelOpen — avoids chart bleeding through inspector column */
+body.mapStudioPilot.chartLeftInspectorOpen .map-studio-shell{
+  grid-template-columns:60px 350px minmax(0,1fr) !important;
+}
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell{
+  grid-template-columns:60px minmax(0,1fr) !important;
+  display:grid !important;
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  height:100% !important;
+  width:100% !important;
+}
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell.inspectorDockOpen,
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell:has(.map-studio-inspector.open){
+  grid-template-columns:60px 350px minmax(0,1fr) !important;
+}
+body.mapStudioPilot.chartLeftInspectorOpen .mapStudioShell.chartFullscreenActive .map-studio-shell{
+  grid-template-columns:60px 350px minmax(0,1fr) !important;
+}
+/* Full chart: chart stays in grid — never viewport-fixed over left inspector */
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-chart.d3Workspace,
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-chart{
+  position:relative !important;
+  inset:auto !important;
+  top:auto !important;
+  left:auto !important;
+  right:auto !important;
+  bottom:auto !important;
+  z-index:1 !important;
+  width:auto !important;
+  height:auto !important;
+  min-height:0 !important;
+  flex:1 1 auto !important;
+  display:flex !important;
+  flex-direction:column !important;
+  grid-column:2 !important;
+  grid-template-columns:none !important;
+  gap:0 !important;
+  padding:0 !important;
+  margin:0 !important;
+  background:#020617 !important;
+  overflow:hidden !important;
+}
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell:has(.map-studio-inspector.open) .map-studio-chart.d3Workspace,
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell:has(.map-studio-inspector.open) .map-studio-chart,
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell.inspectorDockOpen .map-studio-chart{
+  grid-column:3 !important;
+}
+body.mapStudioPilot.chartLeftInspectorOpen .mapStudioShell.chartFullscreenActive .map-studio-chart.d3Workspace,
+body.mapStudioPilot.chartLeftInspectorOpen .mapStudioShell.chartFullscreenActive .map-studio-chart{
+  grid-column:3 !important;
+  position:relative !important;
+  width:auto !important;
+  height:auto !important;
+}
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-nav-rail{
+  z-index:10001 !important;
+}
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-nav-rail .navOverlayShell{
+  z-index:10001 !important;
+}
+body.mapStudioPilot .map-studio-nav-rail{
+  grid-column:1 !important;
+  position:relative !important;
+  width:60px !important;
+  min-width:60px !important;
+  max-width:60px !important;
+  min-height:0 !important;
+  overflow:visible !important;
+  z-index:12 !important;
+  flex-shrink:0 !important;
+}
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open) .map-studio-nav-rail{
+  overflow:hidden !important;
+}
+body.mapStudioPilot .map-studio-nav-rail .navOverlayShell{
+  position:absolute !important;
+  left:0 !important;
+  top:0 !important;
+  bottom:0 !important;
+  height:100% !important;
+  pointer-events:none !important;
+}
+body.mapStudioPilot .map-studio-chart{
+  grid-column:2 !important;
+  min-width:0 !important;
+  max-width:100% !important;
+  min-height:0 !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+}
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open) .map-studio-chart{
+  grid-column:3 !important;
+}
+body.mapStudioPilot.chartLeftInspectorOpen .map-studio-chart,
+body.mapStudioPilot.chartLeftInspectorOpen .map-studio-chart.d3Workspace{
+  grid-column:3 !important;
+  z-index:1 !important;
+}
+body.mapStudioPilot .map-studio-chart.d3Workspace{
+  display:flex !important;
+  flex-direction:column !important;
+  grid-template-columns:none !important;
+  min-width:0 !important;
+}
+body.mapStudioPilot .map-studio-inspector{
+  position:relative !important;
+  grid-column:2 !important;
+  grid-row:1 !important;
+  top:auto !important;
+  left:auto !important;
+  right:auto !important;
+  bottom:auto !important;
+  width:0 !important;
+  min-width:0 !important;
+  max-width:0 !important;
+  overflow:hidden !important;
+  border-right:none !important;
+  display:none !important;
+  flex-direction:column !important;
+  z-index:8 !important;
+  pointer-events:none !important;
+}
+body.mapStudioPilot .map-studio-inspector.open{
+  display:flex !important;
+  width:350px !important;
+  min-width:350px !important;
+  max-width:350px !important;
+  min-height:0 !important;
+  border-right:1px solid var(--border-terminal,#30363d) !important;
+  background:var(--bg-sidebar,#0d1117) !important;
+  pointer-events:auto !important;
+  box-shadow:4px 0 28px rgba(0,0,0,.28) !important;
+  overflow:hidden !important;
+  z-index:10005 !important;
+}
+body.mapStudioPilot.chartLeftInspectorOpen .map-studio-nav-rail .navOverlayShell{
+  z-index:11 !important;
+  max-width:60px !important;
+}
+body.mapStudioPilot.chartLeftInspectorOpen .map-studio-inspector.open{
+  grid-column:2 !important;
+  z-index:10005 !important;
+}
+body.mapStudioPilot .map-studio-inspector.open .inspectorPanelInner,
+body.mapStudioPilot .map-studio-inspector.open .inspectorBody,
+body.mapStudioPilot .map-studio-inspector.open .inspectorContent{
+  min-width:0 !important;
+  width:100% !important;
+}
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-inspector.open{
+  z-index:10005 !important;
+}
+body.mapStudioPilot .map-studio-inspector .inspectorPanelLeftDock{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  width:100% !important;
+}
+body.mapStudioPilot .map-studio-chart .d3Workspace,
+body.mapStudioPilot .map-studio-chart .d3ChartCard{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  min-width:0 !important;
+  overflow:hidden !important;
+  height:100% !important;
+}
+body.mapStudioPilot .chart-parent-wrapper,
+body.mapStudioPilot .chartPilotLayer{
+  position:relative !important;
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  min-width:0 !important;
+  width:100% !important;
+  height:100% !important;
+  overflow:hidden !important;
+  display:flex !important;
+  flex-direction:column !important;
+  pointer-events:auto !important;
+}
+body.mapStudioPilot .chart-canvas,
+body.mapStudioPilot .chartPilotCanvas,
+body.mapStudioPilot .chartPilotLayer .chartMapCanvas{
+  position:relative !important;
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  min-width:0 !important;
+  width:100% !important;
+  height:100% !important;
+  pointer-events:auto !important;
+}
+body.mapStudioPilot .chartPilotCanvas .d3CandleSvg,
+body.mapStudioPilot .chartPilotLayer .d3CandleSvg{
+  width:100% !important;
+  height:100% !important;
+  min-height:0 !important;
+}
+body.mapStudioPilot .chartPilotLayer > :not(.chartMapCanvas):not(.chartPilotCanvas){
+  position:absolute !important;
+  z-index:8 !important;
+}
+body.mapStudioPilot .chartPilotLayer > .chartGestureHint,
+body.mapStudioPilot .chartPilotLayer > .chartCrosshairHud,
+body.mapStudioPilot .chartPilotLayer > .chartReplayOverlay,
+body.mapStudioPilot .chartPilotLayer > .parentRangeMiniBar{
+  pointer-events:none !important;
+}
+body.mapStudioPilot .chartPilotLayer > .chartDrawToolbar,
+body.mapStudioPilot .chartPilotLayer > .structuralMappingDock,
+body.mapStudioPilot .chartPilotLayer > .mapStudioWelcome,
+body.mapStudioPilot .chartPilotLayer > .fullscreenTfDock{
+  pointer-events:auto !important;
+}
+
+/* ── Left inspector dock final lock (grid only — chart column 3, inspector column 2) ── */
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen,
+body.mapStudioPilot .map-studio-shell:has(.map-studio-inspector.open){
+  display:grid !important;
+  grid-template-columns:60px 350px minmax(0,1fr) !important;
+  grid-template-rows:minmax(0,1fr) !important;
+  position:relative !important;
+  overflow:hidden !important;
+}
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen .map-studio-nav-rail{
+  grid-column:1 !important;
+  grid-row:1 !important;
+  overflow:hidden !important;
+}
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen .map-studio-inspector.open{
+  grid-column:2 !important;
+  grid-row:1 !important;
+  z-index:10010 !important;
+  isolation:isolate !important;
+  background:var(--bg-sidebar,#0d1117) !important;
+  pointer-events:auto !important;
+}
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen .map-studio-inspector.open .inspectorPanelInner,
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen .map-studio-inspector.open .inspectorBody,
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen .map-studio-inspector.open .inspectorContent{
+  width:100% !important;
+  max-width:100% !important;
+  min-width:0 !important;
+  box-sizing:border-box !important;
+}
+body.mapStudioPilot .map-studio-shell.inspectorDockOpen .map-studio-chart,
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell.inspectorDockOpen .map-studio-chart,
+body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell:has(.map-studio-inspector.open) .map-studio-chart{
+  grid-column:3 !important;
+  grid-row:1 !important;
+  min-width:0 !important;
+  z-index:1 !important;
+  overflow:hidden !important;
+  position:relative !important;
+}

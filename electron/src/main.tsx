@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { createRoot } from 'react-dom/client';
-import { Activity, AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, Map as MapIcon, RefreshCw, Save, Settings, Target, Zap } from 'lucide-react';
+import { AlertTriangle, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Database, FileText, RefreshCw, Save, Settings, Target } from 'lucide-react';
 import { buildRawPayloadJson, clearRawCases, createRawCase, exportRawCaseEvents, groupRawDisplayEventsByTimeframe, listRawCases, saveRawEvent } from './rawMapping';
+import { inspectorCommit, inspectorCommitOrThrow, type InspectorCommitSource } from './inspectorCommit';
 import { AnalystPage } from './analystPage';
 import {
   buildMasterCaseName,
@@ -11,7 +12,6 @@ import {
   type ExplorerMappingMode,
   type MappingGap,
 } from './mappingWorkflow';
-import brandLogo from '../assets/logo.png';
 import {
   CHART_DRAWING_COLORS,
   type ChartDrawTool,
@@ -40,20 +40,85 @@ import {
   tradeIdeaEndDate,
   type TradeIdeaOverlaySpec,
 } from './chartTradeIdeas';
+import {
+  clearAllUIAnchors,
+  clearMappingEventsForContainer,
+  resolveActiveCaseDisplayId,
+  STALE_CACHE_BLOCKED,
+} from './syncService';
 import { MapTradeIdeaPanel } from './mapTradeIdeaPanel';
+import { InspectorPanel, type InspectorTabId } from './inspectorPanel';
+import { NavRail, MAP_STUDIO_SHELL_CLASS, MAP_STUDIO_SHELL_GRID, MAP_STUDIO_SHELL_STYLE } from './appShell';
+import { useLocalStorage } from './useLocalStorage';
+import {
+  buildCandleSelectionHint,
+  buildRangeSelectionHint,
+  routeInspectorForCandleSelection,
+  routeInspectorForRangeSelection,
+  type InspectorContextHint,
+} from './inspectorContext';
+import {
+  inspectorFormCacheKey,
+  readInspectorFormCache,
+  writeInspectorFormCache,
+} from './inspectorFormCache';
+import { draftRangeLineStyle, savedRangeLineStyle } from './rangeLineStyle';
+import { CockpitOverviewProvider } from './cockpitOverviewContext';
+import { InspectorOverviewDashboard } from './inspectorOverviewDashboard';
 import { ReviewCandidatePanel } from './reviewCandidatePanel';
 import type { RangeAuditViewTarget } from './reviewCandidateClient';
+import { useMappingDraft } from './hooks/useMappingDraft';
+import { useReactiveMappingEventsPersistence } from './hooks/useReactiveMappingEventsPersistence';
+import { useFingerErrorStack } from './fingerErrorStack';
+import { createDebouncedResizeHandler } from './chartResizeDebounce';
+import { createLayoutResizeGuard } from './chartLayoutResizeGuard';
+import { useViewportClamping } from './hooks/useViewportClamping';
+import { normalizeChartTf } from './mappingDraftBoundary';
+import { MappingViewContextSwitcher } from './mappingViewContextSwitcher';
+import {
+  mappingViewContextAvailable,
+  resolveChildChartTimeframe,
+  resolveMappingViewChartTimeframe,
+  resolveParentChartTimeframe,
+  type MappingViewContext,
+} from './mappingViewContext';
+import {
+  clampChartTransformToTimeBounds,
+  intersectClampSpanWithCandles,
+  resolveChartPanBounds,
+} from './viewportClamping';
+import { writeAutoResumeSession } from './autoResumeStorage';
+import { useAutoResume } from './hooks/useAutoResume';
+import { ghostRangeUiClearMessage } from './rangeRehydrationService';
+import {
+  persistRemoteCandlesToCache,
+  readLocalCacheBarCount,
+  syncSymbolAllTimeframesToCache,
+} from './candleBootService';
+import {
+  DEFAULT_RESYNC_INTERVAL_MS,
+  getSyncService,
+  initBackgroundCandleSync,
+} from './syncService';
+import { type AppPage } from './appNavigation';
+import { NavSidebar, useAppPageNavigation } from './navSidebar';
+import { useCockpitSync } from './hooks/useCockpitSync';
+import { resolveVpsBaseUrl } from './vpsConfig';
+import { createChartRenderGate } from './chartRenderGate';
+import { loadSessionFromSyncArchitect } from './syncArchitectLoad';
+import {
+  isStaleRehydrationLoad,
+  purgeGhostMappingLocalStorage,
+} from './mapStudioStaleRehydration';
 import './styles.css';
 
-const BASE_URL = 'https://api01.apexcoastalrentals.co.za';
-const CANDLE_SYNC_INTERVAL_MS = 15 * 60 * 1000;
-const CANDLE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const BASE_URL = resolveVpsBaseUrl();
 const DEBUG_CAMERA = false;
 const SYMBOLS = ['XAUUSD', 'US500.cash'];
 const ZONES = ['Ext L', 'DD', 'D', 'Fair', 'P', 'DP', 'Ext H'];
 const LAYERS = ['weekly', 'daily', 'intraday'] as const;
 type LayerKey = typeof LAYERS[number];
-type Page = 'visual' | 'ideas' | 'live' | 'journal' | 'sql' | 'settings' | 'data' | 'brain' | 'historical' | 'mapstudio';
+type Page = AppPage;
 type CameraIntent = 'LATEST' | 'FIT_ALL' | 'CASE' | 'REPLAY' | 'RANGE' | 'FIT_STRUCTURAL_RANGE' | 'RESTORE_LOCKED' | 'PRESERVE_OR_NEAREST_TIME' | 'HORIZONTAL_STRETCH' | 'VERTICAL_STRETCH' | 'NONE';
 type StructuralFitWindow = { start: string; end: string; low: number; high: number; padRatio?: number };
 type CameraCommand = { intent: CameraIntent; token: number; targetTime?: string | null; reason?: string; scaleFactor?: number; fitWindow?: StructuralFitWindow | null; priceDomain?: { low: number; high: number } | null };
@@ -260,50 +325,27 @@ function telemetryForMap(layer: LayerKey, visual: VisualLayer, livePrice?: numbe
 
 function App() {
   const [symbol, setSymbol] = useLocalStorage('fx_tm_symbol', 'XAUUSD');
-  const [page, setPage] = useLocalStorage<Page>('fx_tm_page', 'visual');
-  const [state, setState] = useState<any>(null);
-  const [active, setActive] = useState<any>(null);
-  const [journal, setJournal] = useState<any[]>([]);
-  const [status, setStatus] = useState<any>(null);
-  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
-  const [ohlcStatus, setOhlcStatus] = useState<any>(null);
-  const [journalSummary, setJournalSummary] = useState<any>(null);
-  const [structuredJournal, setStructuredJournal] = useState<any>(null);
-  const [detailedJournal, setDetailedJournal] = useState<any>(null);
-  const [brain, setBrain] = useState<any>(null);
+  const { page, setPage } = useAppPageNavigation();
+  const {
+    state,
+    activeTrade: active,
+    journal,
+    status,
+    brain,
+    journalSummary,
+    structuredJournal,
+    detailedJournal,
+    apiOnline,
+    error,
+    lastRefresh,
+    refresh,
+  } = useCockpitSync(symbol, BASE_URL);
   const [ideas, setIdeas] = useLocalStorage<TradeIdea[]>('fx_tm_trade_ideas', []);
   const [selectedIdea, setSelectedIdea] = useState<string | null>(null);
   const [visuals, rawSetVisuals] = useLocalStorage<VisualStore>('fx_tm_visual_layers_v027', defaultVisual);
   const visualsSafe = useMemo(() => normalizeVisuals(visuals), [visuals]);
   const setVisuals = (v: VisualStore) => rawSetVisuals(normalizeVisuals(v));
-  const [collapsed, setCollapsed] = useLocalStorage<boolean>('fx_tm_sidebar_collapsed', false);
-  const [lastRefresh, setLastRefresh] = useState('');
-  const [error, setError] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
-  const [showOverviewLive, setShowOverviewLive] = useLocalStorage<boolean>('fx_tm_show_overview_live_panel', false);
-
-  const load = async () => {
-    setError('');
-    try {
-      const [s, a, j, db, brainSnap, journalReport, structuredReport, detailedReport, candleStatus] = await Promise.all([
-        fetch(`${BASE_URL}/state?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()),
-        fetch(`${BASE_URL}/trade/active?symbol=${encodeURIComponent(symbol)}&account=challenge`).then(r => r.json()).catch(() => null),
-        fetch(`${BASE_URL}/sql/trades/recent?limit=12`).then(r => r.json()).catch(() => ({ trades: [] })),
-        fetch(`${BASE_URL}/sql/status`).then(r => r.json()).catch(() => null),
-        fetch(`${BASE_URL}/api/v1/lifecycle/brain?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
-        fetch(`${BASE_URL}/api/v1/journal/report/summary?symbol=${encodeURIComponent(symbol)}`).then(r => r.json()).catch(() => null),
-        fetch(`${BASE_URL}/api/v1/journal/report/recent?symbol=${encodeURIComponent(symbol)}&limit=50`).then(r => r.json()).catch(() => null),
-        fetch(`${BASE_URL}/api/v1/journal/trades/detailed?symbol=${encodeURIComponent(symbol)}&limit=50`).then(r => r.json()).catch(() => null),
-        fetch(`${BASE_URL}/api/v1/candles/status`).then(r => r.json()).catch(() => null),
-      ]);
-      setState(s); setActive(a); setJournal(j.trades || j.rows || []); setStatus(db); setBrain(brainSnap); setJournalSummary(journalReport); setStructuredJournal(structuredReport); setDetailedJournal(detailedReport);
-      setApiOnline(!!(candleStatus?.ok || s?.symbol));
-      setOhlcStatus(candleStatus?.ok ? candleStatus : null);
-      setLastRefresh(new Date().toLocaleTimeString());
-    } catch (e: any) { setApiOnline(false); setError(e?.message || 'Could not reach backend'); }
-  };
-
-  useEffect(() => { load(); const t = setInterval(load, 7000); return () => clearInterval(t); }, [symbol]);
 
   const engine = state?.engine?.htf_map || {};
   const pickedIdea = ideas.find(x => x.id === selectedIdea) || ideas[0];
@@ -357,71 +399,60 @@ function App() {
     setTimeout(() => setSaveMsg(''), 4200);
   };
 
-  return <div className={`appShell ${collapsed ? 'navCollapsed' : ''}`}>
-    <aside className="sidebar">
-      <button className="collapseBtn" onClick={() => setCollapsed(!collapsed)} title="Hide/show tabs">{collapsed ? <ChevronRight size={18}/> : <ChevronLeft size={18}/>}<span>{collapsed ? '' : 'Hide tabs'}</span></button>
-      <div className="brandBlock"><img className="brandLogo" src={brandLogo} alt="FX TrendMaster" />{!collapsed && <div><h1>TrendMaster</h1><p>Electron Cockpit v0.34</p></div>}</div>
-      <div className="navGroup">
-        <NavItem icon={<Activity size={18}/>} label="Overview Maps" page="visual" active={page==='visual'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<MapIcon size={18}/>} label="Map Studio" page="mapstudio" active={page==='mapstudio'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<FileText size={18}/>} label="Trade Ideas" page="ideas" active={page==='ideas'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<Target size={18}/>} label="Lifecycle Catch-Up" page="brain" active={page==='brain'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<Zap size={18}/>} label="Live Trade" page="live" active={page==='live'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<BookOpen size={18}/>} label="Journal" page="journal" active={page==='journal'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<Database size={18}/>} label="Data Collection Statistics" page="data" active={page==='data'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<BookOpen size={18}/>} label="Historical Builder" page="historical" active={page==='historical'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<Settings size={18}/>} label="Display Settings" page="settings" active={page==='settings'} collapsed={collapsed} setPage={setPage}/>
-        <NavItem icon={<Database size={18}/>} label="SQL" page="sql" active={page==='sql'} collapsed={collapsed} setPage={setPage}/>
+  const overviewMaps = useMemo(() => (
+    <>
+      <div className="mapPair topContextPair">
+        <XYTrajectoryPanel title="Weekly Map" layerKey="weekly" layer={engine.weekly} visual={visualsSafe.weekly} updateVisual={updateVisual} accent="gold" livePrice={livePrice} readOnly compact />
+        <XYTrajectoryPanel title="Daily Map" layerKey="daily" layer={engine.daily} visual={visualsSafe.daily} updateVisual={updateVisual} accent="blue" livePrice={livePrice} readOnly compact />
       </div>
-      {!collapsed && <div className="sidebarFooter"><p className="muted">API</p><p className="apiText">{BASE_URL}</p><div className="statusDot"><span className={`dot ${apiOnline ? 'online' : 'offline'}`} />{apiOnline ? 'VPS Online' : apiOnline === false ? 'VPS Offline' : 'Checking VPS…'}</div>{apiOnline && ohlcStatus?.candles != null && <p className="sidebarInfo">OHLC ledger: {Number(ohlcStatus.candles).toLocaleString()} candles in market_memory.db</p>}{apiOnline && <p className="sidebarInfo">Raw mapping ledger: raw_mapping_v159.db (Python reads this + OHLC)</p>}{status?.ok === false && apiOnline && <p className="sidebarInfo sidebarInfoOptional">Trade SQL journal not deployed — optional, not used for mapping.</p>}</div>}
-    </aside>
-    <main className="mainArea">
-      <header className="topbar">
+      <div className="intradayHero">
+        <XYTrajectoryPanel title="Intraday Execution Map" layerKey="intraday" layer={engine.macro || engine.weekly} visual={visualsSafe.intraday} updateVisual={updateVisual} accent="cyan" intraday={state?.intraday || state?.mobile_intraday} livePrice={livePrice} readOnly compact />
+      </div>
+    </>
+  ), [engine.weekly, engine.daily, engine.macro, visualsSafe.weekly, visualsSafe.daily, visualsSafe.intraday, state?.intraday, state?.mobile_intraday, livePrice, updateVisual]);
+
+  const overviewPlanning = useMemo(() => (
+    <div className="overviewPlanningStrip">
+      <TradeIdeaPanel ideas={ideas} setIdeas={setIdeas} selectedIdea={selectedIdea} setSelectedIdea={setSelectedIdea} state={state} brain={brain} currentSymbol={symbol} />
+    </div>
+  ), [ideas, selectedIdea, state, brain, symbol, setIdeas]);
+
+  const cockpitOverviewValue = useMemo(() => ({
+    overviewMaps,
+    overviewPlanning,
+    brain,
+    symbol,
+  }), [overviewMaps, overviewPlanning, brain, symbol]);
+
+  return <CockpitOverviewProvider value={cockpitOverviewValue}><div className="appShell">
+    <NavSidebar page={page} apiOnline={apiOnline} onNavigate={setPage} onRefresh={() => void refresh()} />
+    <main className={`workspaceMain ${page === 'mapstudio' ? 'workspaceMainMapStudio' : ''}`}>
+      {page !== 'mapstudio' && <header className="topbar">
         <div><h2>{pageTitle(page)}</h2><p>{pageSubtitle(page)}</p></div>
-        <div className="topActions"><select value={symbol} onChange={e => setSymbol(e.target.value)}>{SYMBOLS.map(s => <option key={s}>{s}</option>)}</select><button onClick={load}><RefreshCw size={16}/> Refresh</button>{page === 'settings' && <button onClick={localSave}><Save size={16}/> Save Local</button>}<span className="timePill">{saveMsg || lastRefresh || '-'}</span></div>
-      </header>
-      {error && <div className="errorBox"><AlertTriangle size={16}/>{error}</div>}
+        <div className="topActions"><select value={symbol} onChange={e => setSymbol(e.target.value)}>{SYMBOLS.map(s => <option key={s}>{s}</option>)}</select><button onClick={() => void refresh()}><RefreshCw size={16}/> Refresh</button>{page === 'settings' && <button onClick={localSave}><Save size={16}/> Save Local</button>}<span className="timePill">{saveMsg || lastRefresh || '-'}</span></div>
+      </header>}
+      {error && page !== 'mapstudio' && <div className="errorBox"><AlertTriangle size={16}/>{error}</div>}
 
-      {page === 'mapstudio' && <section className="singlePage"><MapStudio symbol={symbol} /></section>}
-
-      {page === 'visual' && <section className="overviewMapsPage">
-        <div className="overviewCommandRow">
-          <div>
-            <b>Map overview</b>
-            <span>Weekly destination · Daily route · Intraday execution</span>
-          </div>
-          <button className={`panelToggle ${showOverviewLive ? 'active' : ''}`} onClick={() => setShowOverviewLive(!showOverviewLive)}>
-            <Zap size={15}/> {showOverviewLive ? 'Hide Active Trade' : 'Show Active Trade'}
-          </button>
-        </div>
-        <div className="mapPair topContextPair">
-          <XYTrajectoryPanel title="Weekly Map" layerKey="weekly" layer={engine.weekly} visual={visualsSafe.weekly} updateVisual={updateVisual} accent="gold" livePrice={livePrice} readOnly compact/>
-          <XYTrajectoryPanel title="Daily Map" layerKey="daily" layer={engine.daily} visual={visualsSafe.daily} updateVisual={updateVisual} accent="blue" livePrice={livePrice} readOnly compact/>
-        </div>
-        <div className="intradayHero">
-          <XYTrajectoryPanel title="Intraday Execution Map" layerKey="intraday" layer={engine.macro || engine.weekly} visual={visualsSafe.intraday} updateVisual={updateVisual} accent="cyan" intraday={state?.intraday || state?.mobile_intraday} livePrice={livePrice} readOnly compact/>
-        </div>
-        <LifecycleBrainPanel brain={brain} />
-        <div className="overviewPlanningStrip">
-          <TradeIdeaPanel ideas={ideas} setIdeas={setIdeas} selectedIdea={pickedIdea} setSelectedIdea={setSelectedIdea} state={state} brain={brain} currentSymbol={symbol}/>
-        </div>
-        {showOverviewLive && <div className="overviewLivePopover"><LiveTradePanel data={active} idea={pickedIdea}/></div>}
-      </section>}
+      {page === 'mapstudio' && <MapStudio symbol={symbol} onSymbolChange={setSymbol} />}
 
       {page === 'ideas' && <section className="singlePage"><TradeIdeaPanel large ideas={ideas} setIdeas={setIdeas} selectedIdea={pickedIdea} setSelectedIdea={setSelectedIdea} state={state} brain={brain} currentSymbol={symbol}/></section>}
-      {page === 'brain' && <section className="singlePage"><LifecycleCatchUpWizard symbol={symbol} onSaved={load} /></section>}
-      {page === 'live' && <section className="singlePage"><LiveTradePanel large data={active} idea={pickedIdea}/></section>}
+      {page === 'brain' && <section className="singlePage"><LifecycleCatchUpWizard symbol={symbol} onSaved={() => void refresh()} /></section>}
       {page === 'journal' && <section className="singlePage"><JournalPage rows={journal} summary={journalSummary} structured={structuredJournal} detailed={detailedJournal}/></section>}
       {page === 'data' && <section className="singlePage"><AnalystPage /></section>}
       {page === 'historical' && <section className="singlePage"><HistoricalLifecycleBuilder symbol={symbol} visuals={visualsSafe} /></section>}
       {page === 'sql' && <section className="singlePage"><SqlPage status={status} journal={journal} summary={journalSummary} structured={structuredJournal}/></section>}
       {page === 'settings' && <section className="singlePage"><GraphSettings visuals={visualsSafe} setVisuals={setVisuals} updateVisual={updateVisual} localSave={localSave} saveMapsToBackend={saveMapsToBackend} loadMapsFromBackend={loadMapsFromBackend}/></section>}
     </main>
-  </div>;
+    <aside className="inspectorPanel" id="pilot-inspector-root" aria-label="Inspector">
+      {page !== 'mapstudio' && (
+        <div className="inspectorPlaceholder">
+          <b>Inspector</b>
+          <span>Open Map Studio for Dashboard, Narrative, GPS, Mark, Case Manager, and Trade Idea panels.</span>
+        </div>
+      )}
+    </aside>
+  </div></CockpitOverviewProvider>;
 }
-
-function NavItem({ icon, label, page, active, collapsed, setPage }: any) { return <button className={`navItem ${active ? 'active' : ''}`} title={label} onClick={() => setPage(page)}>{icon}{!collapsed && <span>{label}</span>}</button>; }
-
 
 type Candle = { symbol:string; timeframe:string; time:string; open:number; high:number; low:number; close:number; volume?:number };
 type MapEvent = { id:string; event_type:string; event_name?:string; time?:string; price:number; zone?:string; zone_percent?:number; notes?:string; candle_open?:number; candle_high?:number; candle_low?:number; candle_close?:number; source?:'map'|'seed'|'auto'|'candidate'|'manual'; primitive?:string; derived_event_code?:string; movement_rule?:string; range_status_after?:string; engine_source?:string; logic_version?:string; candidate_id?:string; confidence?:string; candidate_status?:'ACCEPTED'|'REJECTED'|'EDITED'|'CANDIDATE'; meta_json?:any; structural_event?:string; layer?:string; parent_timeframe?:string; range_id?:any; active_range_id?:any; parent_range_id?:any; old_range_id?:any; new_range_id?:any; raw_event_id?:string };
@@ -576,10 +607,6 @@ function filterRangesForExplorerYear(ranges: any[], yearFilter: string): any[] {
   const year = Number(yearFilter);
   if (!Number.isFinite(year)) return safeArray(ranges);
   return safeArray(ranges).filter((r:any) => rangeYearBucket(r) === year);
-}
-function structureLayerRequiresParentConfirmation(layer: StructureLayer, rangeScope: RangeScope = 'MAJOR'): boolean {
-  if (rangeScope === 'MINOR') return true;
-  return layer === 'DAILY' || layer === 'INTRADAY' || layer === 'MICRO';
 }
 function parentRangeIdForStructureLayer(layer: StructureLayer, rangeScope: RangeScope, selectedParentRangeId: string): string | null {
   if (rangeScope === 'MAJOR' && layer === 'MACRO') return null;
@@ -1057,9 +1084,19 @@ function resolveCandleLoadWindow(
   selectedParentRangeId: string,
   activeStructuralRangeId: string,
   rangeWindow: { start?: string; end?: string },
-  options?: { liveTail?: boolean },
+  options?: { liveTail?: boolean; preferredWindow?: { start?: string | null; end?: string | null } | null },
 ): { start: string; end: string; label: string } | null {
   const liveEnd = options?.liveTail ? todayIsoDay() : null;
+  const preferredStart = isoDay(options?.preferredWindow?.start);
+  const preferredEnd = liveEnd || isoDay(options?.preferredWindow?.end || options?.preferredWindow?.start);
+  if (preferredStart && preferredEnd) {
+    return { start: preferredStart, end: preferredEnd, label: 'chart viewport' };
+  }
+  const rangeStart = isoDay(rangeWindow.start);
+  const rangeEnd = liveEnd || isoDay(rangeWindow.end || rangeWindow.start);
+  if (rangeStart && rangeEnd && isIntradayChartTimeframe(targetTf)) {
+    return { start: rangeStart, end: rangeEnd, label: 'active case window' };
+  }
   if (!isIntradayChartTimeframe(targetTf)) return null;
   const contextRange = resolveMappingContextRange(savedRanges, selectedParentRangeId, activeStructuralRangeId);
   if (contextRange) {
@@ -1072,9 +1109,7 @@ function resolveCandleLoadWindow(
       }
     }
   }
-  const start = isoDay(rangeWindow.start);
-  const end = liveEnd || isoDay(rangeWindow.end || rangeWindow.start);
-  if (start && end) return { start, end, label: 'active case window' };
+  if (rangeStart && rangeEnd) return { start: rangeStart, end: rangeEnd, label: 'active case window' };
   return null;
 }
 
@@ -1179,8 +1214,12 @@ function parentLinkModeLabel(mode: ParentResolveMode): string {
   if (mode === 'single_candidate') return 'Auto-linked by date containment';
   if (mode === 'manual') return 'Parent from explorer';
   if (mode === 'multiple_matches') return 'Multiple parents — click one in Explorer';
-  if (mode === 'no_match') return 'No parent found';
+  if (mode === 'no_match') return 'No parent linked yet';
   return 'No parent required';
+}
+
+function isRootStructuralLayer(layer: StructureLayer, rangeScope: RangeScope): boolean {
+  return rangeScope === 'MAJOR' && (layer === 'MACRO' || layer === 'WEEKLY');
 }
 
 function structuralRangeDateFields(
@@ -1301,6 +1340,52 @@ function structuralMappingScopeFields(structureLayer: StructureLayer, sourceTime
   };
 }
 
+const STRUCTURAL_CHART_EVENT_TYPES = new Set([
+  'BOS_UP',
+  'BOS_DOWN',
+  'RANGE_HIGH_SELECTED',
+  'RANGE_LOW_SELECTED',
+  'BREAK_HIGH_SELECTED',
+  'BREAK_LOW_SELECTED',
+]);
+
+function isStructuralChartEventType(eventType: unknown): boolean {
+  return STRUCTURAL_CHART_EVENT_TYPES.has(String(eventType || '').toUpperCase());
+}
+
+function mapStructuralEventRowToChartEvent(e: any): MapEvent | null {
+  const eventType = String(e?.event_type || e?.structural_event || '').toUpperCase();
+  const time = e?.event_time || e?.time || e?.candle_time;
+  const price = parseNum(e?.event_price ?? e?.price ?? e?.break_level_price);
+  if (!eventType || !time || !Number.isFinite(price)) return null;
+  let meta_json = e?.meta_json;
+  if (typeof meta_json === 'string') {
+    try { meta_json = JSON.parse(meta_json); } catch { /* keep raw string */ }
+  }
+  return {
+    id: String(e?.event_id || e?.client_event_id || e?.id),
+    event_type: eventType,
+    event_name: e?.event_name || eventType,
+    time: String(time),
+    price,
+    notes: e?.notes || '',
+    meta_json,
+    case_id: e?.case_id,
+    raw_case_id: e?.raw_case_id,
+    case_ref: e?.case_ref,
+  };
+}
+
+function mergeChartEventsById(existing: MapEvent[], incoming: MapEvent[]): MapEvent[] {
+  const byId = new Map<string, MapEvent>();
+  for (const row of existing) byId.set(String(row.id), row);
+  for (const row of incoming) {
+    const id = String(row.id);
+    if (!byId.has(id)) byId.set(id, row);
+  }
+  return Array.from(byId.values());
+}
+
 /** ACTIVE range saves must not emit break lifecycle fields; BOS path owns those. */
 function activeStructuralRangeStatusFields(): { status: 'ACTIVE' } {
   return { status: 'ACTIVE' };
@@ -1358,8 +1443,8 @@ type SavedRangeChartLine = {
 };
 
 type DraftRangeChartLine = {
-  high: number;
-  low: number;
+  high: number | null;
+  low: number | null;
   structureLayer: StructureLayer;
   visible: boolean;
   start?: string | null;
@@ -1381,6 +1466,25 @@ function collectParentContextChain(startRangeId: string, allRanges: any[]): stri
     currentId = String(parentId);
   }
   return ids;
+}
+
+/** Chart overlays: active range + direct parent only — hide grandparent chain when mapping child. */
+function chartVisibleRangeIds(
+  allRanges: any[],
+  activeStructuralRangeId: string,
+  selectedParentRangeId: string,
+): Set<string> {
+  const allowed = new Set<string>();
+  const activeId = String(activeStructuralRangeId || '');
+  const parentId = String(selectedParentRangeId || '');
+  if (activeId) allowed.add(activeId);
+  if (parentId) allowed.add(parentId);
+  if (activeId && !parentId) {
+    const row = allRanges.find((r:any) => String(r.range_id || r.id) === activeId);
+    const pid = row?.parent_range_id;
+    if (pid !== null && pid !== undefined && String(pid) !== '') allowed.add(String(pid));
+  }
+  return allowed;
 }
 
 function structuralRangeToChartLine(
@@ -1440,6 +1544,17 @@ type TimelineNode = { kind:string; label:string; anchor_class?:string; timeframe
 type GpsPayload = { ok?:boolean; status?:string; symbol?:string; timeframe?:string; coordinates?:GpsCoordinates|null };
 type PlaybackFrame = { frame_index:number; id:number; story_id:number; frame_timestamp:string; parent_context_mode:string; daily_range_status:string; lifecycle_state:string; phase:string; profile_type:string; objective_code:string; current_zone:string; established_price:number; trigger_event:string; expected_next_event:string; invalidation_condition:string; lookahead_result?:string };
 const MAP_TIMEFRAMES = ['MN1','W1','D1','H4','H1','M15'];
+const CHART_TIMEFRAME_ORDER = ['MN1', 'W1', 'D1', 'H4', 'H1', 'M15', 'M5'] as const;
+
+function chartTimeframeRank(tf: string): number {
+  const i = CHART_TIMEFRAME_ORDER.indexOf(String(tf || '').toUpperCase() as typeof CHART_TIMEFRAME_ORDER[number]);
+  return i >= 0 ? i : CHART_TIMEFRAME_ORDER.length;
+}
+
+function isDrillingDownTimeframe(fromTf: string, toTf: string): boolean {
+  return chartTimeframeRank(toTf) > chartTimeframeRank(fromTf);
+}
+
 type CaseScope = 'MACRO'|'WEEKLY'|'DAILY'|'INTRADAY'|'MICRO';
 function scopeToTimeframe(scope: CaseScope) { return ({ MACRO:'MN1', WEEKLY:'W1', DAILY:'D1', INTRADAY:'H1', MICRO:'M15' } as Record<CaseScope,string>)[scope] || 'D1'; }
 function timeframeToScope(tf:string): CaseScope { const t=String(tf||'').toUpperCase(); if (t==='MN1') return 'MACRO'; if (t==='W1') return 'WEEKLY'; if (t==='D1') return 'DAILY'; if (t==='M15') return 'MICRO'; return 'INTRADAY'; }
@@ -2133,7 +2248,14 @@ function eventAbbrev(type:any) {
   return t.split('_').map(x=>x[0]).join('').slice(0,4) || 'EV';
 }
 
-function MapStudio({ symbol }: { symbol:string }) {
+function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?: (symbol: string) => void }) {
+  // Inspector form fields — hoisted to avoid TDZ with cache hydrate/persist effects.
+  const [seedNotes, setSeedNotes] = useState('');
+  const [tradeIdeaNotes, setTradeIdeaNotes] = useState('');
+  const [markWorkspaceMode, setMarkWorkspaceMode] = useLocalStorage<'htf'|'manual'|'case'>('fx_tm_mark_workspace_mode_v087_9', 'htf');
+  const [inspectorFormReady, setInspectorFormReady] = useState(false);
+  const inspectorFormHydratedScopeRef = useRef<string | null>(null);
+
   const [timeframe, setTimeframe] = useState('D1');
   const activeTimeframeRef = useRef('D1');
   useEffect(()=>{ activeTimeframeRef.current = timeframe; }, [timeframe]);
@@ -2177,9 +2299,11 @@ function MapStudio({ symbol }: { symbol:string }) {
   });
   const [message, setMessage] = useState('D3 Map Canvas ready. Click Candle mode lets you mark Range H/L, reference highs/lows, BOS and sweeps without wrestling tiny handles.');
   const [loading, setLoading] = useState(false);
+  const [candleLoadState, setCandleLoadState] = useState<string | null>(null);
   const [candleFeedStatus, setCandleFeedStatus] = useState<any>(null);
   const [toolMode, setToolMode] = useState<'inspect'|'plot'|'drag'|'range'|'select'|'scrub'>('select');
   const [scaleMode, setScaleMode] = useState<'auto'|'range'>('auto');
+  const [autoscaleToken, setAutoscaleToken] = useState(0);
   const [cursor, setCursor] = useState<{time?:string; price?:number; zone?:string; pct?:number; ohlc?:Candle|null}|null>(null);
   const [candleMenu, setCandleMenu] = useState<{x:number;y:number;candle:Candle;price:number}|null>(null);
   const [selectedCandle, setSelectedCandle] = useState<Candle|null>(null);
@@ -2211,11 +2335,33 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [playbackIndex, setPlaybackIndex] = useState(0);
   const [replayMode, setReplayMode] = useState(false);
   const [playbackPlaying, setPlaybackPlaying] = useState(false);
-  const [rightDeckTab, setRightDeckTab] = useState<'narrative'|'gps'|'mark'|'seed'|'trade'>('narrative');
-  const [workspacePanelOpen, setWorkspacePanelOpen] = useState(false);
-  const [markWorkspaceMode, setMarkWorkspaceMode] = useLocalStorage<'htf'|'manual'|'case'>('fx_tm_mark_workspace_mode_v087_9', 'htf');
+  const [rightDeckTab, setRightDeckTab] = useLocalStorage<InspectorTabId>('fx_tm_inspector_tab_v1', 'mark');
+  const [inspectorContextHint, setInspectorContextHint] = useState<InspectorContextHint | null>(null);
+
+  const applyInspectorRoute = (route: ReturnType<typeof routeInspectorForCandleSelection>, hint: InspectorContextHint | null) => {
+    setRightDeckTab(route.tab);
+    if (route.markWorkspaceMode) setMarkWorkspaceMode(route.markWorkspaceMode);
+    setInspectorContextHint(hint);
+  };
+
+  const handleInspectorTabChange = (tab: InspectorTabId) => {
+    setRightDeckTab(tab);
+    if (tab === 'mark') setToolMode('select');
+    if (tab === 'trade') setChartDrawTool('off');
+  };
   const [topRibbonCollapsed, setTopRibbonCollapsed] = useLocalStorage<boolean>('fx_tm_top_ribbon_collapsed_v087_24', false);
   const [chartFullscreen, setChartFullscreen] = useState(false);
+  const [navOverlayPanelOpen, setNavOverlayPanelOpen] = useState(false);
+  /** Pilot layout: O-N-G-M-C-T rail lives in the fixed 60px grid column; inspector toggles column 3 only. */
+  const useLeftInspectorPanel = true;
+  const handleNavOverlayTabChange = (tab: InspectorTabId) => {
+    if (rightDeckTab === tab && navOverlayPanelOpen) {
+      setNavOverlayPanelOpen(false);
+      return;
+    }
+    handleInspectorTabChange(tab);
+    setNavOverlayPanelOpen(true);
+  };
   // v087.27: camera state is now user-owned. Timeframe toggles should not throw the chart around like a shopping trolley.
   const [cameraMode, setCameraMode] = useLocalStorage<'AUTO'|'LOCKED'|'CASE'|'REPLAY'>('fx_tm_camera_mode_v087_27', 'CASE');
   const [cameraDomainByCaseTf, setCameraDomainByCaseTf] = useLocalStorage<Record<string,{start:string;end:string}>>('fx_tm_camera_domain_v087_27', {});
@@ -2225,6 +2371,8 @@ function MapStudio({ symbol }: { symbol:string }) {
   const candleLoadSeqRef = useRef(0);
   const pendingCameraIntentRef = useRef<{intent:CameraIntent; targetTime?:string|null; reason?:string; fitWindow?: StructuralFitWindow | null; priceDomain?: { low: number; high: number } | null; contextRangeId?: string | null}>({ intent:'LATEST', reason:'initial-load' });
   const visibleCameraDomainRef = useRef<VisibleCameraDomain|null>(null);
+  const cameraKeyRef = useRef('');
+  const saveCameraTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visibleBarCount, setVisibleBarCount] = useState(0);
   const [cameraCommand, setCameraCommand] = useState<CameraCommand>({ intent:'NONE', token:0 });
   const cameraLog = (...args:any[]) => { if (DEBUG_CAMERA) console.log('[camera]', ...args); };
@@ -2246,13 +2394,24 @@ function MapStudio({ symbol }: { symbol:string }) {
   // inherit the smaller board dimensions like a cursed little postage stamp.
   useEffect(()=>{
     if (!chartFullscreen) return;
-    setWorkspacePanelOpen(false);
     if (cameraMode === 'LOCKED') return;
     const intent:CameraIntent = cameraMode === 'CASE' ? 'CASE' : cameraMode === 'REPLAY' ? 'REPLAY' : 'PRESERVE_OR_NEAREST_TIME';
     const targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const t = window.setTimeout(()=>applyCameraCommand(intent, targetTime, 'fullscreen-layout-ready'), 120);
     return () => window.clearTimeout(t);
   }, [chartFullscreen]);
+
+  const inspectorRailHidden = useLeftInspectorPanel && !navOverlayPanelOpen;
+
+  useEffect(() => {
+    document.body.classList.add('mapStudioPilot');
+    document.body.classList.toggle('chartHideInspectorRail', true);
+    document.body.classList.toggle('chartFocusMode', chartFullscreen);
+    document.body.classList.toggle('chartLeftInspectorOpen', navOverlayPanelOpen);
+    return () => {
+      document.body.classList.remove('mapStudioPilot', 'chartHideInspectorRail', 'chartFocusMode', 'chartLeftInspectorOpen');
+    };
+  }, [chartFullscreen, navOverlayPanelOpen]);
 
   // Full candle-by-candle replay: this is separate from MOS playback_frames.
   // It rewinds the actual candle stream so Josh can mark HTF/Daily anchors at the correct historical point.
@@ -2274,7 +2433,6 @@ function MapStudio({ symbol }: { symbol:string }) {
   ];
   const replaySpeedLabel = REPLAY_SPEED_OPTIONS.find((o) => o.ms === candleReplaySpeedMs)?.label ?? '1x';
   const [seedName, setSeedName] = useState('XAUUSD Case');
-  const [seedNotes, setSeedNotes] = useState('');
   const [seedAnchors, setSeedAnchors] = useState<any>({});
   const [seedIdeas, setSeedIdeas] = useState<any[]>([]);
   const [caseLoadStatus, setCaseLoadStatus] = useState('');
@@ -2285,7 +2443,39 @@ function MapStudio({ symbol }: { symbol:string }) {
   // Keep this separate from legacy MOS numeric case ids so Case Save stops dragging old event bundles along.
   const [rawActiveCaseId, setRawActiveCaseId] = useLocalStorage<string>('fx_tm_raw_active_case_id_v087_29c', '');
   const [activeCaseLabel, setActiveCaseLabel] = useLocalStorage<string>('fx_tm_active_case_label_v086_16', '');
-  const activeCaseDisplayId = rawActiveCaseId || (activeCaseId ? String(activeCaseId) : '');
+  const activeCaseDisplayId = resolveActiveCaseDisplayId(rawActiveCaseId, activeCaseId);
+  const { mappingEventsScopeKey } = useReactiveMappingEventsPersistence({
+    symbol,
+    caseId: activeCaseDisplayId || null,
+    eventsByTf,
+    setEventsByTf,
+    eventsByTfRef,
+  });
+
+  const inspectorFormScopeKey = useMemo(
+    () => inspectorFormCacheKey(symbol, timeframe, activeCaseDisplayId || undefined),
+    [symbol, timeframe, activeCaseDisplayId],
+  );
+  useEffect(() => {
+    setInspectorFormReady(false);
+    const cached = readInspectorFormCache(inspectorFormScopeKey);
+    if (cached.seedNotes !== undefined) setSeedNotes(cached.seedNotes);
+    if (cached.tradeIdeaNotes !== undefined) setTradeIdeaNotes(cached.tradeIdeaNotes);
+    if (cached.markWorkspaceMode) setMarkWorkspaceMode(cached.markWorkspaceMode);
+    inspectorFormHydratedScopeRef.current = inspectorFormScopeKey;
+    setInspectorFormReady(true);
+  }, [inspectorFormScopeKey, setMarkWorkspaceMode]);
+  useEffect(() => {
+    if (!inspectorFormReady || inspectorFormHydratedScopeRef.current !== inspectorFormScopeKey) return;
+    const t = window.setTimeout(() => {
+      writeInspectorFormCache(inspectorFormScopeKey, {
+        seedNotes,
+        tradeIdeaNotes,
+        markWorkspaceMode,
+      });
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [inspectorFormReady, inspectorFormScopeKey, seedNotes, tradeIdeaNotes, markWorkspaceMode]);
   const getCurrentMappingCaseRef = () => {
     const rawId = String(rawActiveCaseId || '').trim();
     if (rawId) {
@@ -2322,6 +2512,23 @@ function MapStudio({ symbol }: { symbol:string }) {
     return params;
   };
   const cameraKey = `${activeCaseDisplayId || 'global'}_${timeframe}`;
+  cameraKeyRef.current = cameraKey;
+  const persistVisibleCameraDomain = (dom: VisibleCameraDomain) => {
+    visibleCameraDomainRef.current = dom;
+    const next = Number(dom.visibleBars || 0);
+    setVisibleBarCount(prev => (prev === next ? prev : next));
+    if (cameraMode === 'LOCKED') return;
+    if (!dom?.start || !dom?.end) return;
+    if (!Number.isFinite(new Date(dom.start).getTime()) || !Number.isFinite(new Date(dom.end).getTime())) return;
+    if (saveCameraTimeoutRef.current) clearTimeout(saveCameraTimeoutRef.current);
+    saveCameraTimeoutRef.current = setTimeout(() => {
+      const key = cameraKeyRef.current;
+      setCameraDomainByCaseTf(prev => ({ ...prev, [key]: { start: dom.start, end: dom.end } }));
+      if (Number.isFinite(dom.priceLow) && Number.isFinite(dom.priceHigh) && dom.priceHigh > dom.priceLow) {
+        setCameraPriceDomainByCaseTf(prev => ({ ...prev, [key]: { low: dom.priceLow, high: dom.priceHigh } }));
+      }
+    }, 350);
+  };
   const chartDrawingsKey = cameraKey;
   const candleReplayCursorTime = replayCursorByKey[chartDrawingsKey] ?? null;
   const setCandleReplayCursorTime = (time: string | null) => {
@@ -2343,16 +2550,60 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [tradeIdeaDraft, setTradeIdeaDraft] = useState<ChartTradeIdeaDraft>(() => emptyTradeIdeaDraft());
   const [tradePickMode, setTradePickMode] = useState<TradeIdeaPickKind | null>(null);
   const [selectedTradeIdeaId, setSelectedTradeIdeaId] = useState<string | null>(null);
-  const [tradeIdeaNotes, setTradeIdeaNotes] = useState('');
   const [tradeIdeaSaving, setTradeIdeaSaving] = useState(false);
   const lockedCameraDomain = cameraDomainByCaseTf[cameraKey] || null;
   const caseSaveInFlightRef = useRef<Set<string>>(new Set());
   const [bundleSaving, setBundleSaving] = useState(false);
   const [rawMarkSaving, setRawMarkSaving] = useState(false);
   const [structureLayer, setStructureLayer] = useLocalStorage<StructureLayer>('fx_tm_structure_layer_phase3', 'WEEKLY');
+  const [mappingViewContext, setMappingViewContext] = useState<MappingViewContext>('child');
+  const mappingViewContextSyncRef = useRef(false);
+  const campaignParentChartTf = useMemo(
+    () => resolveParentChartTimeframe(structureLayer),
+    [structureLayer],
+  );
+  const campaignChildChartTf = useMemo(
+    () => resolveChildChartTimeframe(structureLayer, timeframe),
+    [structureLayer, timeframe],
+  );
+  const campaignViewContextEnabled = mappingViewContextAvailable(structureLayer);
+  const {
+    pointCountForTimeframe: mappingDraftPointCountForTimeframe,
+    parentDraft: mappingParentDraft,
+    childDraft: mappingChildDraft,
+  } = useMappingDraft({
+    symbol,
+    timeframe,
+    caseId: activeCaseDisplayId || null,
+    parentTimeframe: campaignParentChartTf,
+    childTimeframe: campaignChildChartTf,
+  });
+  const activeMappingContainerDraft = mappingViewContext === 'parent' ? mappingParentDraft : mappingChildDraft;
+  const activeMappingContainerTf = mappingViewContext === 'parent' ? campaignParentChartTf : campaignChildChartTf;
+  const viewportClampStoreKey = `${String(symbol).toUpperCase()}|${activeCaseDisplayId || ''}|${structureLayer}`;
+  const {
+    isClamped: viewportIsClamped,
+    activeClamp: viewportActiveClamp,
+    canDrillDown: viewportCanDrillDown,
+    drillDown: drillDownViewport,
+    unlockGlobalView,
+  } = useViewportClamping({
+    storeKey: viewportClampStoreKey,
+    containerStartTime: activeMappingContainerDraft?.startTime,
+    containerEndTime: activeMappingContainerDraft?.endTime,
+    containerTimeframe: activeMappingContainerTf,
+    viewContext: mappingViewContext,
+    chartTimeframe: timeframe,
+  });
+  useEffect(() => {
+    setMappingViewContext('child');
+    unlockGlobalView();
+  }, [structureLayer]);
   const [rangeScope, setRangeScope] = useLocalStorage<RangeScope>('fx_tm_range_scope_v1', 'MAJOR');
   const [sourceTimeframe, setSourceTimeframe] = useLocalStorage<string>('fx_tm_structure_source_tf_phase3', 'W1');
   const [structuralSaving, setStructuralSaving] = useState(false);
+  const [inspectorCommitFlash, setInspectorCommitFlash] = useState<'idle' | 'success'>('idle');
+  const inspectorCommitFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [structuralRanges, setStructuralRanges] = useState<StructuralRange[]>([]);
   const [savedStructuralRanges, setSavedStructuralRanges] = useState<StructuralRange[]>([]);
   const [lastSavedRangeConfirmation, setLastSavedRangeConfirmation] = useState<any>(null);
@@ -2360,6 +2611,10 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
   const [rhAnchor, setRhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [rlAnchor, setRlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
+  const rhAnchorRef = useRef(rhAnchor);
+  const rlAnchorRef = useRef(rlAnchor);
+  rhAnchorRef.current = rhAnchor;
+  rlAnchorRef.current = rlAnchor;
   const [structuralAnchorsByLayer, setStructuralAnchorsByLayer] = useLocalStorage<Partial<Record<StructureLayer, LayerAnchorPair>>>(
     'fx_tm_structural_anchors_by_layer_v1',
     {},
@@ -2367,8 +2622,18 @@ function MapStudio({ symbol }: { symbol:string }) {
   const [bhAnchor, setBhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [blAnchor, setBlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [quickEventSaving, setQuickEventSaving] = useState(false);
-  const [lastSavedQuickEvent, setLastSavedQuickEvent] = useState<any>(null);
-  const [quickEventHistory, setQuickEventHistory] = useState<any[]>([]);
+  const fingerErrorStackKey = useMemo(
+    () => `fx_tm_finger_error_stack_v1|${String(symbol).toUpperCase()}|${String(rawActiveCaseId || activeCaseId || '')}|${timeframe}`,
+    [symbol, rawActiveCaseId, activeCaseId, timeframe],
+  );
+  const {
+    stack: quickEventHistory,
+    setStack: setQuickEventHistory,
+    push: pushQuickEvent,
+    undo: popQuickEventFromStack,
+    canUndo: canUndoQuickEvent,
+    peek: lastSavedQuickEvent,
+  } = useFingerErrorStack<any>(fingerErrorStackKey);
   const [structuralRangeDraftDirty, setStructuralRangeDraftDirty] = useState(false);
   const [structuralBosDraftDirty, setStructuralBosDraftDirty] = useState(false);
   const [lastRangeLifecyclePatchWarning, setLastRangeLifecyclePatchWarning] = useState<string | null>(null);
@@ -2486,7 +2751,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     const nearbyEnd = Number.isFinite(selectedMs) ? selectedMs + 1000 * 60 * 60 * 24 * 7 * 12 : NaN;
     const filtered = mapRows.filter((e:any) => {
       if (!showRejectedMarks && isRejectedCandidateEvent(e)) return false;
-      if (mode === 'OFF') return false;
+      if (mode === 'OFF') return isStructuralChartEventType(e?.event_type || e?.event_name);
       if (mode === 'SESSION') return sessionEventIds.has(String(e?.id));
       if (mode === 'ACTIVE_RANGE') return !rangeWindow.start || !rangeWindow.end ? sessionEventIds.has(String(e?.id)) : eventInWindow(e, rangeWindow.start, rangeWindow.end);
       if (mode === 'ACTIVE_CASE') {
@@ -2553,7 +2818,6 @@ function MapStudio({ symbol }: { symbol:string }) {
       setCandleReplayFrame(idx);
       setSelectedCandle(candles[idx]);
       setSelectedCandlePoint({ price: Number(ev.price) || Number(candles[idx].close) });
-      setWorkspacePanelOpen(true);
       setMessage(`Jumped to ${markerLabel(ev.event_type)} · ${shortTime(ev.time, timeframe)}. Tiny miracle: the ledger knows where it lives.`);
     } else {
       setJumpDate(String(ev.time).slice(0,10));
@@ -2777,7 +3041,6 @@ function MapStudio({ symbol }: { symbol:string }) {
       activeTimeframeRef.current = tf;
       setTimeframe(tf);
       setRightDeckTab('narrative');
-      setWorkspacePanelOpen(true);
       setMessage(`Switched to ${tf} for Case #${activeCaseId} ledger row. If the candle is shy, hit the row again after candles load.`);
       return;
     }
@@ -2943,6 +3206,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       setCameraPriceDomainByCaseTf({});
       eventsByTfRef.current = {};
       setEventsByTf({});
+      clearMappingEventsForContainer(mappingEventsScopeKey);
+      setQuickEventHistory([]);
       try { localStorage.removeItem('fx_tm_chart_drawings_v1'); } catch { /* ignore */ }
       try { localStorage.removeItem('fx_tm_chart_trade_ideas_v1'); } catch { /* ignore */ }
       try { localStorage.removeItem('fx_tm_replay_cursor_time_v087_22'); } catch { /* ignore */ }
@@ -2993,38 +3258,44 @@ function MapStudio({ symbol }: { symbol:string }) {
     const hiddenIds = new Set(rangeLineHiddenByCase[activeCaseDisplayId || 'global'] || []);
     const overlays: SavedRangeChartLine[] = [];
     const selectedId = String(activeStructuralRangeId || '');
+    const parentId = String(selectedParentRangeId || '');
+    const visibleIds = chartVisibleRangeIds(allRanges, selectedId, parentId);
 
     for (const r of allRanges) {
       const id = String(r?.range_id || r?.id || '');
-      if (!id || hiddenIds.has(id)) continue;
-      const line = structuralRangeToChartLine(r, activeStructuralRangeId, {
-        isParentContext: id !== selectedId,
-      });
+      if (!id || !visibleIds.has(id)) continue;
+      if (hiddenIds.has(id) && id !== selectedId) continue;
+      const isParentContext = id === parentId && id !== selectedId;
+      const line = structuralRangeToChartLine(r, activeStructuralRangeId, { isParentContext });
       if (!line) continue;
       line.isActive = id === selectedId;
       overlays.push(line);
     }
     return overlays;
-  }, [savedStructuralRanges, activeStructuralRangeId, activeCaseDisplayId, rangeLineHiddenByCase]);
+  }, [savedStructuralRanges, activeStructuralRangeId, selectedParentRangeId, activeCaseDisplayId, rangeLineHiddenByCase]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
     const draftHigh = parseNum(rhAnchor.price);
     const draftLow = parseNum(rlAnchor.price);
-    if (!Number.isFinite(draftHigh) || !Number.isFinite(draftLow) || draftHigh <= draftLow) return null;
+    const hasHigh = Number.isFinite(draftHigh);
+    const hasLow = Number.isFinite(draftLow);
+    if (!hasHigh && !hasLow) return null;
+    if (hasHigh && hasLow && draftHigh <= draftLow) return null;
     const activeRange = activeStructuralRangeId
       ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId))
       : null;
     const savedHigh = parseNum(activeRange?.range_high_price ?? activeRange?.range_high);
     const savedLow = parseNum(activeRange?.range_low_price ?? activeRange?.range_low);
-    const matchesSaved = !!activeRange && savedHigh === draftHigh && savedLow === draftLow && !structuralRangeDraftDirty;
+    const priceMatches = (a: number, b: number) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.005;
+    const matchesSaved = !!activeRange && hasHigh && hasLow && priceMatches(savedHigh, draftHigh) && priceMatches(savedLow, draftLow) && !structuralRangeDraftDirty;
     if (matchesSaved) return null;
     return {
-      high: draftHigh,
-      low: draftLow,
+      high: hasHigh ? draftHigh : null,
+      low: hasLow ? draftLow : null,
       structureLayer: structureLayer,
       visible: true,
-      start: rhAnchor.time || null,
-      end: rlAnchor.time || null,
+      start: rhAnchor.time || rlAnchor.time || null,
+      end: rlAnchor.time || rhAnchor.time || null,
     };
   }, [rhAnchor.price, rlAnchor.time, rlAnchor.price, rhAnchor.time, structureLayer, activeStructuralRangeId, savedStructuralRanges, structuralRangeDraftDirty]);
 
@@ -3142,7 +3413,26 @@ function MapStudio({ symbol }: { symbol:string }) {
             .filter((raw:any)=>String(raw?.timeframe || raw?.meta?.timeframe || '').toUpperCase() === String(requestedTf).toUpperCase())
             .map(normalizeBackendEvent)
             .filter(Boolean) as MapEvent[];
-          setEventsByTf(prev => ({ ...prev, [requestedTf]: caseEvents }));
+          let mergedEvents = caseEvents;
+          const mappingCase = getCurrentMappingCaseRef();
+          if (mappingCase.hasCase) {
+            try {
+              const eventParams = appendMappingCaseParams(
+                new URLSearchParams({ symbol, timeframe: requestedTf, limit: '2000' }),
+                mappingCase,
+              );
+              const structuralRes = await fetch(`${BASE_URL}/api/v1/map/events?${eventParams.toString()}`).then(r=>r.json()).catch(()=>null);
+              if (structuralRes?.ok && Array.isArray(structuralRes.events)) {
+                const structuralEvents = structuralRes.events
+                  .map((row:any) => mapStructuralEventRowToChartEvent(row))
+                  .filter(Boolean) as MapEvent[];
+                mergedEvents = mergeChartEventsById(caseEvents, structuralEvents);
+              }
+            } catch {
+              // Keep seed payload events if structural fetch fails.
+            }
+          }
+          setEventsByTf(prev => ({ ...prev, [requestedTf]: mergedEvents }));
 
           const caseRanges = safeArray<any>(payload.ranges)
             .filter((r:any)=>String(r?.timeframe || '').toUpperCase() === String(requestedTf).toUpperCase());
@@ -3163,7 +3453,12 @@ function MapStudio({ symbol }: { symbol:string }) {
 
       const [rangeRes, eventsRes] = await Promise.all([
         fetch(`${BASE_URL}/api/v1/map/range?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(requestedTf)}&range_key=active`).then(r=>r.json()).catch(()=>null),
-        fetch(`${BASE_URL}/api/v1/map/events?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(requestedTf)}&limit=2000`).then(r=>r.json()).catch(()=>null)
+        fetch(`${BASE_URL}/api/v1/map/events?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(requestedTf)}&limit=2000${(() => {
+          const mappingCase = getCurrentMappingCaseRef();
+          if (!mappingCase.hasCase) return '';
+          const p = appendMappingCaseParams(new URLSearchParams(), mappingCase);
+          return `&${p.toString()}`;
+        })()}`).then(r=>r.json()).catch(()=>null)
       ]);
       if (!isCurrentLoad()) { cameraLog('map memory ignored as stale', { requestId, requestedTf, activeTf:activeTimeframeRef.current }); return false; }
 
@@ -3317,22 +3612,68 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`Locked view for ${timeframe}: ${shortTime(dom.start, timeframe)} → ${shortTime(dom.end, timeframe)}`);
   };
 
-  const loadCandles = async (requestedTf = timeframe, opts?: { quiet?: boolean; skipCamera?: boolean }) => {
+  const applyStaleCacheBlockedUiClear = (targetTf: string) => {
+    // Structural purge only — nav rail / inspector panel chrome is out of scope.
+    purgeGhostMappingLocalStorage(symbol, activeCaseDisplayId || null);
+    purgeStructuralUiAnchors();
+    clearStructuralRangeDraft();
+    setBhAnchor({ price: '', time: '' });
+    setBlAnchor({ price: '', time: '' });
+    setStructuralBosDraftDirty(false);
+    setCandleLoadState(STALE_CACHE_BLOCKED);
+    setCandles([]);
+    setSelectedCandle(null);
+    setSelectedCandlePoint(null);
+    setCandleReplayIndex(0);
+    pendingCameraIntentRef.current = { intent: 'NONE' };
+    setMessage(ghostRangeUiClearMessage(symbol, targetTf));
+  };
+
+  const purgeStructuralUiAnchors = useCallback(() => {
+    clearAllUIAnchors({
+      setActiveStructuralRangeId,
+      setSelectedParentRangeId,
+      setStructuralRanges,
+      setSavedStructuralRanges,
+      setStructuralAnchorsByLayer,
+      setSessionEventIds,
+      setEventsByTf,
+      clearEventsByTfRef: () => { eventsByTfRef.current = {}; },
+      setRangeByTf,
+      setRangeWindowByTf,
+      setMeasurementRangeByTf,
+      setRhAnchor,
+      setRlAnchor,
+      setStructuralRangeDraftDirty,
+      clearMappingEventsBucket: clearMappingEventsForContainer,
+      mappingEventsScopeKey,
+    });
+  }, [mappingEventsScopeKey]);
+
+  const loadCandles = async (requestedTf = timeframe, opts?: { quiet?: boolean; skipCamera?: boolean; cacheFullHistory?: boolean }) => {
     const targetTf = String(requestedTf || timeframe).toUpperCase();
     const quiet = !!opts?.quiet;
+    if (quiet && candleLoadInFlightRef.current) return;
+    if (quiet) candleLoadInFlightRef.current = true;
     const requestId = candleLoadSeqRef.current + 1;
     candleLoadSeqRef.current = requestId;
     const preservedTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const pendingIntent = quiet
       ? { intent: 'PRESERVE_OR_NEAREST_TIME' as CameraIntent, targetTime: preservedTime, reason: 'quiet-refresh' }
       : resolveLoadCameraIntent(targetTf, preservedTime);
+    const pendingForLoad = quiet
+      ? null
+      : (pendingCameraIntentRef.current.intent !== 'NONE' ? pendingCameraIntentRef.current : null);
+    const preferredWindow = pendingForLoad?.fitWindow?.start && pendingForLoad?.fitWindow?.end
+      ? { start: pendingForLoad.fitWindow.start, end: pendingForLoad.fitWindow.end }
+      : null;
     const loadWindow = resolveCandleLoadWindow(
       targetTf,
       savedStructuralRanges,
       selectedParentRangeId,
       activeStructuralRangeId,
-      rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
-      { liveTail: !candleReplayMode },
+      rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+      { liveTail: !candleReplayMode, preferredWindow },
     );
     const isCurrentLoad = () => requestId === candleLoadSeqRef.current && activeTimeframeRef.current === targetTf;
     cameraLog('candle load start', { requestId, targetTf, intent:pendingIntent.intent, targetTime:pendingIntent.targetTime, loadWindow, quiet });
@@ -3343,15 +3684,52 @@ function MapStudio({ symbol }: { symbol:string }) {
         : `Loading ${targetTf} candles from backend...`);
     }
     try {
-      let r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, loadWindow, !quiet));
-      if (!isCurrentLoad()) { cameraLog('candle load ignored as stale', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
-      if (!r.ok) throw new Error(r.error || 'Backend returned no candles');
-      let parsed = parseCandleRows(r.candles);
+      const sessionRange = opts?.cacheFullHistory || !loadWindow
+        ? null
+        : { start: loadWindow.start, end: loadWindow.end };
+      const mappingCase = getCurrentMappingCaseRef();
+      const syncLoad = await loadSessionFromSyncArchitect(symbol, targetTf, {
+        refresh: !quiet,
+        range: sessionRange,
+        caseId: mappingCase.caseRef || activeCaseDisplayId || null,
+      });
+      if (!isCurrentLoad()) {
+        cameraLog('candle load ignored as stale (sync architect)', { requestId, targetTf, activeTf: activeTimeframeRef.current });
+        return;
+      }
+      if (!syncLoad.ok && isStaleRehydrationLoad(syncLoad)) {
+        applyStaleCacheBlockedUiClear(targetTf);
+        if (!quiet) setLoading(false);
+        cameraLog('stale cache blocked chart load', { requestId, targetTf, rehydration: syncLoad.rehydration, state: STALE_CACHE_BLOCKED });
+        return;
+      }
+      if (syncLoad.ok) setCandleLoadState(null);
+
+      let parsed: Candle[] = [];
+      if (syncLoad.candles.length) {
+        parsed = parseCandleRows(syncLoad.candles);
+        if (!quiet && parsed.length) {
+          setMessage(`Loaded ${parsed.length} ${targetTf} candles from local cache…`);
+        }
+      }
+      let r: any = null;
+      if (!parsed.length) {
+        r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, loadWindow, !quiet));
+        if (!isCurrentLoad()) { cameraLog('candle load ignored as stale', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
+        if (!r.ok) throw new Error(r.error || 'Backend returned no candles');
+        parsed = parseCandleRows(r.candles);
+        if (parsed.length) {
+          void persistRemoteCandlesToCache(symbol, targetTf, r, 'chart_load').catch(() => {});
+        }
+      }
       let contextMiss = false;
       if (!parsed.length && loadWindow) {
         r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, null, !quiet));
         if (!isCurrentLoad()) return;
         parsed = parseCandleRows(r.candles);
+        if (parsed.length) {
+          void persistRemoteCandlesToCache(symbol, targetTf, r, 'chart_load_fallback').catch(() => {});
+        }
         contextMiss = parsed.length > 0;
       } else if (loadWindow && parsed.length && !candleWindowOverlapsRange(parsed, loadWindow.start, loadWindow.end)) {
         contextMiss = true;
@@ -3369,6 +3747,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         cameraLog('candle load empty', { requestId, targetTf });
         return;
       }
+      writeAutoResumeSession(symbol, targetTf);
       const targetTime = pendingIntent.targetTime || preservedTime;
       const nearestIdx = targetTime ? candleIndexNearest(parsed, targetTime) : parsed.length - 1;
       const safeIdx = clamp(nearestIdx, 0, parsed.length - 1);
@@ -3396,12 +3775,19 @@ function MapStudio({ symbol }: { symbol:string }) {
       const commandTargetTime = pendingIntent.targetTime || targetTime || nearest?.time || null;
       let fitWindow = pendingIntent.fitWindow || null;
       let cameraIntent: CameraIntent = pendingIntent.intent === 'NONE' ? 'PRESERVE_OR_NEAREST_TIME' : pendingIntent.intent;
-      let useStructuralPrice = !!(pendingIntent.contextRangeId && fitWindow);
-      if (!contextMiss && pendingIntent.contextRangeId) {
+      const hasInheritedPrice = !!(pendingIntent.priceDomain
+        && Number.isFinite(pendingIntent.priceDomain.low)
+        && Number.isFinite(pendingIntent.priceDomain.high)
+        && pendingIntent.priceDomain.high > pendingIntent.priceDomain.low);
+      if (!contextMiss && pendingIntent.contextRangeId && !fitWindow) {
         const contextRange = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(pendingIntent.contextRangeId));
         if (contextRange) fitWindow = structuralRangeFitDomain(contextRange, parsed) || fitWindow;
-        useStructuralPrice = !!fitWindow;
       }
+      let useStructuralPrice = !!(fitWindow
+        && Number.isFinite(fitWindow.low)
+        && Number.isFinite(fitWindow.high)
+        && fitWindow.high > fitWindow.low
+        && !hasInheritedPrice);
       if (contextMiss) {
         cameraIntent = 'LATEST';
         fitWindow = null;
@@ -3442,6 +3828,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (!quiet) setMessage(`Load ${targetTf} failed: ${e?.name === 'AbortError' ? 'timed out — check VPS connection and click Reload' : (e?.message || e)}`);
     }
     finally {
+      if (quiet) candleLoadInFlightRef.current = false;
       if (!quiet) setLoading(false);
     }
   };
@@ -3457,6 +3844,8 @@ function MapStudio({ symbol }: { symbol:string }) {
   };
 
   const syncCandlesFromMt5 = async (forceBackfill = false) => {
+    if (candleSyncInFlightRef.current) return { ok: false, skipped: true };
+    candleSyncInFlightRef.current = true;
     try {
       const r = await fetch(`${BASE_URL}/api/v1/candles/sync-mt5`, {
         method: 'POST',
@@ -3467,6 +3856,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       return r;
     } catch (e: any) {
       return { ok: false, error: e?.message || String(e) };
+    } finally {
+      candleSyncInFlightRef.current = false;
     }
   };
 
@@ -3526,11 +3917,15 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const saveEvent = async (ev:MapEvent) => {
+  const skipBootstrapOnceRef = useRef(false);
+  const candleSyncInFlightRef = useRef(false);
+  const candleLoadInFlightRef = useRef(false);
+
+  const saveEvent = async (ev:MapEvent, source: InspectorCommitSource = 'manual_mark') => {
     // v087.29 keylogger mode: persist only the raw click/action ledger.
     // Local markers remain for the chart; backend relational map_events/ranges are intentionally bypassed.
     setSessionEventIds(prev => { const next = new Set(prev); next.add(String(ev.id)); return next; });
-    await postRawMappingEvent(ev);
+    await postRawMappingEvent(ev, source);
   };
 
 
@@ -3570,7 +3965,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     const lifecycleLock = htfCandidateLockKey(cand, timeframe, low, high);
     if (lifecycleLock) setHtfAcceptedSuggestionLocks(prev => Array.from(new Set([...(prev || []), lifecycleLock])));
     upsertMarkerIntoEvents(ev);
-    await saveEvent(ev);
+    await saveEvent(ev, 'htf_candidate');
     await saveHTFStateSnapshot({ last_transition:cand.derived_event_code, last_candidate:cand.id, range_status_after:cand.range_status_after });
     if (cand.primitive === 'RANGE_REBASE' && cand.meta) {
       const oldSnapshot = { high, low, start:rangeWindow.start, end:rangeWindow.end, preserved_for:'RETRACEMENT_DEPTH_PROFILE_STATS', rebase_candidate_id:cand.id };
@@ -3639,7 +4034,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       meta_json: { ...cand.meta, case_id: activeCaseId || null, range_high: high, range_low: low, timeframe, candidate_status:'REJECTED', rejected_from_candidate:true, rejected_at:new Date().toISOString(), original_event_type:cand.event_type, original_label:cand.label, rejected_reason:'USER_REJECTED_SEMI_AUTO_CANDIDATE', price_location_pct: (() => { const p = zonePercent(cand.price, low, high); return p === null ? null : Number(p.toFixed(2)); })() },
     };
     upsertMarkerIntoEvents(ev);
-    await saveEvent(ev);
+    await saveEvent(ev, 'htf_candidate');
     await saveHTFStateSnapshot({ last_rejected_candidate:cand.id, rejected_candidate_type:cand.event_type, rejected_candidate_rule:cand.movement_rule });
     setHtfCandidates(prev => prev.filter(x => x.id !== cand.id));
     setMessage(`Rejected ${cand.label} and saved it to the Candidate Audit log. Even bad suggestions now have a job.`);
@@ -3836,11 +4231,11 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const postRawMappingEvent = async (ev:MapEvent) => {
+  const postRawMappingEvent = async (ev:MapEvent, source: InspectorCommitSource = 'manual_mark') => {
     const rawCaseId = await ensureRawCase();
     if (!rawCaseId) { setMessage('Save/open a case before mapping raw events. The paper needs a folder, tragically.'); return null; }
     const candleIdx = candles.findIndex(c => c.time === ev.time);
-    const source = String(ev.source || '').toLowerCase() === 'auto' ? 'auto' : 'manual';
+    const eventSource = String(ev.source || '').toLowerCase() === 'auto' ? 'auto' : 'manual';
     const payload = {
       event_id: String(ev.id || markerIdForCandle({ time: ev.time || new Date().toISOString(), open:0, high:Number(ev.price||0), low:Number(ev.price||0), close:Number(ev.price||0), volume:0 } as any, ev.event_type || 'NOTE')),
       case_id: rawCaseId,
@@ -3849,9 +4244,9 @@ function MapStudio({ symbol }: { symbol:string }) {
       candle_time_utc_ms: rawCandleTimeMs(ev.time),
       candle_index: candleIdx >= 0 ? candleIdx : null,
       price: rawPriceModeFor(ev),
-      event_type: rawEventTypeFor(ev.event_type, source),
+      event_type: rawEventTypeFor(ev.event_type, eventSource),
       event_side: rawEventSideFor(ev.event_type),
-      source,
+      source: eventSource,
       supersedes_event_id: null,
       notes: ev.notes || ev.event_name || '',
       raw_payload_json: {
@@ -3864,11 +4259,14 @@ function MapStudio({ symbol }: { symbol:string }) {
         electron_version: 'v087.29_keylogger_mode'
       }
     };
-    const r = await fetch(`${BASE_URL}/api/v1/raw-mapping/events`, {
-      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)
-    }).then(x=>x.json()).catch((e)=>({ ok:false, error:String(e) }));
-    if (!r?.ok) setMessage(`Raw ledger save failed: ${r?.error || 'unknown backend tantrum'}`);
-    return r;
+    const r = await inspectorCommit({
+      baseUrl: BASE_URL,
+      kind: 'raw_mapping_event',
+      source,
+      payload,
+    });
+    if (!r.ok) setMessage(`Raw ledger save failed: ${r.error || 'unknown backend tantrum'}`);
+    return r.data ?? { ok: false, error: r.error };
   };
 
   const saveActiveRange = async (_sourceEvents:MapEvent[]) => {
@@ -3920,7 +4318,14 @@ function MapStudio({ symbol }: { symbol:string }) {
     });
     try {
       const rawId = rawActiveCaseId || (activeCaseId ? String(activeCaseId) : '');
-      if (rawId) await fetch(`${BASE_URL}/api/v1/raw-mapping/events/delete`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ case_id:rawId, event_id:id, notes:'Deleted from Electron v087.29 UI' }) });
+      if (rawId) {
+        await inspectorCommit({
+          baseUrl: BASE_URL,
+          kind: 'raw_mapping_event_delete',
+          source: 'raw_delete',
+          payload: { case_id: rawId, event_id: id, notes: 'Deleted from Electron v087.29 UI' },
+        });
+      }
     } catch { /* local delete still counts */ }
     setMessage('Deleted local marker and appended DELETE_RECORD to raw ledger. No relational swamp involved.');
   };
@@ -4010,7 +4415,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       notes: ''
     };
     upsertMarkerIntoEvents(ev);
-    await saveEvent(ev);
+    await saveEvent(ev, 'chart_click');
     setMessage(`Saved ${ev.event_name} at ${ev.price} (${ev.zone}) · ${shortTime(ev.time, timeframe)}`);
   };
 
@@ -4026,7 +4431,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     });
   };
 
-  const saveRawMarker = async (side: 'HIGH' | 'LOW' | 'REF', candle: Candle) => {
+  const saveRawMarker = async (side: 'HIGH' | 'LOW' | 'REF', candle: Candle, source: InspectorCommitSource = 'manual_mark') => {
     if (rawMarkSaving) return;
     setRawMarkSaving(true);
 
@@ -4063,7 +4468,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         },
       });
 
-      await saveRawEvent(BASE_URL, payload);
+      await saveRawEvent(BASE_URL, payload, source);
 
       const replaceType = side === 'HIGH' ? 'RANGE_HIGH' : side === 'LOW' ? 'RANGE_LOW' : 'SET_ANCHOR_REF';
       const ev: MapEvent = {
@@ -4124,16 +4529,111 @@ function MapStudio({ symbol }: { symbol:string }) {
     return parentLayerCandidates(structureLayer, savedStructuralRanges, rangeScope);
   }, [structureLayer, rangeScope, savedStructuralRanges]);
 
+  const structuralPricesMatch = (a: number, b: number) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.005;
+
+  const hydrateStructuralAnchorsFromRange = (range: any, opts?: { force?: boolean; markDraft?: boolean }) => {
+    if (!range) return;
+    const high = range.range_high_price ?? range.range_high;
+    const low = range.range_low_price ?? range.range_low;
+    const nextRh = { price: String(high ?? ''), time: String(range.range_high_time || ''), candle: null as Candle | null };
+    const nextRl = { price: String(low ?? ''), time: String(range.range_low_time || ''), candle: null as Candle | null };
+    const layer = normalizeStructureLayer(range.structure_layer || range.layer);
+    const shouldReplaceRh = opts?.force || !rhAnchorRef.current.price || structuralPricesMatch(parseNum(rhAnchorRef.current.price), parseNum(high));
+    const shouldReplaceRl = opts?.force || !rlAnchorRef.current.price || structuralPricesMatch(parseNum(rlAnchorRef.current.price), parseNum(low));
+    if (high !== undefined && high !== null && high !== '' && shouldReplaceRh) {
+      rhAnchorRef.current = nextRh;
+      setRhAnchor(nextRh);
+      setRangeHigh(String(high));
+    }
+    if (low !== undefined && low !== null && low !== '' && shouldReplaceRl) {
+      rlAnchorRef.current = nextRl;
+      setRlAnchor(nextRl);
+      setRangeLow(String(low));
+    }
+    if (layer && (nextRh.price || nextRl.price)) {
+      setStructuralAnchorsByLayer(prev => ({
+        ...prev,
+        [layer]: { rh: nextRh, rl: nextRl },
+      }));
+    }
+    setRangeWindowByTf(prev => ({
+      ...prev,
+      [timeframe]: {
+        ...(prev[timeframe] || {}),
+        start: range.range_start_time || range.range_high_time || prev[timeframe]?.start || '',
+        end: range.range_end_time || range.range_low_time || prev[timeframe]?.end || '',
+      },
+    }));
+    if (opts?.markDraft === true) setStructuralRangeDraftDirty(true);
+    else if (opts?.markDraft === false) setStructuralRangeDraftDirty(false);
+  };
+
+  const resolveActiveRangeIdForAnchors = () => {
+    const isBrokenRange = (r: any) => String(r?.status || '').toUpperCase() === 'BROKEN';
+    const layerRows = safeArray<any>(savedStructuralRanges).filter(
+      (r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === structureLayer,
+    );
+    const rowById = (id: string) => layerRows.find((r:any) => String(r.range_id || r.id) === String(id));
+    if (activeStructuralRangeId) {
+      const activeRow = rowById(activeStructuralRangeId);
+      if (activeRow && !isBrokenRange(activeRow)) return String(activeStructuralRangeId);
+    }
+    const rh = parseNum(rhAnchorRef.current.price);
+    const rl = parseNum(rlAnchorRef.current.price);
+    if (Number.isFinite(rh) && Number.isFinite(rl)) {
+      const match = layerRows.find((r:any) => {
+        if (isBrokenRange(r)) return false;
+        const hi = parseNum(r.range_high_price ?? r.range_high);
+        const lo = parseNum(r.range_low_price ?? r.range_low);
+        return structuralPricesMatch(hi, rh) && structuralPricesMatch(lo, rl);
+      });
+      if (match) return String(match.range_id || match.id || '');
+    }
+    const latestActive = layerRows.filter((r:any) => !isBrokenRange(r)).sort(compareRangesByStartDate).slice(-1)[0];
+    return latestActive ? String(latestActive.range_id || latestActive.id || '') : '';
+  };
+
+  const drillToChildMapping = (parentRange: any, opts?: { clearDraft?: boolean }) => {
+    const parentId = String(parentRange?.range_id || parentRange?.id || '');
+    const parentLayer = normalizeStructureLayer(parentRange?.structure_layer || parentRange?.layer);
+    const childLayer = parentLayer ? expectedChildStructureLayer(parentLayer) : null;
+    if (!parentId || !parentLayer || !childLayer) {
+      setMessage('No child mapping layer below this range.');
+      return false;
+    }
+    setStructureLayer(childLayer);
+    setSourceTimeframe(defaultSourceTimeframeForStructureLayer(childLayer));
+    setSelectedParentRangeId(parentId);
+    setActiveStructuralRangeId('');
+    if (opts?.clearDraft !== false) {
+      clearStructuralRangeDraft();
+    }
+    setChainDraftMode(false);
+    const childChartTf = defaultChartTimeframeForStructureLayer(childLayer);
+    if (String(timeframe).toUpperCase() !== childChartTf) {
+      switchTimeframePreserveCase(childChartTf);
+    }
+    setMessage(`Drill to ${childLayer} under ${parentLayer} #${parentId} — plot child RH/RL on ${childChartTf}.`);
+    return true;
+  };
+
   useEffect(() => {
     if (!activeStructuralRangeId) return;
     const row = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId));
     if (!row) return;
     const rowLayer = normalizeStructureLayer(row.structure_layer || row.layer);
     if (rowLayer && rowLayer !== structureLayer) {
+      const expectedParent = expectedParentStructureLayer(structureLayer);
+      if (expectedParent && rowLayer === expectedParent && isRangeMajor(row)) {
+        setSelectedParentRangeId(String(activeStructuralRangeId));
+      }
       setActiveStructuralRangeId('');
       setLastSavedRangeConfirmation(null);
+      return;
     }
-  }, [structureLayer, activeStructuralRangeId, savedStructuralRanges]);
+    if (chainDraftMode) return;
+    hydrateStructuralAnchorsFromRange(row, { markDraft: false });
+  }, [structureLayer, activeStructuralRangeId, savedStructuralRanges, chainDraftMode, timeframe]);
 
   useEffect(() => {
     if (structureLayer === 'MACRO' && rangeScope === 'MAJOR') return;
@@ -4176,28 +4676,32 @@ function MapStudio({ symbol }: { symbol:string }) {
     rangeId: string,
     patch: { direction_of_break:'UP'|'DOWN'; broken_by_event_id:number|string; inactive_from_time:string },
   ) => {
-    return structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(rangeId)}`, {
-      method:'PATCH',
-      headers:{ 'Content-Type':'application/json' },
-      body: JSON.stringify({
+    return inspectorCommitOrThrow({
+      baseUrl: BASE_URL,
+      kind: 'structural_range_patch',
+      source: 'range_lifecycle_patch',
+      pathParams: { rangeId },
+      payload: {
         status: 'BROKEN',
         direction_of_break: patch.direction_of_break,
         broken_by_event_id: patch.broken_by_event_id,
         inactive_from_time: patch.inactive_from_time,
-      }),
+      },
     });
   };
 
   const patchActiveRangeRestored = async (rangeId: string) => {
-    return structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(rangeId)}`, {
-      method:'PATCH',
-      headers:{ 'Content-Type':'application/json' },
-      body: JSON.stringify({
+    return inspectorCommitOrThrow({
+      baseUrl: BASE_URL,
+      kind: 'structural_range_patch',
+      source: 'range_lifecycle_patch',
+      pathParams: { rangeId },
+      payload: {
         status: 'ACTIVE',
         direction_of_break: null,
         broken_by_event_id: null,
         inactive_from_time: null,
-      }),
+      },
     });
   };
 
@@ -4274,10 +4778,12 @@ function MapStudio({ symbol }: { symbol:string }) {
   };
 
   const patchOldRangeNewRangeId = async (oldRangeId: string, newRangeId: string) => {
-    return structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(oldRangeId)}`, {
-      method:'PATCH',
-      headers:{ 'Content-Type':'application/json' },
-      body: JSON.stringify({ new_range_id: Number(newRangeId) }),
+    return inspectorCommitOrThrow({
+      baseUrl: BASE_URL,
+      kind: 'structural_range_patch',
+      source: 'range_chain_link',
+      pathParams: { rangeId: oldRangeId },
+      payload: { new_range_id: Number(newRangeId) },
     });
   };
 
@@ -4319,17 +4825,54 @@ function MapStudio({ symbol }: { symbol:string }) {
       const activeRow = findSavedRangeRowById(activeStructuralRangeId);
       if (activeRow && parentRowMatches(activeRow)) return String(activeStructuralRangeId);
     }
+    if (chainDraftMode && activeStructuralRangeId) {
+      const brokenRow = findSavedRangeRowById(activeStructuralRangeId);
+      if (brokenRow && parentRowMatches(brokenRow)) return String(activeStructuralRangeId);
+    }
     return selectedParentRangeId || '';
+  };
+
+  const resolveParentIdForStructuralSave = () => {
+    const resolved = resolveParentRangeIdForSave(
+      structureLayer,
+      rangeScope,
+      parentSelectionForSave,
+      savedStructuralRanges,
+      childDraftSpan,
+    );
+    if (resolved.parentId) return resolved;
+    const neededParentLayer = rangeScope === 'MINOR' ? structureLayer : expectedParentStructureLayer(structureLayer);
+    if (!neededParentLayer) return resolved;
+    const manualParentId = selectedParentRangeId || parentSelectionForSave;
+    if (!manualParentId) return resolved;
+    const parentRow = safeArray<any>(savedStructuralRanges).find(
+      (r:any) => String(r.range_id || r.id) === String(manualParentId),
+    );
+    if (!parentRow) return resolved;
+    const parentLayer = normalizeStructureLayer(parentRow.structure_layer || parentRow.layer);
+    const layerOk = rangeScope === 'MINOR'
+      ? parentLayer === structureLayer && isRangeMajor(parentRow)
+      : parentLayer === neededParentLayer && isRangeMajor(parentRow);
+    if (!layerOk) return resolved;
+    return {
+      ...resolved,
+      parentId: String(manualParentId),
+      autoSelected: false,
+      mode: 'manual' as const,
+      matchIds: [String(manualParentId)],
+      error: null,
+      orphanWarning: null,
+    };
   };
 
   const parentSelectionForSave = useMemo(
     () => resolveParentSelectionForSave(),
-    [structureLayer, rangeScope, selectedParentRangeId, activeStructuralRangeId, savedStructuralRanges],
+    [structureLayer, rangeScope, selectedParentRangeId, activeStructuralRangeId, savedStructuralRanges, chainDraftMode],
   );
 
   const parentLinkResolve = useMemo(
-    () => resolveParentRangeIdForSave(structureLayer, rangeScope, parentSelectionForSave, savedStructuralRanges, childDraftSpan),
-    [structureLayer, rangeScope, parentSelectionForSave, savedStructuralRanges, childDraftSpan],
+    () => resolveParentIdForStructuralSave(),
+    [structureLayer, rangeScope, parentSelectionForSave, savedStructuralRanges, childDraftSpan, selectedParentRangeId, chainDraftMode, activeStructuralRangeId],
   );
 
   const resolvedParentRange = useMemo(() => {
@@ -4342,9 +4885,14 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (structureLayer === 'MACRO' && rangeScope === 'MAJOR') return null;
     const mode = parentLinkModeLabel(parentLinkResolve.mode);
     if (!resolvedParentRange) {
+      const expectedParent = parentStructureLayer;
+      const rootOk = isRootStructuralLayer(structureLayer, rangeScope);
+      const orphanHint = rootOk && expectedParent
+        ? `${structureLayer} root · optional ${expectedParent} parent not in case`
+        : (parentLinkResolve.orphanWarning || mode);
       return {
         mappingLine: `Mapping: ${structureLayer} ${rangeScope} | Source: ${sourceTimeframe} | Chart: ${timeframe}`,
-        parentLine: `Parent: none · ${parentLinkResolve.orphanWarning || mode}`,
+        parentLine: `Parent: none · ${orphanHint}`,
         mode,
       };
     }
@@ -4355,26 +4903,22 @@ function MapStudio({ symbol }: { symbol:string }) {
     };
   }, [structureLayer, rangeScope, sourceTimeframe, timeframe, parentLinkResolve, resolvedParentRange]);
 
-  const parentLinkHint = parentLinkResolve.error || parentLinkResolve.orphanWarning || null;
-
   const savePreview = useMemo(() => {
     const mappingCase = getCurrentMappingCaseRef();
-    const parentResolve = resolveParentRangeIdForSave(structureLayer, rangeScope, parentSelectionForSave, savedStructuralRanges, childDraftSpan);
+    const parentResolve = resolveParentIdForStructuralSave();
     const parentId = parentResolve.parentId;
-    const chartMismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
     const macroW1ValidNote = structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1' && String(timeframe).toUpperCase() === 'W1'
       ? 'Macro structural layer from W1 source — valid. Saves as MACRO / W1 with chart_timeframe W1.'
       : structureLayer === 'MACRO' && String(sourceTimeframe).toUpperCase() === 'W1'
         ? `Macro layer from W1 source — valid. chart_timeframe will record as ${timeframe}.`
         : '';
-    const warning = [chartMismatch, parentResolve.error, parentResolve.orphanWarning].filter(Boolean).join(' ');
     const activeRangeLayer = selectedSavedRange
       ? normalizeStructureLayer(selectedSavedRange.structure_layer || selectedSavedRange.layer)
       : null;
     const isLayerMatchedUpdate = !!(activeStructuralRangeId && activeRangeLayer === structureLayer);
     const selectedIsBroken = !!(isLayerMatchedUpdate && selectedSavedRange && isStructuralRangeBrokenStatus(selectedSavedRange.status));
     const actionLabel = isLayerMatchedUpdate
-      ? (selectedIsBroken ? 'Update Broken Range (confirm)' : 'Update Selected Range')
+      ? (selectedIsBroken ? 'Update Broken Range' : 'Update Selected Range')
       : 'Save New Range';
     return {
       chart_timeframe: timeframe,
@@ -4398,29 +4942,33 @@ function MapStudio({ symbol }: { symbol:string }) {
       action: isLayerMatchedUpdate ? 'UPDATE_SELECTED_RANGE' : 'SAVE_NEW_RANGE',
       actionLabel,
       selectedIsBroken,
-      warning,
     };
   }, [timeframe, structureLayer, sourceTimeframe, activeCaseId, rawActiveCaseId, activeCaseLabel, parentSelectionForSave, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, savedStructuralRanges, parentStructureLayer, selectedSavedRange, childDraftSpan]);
 
   const saveBlockReason = useMemo(() => {
     if (!getCurrentMappingCaseRef().hasCase) return 'Create or select a mapping case first (Case tab).';
-    const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
-    if (mappingActive) {
-      const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
-      if (mismatch) return mismatch;
+    const hasRh = !!String(rhAnchor.price || '').trim();
+    const hasRl = !!String(rlAnchor.price || '').trim();
+    if (chainDraftMode) {
+      if (!hasRh && !hasRl) return 'Range is BROKEN — set RH/RL for the next range, then Save Next.';
+      if (!hasRh) return 'Set Range High for the next range (Sel → candle → RH).';
+      if (!hasRl) return 'Set Range Low for the next range (Sel → candle → RL).';
+    } else {
+      if (!hasRh && !hasRl) return 'Set Range High and Range Low first.';
+      if (!hasRh) return 'RL is set — select a candle and click RH for Range High.';
+      if (!hasRl) return 'RH is set — select a candle and click RL for Range Low.';
     }
-    if (!rhAnchor.price || !rlAnchor.price) return 'Set Range High and Range Low first.';
-    if (parentLinkResolve.error) return parentLinkResolve.error;
+    const draftHigh = parseNum(rhAnchor.price);
+    const draftLow = parseNum(rlAnchor.price);
+    if (Number.isFinite(draftHigh) && Number.isFinite(draftLow) && draftHigh <= draftLow) {
+      return 'Range High must be above Range Low.';
+    }
+    if (parentLinkResolve.error) return `${parentLinkResolve.error} (Save will continue as orphan.)`;
+    if (parentLinkResolve.orphanWarning) return parentLinkResolve.orphanWarning;
     return null;
-  }, [parentLinkResolve.error, rhAnchor.price, rlAnchor.price, activeCaseId, rawActiveCaseId, chartFullscreen, rightDeckTab, markWorkspaceMode, timeframe, structureLayer, sourceTimeframe]);
+  }, [rhAnchor.price, rlAnchor.price, activeCaseId, rawActiveCaseId, chainDraftMode, parentLinkResolve.error, parentLinkResolve.orphanWarning]);
 
   const chartStatusLine = useMemo(() => {
-    if (saveBlockReason) {
-      return `${saveBlockReason} Click the ${parentStructureLayer || 'parent'} row in Structural Explorer.`;
-    }
-    if (structuralRangeDraftDirty && parentLinkResolve.orphanWarning) {
-      return parentLinkResolve.orphanWarning;
-    }
     const targetBars = targetVisibleBarsForTimeframe(timeframe);
     const zoomHint = visibleBarCount > targetBars * 1.35
       ? ` · ${visibleBarCount} bars visible (try Fit Replay or W+ to read structure)`
@@ -4431,7 +4979,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       return `Selected ${shortTime(selectedCandle.time, timeframe)} · H ${selectedCandle.high.toFixed(2)} · L ${selectedCandle.low.toFixed(2)}${zoomHint}`;
     }
     return `${message}${zoomHint}`;
-  }, [saveBlockReason, structuralRangeDraftDirty, parentLinkResolve.orphanWarning, parentStructureLayer, selectedCandle, timeframe, message, visibleBarCount]);
+  }, [selectedCandle, timeframe, message, visibleBarCount]);
 
   const saveNextRangeEligible = useMemo(() => {
     if (!activeStructuralRangeId) {
@@ -4488,7 +5036,48 @@ function MapStudio({ symbol }: { symbol:string }) {
     return rows;
   };
 
-  const selectSavedStructuralRange = (range:any) => {
+  const refreshStructuralMapEventsForChart = async (requestedTf = timeframe) => {
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) return;
+    const params = appendMappingCaseParams(
+      new URLSearchParams({ symbol, timeframe: requestedTf, limit: '2000' }),
+      mappingCase,
+    );
+    try {
+      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/events?${params.toString()}`);
+      const structural = safeArray<any>(data.events)
+        .map((row:any) => mapStructuralEventRowToChartEvent(row))
+        .filter(Boolean) as MapEvent[];
+      if (!structural.length) return;
+      setEventsByTf(prev => ({
+        ...prev,
+        [requestedTf]: mergeChartEventsById(safeArray(prev[requestedTf]), structural),
+      }));
+    } catch {
+      // Chart refresh must not block mapping saves.
+    }
+  };
+
+  const autoResume = useAutoResume({
+    symbol,
+    timeframe,
+    onSymbolChange,
+    onTimeframeChange: (tf) => {
+      activeTimeframeRef.current = tf;
+      setTimeframe(tf);
+    },
+    onResume: async (session) => {
+      skipBootstrapOnceRef.current = true;
+      setMessage(`Resuming ${session.symbol} · ${session.timeframe}…`);
+      if (getCurrentMappingCaseRef().hasCase) {
+        try { await refreshSavedRangesForCurrentCase(); } catch {}
+        try { await refreshStructuralMapEventsForChart(session.timeframe); } catch {}
+      }
+      await loadCandles(session.timeframe, { cacheFullHistory: true });
+    },
+  });
+
+  const selectSavedStructuralRange = (range:any, opts?: { routeInspector?: boolean }) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
     setActiveStructuralRangeId(id);
@@ -4499,25 +5088,35 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (range.parent_range_id !== undefined && range.parent_range_id !== null) setSelectedParentRangeId(String(range.parent_range_id));
     const high = range.range_high_price ?? range.range_high;
     const low = range.range_low_price ?? range.range_low;
-    const nextRh = { price:String(high ?? ''), time:String(range.range_high_time || ''), candle:null as Candle|null };
-    const nextRl = { price:String(low ?? ''), time:String(range.range_low_time || ''), candle:null as Candle|null };
-    if (high !== undefined && high !== null && high !== '') {
-      setRhAnchor(nextRh);
-      setRangeHigh(String(high));
+    const broken = isStructuralRangeBrokenStatus(range.status);
+    if (broken) {
+      setChainDraftMode(true);
+      clearStructuralRangeDraft();
+    } else {
+      setChainDraftMode(false);
+      hydrateStructuralAnchorsFromRange(range, { force: true, markDraft: false });
     }
-    if (low !== undefined && low !== null && low !== '') {
-      setRlAnchor(nextRl);
-      setRangeLow(String(low));
+    setRangeLineHiddenByCase(prev => {
+      const key = activeCaseDisplayId || 'global';
+      const current = new Set(prev[key] || []);
+      current.delete(id);
+      return { ...prev, [key]: Array.from(current) };
+    });
+    const hint = buildRangeSelectionHint({
+      rangeId: id,
+      structureLayer: nextLayer,
+      rangeScope: normalizeRangeScope(range.range_scope),
+      rangeHigh: high,
+      rangeLow: low,
+    });
+    if (opts?.routeInspector === false) {
+      setInspectorContextHint(hint);
+    } else {
+      applyInspectorRoute(routeInspectorForRangeSelection(), hint);
     }
-    if (nextLayer && (nextRh.price || nextRl.price)) {
-      setStructuralAnchorsByLayer(prev => ({
-        ...prev,
-        [nextLayer]: { rh: nextRh, rl: nextRl },
-      }));
-    }
-    setRangeWindowByTf(prev => ({ ...prev, [timeframe]: { ...(prev[timeframe] || {}), start:range.range_start_time || range.range_high_time || prev[timeframe]?.start || '', end:range.range_end_time || range.range_low_time || prev[timeframe]?.end || '' } }));
-    setStructuralRangeDraftDirty(false);
-    setMessage(`Selected saved range #${id}. Save Range button is now Update Selected Range.`);
+    setMessage(broken
+      ? `Selected BROKEN range #${id}. Set RH/RL for the next ${nextLayer} range, then Save Next.`
+      : `Selected saved range #${id}. RH/RL loaded — use ↑/↓ for BOS after range is active.`);
   };
 
   const explorerYearOptions = useMemo(() => {
@@ -4616,6 +5215,24 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
+  const restoreCaseWorkspaceFromVps = async (rawId: string, preferredTf?: string) => {
+    const tf = String(preferredTf || caseTimeframe || timeframe).toUpperCase();
+    const eventCount = await loadRawCaseLedgerIntoWorkspace(rawId, tf);
+    if (tf && tf !== timeframe) {
+      activeTimeframeRef.current = tf;
+      setTimeframe(tf);
+    }
+    try {
+      const rows = await refreshSavedRangesForCurrentCase();
+      await refreshStructuralMapEventsForChart(tf);
+      await refreshStructuralRanges().catch(() => {});
+      return { eventCount, rangeCount: rows.length };
+    } catch (err: any) {
+      setMessage(`Case ledger restored (${eventCount} events); structural ranges failed: ${err?.message || err}`);
+      return { eventCount, rangeCount: 0 };
+    }
+  };
+
   useEffect(() => {
     if (rightDeckTab === 'seed') {
       refreshSavedRangesForCurrentCase().catch(() => {});
@@ -4641,6 +5258,7 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const applyStructuralDraftPoint = (kind:'RH'|'RL'|'BH'|'BL', candle:Candle, next:{price:string; time:string; candle:Candle|null}) => {
     if (kind === 'RH') {
+      rhAnchorRef.current = next;
       setRhAnchor(next);
       setRangeHigh(next.price);
       setRangeWindowByTf(prev => {
@@ -4657,6 +5275,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       }));
     }
     if (kind === 'RL') {
+      rlAnchorRef.current = next;
       setRlAnchor(next);
       setRangeLow(next.price);
       setRangeWindowByTf(prev => {
@@ -4685,8 +5304,81 @@ function MapStudio({ symbol }: { symbol:string }) {
     return { label, viewNote };
   };
 
+  const hasStructuralAnchorPrice = (anchor: StructuralAnchor) => !!String(anchor.price || '').trim();
+
+  const persistStructuralQuickMarker = async (
+    kind: 'RH' | 'RL',
+    candle: Candle,
+    next: { price: string; time: string; candle: Candle | null },
+    previous: Record<string, unknown>,
+  ) => {
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) return;
+    const eventTypeByRole: Record<'RH' | 'RL', string> = {
+      RH: 'RANGE_HIGH_SELECTED',
+      RL: 'RANGE_LOW_SELECTED',
+    };
+    const eventId = crypto.randomUUID();
+    const parentForEvent = (() => {
+      const resolved = resolveParentIdForStructuralSave();
+      const raw = resolved.parentId || selectedParentRangeId || null;
+      if (raw === null || raw === undefined || String(raw) === '') return null;
+      const parentRow = findSavedRangeRowById(String(raw));
+      if (!parentRow) return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    })();
+    const payload: Record<string, unknown> = {
+      event_id: eventId,
+      case_id: mappingCase.case_id,
+      raw_case_id: mappingCase.raw_case_id,
+      case_ref: mappingCase.case_ref,
+      symbol,
+      ...structuralMappingScopeFields(structureLayer, sourceTimeframe, timeframe),
+      active_range_id: activeStructuralRangeId ? Number(activeStructuralRangeId) || activeStructuralRangeId : null,
+      parent_range_id: parentForEvent,
+      event_type: eventTypeByRole[kind],
+      structural_event: eventTypeByRole[kind],
+      event_time: candle.time,
+      event_price: Number(next.price),
+      candle_time: candle.time,
+      candle_open: candle.open,
+      candle_high: candle.high,
+      candle_low: candle.low,
+      candle_close: candle.close,
+      meta_json: {
+        role: kind,
+        quick_button: true,
+        mapping_layer_authority: true,
+      },
+    };
+    const data = await inspectorCommitOrThrow({
+      baseUrl: BASE_URL,
+      kind: 'structural_event',
+      source: 'structural_quick_button',
+      payload,
+    });
+    const saved = {
+      role: kind,
+      event_id: data.event_id || data.event?.event_id || eventId,
+      db_id: data.id || data.event?.id || null,
+      timeframe,
+      structure_layer: structureLayer,
+      source_timeframe: sourceTimeframe,
+      candle_time: candle.time,
+      event_price: Number(next.price),
+      previous,
+      payload,
+      saved_at: new Date().toISOString(),
+    };
+    pushQuickEvent(saved);
+  };
+
   const setStructuralPoint = async (kind:'RH'|'RL'|'BH'|'BL') => {
-    if (quickEventSaving) return;
+    if (structuralSaving) {
+      setMessage('Wait for the current range save to finish.');
+      return;
+    }
     const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
     if (mappingActive) {
       const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
@@ -4698,9 +5390,23 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (!candle) { setMessage('Select a candle first, then set RH/RL/BH/BL.'); return; }
     const mappingCase = getCurrentMappingCaseRef();
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving structural quick events.'); return; }
-    const scope = structuralMappingScopeFields(structureLayer, sourceTimeframe, timeframe);
-    const price = kind === 'RL' || kind === 'BL' ? candle.low : candle.high;
-    const next = { price: Number(price).toFixed(2), time: candle.time, candle };
+    const anchorPrice = kind === 'RL' ? candle.low : candle.high;
+    const next = { price: Number(anchorPrice).toFixed(2), time: candle.time, candle };
+    const nextNum = parseNum(next.price);
+    if (kind === 'RH' && hasStructuralAnchorPrice(rlAnchorRef.current)) {
+      const rlNum = parseNum(rlAnchorRef.current.price);
+      if (Number.isFinite(rlNum) && Number.isFinite(nextNum) && nextNum <= rlNum) {
+        setMessage(`RH must be above RL (${rlNum.toFixed(2)}). Pick a candle with a higher high.`);
+        return;
+      }
+    }
+    if (kind === 'RL' && hasStructuralAnchorPrice(rhAnchorRef.current)) {
+      const rhNum = parseNum(rhAnchorRef.current.price);
+      if (Number.isFinite(rhNum) && Number.isFinite(nextNum) && nextNum >= rhNum) {
+        setMessage(`RL must be below RH (${rhNum.toFixed(2)}). Pick a candle with a lower low.`);
+        return;
+      }
+    }
     const previous = {
       RH: rhAnchor,
       RL: rlAnchor,
@@ -4709,170 +5415,69 @@ function MapStudio({ symbol }: { symbol:string }) {
       range: rangeByTf[timeframe] || null,
       window: rangeWindowByTf[timeframe] || null,
     };
-    const eventTypeByRole:any = {
-      RH: 'RANGE_HIGH_SELECTED',
-      RL: 'RANGE_LOW_SELECTED',
-    };
-    const eventId = crypto.randomUUID();
-    const parentForEvent = (rangeScope === 'MINOR' || expectedParentStructureLayer(structureLayer))
-      ? (resolveParentRangeIdForSave(structureLayer, rangeScope, selectedParentRangeId, savedStructuralRanges, childDraftSpan).parentId || selectedParentRangeId || null)
-      : null;
-    const payload:any = {
-      event_id: eventId,
-      case_id: mappingCase.case_id,
-      raw_case_id: mappingCase.raw_case_id,
-      case_ref: mappingCase.case_ref,
-      symbol,
-      ...scope,
-      active_range_id: activeStructuralRangeId || null,
-      parent_range_id: parentForEvent,
-      event_type: eventTypeByRole[kind],
-      structural_event: eventTypeByRole[kind],
-      event_time: candle.time,
-      event_price: Number(next.price),
-      candle_time: candle.time,
-      candle_open: candle.open,
-      candle_high: candle.high,
-      candle_low: candle.low,
-      candle_close: candle.close,
-      direction: kind === 'BH' ? 'UP' : kind === 'BL' ? 'DOWN' : null,
-      meta_json: {
-        role: kind,
-        quick_button: true,
-        mapping_layer_authority: true,
-        analytics_ready: structureLayer !== 'MICRO',
-        analytics_note: structureLayer === 'MICRO' ? 'MICRO/M15 quick event stored; analytics not ready yet.' : null,
-      },
-    };
-    setQuickEventSaving(true);
-    try {
-      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-      const applied = applyStructuralDraftPoint(kind, candle, next);
-      const saved = {
-        role: kind,
-        event_id: data.event_id || data.event?.event_id || eventId,
-        db_id: data.id || data.event?.id || null,
-        timeframe,
-        structure_layer: structureLayer,
-        source_timeframe: sourceTimeframe,
-        candle_time: candle.time,
-        event_price: Number(next.price),
-        previous,
-        payload,
-        saved_at: new Date().toISOString(),
-      };
-      setLastSavedQuickEvent(saved);
-      setQuickEventHistory(prev => [...prev, saved].slice(-50));
-      const viewNote = kind === 'RH' || kind === 'RL' ? 'draft anchor updated; use Save Range when ready' : 'draft marker only';
-      setMessage(`Saved ${kind} event ${String(saved.event_id).slice(0,8)} · ${structureLayer}/${sourceTimeframe} · ${shortTime(candle.time, timeframe)} (${viewNote})`);
-    } catch (err:any) {
-      setMessage(`Quick ${kind} event save failed: ${err?.message || err}`);
-    } finally {
-      setQuickEventSaving(false);
+    applyStructuralDraftPoint(kind, candle, next);
+    const draftRh = kind === 'RH' ? next : rhAnchorRef.current;
+    const draftRl = kind === 'RL' ? next : rlAnchorRef.current;
+    const bothReady = hasStructuralAnchorPrice(draftRh) && hasStructuralAnchorPrice(draftRl);
+    const viewNote = kind === 'RH' || kind === 'RL'
+      ? (bothReady ? 'draft anchors ready — click Save' : 'draft anchor updated')
+      : 'draft marker only';
+    if (kind === 'RH' && !hasStructuralAnchorPrice(draftRl)) {
+      setToolMode('select');
+      setChartDrawTool('off');
+      setMessage(`RH set at ${shortTime(candle.time, timeframe)} · ${next.price}. Select the RL candle (Sel), then click RL.`);
+    } else if (kind === 'RL' && !hasStructuralAnchorPrice(draftRh)) {
+      setMessage(`RL set at ${shortTime(candle.time, timeframe)} · ${next.price}. Select a high candle (Sel), then click RH.`);
+    } else {
+      setMessage(`${kind} set at ${shortTime(candle.time, timeframe)} · ${next.price} (${viewNote})`);
     }
+    void persistStructuralQuickMarker(kind, candle, next, previous).catch(() => {
+      // Range save is authoritative; marker events are audit-only.
+    });
   };
 
-  const undoLastQuickEvent = async () => {
-    if (!lastSavedQuickEvent?.event_id || quickEventSaving) return;
-    const ev = lastSavedQuickEvent;
-    setQuickEventSaving(true);
-    try {
-      await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event/${encodeURIComponent(String(ev.event_id))}`, {
-        method:'PATCH',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({
-          meta_json: {
-            undone: true,
-            undone_at: new Date().toISOString(),
-            undo_reason: 'quick_undo',
-          },
-        }),
-      });
-
-      let lifecycleRevertFailed = false;
-      let lifecycleRevertSkipped = false;
-      let lifecycleWarningMessage: string | null = null;
-      let lifecycleRevertSucceeded = false;
-      const shouldTryLifecycleRevert = isBosBreakQuickEventRole(ev.role) && ev.range_lifecycle_patched && ev.broken_range_id;
-      if (shouldTryLifecycleRevert) {
-        const rangeId = String(ev.broken_range_id);
-        const rangeRow = findSavedRangeRowById(rangeId);
-        const chainKnown = rangeHasKnownChainLinks(rangeRow);
-        if (chainKnown === null) {
-          lifecycleRevertSkipped = true;
-          lifecycleWarningMessage = `BOS undone, but range lifecycle revert skipped because chaining status is unknown for range #${rangeId}. Refresh audit.`;
-          setLastRangeLifecyclePatchWarning(lifecycleWarningMessage);
-        } else if (chainKnown) {
-          lifecycleRevertSkipped = true;
-          lifecycleWarningMessage = `BOS undone, but range #${rangeId} is chained to another range. Lifecycle revert skipped. Refresh audit.`;
-          setLastRangeLifecyclePatchWarning(lifecycleWarningMessage);
-        } else {
-          try {
-            const restoreData = await patchActiveRangeRestored(rangeId);
-            const restoredRange = restoreData?.range || {};
-            setSavedStructuralRanges(prev => prev.map((r:any) => {
-              if (String(r.range_id || r.id) !== rangeId) return r;
-              return {
-                ...r,
-                status: restoredRange.status || 'ACTIVE',
-                direction_of_break: restoredRange.direction_of_break ?? null,
-                broken_by_event_id: restoredRange.broken_by_event_id ?? null,
-                inactive_from_time: restoredRange.inactive_from_time ?? null,
-              };
-            }));
-            lifecycleRevertSucceeded = true;
-            setLastRangeLifecyclePatchWarning(null);
-            try { await refreshSavedRangesForCurrentCase(); } catch {}
-            try { await refreshHierarchyAudit(); } catch {}
-          } catch (revertErr:any) {
-            lifecycleRevertFailed = true;
-            lifecycleWarningMessage = `BOS undone, but range lifecycle revert failed. Refresh audit. ${revertErr?.message || revertErr}`;
-            setLastRangeLifecyclePatchWarning(lifecycleWarningMessage);
-          }
-        }
-      }
-
-      const prev = ev.previous || {};
-      if (ev.role === 'RH') {
-        setRhAnchor(prev.RH || { price:'', time:'' });
-        if (prev.range) setRangeByTf((p:any)=>({ ...p, [ev.timeframe]: prev.range }));
-        else setRangeHigh(prev.RH?.price || '');
-        setRangeWindowByTf((p:any)=>({ ...p, [ev.timeframe]: prev.window || {} }));
-      }
-      if (ev.role === 'RL') {
-        setRlAnchor(prev.RL || { price:'', time:'' });
-        if (prev.range) setRangeByTf((p:any)=>({ ...p, [ev.timeframe]: prev.range }));
-        else setRangeLow(prev.RL?.price || '');
-        setRangeWindowByTf((p:any)=>({ ...p, [ev.timeframe]: prev.window || {} }));
-      }
-      if (ev.role === 'BH' || ev.role === 'BREAK_UP') setBhAnchor(prev.BH || { price:'', time:'' });
-      if (ev.role === 'BL' || ev.role === 'BREAK_DOWN') setBlAnchor(prev.BL || { price:'', time:'' });
-      if (ev.role === 'RH' || ev.role === 'RL') setStructuralRangeDraftDirty(!!(prev.RH?.price || prev.RL?.price));
-      if (isBosBreakQuickEventRole(ev.role)) setStructuralBosDraftDirty(!!(prev.BH?.price || prev.BL?.price));
-      const remainingHistory = quickEventHistory.filter((x:any)=>String(x.event_id) !== String(ev.event_id));
-      setQuickEventHistory(remainingHistory);
-      setLastSavedQuickEvent(remainingHistory.length ? remainingHistory[remainingHistory.length - 1] : null);
-
-      if (lifecycleRevertSucceeded) {
-        setChainDraftMode(false);
-        autoChainSaveAttemptRef.current = '';
-        setMessage(`Break undo complete. Range ${ev.broken_range_id} restored to ACTIVE.`);
-      } else if (lifecycleRevertFailed || lifecycleRevertSkipped) {
-        setMessage(lifecycleWarningMessage || `Undid ${ev.role} event on ${ev.timeframe} ${shortTime(ev.candle_time, ev.timeframe)}.`);
-      } else {
-        setMessage(`Undid ${ev.role} event on ${ev.timeframe} ${shortTime(ev.candle_time, ev.timeframe)}.`);
-      }
-    } catch (err:any) {
-      setMessage(`Undo last quick event failed: ${err?.message || err}`);
-    } finally {
-      setQuickEventSaving(false);
+  const applyQuickEventPreviousSnapshot = (ev: any) => {
+    const prev = ev?.previous || {};
+    if (ev.role === 'RH') {
+      setRhAnchor(prev.RH || { price: '', time: '' });
+      if (prev.range) setRangeByTf((p: any) => ({ ...p, [ev.timeframe || timeframe]: prev.range }));
+      else setRangeHigh(prev.RH?.price || '');
+      setRangeWindowByTf((p: any) => ({ ...p, [ev.timeframe || timeframe]: prev.window || {} }));
     }
+    if (ev.role === 'RL') {
+      setRlAnchor(prev.RL || { price: '', time: '' });
+      if (prev.range) setRangeByTf((p: any) => ({ ...p, [ev.timeframe || timeframe]: prev.range }));
+      else setRangeLow(prev.RL?.price || '');
+      setRangeWindowByTf((p: any) => ({ ...p, [ev.timeframe || timeframe]: prev.window || {} }));
+    }
+    if (ev.role === 'BH' || ev.role === 'BREAK_UP') setBhAnchor(prev.BH || { price: '', time: '' });
+    if (ev.role === 'BL' || ev.role === 'BREAK_DOWN') setBlAnchor(prev.BL || { price: '', time: '' });
+    if (ev.role === 'RH' || ev.role === 'RL') setStructuralRangeDraftDirty(!!(prev.RH?.price || prev.RL?.price));
+    if (isBosBreakQuickEventRole(ev.role)) setStructuralBosDraftDirty(!!(prev.BH?.price || prev.BL?.price));
   };
 
-  const structuralWindow = () => {
-    const dateFields = structuralRangeDateFields(rhAnchor.time, rlAnchor.time);
-    const rhMs = parseStructuralTimeMs(rhAnchor.time);
-    const rlMs = parseStructuralTimeMs(rlAnchor.time);
+  const undoLastQuickEvent = () => {
+    if (!canUndoQuickEvent || quickEventSaving) return;
+    const ev = popQuickEventFromStack();
+    if (!ev) return;
+    applyQuickEventPreviousSnapshot(ev);
+    if (ev.event_id) {
+      const eventId = String(ev.event_id);
+      const dbId = ev.db_id != null ? String(ev.db_id) : '';
+      setEventsForTf((prev) => prev.filter((e) => {
+        const id = String(e.id || '');
+        const rawId = String(e.raw_event_id || '');
+        return id !== eventId && rawId !== eventId && (!dbId || id !== dbId);
+      }));
+    }
+    setLastRangeLifecyclePatchWarning(null);
+    setMessage(`Undid ${ev.role} on ${ev.timeframe || timeframe} ${shortTime(ev.candle_time, ev.timeframe || timeframe)}.`);
+  };
+
+  const structuralWindow = (rh: StructuralAnchor = rhAnchor, rl: StructuralAnchor = rlAnchor) => {
+    const dateFields = structuralRangeDateFields(rh.time, rl.time);
+    const rhMs = parseStructuralTimeMs(rh.time);
+    const rlMs = parseStructuralTimeMs(rl.time);
     const spanMs = [rhMs, rlMs].filter((x): x is number => x !== null);
     const duration = spanMs.length
       ? Math.round(Math.abs(Math.max(...spanMs) - Math.min(...spanMs)) / 60000)
@@ -4880,40 +5485,22 @@ function MapStudio({ symbol }: { symbol:string }) {
     return { ...dateFields, duration };
   };
 
-  const confirmOrphanSaveIfNeeded = (layer: StructureLayer, scope: RangeScope, parentResolve: ParentResolveResult): boolean => {
-    if (parentResolve.parentId) return true;
-    if (layer === 'MACRO' && scope === 'MAJOR') return true;
-    if (layer === 'WEEKLY' && scope === 'MAJOR') {
-      if (parentResolve.orphanWarning && macroRangesInCase.length > 0) {
-        return window.confirm(`${parentResolve.orphanWarning}\n\nSave Weekly MAJOR range without Macro MAJOR parent?`);
-      }
-      return true;
-    }
-    if (structureLayerRequiresParentConfirmation(layer, scope)) {
-      return window.confirm(
-        `${parentResolve.orphanWarning || `No matching parent found. Save ${layer} ${scope} range as orphan?`}\n\nOrphan child ranges may fail audit review.`,
-      );
-    }
-    return true;
-  };
-
-  const saveStructuralRange = async () => {
+  const saveStructuralRange = async (options?: { anchors?: { rh: StructuralAnchor; rl: StructuralAnchor } }): Promise<boolean> => {
     if (structuralSaving) {
       setMessage('Range save already in progress…');
-      return;
+      return false;
     }
-    if (structureLayer === 'INTRADAY' && String(sourceTimeframe).toUpperCase() === 'H8') {
-      setMessage('H8 source timeframe is selectable for planning, but backend rendering/storage normalisation is TODO before saving H8.');
-      return;
-    }
+    const rh = options?.anchors?.rh ?? rhAnchorRef.current;
+    const rl = options?.anchors?.rl ?? rlAnchorRef.current;
     const mappingCase = getCurrentMappingCaseRef();
-    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving a range.'); return; }
-    const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
-    if (mappingActive) {
-      const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
-      if (mismatch) { setMessage(mismatch); return; }
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving a range.'); return false; }
+    if (!rh.price || !rl.price) { setMessage('Set Range High and Range Low before saving a structural range.'); return false; }
+    const draftHigh = parseNum(rh.price);
+    const draftLow = parseNum(rl.price);
+    if (Number.isFinite(draftHigh) && Number.isFinite(draftLow) && draftHigh <= draftLow) {
+      setMessage('Range High must be above Range Low before saving.');
+      return false;
     }
-    if (!rhAnchor.price || !rlAnchor.price) { setMessage('Set Range High and Range Low before saving a structural range.'); return; }
     const activeRangeForSave = activeStructuralRangeId
       ? (selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId))
       : null;
@@ -4921,40 +5508,30 @@ function MapStudio({ symbol }: { symbol:string }) {
       ? normalizeStructureLayer(activeRangeForSave.structure_layer || activeRangeForSave.layer)
       : null;
     const activeRangeScope = activeRangeForSave ? normalizeRangeScope(activeRangeForSave.range_scope) : null;
-    const isUpdate = !!(activeStructuralRangeId && activeRangeLayer === structureLayer && activeRangeScope === rangeScope);
-    if (activeStructuralRangeId && activeRangeLayer && activeRangeLayer !== structureLayer) {
+    const existsInLedger = !!activeRangeForSave;
+    const isUpdate = !!(existsInLedger && activeStructuralRangeId && activeRangeLayer === structureLayer && activeRangeScope === rangeScope);
+    if (activeStructuralRangeId && !existsInLedger) {
+      setMessage(`Active range #${activeStructuralRangeId} is not in this case — saving as a new range.`);
+    } else if (activeStructuralRangeId && activeRangeLayer && activeRangeLayer !== structureLayer) {
       setMessage(`Active range #${activeStructuralRangeId} is ${activeRangeLayer}. Saving new ${structureLayer} range instead.`);
     }
-    if (isUpdate && activeRangeForSave && isStructuralRangeBrokenStatus(activeRangeForSave.status)) {
-      const ok = window.confirm('This edits the broken range itself. Use Save Next Range for the next range.');
-      if (!ok) return;
-    }
-    const parentResolve = resolveParentRangeIdForSave(
-      structureLayer,
-      rangeScope,
-      parentSelectionForSave,
-      savedStructuralRanges,
-      childDraftSpan,
-    );
-    if (parentResolve.error) {
-      setMessage(`${parentResolve.error} Click the ${parentTargetLayerLabel(structureLayer, rangeScope)} row in Structural Explorer, or save then use Relink.`);
-      return;
-    }
-    if (!confirmOrphanSaveIfNeeded(structureLayer, rangeScope, parentResolve)) return;
+    const parentResolve = resolveParentIdForStructuralSave();
     if (parentResolve.autoSelected && parentResolve.parentId) {
       setSelectedParentRangeId(String(parentResolve.parentId));
     }
     setStructuralSaving(true);
+    let savedRangeId = '';
     try {
-      const win = structuralWindow();
+      const win = structuralWindow(rh, rl);
       const anchorTimes = resolveEffectiveStructuralAnchorTimes(
-        rhAnchor,
-        rlAnchor,
+        rh,
+        rl,
         rangeWindowByTf[timeframe] || rangeWindow,
         selectedCandle?.time || replayCandle?.time || null,
       );
       const dateFields = structuralRangeDateFields(anchorTimes.range_high_time, anchorTimes.range_low_time);
       const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
+      const parentRangeIdForSave = parentResolve.parentId ? Number(parentResolve.parentId) : null;
       const payload = {
         ...(isUpdate ? { range_id: activeStructuralRangeId } : { range_key: `${safeCaseKey}_${structureLayer}_${sourceTimeframe}_${Date.now()}` }),
         case_id: mappingCase.case_id,
@@ -4963,9 +5540,9 @@ function MapStudio({ symbol }: { symbol:string }) {
         symbol,
         range_scope: rangeScope,
         ...structuralMappingScopeFields(structureLayer, sourceTimeframe, timeframe),
-        parent_range_id: parentResolve.parentId,
-        range_high_price: Number(rhAnchor.price),
-        range_low_price: Number(rlAnchor.price),
+        parent_range_id: parentRangeIdForSave,
+        range_high_price: Number(rh.price),
+        range_low_price: Number(rl.price),
         range_high_time: anchorTimes.range_high_time || win.range_high_time,
         range_low_time: anchorTimes.range_low_time || win.range_low_time,
         range_start_time: dateFields.range_start_time || win.range_start_time,
@@ -4975,10 +5552,20 @@ function MapStudio({ symbol }: { symbol:string }) {
         ...activeStructuralRangeStatusFields(),
         meta_json: { phase:'electron_phase3_structural_mapping', proof_target:'WEEKLY_DAILY', parent_link_mode: parentResolve.mode },
       };
-      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/range`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const data = await inspectorCommitOrThrow({
+        baseUrl: BASE_URL,
+        kind: 'structural_range',
+        source: 'structural_range_save',
+        payload,
+      });
       const id = String(data.range_id || data.id || data.range?.range_id || data.range?.id || '');
+      savedRangeId = id;
       setActiveStructuralRangeId(id);
       setStructuralRangeDraftDirty(false);
+      setRhAnchor({ price: String(rh.price), time: String(rh.time || ''), candle: rh.candle || null });
+      setRlAnchor({ price: String(rl.price), time: String(rl.time || ''), candle: rl.candle || null });
+      setRangeHigh(String(rh.price));
+      setRangeLow(String(rl.price));
       const confirmation = {
         range_id: id || null,
         mode: isUpdate ? 'updated' : 'created',
@@ -4994,29 +5581,64 @@ function MapStudio({ symbol }: { symbol:string }) {
       setStructuralAnchorsByLayer(prev => ({
         ...prev,
         [structureLayer]: {
-          rh: { price: String(rhAnchor.price), time: String(rhAnchor.time || ''), candle: rhAnchor.candle || null },
-          rl: { price: String(rlAnchor.price), time: String(rlAnchor.time || ''), candle: rlAnchor.candle || null },
+          rh: { price: String(rh.price), time: String(rh.time || ''), candle: rh.candle || null },
+          rl: { price: String(rl.price), time: String(rl.time || ''), candle: rl.candle || null },
         },
       }));
+      if (savedRangeId) {
+        const mergedRange = {
+          ...(data.range || {}),
+          range_id: Number(savedRangeId) || savedRangeId,
+          id: Number(savedRangeId) || savedRangeId,
+          structure_layer: confirmation.structure_layer,
+          source_timeframe: confirmation.source_timeframe,
+          range_high_price: confirmation.range_high_price,
+          range_low_price: confirmation.range_low_price,
+          range_high_time: payload.range_high_time,
+          range_low_time: payload.range_low_time,
+          range_scope: rangeScope,
+          parent_range_id: confirmation.parent_range_id,
+          case_ref: confirmation.case_ref,
+          raw_case_id: confirmation.raw_case_id,
+          status: 'ACTIVE',
+        };
+        setSavedStructuralRanges(prev => {
+          const idx = prev.findIndex((r: any) => String(r.range_id || r.id) === savedRangeId);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = { ...next[idx], ...mergedRange };
+            return next;
+          }
+          return [...prev, mergedRange as StructuralRange];
+        });
+      }
       setMessage(`${isUpdate ? 'Updated selected' : 'Saved new'} ${confirmation.structure_layer} range #${id || '?'} · ${confirmation.source_timeframe} · parent ${confirmation.parent_range_id || 'none'} · RH ${confirmation.range_high_price} / RL ${confirmation.range_low_price}`);
-      try { await refreshSavedRangesForCurrentCase(); } catch (refreshErr:any) { setMessage(`Saved range #${id || '?'}; saved-ranges refresh failed: ${refreshErr?.message || refreshErr}`); }
-      try { await refreshStructuralRanges(); } catch {}
-      try { await refreshHierarchyAudit(); } catch {}
+      if (savedRangeId) {
+        void refreshSavedRangesForCurrentCase().catch((refreshErr: any) => {
+          setMessage(`Saved range #${savedRangeId}; saved-ranges refresh failed: ${refreshErr?.message || refreshErr}`);
+        });
+        void refreshStructuralRanges().catch(() => {});
+        void refreshHierarchyAudit().catch(() => {});
+      }
+      return !!savedRangeId;
     } catch (err:any) {
       setMessage(`Range save failed: ${err?.message || err}`);
+      return false;
     } finally {
       setStructuralSaving(false);
     }
   };
 
-  const saveNextStructuralRange = async (options?: { auto?: boolean }) => {
+  const saveNextStructuralRange = async (options?: { auto?: boolean; anchors?: { rh: StructuralAnchor; rl: StructuralAnchor } }) => {
     if (structuralSaving) return false;
     if (!saveNextRangeEligible.eligible) {
       setMessage(saveNextRangeEligible.reason || 'Save Next Range is not available yet.');
       return false;
     }
-    if (structureLayer === 'INTRADAY' && String(sourceTimeframe).toUpperCase() === 'H8') {
-      setMessage('H8 source timeframe is selectable for planning, but backend rendering/storage normalisation is TODO before saving H8.');
+    const rh = options?.anchors?.rh ?? rhAnchorRef.current;
+    const rl = options?.anchors?.rl ?? rlAnchorRef.current;
+    if (!rh.price || !rl.price) {
+      setMessage('Set Range High and Range Low before saving the next range.');
       return false;
     }
     const mappingCase = getCurrentMappingCaseRef();
@@ -5059,9 +5681,9 @@ function MapStudio({ symbol }: { symbol:string }) {
     if (!createdByEventId) { setMessage('BOS event reference missing for chain. Break the range again or refresh audit.'); return false; }
     setStructuralSaving(true);
     try {
-      const win = structuralWindow();
+      const win = structuralWindow(rh, rl);
       const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
-      const activeFromTime = win.active_from_time || win.range_start_time || rhAnchor.time || rlAnchor.time || null;
+      const activeFromTime = win.active_from_time || win.range_start_time || rh.time || rl.time || null;
       const payload = {
         range_key: `${safeCaseKey}_${structureLayer}_${sourceTimeframe}_next_${oldRangeId}_${Date.now()}`,
         case_id: mappingCase.case_id,
@@ -5073,8 +5695,8 @@ function MapStudio({ symbol }: { symbol:string }) {
         parent_range_id: parentRangeId,
         old_range_id: Number(oldRangeId),
         created_by_event_id: createdByEventId,
-        range_high_price: Number(rhAnchor.price),
-        range_low_price: Number(rlAnchor.price),
+        range_high_price: Number(rh.price),
+        range_low_price: Number(rl.price),
         range_high_time: win.range_high_time,
         range_low_time: win.range_low_time,
         range_start_time: win.range_start_time,
@@ -5085,7 +5707,12 @@ function MapStudio({ symbol }: { symbol:string }) {
         new_range_id: null,
         meta_json: { phase:'electron_phase3c_range_chain', chain_from_range_id: oldRangeId, chain_from_bos_event_id: createdByEventId, auto_chain_save: !!options?.auto },
       };
-      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/range`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const data = await inspectorCommitOrThrow({
+        baseUrl: BASE_URL,
+        kind: 'structural_range',
+        source: 'structural_range_next',
+        payload,
+      });
       const newRangeId = String(data.range_id || data.id || data.range?.range_id || data.range?.id || '');
       if (!newRangeId) throw new Error('Next range saved but backend returned no range id.');
 
@@ -5123,10 +5750,19 @@ function MapStudio({ symbol }: { symbol:string }) {
       if (!chainLinkFailed) {
         const prefix = options?.auto ? 'Auto chain save complete. ' : '';
         setMessage(`${prefix}Next range saved. Range ${oldRangeId} → BOS ${createdByEventId} → Range ${newRangeId}.`);
+        const childLayer = expectedChildStructureLayer(structureLayer);
+        if (childLayer) {
+          drillToChildMapping({
+            ...(data.range || {}),
+            range_id: newRangeId,
+            id: newRangeId,
+            structure_layer: structureLayer,
+          });
+        }
       }
-      try { await refreshSavedRangesForCurrentCase(); } catch {}
-      try { await refreshStructuralRanges(); } catch {}
-      try { await refreshHierarchyAudit(); } catch {}
+      void refreshSavedRangesForCurrentCase().catch(() => {});
+      void refreshStructuralRanges().catch(() => {});
+      void refreshHierarchyAudit().catch(() => {});
       return true;
     } catch (err:any) {
       setMessage(`Save Next Range failed: ${err?.message || err}`);
@@ -5146,37 +5782,45 @@ function MapStudio({ symbol }: { symbol:string }) {
     void saveNextStructuralRange({ auto: true });
   }, [autoChainSave, chainDraftMode, structuralSaving, saveNextRangeEligible.eligible, rhAnchor.price, rhAnchor.time, rlAnchor.price, rlAnchor.time, activeStructuralRangeId, structureLayer]);
 
-  const saveStructuralBos = async (direction:'UP'|'DOWN', options?:{ quickButton?:boolean }) => {
+  const saveStructuralBos = async (direction:'UP'|'DOWN', options?:{ quickButton?:boolean }): Promise<boolean> => {
     if (structuralSaving) {
       setMessage('Wait for the current range save to finish before saving BOS.');
-      return;
+      return false;
     }
     if (quickEventSaving) {
       setMessage('Wait for the current quick event save to finish before saving BOS.');
-      return;
+      return false;
     }
     const mappingCase = getCurrentMappingCaseRef();
-    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving Break Up/Break Down.'); return; }
+    if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving Break Up/Break Down.'); return false; }
     const mappingActive = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
     if (mappingActive) {
       const mismatch = chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe);
-      if (mismatch) { setMessage(mismatch); return; }
+      if (mismatch) { setMessage(mismatch); return false; }
     }
     const candle = selectedCandle || replayCandle;
     const quickAnchor = candle && options?.quickButton
       ? { price: Number(direction === 'UP' ? candle.high : candle.low).toFixed(2), time: candle.time, candle }
       : null;
     const anchor = quickAnchor || (direction === 'UP' ? bhAnchor : blAnchor);
-    if (!anchor.price) { setMessage(`Set ${direction === 'UP' ? 'Break Up' : 'Break Down'} candle before saving BOS_${direction}.`); return; }
-    if (!activeStructuralRangeId) {
-      setMessage(`Select a saved ${structureLayer} range as active before Break Up/Break Down. Save Range first, or click the range in the side panel.`);
-      return;
+    if (!anchor.price) { setMessage(`Select a candle, then click ${direction === 'UP' ? '↑ Break Up' : '↓ Break Down'}.`); return false; }
+    let rangeId = resolveActiveRangeIdForAnchors();
+    if (!rangeId) {
+      setMessage(`Save or select a ${structureLayer} range first (Hierarchy tree or Save Range), then break it with ↑/↓.`);
+      return false;
     }
-    const activeRange = selectedSavedRange || safeArray<any>(savedStructuralRanges).find((r:any)=>String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
+    if (String(rangeId) !== String(activeStructuralRangeId)) {
+      setActiveStructuralRangeId(String(rangeId));
+    }
+    const activeRange = findSavedRangeRowById(String(rangeId)) || null;
+    if (activeRange && isStructuralRangeBrokenStatus(activeRange.status)) {
+      setMessage(`Range #${rangeId} is already BROKEN. Set RH/RL for the next ${structureLayer} range, then Save Next.`);
+      return false;
+    }
     const activeRangeLayer = normalizeStructureLayer(activeRange?.structure_layer || activeRange?.layer);
     if (activeRangeLayer && activeRangeLayer !== structureLayer) {
       setMessage(`Active range is ${activeRangeLayer} but mapping scope is ${structureLayer}. Select a matching range or change scope.`);
-      return;
+      return false;
     }
     const activeRangeParentId = activeRange?.parent_range_id ?? null;
     const hasActiveRangeParent = activeRangeParentId !== null && activeRangeParentId !== undefined && String(activeRangeParentId) !== '';
@@ -5188,13 +5832,12 @@ function MapStudio({ symbol }: { symbol:string }) {
       childDraftSpan,
     );
     if (!hasActiveRangeParent && parentResolve.error) {
-      setMessage(parentResolve.error);
-      return;
+      setMessage(`${parentResolve.error} BOS will save without parent link.`);
     }
     setStructuralSaving(true);
     try {
       const candle = anchor.candle || selectedCandle || replayCandle;
-      if (!candle) { throw new Error(`Select a candle or set ${direction === 'UP' ? 'BH' : 'BL'} from a candle before saving BOS_${direction}.`); }
+      if (!candle) { throw new Error(`Select a candle, then click ${direction === 'UP' ? '↑ Break Up' : '↓ Break Down'}.`); }
       const sourceBreakRole = direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN';
       const legacyBreakRole = direction === 'UP' ? 'BH' : 'BL';
       const sourceBreakEvent = [...quickEventHistory].reverse().find((ev:any) =>
@@ -5208,9 +5851,16 @@ function MapStudio({ symbol }: { symbol:string }) {
       const refTime = direction === 'UP'
         ? (activeRange?.range_high_time ?? null)
         : (activeRange?.range_low_time ?? null);
-      const parentRangeIdForBos = hasActiveRangeParent
+    const parentRangeIdForBos = (() => {
+      const raw = hasActiveRangeParent
         ? activeRangeParentId
         : (parentResolve.parentId || selectedParentRangeId || null);
+      if (raw === null || raw === undefined || String(raw) === '') return null;
+      const parentRow = findSavedRangeRowById(String(raw));
+      if (!parentRow) return null;
+      const parsed = Number(raw);
+      return Number.isFinite(parsed) ? parsed : null;
+    })();
       const breakInactiveTime = anchor.time || candle.time || null;
       const payload = {
         event_id: crypto.randomUUID(),
@@ -5219,7 +5869,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         case_ref: mappingCase.case_ref,
         symbol,
         ...structuralMappingScopeFields(structureLayer, sourceTimeframe, timeframe),
-        active_range_id: activeStructuralRangeId || null,
+        active_range_id: Number(rangeId) || rangeId,
         parent_range_id: parentRangeIdForBos,
         event_type: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
         structural_event: direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN',
@@ -5253,36 +5903,46 @@ function MapStudio({ symbol }: { symbol:string }) {
           parent_break_note: 'Weekly parent BH/BL is updated only by the later Parent Break action.',
         },
       };
-      const data = await structuralFetchJson(`${BASE_URL}/api/v1/map/structural-event`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      const data = await inspectorCommitOrThrow({
+        baseUrl: BASE_URL,
+        kind: 'structural_event',
+        source: 'structural_bos',
+        payload,
+      });
       const returned = data?.event || data || {};
       const expectedType = direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN';
-      const validationErrors:string[] = [];
       const returnedType = String(returned.event_type || '').toUpperCase();
       const returnedStructural = String(returned.structural_event || returned.event_type || '').toUpperCase();
       if (returnedType !== expectedType && returnedStructural !== expectedType) {
-        validationErrors.push(`event_type=${returned.event_type || 'missing'}`);
+        throw new Error(`Backend saved BOS with wrong event type: ${returned.event_type || returned.structural_event || 'missing'}`);
       }
       const returnedLayer = normalizeStructureLayer(returned.structure_layer || returned.layer);
-      if (returnedLayer && returnedLayer !== structureLayer) validationErrors.push(`structure_layer=${returned.structure_layer || 'missing'}`);
-      if (String(returned.source_timeframe || '').toUpperCase() !== String(sourceTimeframe).toUpperCase()) validationErrors.push('source_timeframe missing/mismatch');
-      if (mappingCase.raw_case_id && returned.raw_case_id && String(returned.raw_case_id) !== String(mappingCase.raw_case_id)) validationErrors.push('raw_case_id missing/mismatch');
-      if (mappingCase.case_ref && returned.case_ref && String(returned.case_ref) !== String(mappingCase.case_ref)) validationErrors.push('case_ref missing/mismatch');
-      if (String(returned.active_range_id || '') !== String(activeStructuralRangeId)) validationErrors.push('active_range_id missing/mismatch');
-      if (payload.parent_range_id && returned.parent_range_id != null && returned.parent_range_id !== '' && String(returned.parent_range_id) !== String(payload.parent_range_id)) {
-        validationErrors.push('parent_range_id missing/mismatch');
-      }
-      if (String(returned.break_level_type || '').toUpperCase() !== String(payload.break_level_type)) validationErrors.push('break_level_type missing/mismatch');
-      if (validationErrors.length) {
-        throw new Error(`Backend saved BOS through wrong/unlinked path: ${validationErrors.join(', ')}`);
+      if (returnedLayer && returnedLayer !== structureLayer) {
+        setMessage(`BOS saved on ${returnedLayer}; mapping scope is ${structureLayer}. Check hierarchy if this looks wrong.`);
       }
 
       const bosType = direction === 'UP' ? 'BOS_UP' : 'BOS_DOWN';
+      const chartEvent = mapStructuralEventRowToChartEvent({
+        ...returned,
+        event_id: data.event_id || returned.event_id || payload.event_id,
+        id: data.id || returned.id || data.event?.id,
+        event_type: expectedType,
+        event_time: payload.event_time,
+        event_price: payload.event_price,
+        case_id: mappingCase.case_id,
+        raw_case_id: mappingCase.raw_case_id,
+        case_ref: mappingCase.case_ref,
+      });
+      if (chartEvent) {
+        setEventsForTf(prev => mergeChartEventsById(safeArray(prev), [chartEvent]));
+        setSessionEventIds(prev => new Set([...prev, chartEvent.id]));
+      }
       let lifecyclePatchData: any = null;
       let lifecyclePatchFailed = false;
       try {
         const eventRef = resolveStructuralEventRef(data, payload);
         if (!breakInactiveTime) throw new Error('Break candle time missing; cannot patch range lifecycle.');
-        lifecyclePatchData = await patchActiveRangeBroken(String(activeStructuralRangeId), {
+        lifecyclePatchData = await patchActiveRangeBroken(String(rangeId), {
           direction_of_break: direction,
           broken_by_event_id: eventRef.broken_by_event_id,
           inactive_from_time: String(breakInactiveTime),
@@ -5319,17 +5979,16 @@ function MapStudio({ symbol }: { symbol:string }) {
           previous,
           payload,
           range_lifecycle_patched: !!lifecyclePatchData,
-          broken_range_id: lifecyclePatchData ? activeStructuralRangeId : null,
+          broken_range_id: lifecyclePatchData ? rangeId : null,
           saved_at: new Date().toISOString(),
         };
-        setLastSavedQuickEvent(saved);
-        setQuickEventHistory(prev => [...prev, saved].slice(-50));
+        pushQuickEvent(saved);
       }
       setStructuralBosDraftDirty(false);
       if (lifecyclePatchData) {
         const patchedRange = lifecyclePatchData?.range || {};
         setSavedStructuralRanges(prev => prev.map((r:any) => {
-          if (String(r.range_id || r.id) !== String(activeStructuralRangeId)) return r;
+          if (String(r.range_id || r.id) !== String(rangeId)) return r;
           return {
             ...r,
             status: patchedRange.status || 'BROKEN',
@@ -5340,6 +5999,9 @@ function MapStudio({ symbol }: { symbol:string }) {
         }));
         clearStructuralRangeDraft();
         setChainDraftMode(true);
+        if (activeRange && isRangeMajor(activeRange)) {
+          setSelectedParentRangeId(String(rangeId));
+        }
         autoChainSaveAttemptRef.current = '';
         if (activeRange && isRangeMajor(activeRange)) {
           setRangeScope('MAJOR');
@@ -5347,14 +6009,17 @@ function MapStudio({ symbol }: { symbol:string }) {
           setRangeScope('MINOR');
         }
         const scopeHint = activeRange && isRangeMajor(activeRange) ? 'MAJOR' : 'MINOR';
-        setMessage(`${bosType} saved. Range ${activeStructuralRangeId} marked BROKEN. Set RH/RL for the next ${structureLayer} ${scopeHint} range (Role chip controls scope).`);
+        setMessage(`${bosType} saved. Range #${rangeId} marked BROKEN. Set RH/RL for the next ${structureLayer} ${scopeHint} range, then Save Next.`);
         try { await refreshSavedRangesForCurrentCase(); } catch {}
       } else if (!lifecyclePatchFailed) {
-        setMessage(`Saved ${direction === 'UP' ? 'Break Up' : 'Break Down'} as formal ${bosType} ${String(data.event_id || data.event?.event_id || '').slice(0,8)} · ${structureLayer}/${sourceTimeframe} · active range #${activeStructuralRangeId} · ref ${refPrice ?? 'derived later'}`);
+        setMessage(`Saved ${direction === 'UP' ? 'Break Up' : 'Break Down'} as ${bosType} · range #${rangeId} · ref ${refPrice ?? 'derived later'}`);
       }
+      try { await refreshStructuralMapEventsForChart(timeframe); } catch {}
       try { await refreshHierarchyAudit(); } catch {}
+      return true;
     } catch (err:any) {
       setMessage(`BOS_${direction} save failed: ${err?.message || err}`);
+      return false;
     } finally {
       setStructuralSaving(false);
     }
@@ -5483,7 +6148,13 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const addTypedEventFromCandle = async (candle:Candle, type:string, priceMode:'high'|'low'|'close'='close', customName?:string) => {
+  const addTypedEventFromCandle = async (
+    candle:Candle,
+    type:string,
+    priceMode:'high'|'low'|'close'='close',
+    customName?:string,
+    source: InspectorCommitSource = 'manual_mark',
+  ) => {
     const price = priceMode === 'high' ? candle.high : priceMode === 'low' ? candle.low : candle.close;
     const activeLow = parseNum(rangeByTf[timeframe]?.low || rangeLow);
     const activeHigh = parseNum(rangeByTf[timeframe]?.high || rangeHigh);
@@ -5499,7 +6170,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       notes: ''
     };
     const nextEvents = upsertMarkerIntoEvents(ev);
-    await saveEvent(ev);
+    await saveEvent(ev, source);
     if (isRangeAnchorMarker(type)) {
       // v086.12: explicit anchor saves update ONLY the chosen side.
       // Do not resync both high+low from the full event ledger here, because an older
@@ -5542,7 +6213,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     const rolesToSave = [...pendingMarkerRoles];
     try {
       for (const role of rolesToSave) {
-        await markCandleRole(role, candle, { keepSelection: true });
+        await markCandleRole(role, candle, { keepSelection: true, commitSource: 'marker_bundle' });
       }
       setMessage(`Saved ${rolesToSave.length} event${rolesToSave.length === 1 ? '' : 's'} to event ledger · ${shortTime(candle.time, timeframe)}.`);
       setPendingMarkerRoles([]);
@@ -5551,34 +6222,35 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
   };
 
-  const markCandleRole = async (role:string, candle:Candle, opts?:{keepSelection?:boolean}) => {
+  const markCandleRole = async (role:string, candle:Candle, opts?:{keepSelection?:boolean; commitSource?: InspectorCommitSource}) => {
+    const commitSource = opts?.commitSource ?? 'manual_mark';
     setCandleMenu(null);
     if (!opts?.keepSelection) setSelectedCandle(candle);
     if (role === 'NONE') { clearSelectedCandleEvents(); return; }
-    if (role === 'RANGE_HIGH') return saveRawMarker('HIGH', candle);
-    if (role === 'RANGE_LOW') return saveRawMarker('LOW', candle);
-    if (role === 'REF_HIGH_TAKEN' || role === 'REF_LOW_TAKEN') return saveRawMarker('REF', candle);
-    if (role === 'INTERNAL_SWEEP_HIGH') return addTypedEventFromCandle(candle, 'INTERNAL_SWEEP_HIGH', 'high');
-    if (role === 'INTERNAL_SWEEP_LOW') return addTypedEventFromCandle(candle, 'INTERNAL_SWEEP_LOW', 'low');
-    if (role === 'EXTERNAL_SWEEP_HIGH') return addTypedEventFromCandle(candle, 'EXTERNAL_SWEEP_HIGH', 'high');
-    if (role === 'EXTERNAL_SWEEP_LOW') return addTypedEventFromCandle(candle, 'EXTERNAL_SWEEP_LOW', 'low');
-    if (role === 'INTERNAL_REJECTION_HIGH') return addTypedEventFromCandle(candle, 'INTERNAL_REJECTION_HIGH', 'high');
-    if (role === 'INTERNAL_REJECTION_LOW') return addTypedEventFromCandle(candle, 'INTERNAL_REJECTION_LOW', 'low');
-    if (role === 'EXTREME_DISCOUNT_LOW') return addTypedEventFromCandle(candle, 'EXTREME_DISCOUNT_LOW', 'low');
-    if (role === 'BELOW_FAIR_PRICE_LOW') return addTypedEventFromCandle(candle, 'BELOW_FAIR_PRICE_LOW', 'low');
-    if (role === 'ABOVE_FAIR_PRICE_HIGH') return addTypedEventFromCandle(candle, 'ABOVE_FAIR_PRICE_HIGH', 'high');
-    if (role === 'EXTREME_PREMIUM_HIGH') return addTypedEventFromCandle(candle, 'EXTREME_PREMIUM_HIGH', 'high');
-    if (role === 'RECLAIM_HIGH') return addTypedEventFromCandle(candle, 'RECLAIM_HIGH', 'close');
-    if (role === 'RECLAIM_LOW') return addTypedEventFromCandle(candle, 'RECLAIM_LOW', 'close');
-    if (role === 'BOS_UP') return addTypedEventFromCandle(candle, 'BOS_UP', 'close');
-    if (role === 'BOS_DOWN') return addTypedEventFromCandle(candle, 'BOS_DOWN', 'close');
-    if (role === 'CHOCH_UP') return addTypedEventFromCandle(candle, 'CHOCH_UP', 'close');
-    if (role === 'CHOCH_DOWN') return addTypedEventFromCandle(candle, 'CHOCH_DOWN', 'close');
-    if (role === 'P1') return addTypedEventFromCandle(candle, 'P1', 'close');
-    if (role === 'P2') return addTypedEventFromCandle(candle, 'P2', 'close');
-    if (role === 'P3') return addTypedEventFromCandle(candle, 'P3', 'close');
-    if (role === 'CUSTOM') return addTypedEventFromCandle(candle, eventType, 'close', eventName || eventType);
-    return addTypedEventFromCandle(candle, role, markerPriceMode(role), markerLabel(role));
+    if (role === 'RANGE_HIGH') return saveRawMarker('HIGH', candle, commitSource);
+    if (role === 'RANGE_LOW') return saveRawMarker('LOW', candle, commitSource);
+    if (role === 'REF_HIGH_TAKEN' || role === 'REF_LOW_TAKEN') return saveRawMarker('REF', candle, commitSource);
+    if (role === 'INTERNAL_SWEEP_HIGH') return addTypedEventFromCandle(candle, 'INTERNAL_SWEEP_HIGH', 'high', undefined, commitSource);
+    if (role === 'INTERNAL_SWEEP_LOW') return addTypedEventFromCandle(candle, 'INTERNAL_SWEEP_LOW', 'low', undefined, commitSource);
+    if (role === 'EXTERNAL_SWEEP_HIGH') return addTypedEventFromCandle(candle, 'EXTERNAL_SWEEP_HIGH', 'high', undefined, commitSource);
+    if (role === 'EXTERNAL_SWEEP_LOW') return addTypedEventFromCandle(candle, 'EXTERNAL_SWEEP_LOW', 'low', undefined, commitSource);
+    if (role === 'INTERNAL_REJECTION_HIGH') return addTypedEventFromCandle(candle, 'INTERNAL_REJECTION_HIGH', 'high', undefined, commitSource);
+    if (role === 'INTERNAL_REJECTION_LOW') return addTypedEventFromCandle(candle, 'INTERNAL_REJECTION_LOW', 'low', undefined, commitSource);
+    if (role === 'EXTREME_DISCOUNT_LOW') return addTypedEventFromCandle(candle, 'EXTREME_DISCOUNT_LOW', 'low', undefined, commitSource);
+    if (role === 'BELOW_FAIR_PRICE_LOW') return addTypedEventFromCandle(candle, 'BELOW_FAIR_PRICE_LOW', 'low', undefined, commitSource);
+    if (role === 'ABOVE_FAIR_PRICE_HIGH') return addTypedEventFromCandle(candle, 'ABOVE_FAIR_PRICE_HIGH', 'high', undefined, commitSource);
+    if (role === 'EXTREME_PREMIUM_HIGH') return addTypedEventFromCandle(candle, 'EXTREME_PREMIUM_HIGH', 'high', undefined, commitSource);
+    if (role === 'RECLAIM_HIGH') return addTypedEventFromCandle(candle, 'RECLAIM_HIGH', 'close', undefined, commitSource);
+    if (role === 'RECLAIM_LOW') return addTypedEventFromCandle(candle, 'RECLAIM_LOW', 'close', undefined, commitSource);
+    if (role === 'BOS_UP') return addTypedEventFromCandle(candle, 'BOS_UP', 'close', undefined, commitSource);
+    if (role === 'BOS_DOWN') return addTypedEventFromCandle(candle, 'BOS_DOWN', 'close', undefined, commitSource);
+    if (role === 'CHOCH_UP') return addTypedEventFromCandle(candle, 'CHOCH_UP', 'close', undefined, commitSource);
+    if (role === 'CHOCH_DOWN') return addTypedEventFromCandle(candle, 'CHOCH_DOWN', 'close', undefined, commitSource);
+    if (role === 'P1') return addTypedEventFromCandle(candle, 'P1', 'close', undefined, commitSource);
+    if (role === 'P2') return addTypedEventFromCandle(candle, 'P2', 'close', undefined, commitSource);
+    if (role === 'P3') return addTypedEventFromCandle(candle, 'P3', 'close', undefined, commitSource);
+    if (role === 'CUSTOM') return addTypedEventFromCandle(candle, eventType, 'close', eventName || eventType, commitSource);
+    return addTypedEventFromCandle(candle, role, markerPriceMode(role), markerLabel(role), commitSource);
   };
 
   const updateEvent = (id:string, patch:Partial<MapEvent>) => {
@@ -5586,7 +6258,7 @@ function MapStudio({ symbol }: { symbol:string }) {
   };
 
   const finishEventDrag = async (ev:MapEvent) => {
-    await saveEvent(ev);
+    await saveEvent(ev, 'event_drag');
     setMessage(`Updated ${ev.event_name} · ${ev.price} · ${ev.zone} · ${shortTime(ev.time, timeframe)}`);
   };
 
@@ -5719,14 +6391,14 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`Replay scrubbed to ${shortTime(c.time, timeframe)} · ${safe + 1}/${candles.length}`);
   };
 
-  const applyExplorerRowSelection = (range: any) => {
+  const applyExplorerRowSelection = (range: any, opts?: { routeInspector?: boolean }) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
     const rangeLayer = normalizeStructureLayer(range?.structure_layer || range?.layer);
     const neededParentLayer = expectedParentStructureLayer(structureLayer);
 
     if (rangeLayer === structureLayer) {
-      selectSavedStructuralRange(range);
+      selectSavedStructuralRange(range, opts);
       return;
     }
 
@@ -5753,10 +6425,31 @@ function MapStudio({ symbol }: { symbol:string }) {
     }));
     setStructuralRangeDraftDirty(false);
 
+    const hint = buildRangeSelectionHint({
+      rangeId: id,
+      structureLayer: rangeLayer || structureLayer,
+      rangeScope: normalizeRangeScope(range?.range_scope),
+      rangeHigh: high,
+      rangeLow: low,
+    });
+
+    if (opts?.routeInspector === false) {
+      setInspectorContextHint(hint);
+      if (rangeLayer && neededParentLayer && rangeLayer === neededParentLayer) {
+        setSelectedParentRangeId(id);
+        setMessage(`Parent context: ${rangeLayer} #${id} → mapping ${structureLayer}.`);
+      } else {
+        setMessage(`Selected ${rangeLayer || 'range'} #${id} for navigation.`);
+      }
+      return;
+    }
+
     if (rangeLayer && neededParentLayer && rangeLayer === neededParentLayer) {
       setSelectedParentRangeId(id);
+      applyInspectorRoute(routeInspectorForRangeSelection(), hint);
       setMessage(`Parent context: ${rangeLayer} #${id} → mapping ${structureLayer}.`);
     } else {
+      applyInspectorRoute(routeInspectorForRangeSelection(), hint);
       setMessage(`Selected ${rangeLayer || 'range'} #${id} for navigation.`);
     }
   };
@@ -5767,7 +6460,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     const chartTf = String(range?.chart_timeframe || range?.source_timeframe || range?.timeframe || timeframe).toUpperCase();
     const needsTfSwitch = chartTf !== String(timeframe).toUpperCase();
     const fitWindow = structuralRangeFitDomain(range, needsTfSwitch ? [] : candles);
-    applyExplorerRowSelection(range);
+    applyExplorerRowSelection(range, { routeInspector: false });
     if (needsTfSwitch) {
       pendingCameraIntentRef.current = {
         intent: 'FIT_STRUCTURAL_RANGE',
@@ -5883,17 +6576,11 @@ function MapStudio({ symbol }: { symbol:string }) {
     }
 
     jumpToStructuralRange(parent);
-    setRightDeckTab('mark');
-    setMarkWorkspaceMode('htf');
-    setWorkspacePanelOpen(true);
     setMessage(`Map ${childLayer} under ${gap.parentLayer} #${parentId} — parent set, chart jumped.`);
   };
 
   const editStructuralRangeFromTree = (range: any) => {
     selectSavedStructuralRange(range);
-    setRightDeckTab('mark');
-    setMarkWorkspaceMode('htf');
-    setWorkspacePanelOpen(true);
     setMessage(`Editing range #${range?.range_id || range?.id} in Structural Map.`);
   };
 
@@ -5918,10 +6605,11 @@ function MapStudio({ symbol }: { symbol:string }) {
       return;
     }
     try {
-      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/reparent`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ child_range_id: Number(id), parent_range_id: parentId }),
+      await inspectorCommitOrThrow({
+        baseUrl: BASE_URL,
+        kind: 'structural_range_reparent',
+        source: 'range_reparent',
+        payload: { child_range_id: Number(id), parent_range_id: parentId },
       });
       await refreshSavedRangesForCurrentCase();
       try { await refreshHierarchyAudit(); } catch {}
@@ -5942,10 +6630,12 @@ function MapStudio({ symbol }: { symbol:string }) {
     );
     if (!ok) return;
     try {
-      await structuralFetchJson(`${BASE_URL}/api/v1/map/range/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'ABANDONED' }),
+      await inspectorCommitOrThrow({
+        baseUrl: BASE_URL,
+        kind: 'structural_range_patch',
+        source: 'range_archive',
+        pathParams: { rangeId: id },
+        payload: { status: 'ABANDONED' },
       });
       if (String(activeStructuralRangeId) === id) setActiveStructuralRangeId('');
       await refreshSavedRangesForCurrentCase();
@@ -6003,7 +6693,7 @@ function MapStudio({ symbol }: { symbol:string }) {
       <div
         key={id}
         className={`explorerTreeRow ${isActive ? 'active' : ''} ${isParentContext ? 'parentContext' : ''} ${node.depth > 0 ? 'isChild' : ''}`}
-        style={{ marginLeft: `${node.depth * 12}px` }}
+        style={{ ['--tree-depth' as string]: node.depth }}
       >
         {hasChildren ? (
           <button type="button" className="explorerTreeToggle" onClick={toggleCollapsed} aria-label={collapsed ? 'Expand' : 'Collapse'}>
@@ -6288,24 +6978,6 @@ function MapStudio({ symbol }: { symbol:string }) {
     setMessage(`New case draft: "${name}". Map your anchors, then Create Case.`);
   };
 
-  // v087.27: when a case is first saved after H/L were plotted before the case existed,
-  // create clean linked anchor rows for the case. Otherwise the audit says "0 events" while the chart
-  // plainly has a parent range. Software gaslighting, now reduced.
-  const saveCaseAnchorEventDirect = async (tf:string, type:'RANGE_HIGH'|'RANGE_LOW', price:any, time:any, caseId:number) => {
-    const n = Number(price);
-    if (!Number.isFinite(n) || !caseId) return;
-    const eventTime = String(time || selectedCandle?.time || replayCandle?.time || candleReplayCursorTime || new Date().toISOString());
-    const id = `${symbol}_${String(tf).toUpperCase()}_${String(eventTime).replace(/[^0-9A-Za-z]+/g,'')}_${type}_CASE_${caseId}`;
-    const structural = type;
-    const meta = { case_id: caseId, timeframe: String(tf).toUpperCase(), layer: String(tf).toUpperCase(), structural_event: structural, case_anchor_autolink: true };
-    try {
-      await fetch(`${BASE_URL}/api/v1/map/event`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
-        symbol, timeframe: String(tf).toUpperCase(), case_id: caseId, layer: String(tf).toUpperCase(), structural_event: structural,
-        client_event_id: id, id, event_type: type, event_name: type, time: eventTime, price: Number(n.toFixed(2)), notes:'Case-linked range anchor.', meta_json: JSON.stringify(meta)
-      })});
-    } catch { /* anchor auto-link is helpful, not a hostage situation */ }
-  };
-
   const saveSeedIdea = async (saveAsNew = false) => {
     if (caseSaving) return;
     if (!cleanCaseDisplayName(seedName)) {
@@ -6350,8 +7022,11 @@ function MapStudio({ symbol }: { symbol:string }) {
 
       const hasActiveRaw = rawActiveCaseId && merged.some((idea:any) => String(idea?.raw_case_id || idea?.id || '') === String(rawActiveCaseId));
       const hasActiveLegacy = activeCaseId != null && merged.some((idea:any) => Number(idea?.id) === Number(activeCaseId));
-      if (rawActiveCaseId && !hasActiveRaw) setRawActiveCaseId('');
-      if (activeCaseId != null && !hasActiveLegacy) setActiveCaseId(null);
+      if (rawList.ok && rawActiveCaseId && !hasActiveRaw) setRawActiveCaseId('');
+      if (Array.isArray(legacyData?.ideas) && activeCaseId != null && !hasActiveLegacy) setActiveCaseId(null);
+      if (rawActiveCaseId && !hasActiveRaw && !rawList.ok) {
+        setSeedIdeas((prev) => mergeSavedCases(prev, rawCaseRecentRow(String(rawActiveCaseId))));
+      }
 
       const rawCount = rawRows.length;
       const legacyCount = legacyRows.length;
@@ -6409,86 +7084,154 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const switchTimeframePreserveCase = (nextTf:string) => {
     const tf = String(nextTf || timeframe).toUpperCase();
+    const sourceTf = String(timeframe).toUpperCase();
+    const sourceKey = `${activeCaseDisplayId || 'global'}_${sourceTf}`;
     let targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const dom = visibleCameraDomainRef.current;
-    if (dom?.start && dom?.end && Number.isFinite(new Date(dom.start).getTime()) && Number.isFinite(new Date(dom.end).getTime())) {
-      setCameraDomainByCaseTf(prev => ({ ...prev, [cameraKey]: { start: dom.start, end: dom.end } }));
+    const validDomTime = !!(dom?.start && dom?.end
+      && Number.isFinite(new Date(dom.start).getTime())
+      && Number.isFinite(new Date(dom.end).getTime()));
+    if (validDomTime) {
+      setCameraDomainByCaseTf(prev => ({ ...prev, [sourceKey]: { start: dom!.start, end: dom!.end } }));
     }
-    let priceDomain: { low: number; high: number } | null = null;
+    let inheritedPrice: { low: number; high: number } | null = null;
     if (dom && Number.isFinite(dom.priceLow) && Number.isFinite(dom.priceHigh) && dom.priceHigh > dom.priceLow) {
-      const currentPrice = { low: dom.priceLow, high: dom.priceHigh };
-      setCameraPriceDomainByCaseTf(prev => ({ ...prev, [cameraKey]: currentPrice }));
-      priceDomain = currentPrice;
-    }
-    const nextKey = `${activeCaseDisplayId || 'global'}_${tf}`;
-    const savedDest = cameraPriceDomainByCaseTf[nextKey];
-    if (savedDest && Number.isFinite(savedDest.low) && Number.isFinite(savedDest.high) && savedDest.high > savedDest.low) {
-      priceDomain = savedDest;
+      inheritedPrice = { low: dom.priceLow, high: dom.priceHigh };
+      setCameraPriceDomainByCaseTf(prev => ({ ...prev, [sourceKey]: inheritedPrice! }));
     }
 
+    const nextKey = `${activeCaseDisplayId || 'global'}_${tf}`;
+    const savedDestTime = cameraDomainByCaseTf[nextKey];
+    const savedDestPrice = cameraPriceDomainByCaseTf[nextKey];
+    const inheritedTime = validDomTime ? { start: dom!.start, end: dom!.end } : null;
+    const drillingDown = isDrillingDownTimeframe(sourceTf, tf);
     const contextRange = resolveMappingContextRange(savedStructuralRanges, selectedParentRangeId, activeStructuralRangeId);
-    const drillingIntraday = isIntradayChartTimeframe(tf);
-    let intent:CameraIntent = cameraMode === 'LOCKED'
+
+    let intent: CameraIntent = cameraMode === 'LOCKED'
       ? 'RESTORE_LOCKED'
       : cameraMode === 'CASE'
         ? 'CASE'
         : cameraMode === 'REPLAY'
           ? 'REPLAY'
           : 'PRESERVE_OR_NEAREST_TIME';
+    let fitWindow: StructuralFitWindow | null = null;
+    let priceDomain: { low: number; high: number } | null = null;
     let contextRangeId: string | null = null;
 
-    if (cameraMode !== 'LOCKED' && drillingIntraday && contextRange) {
-      intent = 'FIT_STRUCTURAL_RANGE';
-      contextRangeId = String(contextRange.range_id || contextRange.id);
-      targetTime = targetTime || structuralContextTargetTime(contextRange);
-      priceDomain = null;
-    } else if (cameraMode !== 'LOCKED' && !drillingIntraday) {
-      const savedTime = cameraDomainByCaseTf[nextKey];
-      const savedPrice = cameraPriceDomainByCaseTf[nextKey];
-      if (savedTime?.start && savedTime?.end) {
+    if (cameraMode !== 'LOCKED') {
+      if (drillingDown && inheritedTime) {
         intent = 'FIT_STRUCTURAL_RANGE';
-        priceDomain = savedPrice && savedPrice.high > savedPrice.low
-          ? savedPrice
-          : priceDomain;
-        pendingCameraIntentRef.current = {
-          intent,
-          targetTime: targetTime || savedTime.start,
-          reason: `timeframe-switch-restore:${timeframe}->${tf}`,
-          fitWindow: {
-            start: savedTime.start,
-            end: savedTime.end,
-            low: 0,
-            high: 0,
-            padRatio: 0,
-          },
-          priceDomain,
-          contextRangeId: null,
+        fitWindow = {
+          start: inheritedTime.start,
+          end: inheritedTime.end,
+          low: 0,
+          high: 0,
+          padRatio: structuralRangeFitPadRatio(normalizeStructureLayer(structureLayer)),
         };
-        const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
-        if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
-        activeTimeframeRef.current = tf;
-        setTimeframe(tf);
-        cameraLog('timeframe switch restore', { from: timeframe, to: tf, savedTime, priceDomain });
-        return;
+        priceDomain = inheritedPrice
+          || (savedDestPrice && savedDestPrice.high > savedDestPrice.low ? savedDestPrice : null);
+        targetTime = targetTime || inheritedTime.start;
+      } else if (savedDestTime?.start && savedDestTime?.end) {
+        intent = 'FIT_STRUCTURAL_RANGE';
+        fitWindow = {
+          start: savedDestTime.start,
+          end: savedDestTime.end,
+          low: 0,
+          high: 0,
+          padRatio: 0,
+        };
+        priceDomain = savedDestPrice && savedDestPrice.high > savedDestPrice.low
+          ? savedDestPrice
+          : inheritedPrice;
+        targetTime = targetTime || savedDestTime.start;
+      } else if (inheritedTime) {
+        intent = 'FIT_STRUCTURAL_RANGE';
+        fitWindow = {
+          start: inheritedTime.start,
+          end: inheritedTime.end,
+          low: 0,
+          high: 0,
+          padRatio: 0.08,
+        };
+        priceDomain = inheritedPrice;
+        targetTime = targetTime || inheritedTime.start;
+      } else if (isIntradayChartTimeframe(tf) && contextRange) {
+        intent = 'FIT_STRUCTURAL_RANGE';
+        contextRangeId = String(contextRange.range_id || contextRange.id);
+        targetTime = targetTime || structuralContextTargetTime(contextRange);
       }
     }
 
-    cameraLog('timeframe switch start', { from:timeframe, to:tf, intent, targetTime, priceDomain, contextRangeId });
-    pendingCameraIntentRef.current = { intent, targetTime, reason:`timeframe-switch:${timeframe}->${tf}`, priceDomain, contextRangeId };
-    const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
-    if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
+    cameraLog('timeframe switch start', { from: sourceTf, to: tf, intent, targetTime, priceDomain, contextRangeId, drillingDown, inheritedTime });
+    pendingCameraIntentRef.current = {
+      intent,
+      targetTime,
+      reason: `timeframe-switch:${sourceTf}->${tf}`,
+      fitWindow,
+      priceDomain,
+      contextRangeId,
+    };
+    if (drillingDown && inheritedTime) {
+      setRangeWindowByTf(prev => ({ ...prev, [tf]: { start: inheritedTime.start, end: inheritedTime.end } }));
+    } else {
+      const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
+      if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
+    }
     activeTimeframeRef.current = tf;
     setTimeframe(tf);
+    if (autoResume.isWelcome) autoResume.markSessionActive(symbol, tf);
   };
+
+  const handleMappingViewContextChange = (next: MappingViewContext) => {
+    unlockGlobalView();
+    setMappingViewContext(next);
+    const targetTf = resolveMappingViewChartTimeframe(next, structureLayer, timeframe);
+    if (targetTf && targetTf !== String(timeframe).toUpperCase()) {
+      mappingViewContextSyncRef.current = true;
+      switchTimeframePreserveCase(targetTf);
+    }
+  };
+
+  const handleDrillDownViewport = () => {
+    const start = activeMappingContainerDraft?.startTime;
+    const end = activeMappingContainerDraft?.endTime;
+    if (!drillDownViewport() || !start || !end || !candles.length) {
+      setMessage('Drill down needs a mapped container with start and end times.');
+      return;
+    }
+    const clamped = clampFitTimesToCandles(start, end, candles);
+    applyCameraCommand('FIT_STRUCTURAL_RANGE', clamped.start, 'drill-down-container', undefined, {
+      start: clamped.start,
+      end: clamped.end,
+      low: 0,
+      high: 0,
+      padRatio: 0.06,
+    });
+    setMessage(`Drill down · ${shortTime(clamped.start, timeframe)} → ${shortTime(clamped.end, timeframe)}`);
+  };
+
+  const handleUnlockGlobalView = () => {
+    unlockGlobalView();
+    setMessage('Global view unlocked — chart pan/zoom is no longer clamped to the container.');
+  };
+
+  useEffect(() => {
+    if (!mappingViewContextSyncRef.current) return;
+    mappingViewContextSyncRef.current = false;
+  }, [timeframe]);
+
+  useEffect(() => {
+    if (!campaignViewContextEnabled) return;
+    const parentTf = campaignParentChartTf;
+    if (mappingViewContext === 'parent' && parentTf && normalizeChartTf(timeframe) !== normalizeChartTf(parentTf)) {
+      setMappingViewContext('child');
+    }
+  }, [timeframe, structureLayer, campaignViewContextEnabled, campaignParentChartTf, mappingViewContext]);
 
   const showStructuralMappingRibbon = chartFullscreen || (rightDeckTab === 'mark' && markWorkspaceMode === 'htf');
   const mappingAllowedChartTfs = useMemo(
     () => allowedChartTimeframesForStructureLayer(structureLayer),
     [structureLayer],
-  );
-  const chartLayerMismatch = useMemo(
-    () => showStructuralMappingRibbon ? chartLayerMismatchWarning(timeframe, structureLayer, sourceTimeframe) : '',
-    [showStructuralMappingRibbon, timeframe, structureLayer, sourceTimeframe],
   );
 
   useEffect(() => {
@@ -6525,8 +7268,8 @@ function MapStudio({ symbol }: { symbol:string }) {
       activeTimeframeRef.current = nextTf;
       setTimeframe(nextTf);
       setSeedIdeas(prev => mergeSavedCases(prev, rawCaseRecentRow(rawId, idea.raw_case)));
-      const restoredCount = await loadRawCaseLedgerIntoWorkspace(rawId, nextTf);
-      setMessage(`Opened raw Case ${rawId.slice(0,8)} from VPS${restoredCount ? ` · ${restoredCount} ledger event${restoredCount===1?'':'s'} restored` : ''}.`);
+      const { eventCount, rangeCount } = await restoreCaseWorkspaceFromVps(rawId, nextTf);
+      setMessage(`Opened raw Case ${rawId.slice(0,8)} from VPS${eventCount ? ` · ${eventCount} ledger event${eventCount===1?'':'s'}` : ''}${rangeCount ? ` · ${rangeCount} structural range${rangeCount===1?'':'s'}` : ''}.`);
       return;
     }
     const id = Number(idea.id);
@@ -6600,11 +7343,16 @@ function MapStudio({ symbol }: { symbol:string }) {
       return;
     }
     if (rawCaseRestoreRef.current === rawActiveCaseId) return;
-    if (!seedIdeas.length) return;
     rawCaseRestoreRef.current = rawActiveCaseId;
     const row = safeArray<any>(seedIdeas).find((x:any) => String(x?.raw_case_id || x?.id || '') === String(rawActiveCaseId));
     const tf = String(row?.case_timeframe || row?.replay_timeframe || row?.raw_case?.base_timeframe || caseTimeframe || timeframe).toUpperCase();
-    loadRawCaseLedgerIntoWorkspace(String(rawActiveCaseId), tf);
+    void restoreCaseWorkspaceFromVps(String(rawActiveCaseId), tf).then(({ eventCount, rangeCount }) => {
+      if (eventCount || rangeCount) {
+        setMessage(`Restored case ${String(rawActiveCaseId).slice(0, 8)} · ${eventCount} events · ${rangeCount} ranges from VPS.`);
+      }
+    }).catch((err: any) => {
+      setMessage(`Case restore failed: ${err?.message || err}`);
+    });
   }, [rawActiveCaseId, seedIdeas]);
 
   useEffect(()=>{ loadSavedCasesFromBackend(); }, [symbol]);
@@ -6845,38 +7593,69 @@ function MapStudio({ symbol }: { symbol:string }) {
 
   const markerSections = useMemo(() => markerGroupsForTimeframe(timeframe), [timeframe]);
 
-  useEffect(()=>{
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setWorkspacePanelOpen(false); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
   useEffect(() => {
+    if (autoResume.phase !== 'welcome' || candles.length) return;
     let cancelled = false;
-    (async () => {
-      await bootstrapCandleFeed();
-      if (!cancelled) await loadCandles(timeframe);
+    void (async () => {
+      const cacheCount = await readLocalCacheBarCount(symbol, timeframe);
+      if (cancelled || cacheCount <= 0) return;
+      await loadCandles(timeframe, { cacheFullHistory: true });
+      if (!cancelled) autoResume.markSessionActive(symbol, timeframe);
     })();
     return () => { cancelled = true; };
-  }, [symbol, timeframe]);
+  }, [autoResume.phase, symbol, timeframe, candles.length]);
 
   useEffect(() => {
+    if (autoResume.phase === 'booting' || autoResume.isAutoResuming) return;
     let cancelled = false;
-    const syncTimer = window.setInterval(async () => {
+    (async () => {
+      if (skipBootstrapOnceRef.current) {
+        skipBootstrapOnceRef.current = false;
+        return;
+      }
+      if (getCurrentMappingCaseRef().hasCase) {
+        try { await refreshSavedRangesForCurrentCase(); } catch {}
+        try { await refreshStructuralMapEventsForChart(timeframe); } catch {}
+      }
+      const cacheCount = await readLocalCacheBarCount(symbol, timeframe);
+      if (cacheCount > 0) {
+        await loadCandles(timeframe, { cacheFullHistory: true });
+      } else {
+        await loadCandles(timeframe);
+      }
       if (cancelled) return;
-      await syncCandlesFromMt5(false);
-      if (!cancelled) await loadCandles(timeframe, { quiet: true, skipCamera: true });
-    }, CANDLE_SYNC_INTERVAL_MS);
-    const refreshTimer = window.setInterval(async () => {
-      if (cancelled) return;
-      await loadCandles(timeframe, { quiet: true, skipCamera: true });
-    }, CANDLE_REFRESH_INTERVAL_MS);
+      void syncSymbolAllTimeframesToCache(symbol, { reason: 'boot_sync', baseUrl: BASE_URL }).then(async (sync) => {
+        if (cancelled) return;
+        if (sync.ok) {
+          await loadCandles(timeframe, { quiet: true, skipCamera: true, cacheFullHistory: true });
+          return;
+        }
+        await bootstrapCandleFeed();
+        if (!cancelled) await loadCandles(timeframe, { quiet: true, skipCamera: true });
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [symbol, timeframe, activeCaseDisplayId, autoResume.phase, autoResume.isAutoResuming]);
+
+  useEffect(() => {
+    if (autoResume.phase === 'booting' || autoResume.isAutoResuming) return;
+    let cancelled = false;
+    const stopBackgroundSync = initBackgroundCandleSync({
+      baseUrl: BASE_URL,
+      resyncIntervalMs: DEFAULT_RESYNC_INTERVAL_MS,
+      onStatus: (status) => {
+        if (cancelled || status.phase !== 'ready') return;
+        if (status.symbol && status.symbol !== symbol) return;
+        if (candleLoadInFlightRef.current) return;
+        void loadCandles(timeframe, { quiet: true, skipCamera: true, cacheFullHistory: true });
+      },
+    });
+    getSyncService().onSymbolSelected(symbol);
     return () => {
       cancelled = true;
-      window.clearInterval(syncTimer);
-      window.clearInterval(refreshTimer);
+      stopBackgroundSync();
     };
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, autoResume.phase, autoResume.isAutoResuming]);
 
   const selectStructureLayer = (layer: StructureLayer) => {
     const nextAnchorsByLayer: Partial<Record<StructureLayer, LayerAnchorPair>> = {
@@ -6887,15 +7666,21 @@ function MapStudio({ symbol }: { symbol:string }) {
 
     const nextParentLayer = expectedParentStructureLayer(layer);
     if (nextParentLayer) {
-      const selectedRow = selectedParentRangeId
-        ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(selectedParentRangeId))
-        : null;
-      const selectedRowLayer = selectedRow ? normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) : null;
-      const parentRange = latestSavedRangeForLayer(nextParentLayer, savedStructuralRanges, selectedParentRangeId || undefined);
-      if (parentRange) {
-        setSelectedParentRangeId(String(parentRange.range_id || parentRange.id));
-      } else if (selectedRowLayer && selectedRowLayer !== nextParentLayer) {
-        setSelectedParentRangeId('');
+      const activeRow = activeStructuralRangeId ? findSavedRangeRowById(activeStructuralRangeId) : null;
+      const activeRowLayer = activeRow ? normalizeStructureLayer(activeRow.structure_layer || activeRow.layer) : null;
+      if (activeRow && activeRowLayer === nextParentLayer && isRangeMajor(activeRow)) {
+        setSelectedParentRangeId(String(activeStructuralRangeId));
+      } else {
+        const selectedRow = selectedParentRangeId
+          ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(selectedParentRangeId))
+          : null;
+        const selectedRowLayer = selectedRow ? normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) : null;
+        const parentRange = latestSavedRangeForLayer(nextParentLayer, savedStructuralRanges, selectedParentRangeId || activeStructuralRangeId || undefined);
+        if (parentRange) {
+          setSelectedParentRangeId(String(parentRange.range_id || parentRange.id));
+        } else if (selectedRowLayer && selectedRowLayer !== nextParentLayer) {
+          setSelectedParentRangeId('');
+        }
       }
     } else {
       setSelectedParentRangeId('');
@@ -6907,7 +7692,11 @@ function MapStudio({ symbol }: { symbol:string }) {
       setRlAnchor(stored.rl || { price:'', time:'', candle:null });
       setRangeHigh(stored.rh?.price || '');
       setRangeLow(stored.rl?.price || '');
-      setStructuralRangeDraftDirty(!!(stored.rh?.price && stored.rl?.price));
+      const layerSavedRange = latestSavedRangeForLayer(layer, savedStructuralRanges, activeStructuralRangeId || undefined);
+      const priceMatches = (a: number, b: number) => Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.005;
+      const rhMatch = layerSavedRange && priceMatches(parseNum(stored.rh?.price), parseNum(layerSavedRange.range_high_price ?? layerSavedRange.range_high));
+      const rlMatch = layerSavedRange && priceMatches(parseNum(stored.rl?.price), parseNum(layerSavedRange.range_low_price ?? layerSavedRange.range_low));
+      setStructuralRangeDraftDirty(!!(stored.rh?.price && stored.rl?.price) && !(rhMatch && rlMatch));
     } else {
       setRhAnchor({ price:'', time:'', candle:null });
       setRlAnchor({ price:'', time:'', candle:null });
@@ -6953,6 +7742,80 @@ function MapStudio({ symbol }: { symbol:string }) {
     return null;
   }, [chainDraftMode, activeStructuralRangeId, selectedSavedRange, savedStructuralRanges, rangeScope]);
 
+  useEffect(() => () => {
+    if (inspectorCommitFlashTimerRef.current) clearTimeout(inspectorCommitFlashTimerRef.current);
+  }, []);
+
+  const triggerInspectorCommitSuccess = () => {
+    if (inspectorCommitFlashTimerRef.current) clearTimeout(inspectorCommitFlashTimerRef.current);
+    setInspectorCommitFlash('success');
+    inspectorCommitFlashTimerRef.current = setTimeout(() => {
+      setInspectorCommitFlash('idle');
+      inspectorCommitFlashTimerRef.current = null;
+    }, 500);
+  };
+
+  const inspectorCommitAction = useMemo(() => {
+    if (chainDraftMode && saveNextRangeEligible.eligible && rhAnchor.price && rlAnchor.price) {
+      return { kind: 'next_range' as const, label: 'Commit Next Range' };
+    }
+    if (structuralBosDraftDirty && (bhAnchor.price || blAnchor.price) && activeStructuralRangeId) {
+      const direction: 'UP' | 'DOWN' = bhAnchor.price ? 'UP' : 'DOWN';
+      return {
+        kind: 'bos' as const,
+        label: direction === 'UP' ? 'Commit Break Up' : 'Commit Break Down',
+        direction,
+      };
+    }
+    return { kind: 'range' as const, label: savePreview.actionLabel };
+  }, [
+    chainDraftMode,
+    saveNextRangeEligible.eligible,
+    rhAnchor.price,
+    rlAnchor.price,
+    structuralBosDraftDirty,
+    bhAnchor.price,
+    blAnchor.price,
+    activeStructuralRangeId,
+    savePreview.actionLabel,
+  ]);
+
+  const inspectorCommitDisabled = useMemo(() => {
+    if (structuralSaving || quickEventSaving) return true;
+    if (!getCurrentMappingCaseRef().hasCase) return true;
+    if (inspectorCommitAction.kind === 'next_range') {
+      return !saveNextRangeEligible.eligible || !rhAnchor.price || !rlAnchor.price;
+    }
+    if (inspectorCommitAction.kind === 'bos') {
+      return !activeStructuralRangeId || (!bhAnchor.price && !blAnchor.price);
+    }
+    return !rhAnchor.price || !rlAnchor.price;
+  }, [
+    structuralSaving,
+    quickEventSaving,
+    inspectorCommitAction.kind,
+    saveNextRangeEligible.eligible,
+    rhAnchor.price,
+    rlAnchor.price,
+    bhAnchor.price,
+    blAnchor.price,
+    activeStructuralRangeId,
+    activeCaseId,
+    rawActiveCaseId,
+  ]);
+
+  const handleInspectorStructuralCommit = async () => {
+    let ok = false;
+    if (inspectorCommitAction.kind === 'next_range') {
+      ok = await saveNextStructuralRange();
+    } else if (inspectorCommitAction.kind === 'bos' && inspectorCommitAction.direction) {
+      ok = await saveStructuralBos(inspectorCommitAction.direction);
+    } else {
+      ok = await saveStructuralRange();
+    }
+    if (ok) triggerInspectorCommitSuccess();
+  };
+
   const structuralMappingRibbonEl = (
     <div className={`structuralMappingRibbon ${chartFullscreen ? 'ribbonDocked ribbonCompact' : 'ribbonInline'}`} aria-label="Structural mapping scope">
       {!chartFullscreen && <div className="ribbonScopeRow">
@@ -6996,10 +7859,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         {chartFullscreen ? `Plot ${mappingAllowedChartTfs.join('/')}` : `Plot chart: ${mappingAllowedChartTfs.join(' / ')}`}
       </span>
       {saveBlockReason && (
-        <span className="ribbonSaveBlock" title={saveBlockReason}>{saveBlockReason}</span>
-      )}
-      {!saveBlockReason && parentLinkResolve.orphanWarning && structuralRangeDraftDirty && (
-        <span className="ribbonSaveHint" title={parentLinkResolve.orphanWarning}>{parentLinkResolve.orphanWarning}</span>
+        <span className="ribbonSaveHint" title={saveBlockReason}>{saveBlockReason}</span>
       )}
       <span className="ribbonStatus" title={`${structureLayer} · source ${sourceTimeframe} · chart ${timeframe}${activeStructuralRangeId ? ` · active #${activeStructuralRangeId}` : ''}`}>
         {chartFullscreen
@@ -7009,26 +7869,79 @@ function MapStudio({ symbol }: { symbol:string }) {
       <button type="button" className={`ribbonChainToggle ${autoChainSave ? 'active' : ''}`} onClick={() => setAutoChainSave(v => !v)} title="After BOS break, auto Save Next Range when RH and RL are set">
         {chartFullscreen ? `Auto ${autoChainSave ? 'ON' : 'OFF'}` : `Auto Chain Save: ${autoChainSave ? 'ON' : 'OFF'}`}
       </button>
-      {chainDraftMode && <div className="chainDraftBanner">{chainScopeMismatch || (chartFullscreen ? `BROKEN · set RH/RL for next ${STRUCTURE_LAYER_CHIP[structureLayer]} ${rangeScope}` : `Range is BROKEN. Set RH/RL for the next ${structureLayer} ${rangeScope} range.`)}</div>}
+      {chainDraftMode && (
+        <div className="chainDraftBanner">
+          <span>{chainScopeMismatch || (chartFullscreen ? `BROKEN · set RH/RL for next ${STRUCTURE_LAYER_CHIP[structureLayer]} ${rangeScope}` : `Range is BROKEN. Set RH/RL for the next ${structureLayer} ${rangeScope} range.`)}</span>
+          {expectedChildStructureLayer(structureLayer) && selectedSavedRange && !chainScopeMismatch && (
+            <button
+              type="button"
+              className="chainDrillBtn"
+              onClick={() => drillToChildMapping(selectedSavedRange)}
+              title={`Switch to ${expectedChildStructureLayer(structureLayer)} and plot child range under #${activeStructuralRangeId}`}
+            >
+              Drill {expectedChildStructureLayer(structureLayer)}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
-  const compactQuickSaveLabel = savePreview.actionLabel
-    .replace('Update Broken Range (confirm)', 'Upd Broken')
-    .replace('Update Selected Range', 'Update')
-    .replace('Save New Range', 'Save');
+  const compactQuickSaveLabel = chainDraftMode && saveNextRangeEligible.eligible
+    ? 'Next'
+    : savePreview.actionLabel
+      .replace('Update Broken Range (confirm)', 'Upd Broken')
+      .replace('Update Selected Range', 'Update')
+      .replace('Save New Range', 'Save');
+
+  const handleQuickRangeSave = () => {
+    if (chainDraftMode && saveNextRangeEligible.eligible) void saveNextStructuralRange();
+    else void saveStructuralRange();
+  };
+  const structuralQuickAnchorDisabled = structuralSaving || quickEventSaving || (!selectedCandle && !replayCandle);
+  const structuralQuickAnchorHint = !selectedCandle && !replayCandle
+    ? 'Select a candle on the chart first (Sel tool)'
+    : structuralSaving
+      ? 'Saving range…'
+      : quickEventSaving
+        ? 'Saving event…'
+        : '';
+  const structuralQuickAnchorBarEl = (
+    <div className="quickAnchorBar quickAnchorBarCompact" aria-label="Quick structural mapping controls">
+      <button type="button" className={`structuralQuickBtn chipBtn ${rhAnchor.price ? 'active' : ''}`} disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RH')} title={structuralQuickAnchorHint || (rhAnchor.price ? `RH ${rhAnchor.price}` : 'Range High')}><span>RH</span></button>
+      <button type="button" className={`structuralQuickBtn chipBtn ${rlAnchor.price ? 'active' : ''}`} disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RL')} title={structuralQuickAnchorHint || (rlAnchor.price ? `RL ${rlAnchor.price}` : 'Range Low')}><span>RL</span></button>
+      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BH')} title={structuralQuickAnchorHint || 'Break Up / BOS_UP'}><span>↑</span></button>
+      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BL')} title={structuralQuickAnchorHint || 'Break Down / BOS_DOWN'}><span>↓</span></button>
+      <span className="quickAnchorDivider" />
+      <button type="button" className="quickSaveBtn" onClick={() => saveSeedIdea(false)} disabled={caseSaving} title="Update mapping case">{caseSaving ? '…' : getCurrentMappingCaseRef().hasCase ? 'Case' : 'New Case'}</button>
+      <button type="button" className={`quickSaveBtn ${chainDraftMode ? 'primary' : savePreview.selectedIsBroken ? '' : 'primary'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase} title={saveBlockReason || (chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+      <button type="button" className="quickSaveBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? '…' : 'Next'}</button>
+      <button type="button" className="quickSaveBtn" onClick={refreshHierarchyAudit} title="Refresh hierarchy audit">Audit</button>
+      <button type="button" className="quickSaveBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
+      <button type="button" className="quickSaveBtn" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="Undo last quick event (LIFO)">Undo</button>
+      {(structuralRangeDraftDirty || structuralBosDraftDirty) && <span className="quickDraftStatus dirty" title="Unsaved draft">draft</span>}
+      {lastSavedQuickEvent && <span className="quickDraftStatus saved" title={`Last: ${lastSavedQuickEvent.role} ${lastSavedQuickEvent.source_timeframe}`}>{lastSavedQuickEvent.role}</span>}
+      {chartFullscreen && <>
+        <span className="quickAnchorDivider" />
+        <button type="button" onClick={() => setChartFullscreen(false)} title="Exit fullscreen">Exit</button>
+      </>}
+    </div>
+  );
 
   const structuralMarkToolbarEl = (
     <div className="structuralMarkToolbar" aria-label="Structural mapping toolbar">
-      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('RH')} title="Range High">RH</button>
-      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('RL')} title="Range Low">RL</button>
-      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
-      <button type="button" className="structuralMarkBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RH')} title="Range High">RH</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RL')} title="Range Low">RL</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
       <span className="structuralMarkDivider" />
-      <button type="button" className={`structuralMarkBtn primary ${savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!parentLinkResolve.error || !getCurrentMappingCaseRef().hasCase} title={saveBlockReason || savePreview.actionLabel}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+      <button type="button" className={`structuralMarkBtn primary ${chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase} title={saveBlockReason || (chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
       <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save next range'}>Next</button>
       <button type="button" className="structuralMarkBtn" onClick={refreshHierarchyAudit} title="Refresh audit">Audit</button>
       <button type="button" className="structuralMarkBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
-      <button type="button" className="structuralMarkBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving} title="Undo last event">Undo</button>
+      <button type="button" className="structuralMarkBtn" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="Undo last event (LIFO)">Undo</button>
+      {(structuralRangeDraftDirty || structuralBosDraftDirty) && (
+        <span className="structuralDraftBadge" title="Unsaved draft — use Commit in Inspector footer">draft</span>
+      )}
     </div>
   );
 
@@ -7052,7 +7965,7 @@ function MapStudio({ symbol }: { symbol:string }) {
     </div>
   );
 
-  return <div className={`mapStudioShell d3MapStudio ${chartFullscreen ? 'chartFullscreenActive' : ''}`}>
+  return <div className={`mapStudioShell d3MapStudio ${chartFullscreen ? 'chartFullscreenActive' : ''}${!inspectorFormReady ? ' mapStudioBooting' : ''}`}>
     <div className="panelHeader mapStudioHeader">
       <div><h2>Map Studio</h2><p>D3 candle canvas with locked vertical scale, horizontal pan, precision crosshair, and backend candle memory.</p></div>
       <div className="studioControls"><button onClick={loadCandles} disabled={loading}><RefreshCw size={18}/> Reload</button></div>
@@ -7065,7 +7978,7 @@ function MapStudio({ symbol }: { symbol:string }) {
         return <button key={tf} type="button" className={`${timeframe===tf?'active':''}${locked?' tfLocked':''}`} disabled={locked} title={locked ? `Blocked while mapping ${structureLayer}. Change scope or use ${mappingAllowedChartTfs.join('/')}.` : `Switch to ${tf}`} onClick={()=>handleChartTfSwitch(tf)}>{tf}</button>;
       })}</div>
       {!topRibbonCollapsed && <>
-      <button className={scaleMode==='auto'?'active':''} onClick={()=>setScaleMode('auto')}>Auto</button>
+      <button className={scaleMode==='auto'?'active':''} onClick={()=>{ setScaleMode('auto'); setAutoscaleToken(x=>x+1); }}>Auto</button>
       <button className={scaleMode==='range'?'active':''} onClick={()=>setScaleMode('range')}>Range</button>
       <button className={gpsMode==='active'?'active':''} onClick={()=>setGpsMode('active')}>GPS</button>
       <button className={candleReplayMode?'active replayActiveBtn':''} onClick={toggleBarReplay} title="TradingView-style bar replay">Bar Replay</button>
@@ -7103,172 +8016,42 @@ function MapStudio({ symbol }: { symbol:string }) {
       <span>{cursor.zone || 'No range'}{cursor.pct !== undefined ? ` · ${cursor.pct.toFixed(2)}%` : ''}</span>
     </div>}
 
-    <div className={`d3Workspace ${chartFullscreen ? 'chartFullscreenMode' : ''}`}>
-      <div className={`d3ChartCard ${chartFullscreen ? 'chartFullscreenCard' : ''} ${chartFullscreen && workspacePanelOpen ? 'workspacePanelOpen' : ''}`}>
-        <div className="chartTitleRow chartTitleRowMap compactChartTitle">
-          <h3>{symbol} {timeframe}</h3>
-          <span>{chartStatusLine}</span>
-        </div>
-        {replayMode && currentPlaybackFrame && <div className={`replayFrameBanner ${String(currentPlaybackFrame.lookahead_result || '').toLowerCase()}`}>
-          <div><b>Replay Frame {playbackIndex + 1}/{playbackFrames.length}</b><span>{currentPlaybackFrame.frame_timestamp}</span></div>
-          <div><strong>{currentPlaybackFrame.phase}</strong><span>{currentPlaybackFrame.lifecycle_state} · {currentPlaybackFrame.parent_context_mode}</span></div>
-          <div><strong>{currentPlaybackFrame.current_zone}</strong><span>{currentPlaybackFrame.objective_code} · {currentPlaybackFrame.profile_type}</span></div>
-          <div><strong>{currentPlaybackFrame.lookahead_result || 'RAW'}</strong><span>{currentPlaybackFrame.trigger_event}</span></div>
-        </div>}
-        {candleReplayMode && replayCandle && <div className="chartReplayOverlay">
-          <b>Bar Replay · {timeframe}</b>
-          <span>{effectiveReplayIndex + 1}/{candles.length} · {shortTime(replayCandle.time, timeframe)}</span>
-          <span>{replaySelectBarMode ? 'Scrub tool: click chart to set replay bar' : candleReplayPlaying ? 'Playing…' : 'Use Scrub tool to move replay cursor'}</span>
-        </div>}
-        {activeParentRangeOverlay.length > 0 && <div className="parentRangeMiniBar" title="Parent range reference only. Jump/replay controls moved out of the chart body because apparently buttons enjoy standing in front of candles.">
-          <b>{activeParentRangeOverlay[0]?.structureLayer || activeParentRangeOverlay[0]?.timeframe} parent</b>
-          <span>{activeParentRangeOverlay.map(x=>`${x.kind.toUpperCase()} ${Number(x.price).toFixed(2)}`).join(' · ')}</span>
-        </div>}
-        {!chartFullscreen && showStructuralMappingRibbon && structuralMappingRibbonEl}
-        {chartFullscreen && <div className="structuralMappingDock compact">
-          {showStructuralMappingRibbon && structuralMappingRibbonEl}
-          {chartDrawToolbarEl}
-          <div className="quickAnchorBar quickAnchorBarCompact" aria-label="Quick structural mapping controls">
-          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RH')} title="Range High"><span>RH</span></button>
-          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('RL')} title="Range Low"><span>RL</span></button>
-          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BH')} title="Break Up / BOS_UP"><span>↑</span></button>
-          <button className="structuralQuickBtn chipBtn" disabled={quickEventSaving || (!selectedCandle && !replayCandle)} onClick={()=>setStructuralPoint('BL')} title="Break Down / BOS_DOWN"><span>↓</span></button>
-          <span className="quickAnchorDivider" />
-          <button className="quickSaveBtn" onClick={()=>saveSeedIdea(false)} disabled={caseSaving} title="Update mapping case">{caseSaving ? '…' : getCurrentMappingCaseRef().hasCase ? 'Case' : 'New Case'}</button>
-          <button className={`quickSaveBtn ${savePreview.selectedIsBroken ? '' : 'primary'}`} onClick={saveStructuralRange} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!parentLinkResolve.error || !getCurrentMappingCaseRef().hasCase} title={saveBlockReason || savePreview.actionLabel}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
-          <button className="quickSaveBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible} title={saveNextRangeEligible.reason || 'Save chained next range after BOS break'}>{structuralSaving ? '…' : 'Next'}</button>
-          <button className="quickSaveBtn" onClick={refreshHierarchyAudit} title="Refresh hierarchy audit">Audit</button>
-          <button className="quickSaveBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
-          <button className="quickSaveBtn" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving} title="Undo last quick event">Undo</button>
-          {(structuralRangeDraftDirty || structuralBosDraftDirty) && <span className="quickDraftStatus dirty" title="Unsaved draft">draft</span>}
-          {lastSavedQuickEvent && <span className="quickDraftStatus saved" title={`Last: ${lastSavedQuickEvent.role} ${lastSavedQuickEvent.source_timeframe}`}>{lastSavedQuickEvent.role}</span>}
-          <span className="quickAnchorDivider" />
-          <button className={toolMode==='select'?'active':''} onClick={()=>setToolMode('select')} title="Select candle for mapping">Sel</button>
-          <button className={toolMode==='scrub'?'active':''} onClick={()=>setToolMode('scrub')} disabled={!candleReplayMode} title="Scrub replay cursor">Scrub</button>
-          <button className={toolMode==='inspect'?'active':''} onClick={()=>setToolMode('inspect')} title="Pan chart">Pan</button>
-          <button onClick={()=>setChartFullscreen(false)} title="Exit fullscreen">Exit</button>
-        </div>
-        </div>}
-        {chartFullscreen && <div className="fullscreenTfDock" aria-label="Fullscreen timeframe controls">
-          {(['MN1','W1','D1','H4','H1','M15'] as string[]).map(tf => {
-            const locked = showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
-            return <button key={tf} type="button" className={`${timeframe===tf?'active':''}${locked?' tfLocked':''}`} disabled={locked} title={locked ? `Blocked while mapping ${structureLayer}` : tf} onClick={()=>handleChartTfSwitch(tf)}>{tf}</button>;
-          })}
-          <select value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)}><option value="AUTO">Auto</option><option value="LOCKED">Lock</option><option value="CASE">Case</option><option value="REPLAY">Replay</option></select>
-        </div>}
-        <div className="chartMapStage">
-        {chartHudCandleTime && <div className="chartCrosshairHud" aria-live="polite">
-          <b>{shortTime(chartHudCandleTime, timeframe)}</b>
-          {chartHudPrice != null && Number.isFinite(Number(chartHudPrice)) && <span>{Number(chartHudPrice).toFixed(2)}</span>}
-        </div>}
-        {!chartFullscreen && <div className="chartGestureHint" aria-hidden="true">Drag to pan · Scroll to zoom · Price strip drag · Draw tools save per case/timeframe</div>}
-        {!chartFullscreen && chartDrawToolbarEl}
-        <div className="chartMapCanvas">
-        <D3CandleMap
-          candles={candles}
-          replayCutTime={candleReplayMode && replayCandle ? replayCandle.time : null}
-          timeframe={timeframe}
-          rangeHigh={high}
-          rangeLow={low}
-          rangeStart={rangeWindow.start}
-          rangeEnd={rangeWindow.end}
-          hasRange={hasRange}
-          caseStart={activeCaseLedger?.start || ''}
-          caseEnd={activeCaseLedger?.end || ''}
-          caseHigh={activeCaseLedger?.high || ''}
-          caseLow={activeCaseLedger?.low || ''}
-          parentOverlays={[]}
-          savedRangeOverlays={chartSavedRangeOverlays}
-          draftRangeOverlay={chartDraftRangeOverlay}
-          showFibOverlays={false}
-          events={visibleEvents}
-          selectedCandleTime={selectedCandle?.time || null}
-          selectedCandlePrice={selectedCandlePoint?.price ?? null}
-          eventType={eventType}
-          toolMode={toolMode}
-          chartDrawings={chartDrawings}
-          chartDrawTool={chartDrawTool}
-          chartDrawColor={chartDrawColor}
-          selectedDrawingId={selectedDrawingId}
-          onDrawingsChange={updateChartDrawings}
-          onSelectedDrawingChange={setSelectedDrawingId}
-          chartTradeIdeas={chartTradeIdeas}
-          tradeIdeaDraft={tradeIdeaDraft}
-          tradePickMode={tradePickMode}
-          selectedTradeIdeaId={selectedTradeIdeaId}
-          onTradeLevelPick={handleTradeLevelPick}
-          scaleMode={scaleMode}
-          jumpLatestToken={jumpToken}
-          fitAllToken={fitToken}
-          goDate={jumpDate}
-          replayCursorEnabled={candleReplayMode && toolMode === 'scrub'}
-          onReplayCursorChange={setCandleReplayFrameByTime}
-          onCursor={setCursor}
-          onAddEvent={addEventAt}
-          onUpdateEvent={updateEvent}
-          onFinishEventDrag={finishEventDrag}
-          onCandleSelect={(payload)=>{
-            setSelectedCandle(payload.candle);
-            setPendingMarkerRoles([]);
-            setSelectedCandlePoint({ price: Number(payload.price.toFixed(2)), clientX: payload.clientX, clientY: payload.clientY });
-            setMessage(`Selected ${shortTime(payload.candle.time, timeframe)} · anchor ${payload.price.toFixed(2)}. Choose meaning from Mark tab.`);
-          }}
-          cameraMode={cameraMode}
-          cameraCommand={cameraCommand}
-          lockedCameraDomain={lockedCameraDomain}
-          lockedPriceDomain={cameraPriceDomainByCaseTf[cameraKey] || null}
-          cameraKey={cameraKey}
-          candleWidthScale={candleWidthScale}
-          priceZoomScale={priceZoomScale}
-          onCameraDomainChange={(dom)=>{ if (cameraMode === 'LOCKED') setCameraDomainByCaseTf(prev=>({ ...prev, [cameraKey]: dom })); }}
-          onVisibleDomainChange={(dom)=>{ visibleCameraDomainRef.current = dom; const next = Number(dom.visibleBars || 0); setVisibleBarCount(prev => (prev === next ? prev : next)); }}
-          onRangeChange={({high, low, start, end})=>{
-            if (typeof high === 'number' && Number.isFinite(high)) setRangeHigh(String(Number(high.toFixed(2))));
-            if (typeof low === 'number' && Number.isFinite(low)) setRangeLow(String(Number(low.toFixed(2))));
-            if (typeof start === 'string') setRangeWindow({ start });
-            if (typeof end === 'string') setRangeWindow({ end });
-          }}
+      <div
+        className={`${MAP_STUDIO_SHELL_CLASS}${navOverlayPanelOpen ? ' inspectorDockOpen' : ''}`}
+        style={{
+          ...MAP_STUDIO_SHELL_STYLE,
+          gridTemplateColumns: navOverlayPanelOpen
+            ? '60px 350px minmax(0, 1fr)'
+            : MAP_STUDIO_SHELL_GRID,
+        }}
+      >
+        <NavRail
+          activeTab={rightDeckTab}
+          onTabChange={handleNavOverlayTabChange}
+          panelOpen={navOverlayPanelOpen}
         />
-        </div>
-        </div>
-      </div>
-      {chartFullscreen && <div className="fullscreenBottomBar" aria-label="Fullscreen chart controls">
-        <div className="fullscreenReplayDock" aria-label="Fullscreen replay controls">
-          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0}>◀</button>
-          <button className={candleReplayPlaying?'active':''} onClick={toggleCandleReplayPlay} disabled={!candles.length}>{candleReplayPlaying ? 'Pause' : 'Play'}</button>
-          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex + 1)} disabled={!candles.length || effectiveReplayIndex >= candles.length - 1}>▶</button>
-          <button onClick={jumpToParentRangeStart} disabled={!activeParentRangeOverlay.length}>Parent</button>
-          <button onClick={startChildReplayFromParentStart} disabled={!activeParentRangeOverlay.length}>Child Replay</button>
-          <span>{candles.length ? `${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)} · C ${replayCandle.close.toFixed(2)}` : ''}</span>
-        </div>
-        <div className="fullscreenCameraDock" aria-label="Fullscreen zoom and fit controls">
-          <div className="fullscreenScaleDock">
-            <button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button>
-            <button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button>
-            <button onClick={resetCameraScale}>Reset</button>
-          </div>
-          <div className="fullscreenFitDock">
-            <button onClick={fitRangeView}>Fit Range</button>
-            <button onClick={fitReplayView}>Fit Replay</button>
-            <button onClick={fitCaseView}>Fit Case</button>
-            <button onClick={fitAllView}>Fit All</button>
-            <button onClick={lockCurrentView}>Lock View</button>
-          </div>
-        </div>
-      </div>}
-      <div className="floatingWorkspaceDock" aria-label="Workspace tools">
-        <button className={rightDeckTab==='narrative' && workspacePanelOpen ? 'active' : ''} title="Narrative" onClick={()=>{ setRightDeckTab('narrative'); setWorkspacePanelOpen(prev => rightDeckTab === 'narrative' ? !prev : true); }}>N</button>
-        <button className={rightDeckTab==='gps' && workspacePanelOpen ? 'active' : ''} title="GPS" onClick={()=>{ setRightDeckTab('gps'); setWorkspacePanelOpen(prev => rightDeckTab === 'gps' ? !prev : true); }}>G</button>
-        <button className={rightDeckTab==='mark' && workspacePanelOpen ? 'active' : ''} title="Mark" onClick={()=>{ setRightDeckTab('mark'); setToolMode('select'); setWorkspacePanelOpen(prev => rightDeckTab === 'mark' ? !prev : true); }}>M</button>
-        <button className={rightDeckTab==='seed' && workspacePanelOpen ? 'active' : ''} title="Case" onClick={()=>{ setRightDeckTab('seed'); setWorkspacePanelOpen(prev => rightDeckTab === 'seed' ? !prev : true); }}>C</button>
-        <button className={rightDeckTab==='trade' && workspacePanelOpen ? 'active' : ''} title="Trade Idea" onClick={()=>{ setRightDeckTab('trade'); setChartDrawTool('off'); setWorkspacePanelOpen(prev => rightDeckTab === 'trade' ? !prev : true); }}>T</button>
-      </div>
-      <div className={`mapSidePanel d3Side compactSideDeck floatingWorkspacePanel ${workspacePanelOpen ? 'open' : 'closed'}`}>
-        <div className="floatingPanelChrome">
-          <div><b>{rightDeckTab === 'narrative' ? 'Narrative' : rightDeckTab === 'gps' ? 'Market GPS' : rightDeckTab === 'mark' ? 'Mark Event' : rightDeckTab === 'trade' ? 'Trade Idea' : 'Case Manager'}</b><span>{symbol} · {timeframe}</span></div>
-          <button onClick={()=>setWorkspacePanelOpen(false)} title="Close panel">×</button>
-        </div>
-        {rightDeckTab === 'narrative' && <div className="rightTabPanel narrativeTabPanel ledgerViewerPanel">
+
+      <div className={`map-studio-inspector${navOverlayPanelOpen ? ' open' : ''}`} aria-hidden={!navOverlayPanelOpen}>
+        {navOverlayPanelOpen && (
+      <InspectorPanel
+        className="inspectorPanelLeftDock"
+        activeTab={rightDeckTab}
+        onTabChange={handleInspectorTabChange}
+        onClosePanel={() => setNavOverlayPanelOpen(false)}
+        symbol={symbol}
+        timeframe={timeframe}
+        contextHint={inspectorContextHint}
+        renderTab={(tab) => {
+          if (tab === 'dashboard') {
+            return (
+              <div className="rightTabPanel dashboardTabPanel">
+                <InspectorOverviewDashboard variant="inspector" />
+              </div>
+            );
+          }
+          if (tab === 'narrative') {
+            return (
+        <div className="rightTabPanel narrativeTabPanel ledgerViewerPanel">
           <h3>Event Ledger</h3>
           <p className="mutedSmall">Raw saved facts for the active timeframe. This is the brain food. Narrative comes after the compiler understands the bones.</p>
           <div className="caseBadge">LEDGER · {symbol} {timeframe} · {eventLedgerRows.length} saved event{eventLedgerRows.length===1?'':'s'}</div>
@@ -7296,55 +8079,27 @@ function MapStudio({ symbol }: { symbol:string }) {
             </button>)}
           </div>
           <div className="narrativeHint">Click a ledger row to jump replay/camera to that candle. Range Compiler Preview is read-only for now. No mystical narrator yet, calm down humanity.</div>
-        </div>}
-        {rightDeckTab === 'gps' && <>
-        <div className="gpsPanel">
-          <h3>Market GPS</h3>
-          <p className="mutedSmall">{gpsMode === 'mock' ? 'Mock payload: front-door test.' : 'Live MOS state from backend.'} Edit below, save to database, then use GPS Active.</p>
-          {gps?.coordinates ? <>
-            <div className="gpsRow"><span>Story Anchor</span><b>{gps.coordinates.story_anchor}</b></div>
-            <div className="gpsRow"><span>Anchor Class</span><b>{gps.coordinates.anchor_class || anchorClassLabel(gps.coordinates.story_anchor)}</b></div>
-            <div className="gpsRow"><span>Chapter</span><b>{gps.coordinates.chapter}</b></div>
-            <div className="gpsPhaseBox phaseCoordinate"><strong>{gps.coordinates.phase} {gps.coordinates.phase_part}</strong></div>
-            <div className="gpsRow"><span>Objective</span><b>{gps.coordinates.objective}</b></div>
-            <div className="gpsRow"><span>Current Zone</span><b>{gps.coordinates.current_zone}</b></div>
-            {gps.coordinates.parent_context_mode && <div className="gpsRow"><span>Parent Mode</span><b>{gps.coordinates.parent_context_mode}</b></div>}
-            {gps.coordinates.daily_range_status && <div className="gpsRow"><span>Daily Range</span><b>{gps.coordinates.daily_range_status}</b></div>}
-            {gps.coordinates.lifecycle_state && <div className="gpsRow"><span>Lifecycle</span><b>{gps.coordinates.lifecycle_state}</b></div>}
-            {gps.coordinates.profile_type && <div className="gpsRow"><span>Profile</span><b>{gps.coordinates.profile_type}</b></div>}
-          </> : <div className="gpsEmpty">{gps?.status || 'No GPS state loaded yet.'}</div>}
-          <div className="gpsMockEditor">
-            <label>Anchor<select value={gpsStoryAnchor} onChange={e=>setGpsStoryAnchor(e.target.value)}>{STORY_ANCHOR_OPTIONS.map(x=><option key={x}>{x}</option>)}</select></label>
-            <label>Chapter<select value={gpsChapter} onChange={e=>setGpsChapter(e.target.value)}>{['DAILY_BOS_UP','DAILY_BOS_DOWN','DAILY_CHOCH_UP','DAILY_CHOCH_DOWN','DAILY_BOS_UP_RECLAIM','POLARITY_FLIP_RETEST'].map(x=><option key={x}>{x}</option>)}</select></label>
-            <div className="gpsMockGrid">
-              <label>Story ID<input value={gpsStoryId} onChange={e=>setGpsStoryId(e.target.value)} placeholder="optional" /></label>
-              <label>Chapter ID<input value={gpsChapterId} onChange={e=>setGpsChapterId(e.target.value)} placeholder="optional" /></label>
-            </div>
-            <label>Parent Mode<select value={gpsParentMode} onChange={e=>setGpsParentMode(e.target.value)}>{['WEEKLY_ACTIVE_PARENT','WEEKLY_ABANDONED_DAILY_IN_MOTION','WEEKLY_FORMING_NO_DAILY_RANGE','DAILY_ACTIVE_ORPHAN','DAILY_ADOPTED_BY_NEW_WEEKLY'].map(x=><option key={x}>{x}</option>)}</select></label>
-            <label>Daily Range<select value={gpsDailyRangeStatus} onChange={e=>setGpsDailyRangeStatus(e.target.value)}>{['NO_ACTIVE_DAILY_RANGE','DAILY_RANGE_FORMING','DAILY_RANGE_ACTIVE','DAILY_RANGE_RETESTING','DAILY_RANGE_ABANDONED'].map(x=><option key={x}>{x}</option>)}</select></label>
-            <label>Lifecycle<select value={gpsLifecycleState} onChange={e=>setGpsLifecycleState(e.target.value)}>{['REVERSAL_DEVELOPMENT','EXPANSION','MITIGATION','OBJECTIVE_COMPLETION'].map(x=><option key={x}>{x}</option>)}</select></label>
-            <div className="gpsMockGrid">
-              <label>Phase<select value={gpsPhaseNumber} onChange={e=>setGpsPhaseNumber(e.target.value)}>{['P1','P2','P3'].map(x=><option key={x}>{x}</option>)}</select></label>
-              <label>State<select value={gpsPhasePart} onChange={e=>setGpsPhasePart(e.target.value)}>{['RETEST','RECLAIM','IMPULSE','BOS','FAIL'].map(x=><option key={x}>{x}</option>)}</select></label>
-            </div>
-            <label>Profile<select value={gpsProfileType} onChange={e=>setGpsProfileType(e.target.value)}>{['DEEP_RECLAIM_SD_PROFILE','SHALLOW_RECLAIM_SR_PROFILE','NO_RECLAIM_CONTINUATION_PROFILE','FAILED_RECLAIM_ABANDONED_RANGE'].map(x=><option key={x}>{x}</option>)}</select></label>
-            <label>Objective<input value={gpsObjective} onChange={e=>setGpsObjective(e.target.value.toUpperCase())} /></label>
-            <label>Zone<input value={gpsCurrentZone} onChange={e=>setGpsCurrentZone(e.target.value.toUpperCase())} /></label>
-            <label>Trigger<input value={gpsTriggerEvent} onChange={e=>setGpsTriggerEvent(e.target.value.toUpperCase())} /></label>
-            <label>Expected Next<input value={gpsExpectedNextEvent} onChange={e=>setGpsExpectedNextEvent(e.target.value.toUpperCase())} /></label>
-            <label>Invalidation<input value={gpsInvalidationCondition} onChange={e=>setGpsInvalidationCondition(e.target.value.toUpperCase())} /></label>
-          <button className="gpsSaveBtn" onClick={saveGpsState}>Build MOS State</button><button className="gpsSaveBtn secondary" onClick={()=>loadGps('active')}>Load Active GPS</button></div>
         </div>
-
-        </>}
-        {rightDeckTab === 'mark' && <div className="rightTabPanel markTabPanel markPanelModern markWorkspaceV0879">
+            );
+          }
+          if (tab === 'gps') {
+            return (
+        <div className="rightTabPanel gpsHierarchyTabPanel">
+          {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollGps')}
+        </div>
+            );
+          }
+          if (tab === 'mark') {
+            return (
+        <div className="rightTabPanel markTabPanel markPanelModern markWorkspaceV0879">
           <div className="markWorkspaceModeTabs">
             <button className={markWorkspaceMode==='htf'?'active':''} onClick={()=>setMarkWorkspaceMode('htf')}>Structural Map</button>
             <button className={markWorkspaceMode==='manual'?'active':''} onClick={()=>setMarkWorkspaceMode('manual')}>Manual Events</button>
             <button className={markWorkspaceMode==='case'?'active':''} onClick={()=>setMarkWorkspaceMode('case')}>Case Save</button>
           </div>
 
-          {markWorkspaceMode === 'htf' && <div className="markModePane htfEnginePane structuralMapClean">
+          {markWorkspaceMode === 'htf' && <div className="markModePane htfEnginePane structuralMapClean structuralMapWithCommitFooter">
+            <div className="structuralMapScroll">
             {structuralMarkToolbarEl}
 
             <div className="structuralScopeCompact">
@@ -7361,8 +8116,6 @@ function MapStudio({ symbol }: { symbol:string }) {
             </div>
 
             {structureLayer === 'MACRO' && <div className="caseBadge compactBadge">Macro root · no parent required</div>}
-
-            {parentLinkHint && <div className={`parentLinkHint ${parentLinkResolve.error ? 'warningBadge' : 'compactBadge'}`}>{parentLinkHint}</div>}
 
             <section className="structuralReviewSection">
               <ReviewCandidatePanel
@@ -7399,10 +8152,6 @@ function MapStudio({ symbol }: { symbol:string }) {
               />
             </section>
 
-            <section className="structuralExplorerSection">
-              {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollMark')}
-            </section>
-
             <details className="structuralPanelDetails collapsedSection">
               <summary>Save Preview · {savePreview.actionLabel}</summary>
               <div className="htfLiteGrid compactStateGrid miniPreviewGrid">
@@ -7412,12 +8161,11 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <div><span>RH / RL</span><strong>{savePreview.range_high_price || '—'} / {savePreview.range_low_price || '—'}</strong></div>
                 <div><span>Selected</span><strong>{activeStructuralRangeId || 'new'}</strong></div>
               </div>
-              {savePreview.warning && <div className="caseBadge warningBadge">{savePreview.warning}</div>}
               {!saveNextRangeEligible.eligible && saveNextRangeEligible.oldRangeId && activeStructuralRangeId && <div className="caseBadge">{saveNextRangeEligible.reason}</div>}
             </details>
 
             <details className="structuralPanelDetails collapsedSection">
-              <summary>Advanced Manual Buttons</summary>
+              <summary>Anchor Draft · RH/RL/BH/BL</summary>
               <div className="htfLiteGrid compactStateGrid miniPreviewGrid">
                 <div><span>RH</span><strong>{rhAnchor.price || 'not set'}</strong></div>
                 <div><span>RL</span><strong>{rlAnchor.price || 'not set'}</strong></div>
@@ -7425,11 +8173,11 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <div><span>Break Down</span><strong>{blAnchor.price || 'not set'}</strong></div>
               </div>
               <div className="caseActionRow compactActionRow">
-                <button type="button" onClick={() => setStructuralPoint('RH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range High</button>
-                <button type="button" onClick={() => setStructuralPoint('RL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Range Low</button>
-                <button type="button" onClick={() => setStructuralPoint('BH')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Up</button>
-                <button type="button" onClick={() => setStructuralPoint('BL')} disabled={quickEventSaving || (!selectedCandle && !replayCandle)}>Break Down</button>
-                <button type="button" className="gpsSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!lastSavedQuickEvent || quickEventSaving}>Undo Last Event</button>
+                <button type="button" onClick={() => setStructuralPoint('RH')} disabled={!selectedCandle && !replayCandle}>Range High</button>
+                <button type="button" onClick={() => setStructuralPoint('RL')} disabled={!selectedCandle && !replayCandle}>Range Low</button>
+                <button type="button" onClick={() => setStructuralPoint('BH')} disabled={!selectedCandle && !replayCandle}>Break Up</button>
+                <button type="button" onClick={() => setStructuralPoint('BL')} disabled={!selectedCandle && !replayCandle}>Break Down</button>
+                <button type="button" className="gpsSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving}>Undo Last Event</button>
               </div>
               {lastRangeLifecyclePatchWarning && <div className="caseBadge warningBadge">{lastRangeLifecyclePatchWarning}</div>}
               {lastSavedQuickEvent && <div className="htfCandidateState mini"><span>Last: {lastSavedQuickEvent.role} · {lastSavedQuickEvent.structure_layer}/{lastSavedQuickEvent.source_timeframe}</span></div>}
@@ -7450,6 +8198,22 @@ function MapStudio({ symbol }: { symbol:string }) {
                 <button type="button" className="gpsSaveBtn secondary" onClick={exportAuditJson}>Export Audit JSON</button>
               </div>
             </details>
+            </div>
+            <footer className="inspectorStructuralCommitFooter markCommitFooter">
+              <div>
+                <b>{inspectorCommitAction.label}</b>
+                <span>{saveBlockReason || `${structureLayer} · ${sourceTimeframe} · RH ${rhAnchor.price || '—'} / RL ${rlAnchor.price || '—'}`}</span>
+              </div>
+              <button
+                type="button"
+                className={`inspectorCommitBtn${inspectorCommitFlash === 'success' ? ' inspectorCommitBtnSuccess' : ''}`}
+                onClick={() => void handleInspectorStructuralCommit()}
+                disabled={inspectorCommitDisabled}
+                title={saveBlockReason || inspectorCommitAction.label}
+              >
+                {structuralSaving ? 'Committing…' : 'Commit'}
+              </button>
+            </footer>
           </div>}
 
           {markWorkspaceMode === 'manual' && <div className="markModePane manualEventsPane">
@@ -7526,8 +8290,12 @@ function MapStudio({ symbol }: { symbol:string }) {
               </div>
             </div>}
           </div>}
-        </div>}
-        {rightDeckTab === 'seed' && <div className="rightTabPanel seedTabPanel">
+        </div>
+            );
+          }
+          if (tab === 'seed') {
+            return (
+        <div className="rightTabPanel seedTabPanel">
         <div className="seedIdeaPanel sideSeedPanel caseManagerCompact">
       <div className="seedHeader caseManagerHeader compactCaseHeader">
         <div><b>Case Manager</b><span>Active case · hierarchy · navigation</span></div>
@@ -7560,8 +8328,6 @@ function MapStudio({ symbol }: { symbol:string }) {
           <button type="button" className="caseToolbarBtn primary" onClick={()=>saveSeedIdea(false)} disabled={caseSaving}>{caseSaving ? '…' : (getCurrentMappingCaseRef().hasCase ? 'Update Case' : 'Create Case')}</button>
         </div>
       </div>
-
-      {structuralExplorerPanelEl('explorerTreeScroll explorerTreeScrollCase')}
 
       {caseLoadStatus && <div className="caseBadge">{caseLoadStatus}</div>}
       {caseSavedNotice && <div className="caseSavedNotice">✓ {caseSavedNotice}</div>}
@@ -7623,8 +8389,12 @@ function MapStudio({ symbol }: { symbol:string }) {
         </div>
       </details>
     </div>
-        </div>}
-        {rightDeckTab === 'trade' && <MapTradeIdeaPanel
+        </div>
+            );
+          }
+          if (tab === 'trade') {
+            return (
+        <MapTradeIdeaPanel
           symbol={symbol}
           timeframe={timeframe}
           draft={tradeIdeaDraft}
@@ -7642,8 +8412,197 @@ function MapStudio({ symbol }: { symbol:string }) {
           onExport={handleExportTradeIdeas}
           saving={tradeIdeaSaving}
           shortTime={shortTime}
-        />}
+        />
+            );
+          }
+          return null;
+        }}
+      />
+        )}
       </div>
+
+    <div className={`map-studio-chart${chartFullscreen ? ' chartFullscreenMode' : ''}`}>
+      <div className={`d3ChartCard ${chartFullscreen ? 'chartFullscreenCard' : ''}`}>
+        <div className="chartTitleRow chartTitleRowMap compactChartTitle">
+          <h3>{symbol} {timeframe}</h3>
+          <span>{chartStatusLine}</span>
+          {campaignViewContextEnabled && (
+            <MappingViewContextSwitcher
+              viewContext={mappingViewContext}
+              parentTimeframe={campaignParentChartTf}
+              childTimeframe={campaignChildChartTf}
+              parentPointCount={campaignParentChartTf ? mappingDraftPointCountForTimeframe(campaignParentChartTf) : 0}
+              childPointCount={mappingDraftPointCountForTimeframe(campaignChildChartTf)}
+              onChange={handleMappingViewContextChange}
+              isClamped={viewportIsClamped}
+              canDrillDown={viewportCanDrillDown}
+              onDrillDown={handleDrillDownViewport}
+              onUnlockGlobalView={handleUnlockGlobalView}
+            />
+          )}
+        </div>
+        {replayMode && currentPlaybackFrame && <div className={`replayFrameBanner ${String(currentPlaybackFrame.lookahead_result || '').toLowerCase()}`}>
+          <div><b>Replay Frame {playbackIndex + 1}/{playbackFrames.length}</b><span>{currentPlaybackFrame.frame_timestamp}</span></div>
+          <div><strong>{currentPlaybackFrame.phase}</strong><span>{currentPlaybackFrame.lifecycle_state} · {currentPlaybackFrame.parent_context_mode}</span></div>
+          <div><strong>{currentPlaybackFrame.current_zone}</strong><span>{currentPlaybackFrame.objective_code} · {currentPlaybackFrame.profile_type}</span></div>
+          <div><strong>{currentPlaybackFrame.lookahead_result || 'RAW'}</strong><span>{currentPlaybackFrame.trigger_event}</span></div>
+        </div>}
+        {candleReplayMode && replayCandle && <div className="chartReplayOverlay">
+          <b>Bar Replay · {timeframe}</b>
+          <span>{effectiveReplayIndex + 1}/{candles.length} · {shortTime(replayCandle.time, timeframe)}</span>
+          <span>{replaySelectBarMode ? 'Scrub tool: click chart to set replay bar' : candleReplayPlaying ? 'Playing…' : 'Use Scrub tool to move replay cursor'}</span>
+        </div>}
+        {activeParentRangeOverlay.length > 0 && <div className="parentRangeMiniBar" title="Parent range reference only. Jump/replay controls moved out of the chart body because apparently buttons enjoy standing in front of candles.">
+          <b>{activeParentRangeOverlay[0]?.structureLayer || activeParentRangeOverlay[0]?.timeframe} parent</b>
+          <span>{activeParentRangeOverlay.map(x=>`${x.kind.toUpperCase()} ${Number(x.price).toFixed(2)}`).join(' · ')}</span>
+        </div>}
+        {!chartFullscreen && showStructuralMappingRibbon && structuralMappingRibbonEl}
+        {!chartFullscreen && inspectorRailHidden && showStructuralMappingRibbon && (
+          <div className="structuralMappingDock compact chartQuickDock">
+            {structuralQuickAnchorBarEl}
+          </div>
+        )}
+        {chartFullscreen && <div className="structuralMappingDock compact">
+          {showStructuralMappingRibbon && structuralMappingRibbonEl}
+          {chartDrawToolbarEl}
+          {structuralQuickAnchorBarEl}
+        </div>}
+        {chartFullscreen && <div className="fullscreenTfDock" aria-label="Fullscreen timeframe controls">
+          {(['MN1','W1','D1','H4','H1','M15'] as string[]).map(tf => {
+            const locked = showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
+            return <button key={tf} type="button" className={`${timeframe===tf?'active':''}${locked?' tfLocked':''}`} disabled={locked} title={locked ? `Blocked while mapping ${structureLayer}` : tf} onClick={()=>handleChartTfSwitch(tf)}>{tf}</button>;
+          })}
+          <select value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)}><option value="AUTO">Auto</option><option value="LOCKED">Lock</option><option value="CASE">Case</option><option value="REPLAY">Replay</option></select>
+        </div>}
+        <div className="chartMapStage chartPilotLayer chart-parent-wrapper">
+        {autoResume.isWelcome && !candles.length && (
+          <div className="mapStudioWelcome" aria-live="polite">
+            <h3>Welcome to Map Studio</h3>
+            <p>Choose a symbol and timeframe, then start your first mapping session. Your last chart context will resume automatically next time.</p>
+            <button type="button" className="mapStudioWelcomeBtn" onClick={() => void autoResume.beginFirstSession()}>
+              Start mapping
+            </button>
+          </div>
+        )}
+        {chartHudCandleTime && <div className="chartCrosshairHud" aria-live="polite">
+          <b>{shortTime(chartHudCandleTime, timeframe)}</b>
+          {chartHudPrice != null && Number.isFinite(Number(chartHudPrice)) && <span>{Number(chartHudPrice).toFixed(2)}</span>}
+        </div>}
+        {!chartFullscreen && <div className="chartGestureHint" aria-hidden="true">Sel: one click picks a candle · Pan: drag chart · Scroll to zoom · Double-click resets price view</div>}
+        {!chartFullscreen && chartDrawToolbarEl}
+        <div className="chartMapCanvas chart-canvas">
+        <D3CandleMap
+          candles={candles}
+          replayCutTime={candleReplayMode && replayCandle ? replayCandle.time : null}
+          timeframe={timeframe}
+          rangeHigh={high}
+          rangeLow={low}
+          rangeStart={rangeWindow.start}
+          rangeEnd={rangeWindow.end}
+          hasRange={hasRange}
+          caseStart={activeCaseLedger?.start || ''}
+          caseEnd={activeCaseLedger?.end || ''}
+          caseHigh={activeCaseLedger?.high || ''}
+          caseLow={activeCaseLedger?.low || ''}
+          parentOverlays={[]}
+          savedRangeOverlays={chartSavedRangeOverlays}
+          draftRangeOverlay={chartDraftRangeOverlay}
+          showFibOverlays={false}
+          events={visibleEvents}
+          selectedCandleTime={selectedCandle?.time || null}
+          selectedCandlePrice={selectedCandlePoint?.price ?? null}
+          eventType={eventType}
+          toolMode={toolMode}
+          chartDrawings={chartDrawings}
+          chartDrawTool={chartDrawTool}
+          chartDrawColor={chartDrawColor}
+          selectedDrawingId={selectedDrawingId}
+          onDrawingsChange={updateChartDrawings}
+          onSelectedDrawingChange={setSelectedDrawingId}
+          chartTradeIdeas={chartTradeIdeas}
+          tradeIdeaDraft={tradeIdeaDraft}
+          tradePickMode={tradePickMode}
+          selectedTradeIdeaId={selectedTradeIdeaId}
+          onTradeLevelPick={handleTradeLevelPick}
+          autoscaleToken={autoscaleToken}
+          scaleMode={scaleMode}
+          jumpLatestToken={jumpToken}
+          fitAllToken={fitToken}
+          goDate={jumpDate}
+          replayCursorEnabled={candleReplayMode && toolMode === 'scrub'}
+          onReplayCursorChange={setCandleReplayFrameByTime}
+          onCursor={setCursor}
+          onAddEvent={addEventAt}
+          onUpdateEvent={updateEvent}
+          onFinishEventDrag={finishEventDrag}
+          onCandleSelect={(payload)=>{
+            setSelectedCandle(payload.candle);
+            setPendingMarkerRoles([]);
+            setSelectedCandlePoint({ price: Number(payload.price.toFixed(2)), clientX: payload.clientX, clientY: payload.clientY });
+            const hasRh = !!String(rhAnchor.price || '').trim();
+            const hasRl = !!String(rlAnchor.price || '').trim();
+            if (hasRh && !hasRl) {
+              setMessage(`Selected ${shortTime(payload.candle.time, timeframe)} for RL · L ${payload.candle.low.toFixed(2)}. Click RL.`);
+            } else if (!hasRh && hasRl) {
+              setMessage(`Selected ${shortTime(payload.candle.time, timeframe)} for RH · H ${payload.candle.high.toFixed(2)}. Click RH.`);
+            } else if (!hasRh) {
+              setMessage(`Selected ${shortTime(payload.candle.time, timeframe)} · H ${payload.candle.high.toFixed(2)} · L ${payload.candle.low.toFixed(2)}. Click RH or RL.`);
+            } else {
+              setMessage(`Selected ${shortTime(payload.candle.time, timeframe)} · anchor ${payload.price.toFixed(2)}.`);
+            }
+          }}
+          cameraMode={cameraMode}
+          cameraCommand={cameraCommand}
+          lockedCameraDomain={lockedCameraDomain}
+          lockedPriceDomain={cameraPriceDomainByCaseTf[cameraKey] || null}
+          cameraKey={cameraKey}
+          candleWidthScale={candleWidthScale}
+          priceZoomScale={priceZoomScale}
+          onCameraDomainChange={(dom)=>{ if (cameraMode === 'LOCKED') setCameraDomainByCaseTf(prev=>({ ...prev, [cameraKey]: dom })); }}
+          onVisibleDomainChange={persistVisibleCameraDomain}
+          viewportClamp={viewportIsClamped && viewportActiveClamp ? viewportActiveClamp : null}
+          chartEmptyState={autoResume.isAutoResuming ? 'loading' : autoResume.isWelcome && !candles.length ? 'welcome' : 'empty'}
+          isInspectorOpen={navOverlayPanelOpen}
+          onRangeChange={({high, low, start, end})=>{
+            if (typeof high === 'number' && Number.isFinite(high)) setRangeHigh(String(Number(high.toFixed(2))));
+            if (typeof low === 'number' && Number.isFinite(low)) setRangeLow(String(Number(low.toFixed(2))));
+            if (typeof start === 'string') setRangeWindow({ start });
+            if (typeof end === 'string') setRangeWindow({ end });
+          }}
+        />
+        </div>
+        </div>
+      </div>
+      {chartFullscreen && <div className="fullscreenBottomBar" aria-label="Fullscreen chart controls">
+        <div className="fullscreenChromeDock" aria-label="Fullscreen layout chrome">
+          <button type="button" className="active" onClick={() => setChartFullscreen(false)} title="Exit full chart mode">
+            Exit Full
+          </button>
+        </div>
+        <div className="fullscreenReplayDock" aria-label="Fullscreen replay controls">
+          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex - 1)} disabled={!candles.length || effectiveReplayIndex <= 0}>◀</button>
+          <button className={candleReplayPlaying?'active':''} onClick={toggleCandleReplayPlay} disabled={!candles.length}>{candleReplayPlaying ? 'Pause' : 'Play'}</button>
+          <button onClick={()=>setCandleReplayFrame(effectiveReplayIndex + 1)} disabled={!candles.length || effectiveReplayIndex >= candles.length - 1}>▶</button>
+          <button onClick={jumpToParentRangeStart} disabled={!activeParentRangeOverlay.length}>Parent</button>
+          <button onClick={startChildReplayFromParentStart} disabled={!activeParentRangeOverlay.length}>Child Replay</button>
+          <span>{candles.length ? `${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)} · C ${replayCandle.close.toFixed(2)}` : ''}</span>
+        </div>
+        <div className="fullscreenCameraDock" aria-label="Fullscreen zoom and fit controls">
+          <div className="fullscreenScaleDock">
+            <button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button>
+            <button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button>
+            <button onClick={resetCameraScale}>Reset</button>
+          </div>
+          <div className="fullscreenFitDock">
+            <button onClick={fitRangeView}>Fit Range</button>
+            <button onClick={fitReplayView}>Fit Replay</button>
+            <button onClick={fitCaseView}>Fit Case</button>
+            <button onClick={fitAllView}>Fit All</button>
+            <button onClick={lockCurrentView}>Lock View</button>
+          </div>
+        </div>
+      </div>}
+    </div>
     </div>
 
     {candleReplayMode && <div className="fixedBottomReplayDock tvReplayDock" aria-label="Bar replay controls">
@@ -7871,6 +8830,7 @@ type D3CandleMapProps = {
   selectedTradeIdeaId?:string|null;
   onTradeLevelPick?:(payload:{kind:TradeIdeaPickKind; time:string; price:number})=>void;
   scaleMode:'auto'|'range';
+  autoscaleToken?:number;
   jumpLatestToken:number;
   fitAllToken:number;
   goDate:string;
@@ -7891,6 +8851,10 @@ type D3CandleMapProps = {
   cameraKey?:string;
   onCameraDomainChange?:(domain:{start:string;end:string})=>void;
   onVisibleDomainChange?:(domain:VisibleCameraDomain)=>void;
+  viewportClamp?:{start:string;end:string}|null;
+  chartEmptyState?: 'empty' | 'loading' | 'welcome';
+  /** Inspector overlay open — layout resize from toggle should not tear down chart. */
+  isInspectorOpen?: boolean;
 };
 
 function snapChartPx(value: number): number {
@@ -7931,7 +8895,7 @@ function medianBarSpacingPx(candles: Candle[], zx: d3.ScaleTime<number, number>,
   return gaps[Math.floor(gaps.length / 2)] || 10;
 }
 
-const CHART_MARGIN = { top: 24, right: 86, bottom: 42, left: 72 };
+const CHART_MARGIN = { top: 24, right: 20, bottom: 42, left: 72 };
 
 type ChartSurfaceMetrics = {
   width: number;
@@ -8028,6 +8992,45 @@ function nearestVisibleCandle(date: Date, candles: Candle[]): Candle | null {
   return best;
 }
 
+function pickCandleAtPoint(
+  mx: number,
+  my: number,
+  visible: Candle[],
+  renderData: Candle[],
+  zx: d3.ScaleTime<number, number>,
+  y: d3.ScaleLinear<number, number>,
+  metrics: ChartSurfaceMetrics,
+  barSpacingPx: number,
+): Candle | null {
+  const { x: sx, y: sy } = clampChartPlotXY(mx, my, metrics);
+  const pool = visible.length ? visible : renderData;
+  if (!pool.length) return null;
+  const hitHalfW = Math.max(5, Math.min(28, barSpacingPx * 0.55));
+  let best: Candle | null = null;
+  let bestScore = Infinity;
+  for (const c of pool) {
+    const cx = zx(candleTimeDate(c.time));
+    if (!Number.isFinite(cx)) continue;
+    const dx = Math.abs(sx - cx);
+    if (dx > hitHalfW) continue;
+    const yHigh = y(c.high);
+    const yLow = y(c.low);
+    const top = Math.min(yHigh, yLow) - 8;
+    const bottom = Math.max(yHigh, yLow) + 8;
+    if (sy < top || sy > bottom) {
+      if (dx > hitHalfW * 0.65) continue;
+    }
+    const score = dx + Math.min(Math.abs(sy - yHigh), Math.abs(sy - yLow)) * 0.12;
+    if (score < bestScore) {
+      best = c;
+      bestScore = score;
+    }
+  }
+  if (best) return best;
+  const date = zx.invert(sx);
+  return nearestVisibleCandle(date, pool);
+}
+
 function snapCrosshairToCandle(
   mx: number,
   my: number,
@@ -8037,10 +9040,10 @@ function snapCrosshairToCandle(
   y: d3.ScaleLinear<number, number>,
   metrics: ChartSurfaceMetrics,
   timeframe: string,
+  barSpacingPx = 12,
 ): CrosshairSnap | null {
   const { x: sx, y: sy } = clampChartPlotXY(mx, my, metrics);
-  const pool = visible.length ? visible : renderData;
-  const c = nearestVisibleCandle(zx.invert(sx), pool);
+  const c = pickCandleAtPoint(mx, my, visible, renderData, zx, y, metrics, barSpacingPx);
   if (!c) return null;
   const cx = snapChartStrokePx(zx(candleTimeDate(c.time)));
   const rawPrice = y.invert(sy);
@@ -8117,6 +9120,26 @@ function chartXScaleFromData(data: Candle[], metrics: ChartSurfaceMetrics) {
     .range([metrics.margin.left, metrics.margin.left + metrics.innerW]);
 }
 
+function chartScreenXRatio(metrics: ChartSurfaceMetrics, ratio: number): number {
+  return metrics.margin.left + metrics.innerW * ratio;
+}
+
+/** Place `timeRaw` at a horizontal screen ratio while preserving zoom scale `k`. */
+function translateTransformToCenterTime(
+  x0: d3.ScaleTime<number, number>,
+  timeRaw: string,
+  k: number,
+  metrics: ChartSurfaceMetrics,
+  screenRatio = 0.5,
+): d3.ZoomTransform | null {
+  const t = new Date(String(timeRaw));
+  if (!Number.isFinite(t.getTime())) return null;
+  const px = x0(t);
+  if (!Number.isFinite(px)) return null;
+  const tx = chartScreenXRatio(metrics, screenRatio) - k * px;
+  return d3.zoomIdentity.translate(tx, 0).scale(k);
+}
+
 function D3CandleMap(props:D3CandleMapProps) {
   const svgRef = useRef<SVGSVGElement|null>(null);
   const transformRef = useRef<any>(d3.zoomIdentity);
@@ -8125,9 +9148,10 @@ function D3CandleMap(props:D3CandleMapProps) {
   const drawRafRef = useRef<number | null>(null);
   const yPanPxRef = useRef(0);
   const yZoomRef = useRef(1);
-  const yDragSnapRef = useRef<{ startY:number; startPan:number } | null>(null);
+  const yDragSnapRef = useRef<{ startX: number; startY: number; startPan: number } | null>(null);
   const yDragActiveRef = useRef(false);
-  const priceStripLastTapRef = useRef(0);
+  const overlayPanMovedRef = useRef(false);
+  const selectTapRef = useRef<{ mx: number; my: number } | null>(null);
   const lastYDomainRef = useRef<[number, number] | null>(null);
   const lastYBaseRef = useRef<{baseLo:number;baseHi:number;innerH:number}|null>(null);
   const latestProps = useRef(props);
@@ -8141,13 +9165,24 @@ function D3CandleMap(props:D3CandleMapProps) {
   const lastCursorNotifyKeyRef = useRef('');
   const manualZoomRef = useRef(false);
   const lastReplayPanTimeRef = useRef('');
+  const renderGateRef = useRef(createChartRenderGate());
+  const layoutResizeGuardRef = useRef(createLayoutResizeGuard());
 
   const nearestCandle = (date:Date, data:Candle[]) => nearestVisibleCandle(date, data);
 
-  const scheduleDraw = () => {
+  type DrawScheduleReason = 'data' | 'resize';
+
+  const scheduleDraw = (reason: DrawScheduleReason = 'data') => {
     if (drawRafRef.current != null) return;
     drawRafRef.current = window.requestAnimationFrame(() => {
       drawRafRef.current = null;
+      if (reason === 'resize') {
+        const svgEl = svgRef.current;
+        if (svgEl) {
+          const rect = svgEl.getBoundingClientRect();
+          if (!renderGateRef.current.shouldRedraw(rect.width, rect.height)) return;
+        }
+      }
       draw();
     });
   };
@@ -8168,10 +9203,11 @@ function D3CandleMap(props:D3CandleMapProps) {
     if (!svgEl) return;
     const metrics = getChartSurfaceMetrics(svgEl);
     if (!metrics) {
-      scheduleDraw();
+      scheduleDraw('data');
       return;
     }
     layoutMetricsRef.current = metrics;
+    renderGateRef.current.noteDimensions(metrics.width, metrics.height);
     const p = latestProps.current;
     const data = p.candles || [];
     const replayCutMs = p.replayCutTime ? candleTimeMs(p.replayCutTime) : null;
@@ -8184,7 +9220,27 @@ function D3CandleMap(props:D3CandleMapProps) {
     svg.selectAll('*').remove();
     svg.append('rect').attr('width', width).attr('height', height).attr('fill', '#000');
     if (!data.length) {
-      svg.append('text').attr('x', width/2).attr('y', height/2).attr('text-anchor','middle').attr('fill','#94a3b8').attr('font-size',22).text('No candles loaded yet');
+      if (p.chartEmptyState === 'welcome') return;
+      const emptyLabel = p.chartEmptyState === 'loading' ? 'Loading…' : 'No candles loaded yet';
+      const emptyClass = p.chartEmptyState === 'loading' ? 'chart-empty chart-empty-loading' : 'chart-empty';
+      svg.append('text')
+        .attr('class', emptyClass)
+        .attr('x', width / 2)
+        .attr('y', height / 2)
+        .attr('text-anchor', 'middle')
+        .attr('fill', '#94a3b8')
+        .attr('font-size', p.chartEmptyState === 'loading' ? 20 : 22)
+        .text(emptyLabel);
+      if (p.chartEmptyState === 'loading') {
+        svg.append('text')
+          .attr('class', 'chart-empty-spinner')
+          .attr('x', width / 2)
+          .attr('y', height / 2 + 28)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#7dd3fc')
+          .attr('font-size', 12)
+          .text('Sync Architect · local cache');
+      }
       return;
     }
 
@@ -8195,7 +9251,13 @@ function D3CandleMap(props:D3CandleMapProps) {
 
     const dateDomainSource = renderData;
     const dates = dateDomainSource.map(d => candleTimeDate(d.time)).filter(d => Number.isFinite(d.getTime()));
-    const x0 = d3.scaleTime().domain(d3.extent(dates) as [Date,Date]).range([margin.left, margin.left+innerW]);
+    const clampSpan = p.viewportClamp ? intersectClampSpanWithCandles(p.viewportClamp, renderData) : null;
+    const panBounds = resolveChartPanBounds(renderData, clampSpan);
+    let extent = d3.extent(dates) as [Date, Date];
+    if (panBounds) {
+      extent = [new Date(panBounds.start), new Date(panBounds.end)];
+    }
+    const x0 = d3.scaleTime().domain(extent).range([margin.left, margin.left+innerW]);
     let zx = transformRef.current.rescaleX(x0);
     let domain = zx.domain();
     const inDomain = (d: any) => {
@@ -8203,51 +9265,58 @@ function D3CandleMap(props:D3CandleMapProps) {
       return Number.isFinite(dt.getTime()) && dt >= domain[0] && dt <= domain[1];
     };
     let visible = renderData.filter(inDomain);
-    if (!visible.length && renderData.length) {
-      const fitBars = targetVisibleBarsForTimeframe(p.timeframe) * 2;
-      const tail = renderData.slice(-Math.min(renderData.length, fitBars));
-      const tailDates = tail.map(d => candleTimeDate(d.time)).filter(d => Number.isFinite(d.getTime()));
-      const ext = d3.extent(tailDates) as [Date, Date];
-      if (ext[0] && ext[1] && Number.isFinite(ext[0].getTime()) && Number.isFinite(ext[1].getTime())) {
-        x0.domain(ext);
-        transformRef.current = d3.zoomIdentity;
-        zx = transformRef.current.rescaleX(x0);
-        domain = zx.domain();
-        visible = renderData.filter(inDomain);
-      }
+    if (!visible.length && renderData.length && panBounds && manualZoomRef.current) {
+      transformRef.current = clampChartTransformToTimeBounds(
+        transformRef.current,
+        x0,
+        panBounds,
+        margin.left,
+        innerW,
+      );
+      zx = transformRef.current.rescaleX(x0);
+      domain = zx.domain();
+      visible = renderData.filter(inDomain);
     }
     const v = visible;
-    // v078/v081: auto-scale should breathe around the active viewport, not get pinned by old giant candles.
-    // If there are no visible candles after a replay cut, preserve the last y-domain instead of
-    // recalculating from the cursor's last 120 candles and yanking the chart vertically.
+    const freezePriceSpan = manualZoomRef.current && lastYBaseRef.current && p.scaleMode === 'auto';
     const autoscaleLookback = Math.min(v.length, 72);
     const autoScaleSource = p.scaleMode === 'auto' ? v.slice(Math.max(0, v.length - autoscaleLookback)) : v;
     const priorY = lastYDomainRef.current;
-    const hiData = d3.max(autoScaleSource, d=>d.high) ?? (priorY ? priorY[1] : (d3.max(renderData.slice(-120), d=>d.high) ?? 1));
-    const loData = d3.min(autoScaleSource, d=>d.low) ?? (priorY ? priorY[0] : (d3.min(renderData.slice(-120), d=>d.low) ?? 0));
-    const visibleHi = d3.max(v, d=>d.high) ?? hiData;
-    const visibleLo = d3.min(v, d=>d.low) ?? loData;
-    const parentOverlayPrices = safeArray<any>(p.parentOverlays || []).map((x:any)=>Number(x.price)).filter(Number.isFinite);
-    const savedOverlayPrices = safeArray<SavedRangeChartLine>(p.savedRangeOverlays || []).flatMap((r)=>[r.high, r.low]).filter(Number.isFinite);
-    const draftOverlayPrices = p.draftRangeOverlay?.visible ? [p.draftRangeOverlay.high, p.draftRangeOverlay.low].filter(Number.isFinite) : [];
-    const parentHi = parentOverlayPrices.length ? Math.max(...parentOverlayPrices) : undefined;
-    const parentLo = parentOverlayPrices.length ? Math.min(...parentOverlayPrices) : undefined;
-    const savedHi = savedOverlayPrices.length ? Math.max(...savedOverlayPrices) : undefined;
-    const savedLo = savedOverlayPrices.length ? Math.min(...savedOverlayPrices) : undefined;
-    let yHi = hiData, yLo = loData;
-    if (p.hasRange && p.scaleMode === 'range' && v.length) { yHi = Math.max(p.rangeHigh, visibleHi); yLo = Math.min(p.rangeLow, visibleLo); }
-    if (Number.isFinite(parentHi as any)) yHi = Math.max(yHi, Number(parentHi));
-    if (Number.isFinite(parentLo as any)) yLo = Math.min(yLo, Number(parentLo));
-    if (Number.isFinite(savedHi as any)) yHi = Math.max(yHi, Number(savedHi));
-    if (Number.isFinite(savedLo as any)) yLo = Math.min(yLo, Number(savedLo));
-    if (draftOverlayPrices.length) {
-      yHi = Math.max(yHi, ...draftOverlayPrices);
-      yLo = Math.min(yLo, ...draftOverlayPrices);
+    let baseLo: number;
+    let baseHi: number;
+    if (freezePriceSpan && lastYBaseRef.current) {
+      baseLo = lastYBaseRef.current.baseLo;
+      baseHi = lastYBaseRef.current.baseHi;
+    } else {
+      const hiData = d3.max(autoScaleSource, d=>d.high) ?? (priorY ? priorY[1] : (d3.max(renderData.slice(-120), d=>d.high) ?? 1));
+      const loData = d3.min(autoScaleSource, d=>d.low) ?? (priorY ? priorY[0] : (d3.min(renderData.slice(-120), d=>d.low) ?? 0));
+      const visibleHi = d3.max(v, d=>d.high) ?? hiData;
+      const visibleLo = d3.min(v, d=>d.low) ?? loData;
+      const parentOverlayPrices = safeArray<any>(p.parentOverlays || []).map((x:any)=>Number(x.price)).filter(Number.isFinite);
+      const savedOverlayPrices = safeArray<SavedRangeChartLine>(p.savedRangeOverlays || [])
+        .filter((r) => r.isActive || r.isParentContext)
+        .flatMap((r)=>[r.high, r.low])
+        .filter(Number.isFinite);
+      const draftOverlayPrices = p.draftRangeOverlay?.visible ? [p.draftRangeOverlay.high, p.draftRangeOverlay.low].filter(Number.isFinite) : [];
+      const parentHi = parentOverlayPrices.length ? Math.max(...parentOverlayPrices) : undefined;
+      const parentLo = parentOverlayPrices.length ? Math.min(...parentOverlayPrices) : undefined;
+      const savedHi = savedOverlayPrices.length ? Math.max(...savedOverlayPrices) : undefined;
+      const savedLo = savedOverlayPrices.length ? Math.min(...savedOverlayPrices) : undefined;
+      let yHi = hiData, yLo = loData;
+      if (p.hasRange && p.scaleMode === 'range' && v.length) { yHi = Math.max(p.rangeHigh, visibleHi); yLo = Math.min(p.rangeLow, visibleLo); }
+      if (Number.isFinite(parentHi as any)) yHi = Math.max(yHi, Number(parentHi));
+      if (Number.isFinite(parentLo as any)) yLo = Math.min(yLo, Number(parentLo));
+      if (Number.isFinite(savedHi as any)) yHi = Math.max(yHi, Number(savedHi));
+      if (Number.isFinite(savedLo as any)) yLo = Math.min(yLo, Number(savedLo));
+      if (draftOverlayPrices.length) {
+        yHi = Math.max(yHi, ...draftOverlayPrices);
+        yLo = Math.min(yLo, ...draftOverlayPrices);
+      }
+      const pad = Math.max((yHi-yLo)*0.18, 1);
+      baseLo = yLo - pad;
+      baseHi = yHi + pad;
+      lastYBaseRef.current = { baseLo, baseHi, innerH };
     }
-    const pad = Math.max((yHi-yLo)*0.18, 1);
-    const baseLo = yLo - pad;
-    const baseHi = yHi + pad;
-    lastYBaseRef.current = { baseLo, baseHi, innerH };
     const zoomY = Math.max(0.25, Math.min(32, (yZoomRef.current || 1)));
     const baseSpan = Math.max(1e-9, baseHi - baseLo);
     const span = baseSpan / zoomY;
@@ -8272,25 +9341,6 @@ function D3CandleMap(props:D3CandleMapProps) {
       .attr('x1', margin.left).attr('x2', margin.left+innerW).attr('y1', d=>snapChartStrokePx(y(d))).attr('y2', d=>snapChartStrokePx(y(d))).attr('stroke','rgba(255,255,255,.08)').attr('shape-rendering','crispEdges');
     grid.selectAll('text.ytick').data(y.ticks(7)).join('text')
       .attr('x', 10).attr('y', d=>y(d)+4).attr('fill','rgba(226,232,240,.65)').attr('font-size',13).text(d=>Number(d).toFixed(2));
-
-    const drawRangeLineLabels = (container:any, rows:any[]) => {
-      const labels = container.selectAll('g.rangeLineLabel').data(rows).join('g')
-        .attr('class','rangeLineLabel')
-        .attr('transform',(d:any)=>`translate(${Number(d.x1 ?? margin.left) + 8},${y(Number(d.price)) - (d.kind === 'high' ? 14 : -4)})`);
-      labels.append('rect')
-        .attr('width', (d:any)=>Math.max(92, d.label.length * 6.2))
-        .attr('height', 18).attr('rx', 6)
-        .attr('fill','rgba(2,6,23,.74)')
-        .attr('stroke', (d:any)=>d.color)
-        .attr('stroke-opacity', (d:any)=> (d.style?.opacity ?? 0.5) * 0.55);
-      labels.append('text')
-        .attr('x', 8).attr('y', 13)
-        .attr('fill', (d:any)=>d.color)
-        .attr('fill-opacity', (d:any)=> (d.style?.opacity ?? 0.5) * 0.85)
-        .attr('font-size', 11)
-        .attr('font-weight', 900)
-        .text((d:any)=>d.label);
-    };
 
     const savedRanges = safeArray<SavedRangeChartLine>(p.savedRangeOverlays || []);
     if (savedRanges.length) {
@@ -8317,7 +9367,6 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('stroke-opacity', (d:any)=>d.style.opacity)
         .attr('stroke-width', (d:any)=>d.style.width)
         .attr('stroke-dasharray', (d:any)=>d.style.dash || null);
-      drawRangeLineLabels(sg, savedRows);
     }
 
     const parentOverlayLines = safeArray<ParentRangeOverlayLine>(p.parentOverlays || []);
@@ -8352,7 +9401,6 @@ function D3CandleMap(props:D3CandleMapProps) {
           .attr('stroke-opacity', (d:any)=>d.style.opacity)
           .attr('stroke-width', (d:any)=>d.style.width)
           .attr('stroke-dasharray', (d:any)=>d.style.dash || null);
-        drawRangeLineLabels(pg, parentRows);
       }
     }
 
@@ -8362,10 +9410,13 @@ function D3CandleMap(props:D3CandleMapProps) {
       const draftColor = structureLayerLineColor(draft.structureLayer);
       const draftSpan = rangeSpanX(zx, draft.start, draft.end, margin, innerW);
       const dg = plot.append('g').attr('class','draftRangeLines').attr('pointer-events','none');
-      const draftRows = [
-        { kind:'high' as const, price:draft.high, label:`Draft ${draft.structureLayer} RH`, color:draftColor, style:draftStyle, x1: draftSpan.x1, x2: draftSpan.x2 },
-        { kind:'low' as const, price:draft.low, label:`Draft ${draft.structureLayer} RL`, color:draftColor, style:draftStyle, x1: draftSpan.x1, x2: draftSpan.x2 },
-      ];
+      const draftRows: Array<{ kind: 'high' | 'low'; price: number; label: string; color: string; style: typeof draftStyle; x1: number; x2: number }> = [];
+      if (Number.isFinite(draft.high)) {
+        draftRows.push({ kind:'high', price:Number(draft.high), label:`Draft ${draft.structureLayer} RH`, color:draftColor, style:draftStyle, x1: draftSpan.x1, x2: draftSpan.x2 });
+      }
+      if (Number.isFinite(draft.low)) {
+        draftRows.push({ kind:'low', price:Number(draft.low), label:`Draft ${draft.structureLayer} RL`, color:draftColor, style:draftStyle, x1: draftSpan.x1, x2: draftSpan.x2 });
+      }
       dg.selectAll('line.draftRangeLine').data(draftRows).join('line')
         .attr('class','draftRangeLine')
         .attr('x1', (d:any)=>Number(d.x1))
@@ -8376,7 +9427,6 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('stroke-opacity', draftStyle.opacity)
         .attr('stroke-width', draftStyle.width)
         .attr('stroke-dasharray', draftStyle.dash);
-      drawRangeLineLabels(dg, draftRows);
     }
 
     const slotW = barSpacingPx;
@@ -8394,6 +9444,7 @@ function D3CandleMap(props:D3CandleMapProps) {
         y,
         metrics,
         p.timeframe,
+        barSpacingPx,
       );
     }
 
@@ -8618,9 +9669,9 @@ function D3CandleMap(props:D3CandleMapProps) {
     const visibleEvents = p.events.filter(ev=>ev.time && new Date(ev.time) >= domain[0] && new Date(ev.time) <= domain[1]);
     const evNodes = eventG.selectAll('g.ev').data(visibleEvents, (d:any)=>d.id).join('g').attr('class','ev').attr('cursor', p.toolMode==='drag'?'grab':'pointer');
     evNodes.attr('transform', d=>`translate(${zx(new Date(d.time || ''))},${y(d.price)})`);
-    evNodes.append('line').attr('x1',0).attr('x2',34).attr('y1',0).attr('y2',0).attr('stroke',(d:any)=>d.source==='seed'?'rgba(255,191,47,.55)':'rgba(0,255,208,.45)').attr('stroke-width',2).attr('stroke-dasharray','8 6');
-    evNodes.append('circle').attr('r',(d:any)=>d.source==='seed'?6:8).attr('fill',(d:any)=>d.source==='seed'?'#ffbf2f':'#00ffd0').attr('stroke','#001b18').attr('stroke-width',3);
-    evNodes.append('text').attr('x',12).attr('y',-10).attr('fill','#e8eef7').attr('font-size',11).attr('font-weight',900).text(d=>eventAbbrev(d.event_type || d.event_name));
+    evNodes.append('line').attr('x1',0).attr('x2',16).attr('y1',0).attr('y2',0).attr('stroke',(d:any)=>d.source==='seed'?'rgba(255,191,47,.55)':'rgba(0,255,208,.45)').attr('stroke-width',1.5).attr('stroke-dasharray','4 4');
+    evNodes.append('circle').attr('r',(d:any)=>d.source==='seed'?3.5:4).attr('fill',(d:any)=>d.source==='seed'?'#ffbf2f':'#00ffd0').attr('stroke','#001b18').attr('stroke-width',1.5);
+    evNodes.append('text').attr('x',8).attr('y',-6).attr('fill','#e8eef7').attr('font-size',8).attr('font-weight',800).text(d=>eventAbbrev(d.event_type || d.event_name));
     evNodes.append('title').text(d=>`${d.event_name || d.event_type}
 Price: ${d.price}
 Zone: ${d.zone}
@@ -8642,105 +9693,20 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       })
       .on('end', function(event, d){ if (latestProps.current.toolMode === 'drag') latestProps.current.onFinishEventDrag(d); }) as any);
 
-    // v079: safe manual vertical price panning. Drag the right price strip up/down (touch + mouse).
-    const touchCoarse = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
-    const stripPad = touchCoarse ? 10 : 4;
-    const stripW = Math.max(touchCoarse ? 56 : 44, margin.right - 2) + stripPad;
-    const stripX = margin.left + innerW + 1 - stripPad;
-    const priceStripG = svg.append('g').attr('class', 'chartPriceStripGroup').attr('pointer-events', 'all');
-    const yDragZone = priceStripG.append('rect')
-      .attr('class', 'chartPriceStrip')
-      .attr('x', stripX)
-      .attr('y', margin.top)
-      .attr('width', stripW)
-      .attr('height', innerH)
-      .attr('fill', 'transparent')
-      .attr('cursor', 'ns-resize')
-      .style('touch-action', 'none');
-    const gripX = stripX + stripW / 2;
-    const grip = priceStripG.append('g').attr('class', 'chartPriceStripGrip').attr('pointer-events', 'none');
-    for (let i = -1; i <= 1; i += 1) {
-      grip.append('line')
-        .attr('x1', gripX + i * 5 - 8)
-        .attr('x2', gripX + i * 5 + 8)
-        .attr('y1', margin.top + innerH * 0.42)
-        .attr('y2', margin.top + innerH * 0.42)
-        .attr('stroke', 'rgba(0,255,208,.55)')
-        .attr('stroke-width', touchCoarse ? 2.5 : 2)
-        .attr('stroke-linecap', 'round');
-      grip.append('line')
-        .attr('x1', gripX + i * 5 - 8)
-        .attr('x2', gripX + i * 5 + 8)
-        .attr('y1', margin.top + innerH * 0.58)
-        .attr('y2', margin.top + innerH * 0.58)
-        .attr('stroke', 'rgba(0,255,208,.55)')
-        .attr('stroke-width', touchCoarse ? 2.5 : 2)
-        .attr('stroke-linecap', 'round');
-    }
-
     const resetPricePan = () => {
       yPanPxRef.current = 0;
       yZoomRef.current = 1;
       scheduleDraw();
     };
-    const pointerY = (evt: any) => {
-      const [, my] = chartPointer(evt, svgEl);
-      return Number.isFinite(my) ? my : null;
+    const chartAllowsDragPan = () => {
+      const pp = latestProps.current;
+      if (pp.tradePickMode) return false;
+      const dt = pp.chartDrawTool || 'off';
+      if (dt === 'hline' || dt === 'vline' || dt === 'text' || dt === 'edit') return false;
+      const mode = pp.toolMode;
+      if (mode === 'range' || mode === 'drag' || mode === 'scrub' || mode === 'plot') return false;
+      return mode === 'inspect' || mode === 'select';
     };
-    const onPriceStripDown = (evt: any) => {
-      evt.preventDefault();
-      evt.stopPropagation();
-      const my = pointerY(evt);
-      if (my == null) return;
-      yDragActiveRef.current = true;
-      yDragSnapRef.current = { startY: my, startPan: yPanPxRef.current || 0 };
-      if (typeof evt.pointerId === 'number' && yDragZone.node()?.setPointerCapture) {
-        try { yDragZone.node()!.setPointerCapture(evt.pointerId); } catch { /* ignore */ }
-      }
-    };
-    const onPriceStripMove = (evt: any) => {
-      if (!yDragActiveRef.current) return;
-      evt.preventDefault();
-      const snap = yDragSnapRef.current;
-      if (!snap) return;
-      const my = pointerY(evt);
-      if (my == null) return;
-      yPanPxRef.current = snap.startPan + (my - snap.startY);
-      scheduleDraw();
-    };
-    const endPriceStripDrag = (evt: any) => {
-      if (!yDragActiveRef.current) return;
-      yDragActiveRef.current = false;
-      yDragSnapRef.current = null;
-      if (typeof evt?.pointerId === 'number' && yDragZone.node()?.releasePointerCapture) {
-        try { yDragZone.node()!.releasePointerCapture(evt.pointerId); } catch { /* ignore */ }
-      }
-    };
-    const onPriceStripUp = (evt: any) => {
-      const snap = yDragSnapRef.current;
-      const my = pointerY(evt);
-      const dragged = snap && my != null && Math.abs(my - snap.startY) > 10;
-      endPriceStripDrag(evt);
-      if (dragged) {
-        priceStripLastTapRef.current = 0;
-        return;
-      }
-      const now = Date.now();
-      if (now - priceStripLastTapRef.current < 320) resetPricePan();
-      priceStripLastTapRef.current = now;
-    };
-
-    yDragZone
-      .on('pointerdown', onPriceStripDown)
-      .on('pointermove', onPriceStripMove)
-      .on('pointerup', onPriceStripUp)
-      .on('pointercancel', endPriceStripDrag)
-      .on('lostpointercapture', endPriceStripDrag)
-      .on('dblclick', (evt: any) => {
-        evt.preventDefault();
-        evt.stopPropagation();
-        resetPricePan();
-      });
 
     const overlay = svg.append('rect').attr('class','chartPanSurface').attr('x',margin.left).attr('y',margin.top).attr('width',innerW).attr('height',innerH).attr('fill','transparent').attr('cursor', (() => {
       const dt = p.chartDrawTool || 'off';
@@ -8819,7 +9785,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
 
     const handleCrosshairPointer = (mx: number, my: number) => {
       if (!Number.isFinite(mx) || !Number.isFinite(my)) return;
-      const snap = snapCrosshairToCandle(mx, my, v, renderData, zx, y, metrics, p.timeframe);
+      const snap = snapCrosshairToCandle(mx, my, v, renderData, zx, y, metrics, p.timeframe, barSpacingPx);
       if (!snap) {
         hoverActiveRef.current = false;
         hoverPointerRef.current = null;
@@ -8840,70 +9806,143 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       latestProps.current.onCursor(null);
     };
 
+    const handleOverlayTap = (event: any, mx: number, my: number) => {
+      const snap = snapCrosshairToCandle(mx, my, v, renderData, zx, y, metrics, p.timeframe, barSpacingPx);
+      const drawTool = latestProps.current.chartDrawTool || 'off';
+      const tradePick = latestProps.current.tradePickMode;
+      const drawColorNow = latestProps.current.chartDrawColor || CHART_DRAWING_COLORS[0];
+      const { x: px, y: py } = clampChartPlotXY(mx, my, metrics);
+      const price = snap?.price ?? y.invert(py);
+      const c = snap?.candle || nearestCandle(zx.invert(px), renderData);
+
+      if (tradePick && latestProps.current.onTradeLevelPick) {
+        if (!c) return;
+        latestProps.current.onTradeLevelPick({ kind: tradePick, time: c.time, price: Number(price.toFixed(2)) });
+        return;
+      }
+
+      if (drawTool === 'edit') {
+        return;
+      }
+      if (drawTool === 'hline' && latestProps.current.onDrawingsChange) {
+        const xRatio = Math.max(0, Math.min(1, (px - margin.left) / innerW));
+        latestProps.current.onDrawingsChange([
+          ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
+          { id: newDrawingId(), kind: 'hline', price: Number(price.toFixed(2)), xLeftRatio: Math.max(0, xRatio - 0.35), xRightRatio: Math.min(1, xRatio + 0.35), color: drawColorNow },
+        ]);
+        return;
+      }
+      if (drawTool === 'vline' && latestProps.current.onDrawingsChange && c) {
+        latestProps.current.onDrawingsChange([
+          ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
+          { id: newDrawingId(), kind: 'vline', time: c.time, yTopRatio: 0.15, yBottomRatio: 0.85, color: drawColorNow },
+        ]);
+        return;
+      }
+      if (drawTool === 'text' && latestProps.current.onDrawingsChange && c) {
+        const text = window.prompt('Label text', '')?.trim();
+        if (!text) return;
+        latestProps.current.onDrawingsChange([
+          ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
+          { id: newDrawingId(), kind: 'text', time: c.time, price: Number(price.toFixed(2)), text, color: drawColorNow },
+        ]);
+        return;
+      }
+
+      const scrubActive = latestProps.current.replayCursorEnabled && latestProps.current.toolMode === 'scrub';
+      if (scrubActive && latestProps.current.onReplayCursorChange) {
+        if (c) {
+          latestProps.current.onReplayCursorChange(c.time);
+          return;
+        }
+      }
+      if (latestProps.current.toolMode === 'select' && snap?.candle && latestProps.current.onCandleSelect) {
+        latestProps.current.onCandleSelect({
+          candle: snap.candle,
+          price,
+          clientX: event.clientX,
+          clientY: event.clientY,
+        });
+        return;
+      }
+      if (latestProps.current.toolMode !== 'plot') return;
+      latestProps.current.onAddEvent({ time:c?.time || '', price, candle:c });
+    };
+
     overlay
+      .on('pointerdown', (event:any) => {
+        overlayPanMovedRef.current = false;
+        const mode = latestProps.current.toolMode;
+        if ((mode === 'select' || mode === 'scrub') && event.button === 0) {
+          const [mx, my] = chartPointer(event, svgEl);
+          if (Number.isFinite(mx) && Number.isFinite(my)) {
+            selectTapRef.current = { mx, my };
+          }
+          event.stopPropagation();
+        }
+        if (!chartAllowsDragPan() || event.button !== 0) return;
+        const [mx, my] = chartPointer(event, svgEl);
+        if (!Number.isFinite(my)) return;
+        yDragActiveRef.current = true;
+        yDragSnapRef.current = { startX: mx, startY: my, startPan: yPanPxRef.current || 0 };
+      })
       .on('pointermove', (event:any) => {
         const [mx, my] = chartPointer(event, svgEl);
+        if (yDragActiveRef.current && yDragSnapRef.current && Number.isFinite(my)) {
+          const snap = yDragSnapRef.current;
+          const dy = my - snap.startY;
+          const dx = mx - snap.startX;
+          if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
+            overlayPanMovedRef.current = true;
+            manualZoomRef.current = true;
+          }
+          yPanPxRef.current = snap.startPan + dy;
+          scheduleDraw();
+        }
         handleCrosshairPointer(mx, my);
       })
-      .on('pointerleave', clearCrosshair)
-      .on('pointercancel', clearCrosshair)
-      .on('click', (event:any)=>{
-        const [mx, my] = chartPointer(event, svgEl);
-        const snap = snapCrosshairToCandle(mx, my, v, renderData, zx, y, metrics, p.timeframe);
-        const drawTool = latestProps.current.chartDrawTool || 'off';
-        const tradePick = latestProps.current.tradePickMode;
-        const drawColorNow = latestProps.current.chartDrawColor || CHART_DRAWING_COLORS[0];
-        const { x: px, y: py } = clampChartPlotXY(mx, my, metrics);
-        const price = snap?.price ?? y.invert(py);
-        const c = snap?.candle || nearestCandle(zx.invert(px), renderData);
-
-        if (tradePick && latestProps.current.onTradeLevelPick) {
-          if (!c) return;
-          latestProps.current.onTradeLevelPick({ kind: tradePick, time: c.time, price: Number(price.toFixed(2)) });
-          return;
-        }
-
-        if (drawTool === 'edit') {
-          return;
-        }
-        if (drawTool === 'hline' && latestProps.current.onDrawingsChange) {
-          const xRatio = Math.max(0, Math.min(1, (px - margin.left) / innerW));
-          latestProps.current.onDrawingsChange([
-            ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
-            { id: newDrawingId(), kind: 'hline', price: Number(price.toFixed(2)), xLeftRatio: Math.max(0, xRatio - 0.35), xRightRatio: Math.min(1, xRatio + 0.35), color: drawColorNow },
-          ]);
-          return;
-        }
-        if (drawTool === 'vline' && latestProps.current.onDrawingsChange && c) {
-          latestProps.current.onDrawingsChange([
-            ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
-            { id: newDrawingId(), kind: 'vline', time: c.time, yTopRatio: 0.15, yBottomRatio: 0.85, color: drawColorNow },
-          ]);
-          return;
-        }
-        if (drawTool === 'text' && latestProps.current.onDrawingsChange && c) {
-          const text = window.prompt('Label text', '')?.trim();
-          if (!text) return;
-          latestProps.current.onDrawingsChange([
-            ...safeArray<ChartDrawing>(latestProps.current.chartDrawings || []),
-            { id: newDrawingId(), kind: 'text', time: c.time, price: Number(price.toFixed(2)), text, color: drawColorNow },
-          ]);
-          return;
-        }
-
-        const scrubActive = latestProps.current.replayCursorEnabled && latestProps.current.toolMode === 'scrub';
-        if (scrubActive && latestProps.current.onReplayCursorChange) {
-          if (c) {
-            latestProps.current.onReplayCursorChange(c.time);
-            return;
+      .on('pointerup', (event:any) => {
+        const mode = latestProps.current.toolMode;
+        const tapStart = selectTapRef.current;
+        selectTapRef.current = null;
+        if ((mode === 'select' || mode === 'scrub') && tapStart && event.button === 0) {
+          const [mx, my] = chartPointer(event, svgEl);
+          if (Number.isFinite(mx) && Number.isFinite(my)) {
+            const moved = Math.hypot(mx - tapStart.mx, my - tapStart.my);
+            if (moved < 8) {
+              handleOverlayTap(event, mx, my);
+            }
           }
         }
-        if (latestProps.current.toolMode === 'select' && c && latestProps.current.onCandleSelect) {
-          latestProps.current.onCandleSelect({ candle:c, price, clientX:event.clientX, clientY:event.clientY });
+        yDragActiveRef.current = false;
+        yDragSnapRef.current = null;
+      })
+      .on('pointerleave', () => {
+        selectTapRef.current = null;
+        yDragActiveRef.current = false;
+        yDragSnapRef.current = null;
+        clearCrosshair();
+      })
+      .on('pointercancel', () => {
+        selectTapRef.current = null;
+        yDragActiveRef.current = false;
+        yDragSnapRef.current = null;
+        clearCrosshair();
+      })
+      .on('dblclick', (event:any) => {
+        if (!chartAllowsDragPan()) return;
+        event.preventDefault();
+        resetPricePan();
+      })
+      .on('click', (event:any)=>{
+        const mode = latestProps.current.toolMode;
+        if (mode === 'select' || mode === 'scrub') return;
+        if (overlayPanMovedRef.current) {
+          overlayPanMovedRef.current = false;
           return;
         }
-        if (latestProps.current.toolMode !== 'plot') return;
-        latestProps.current.onAddEvent({ time:c?.time || '', price, candle:c });
+        const [mx, my] = chartPointer(event, svgEl);
+        handleOverlayTap(event, mx, my);
       });
 
     const zoomed = (event:any) => {
@@ -8913,6 +9952,28 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       manualZoomRef.current = true;
       try {
         const pp = latestProps.current;
+        const dataNow = pp.replayCutTime
+          ? safeArray(pp.candles).filter((d:any)=>new Date(d.time).getTime() <= new Date(String(pp.replayCutTime)).getTime())
+          : safeArray(pp.candles);
+        const clampSpanNow = pp.viewportClamp?.start && pp.viewportClamp?.end
+          ? intersectClampSpanWithCandles(pp.viewportClamp, dataNow)
+          : null;
+        const panBoundsNow = resolveChartPanBounds(dataNow, clampSpanNow);
+        if (panBoundsNow && svgRef.current && dataNow.length) {
+          const m = getChartSurfaceMetrics(svgRef.current);
+          if (m) {
+            const xBase = d3.scaleTime()
+              .domain([new Date(panBoundsNow.start), new Date(panBoundsNow.end)])
+              .range([m.margin.left, m.margin.left + m.innerW]);
+            transformRef.current = clampChartTransformToTimeBounds(
+              transformRef.current,
+              xBase,
+              panBoundsNow,
+              m.margin.left,
+              m.innerW,
+            );
+          }
+        }
         if (pp.cameraMode === 'LOCKED') {
           const dataNow = pp.replayCutTime ? safeArray(pp.candles).filter((d:any)=>new Date(d.time).getTime() <= new Date(String(pp.replayCutTime)).getTime()) : safeArray(pp.candles);
           if (dataNow.length && svgRef.current) {
@@ -8945,23 +10006,34 @@ Date: ${shortTime(d.time,p.timeframe)}`);
             return false;
           }
           const mode = latestProps.current.toolMode;
-          if (mode === 'range' || mode === 'drag') return false;
           if (event.type === 'wheel') return true;
+          if (mode === 'scrub' || mode === 'range' || mode === 'drag' || mode === 'plot') return false;
+          if (mode === 'select' || mode === 'inspect') {
+            if (event.type.startsWith('touch')) return true;
+            return event.button === 0;
+          }
           if (event.type.startsWith('touch')) return true;
           return event.button === 0;
         })
         .on('zoom', zoomed);
     }
     const zoom = zoomBehaviorRef.current;
-    const freePad = innerW * 10;
+    let translateExtentLeft = margin.left - innerW * 0.08;
+    let translateExtentRight = margin.left + innerW + innerW * 0.08;
+    if (panBounds) {
+      const boundsX0 = d3.scaleTime()
+        .domain([new Date(panBounds.start), new Date(panBounds.end)])
+        .range([margin.left, margin.left + innerW]);
+      translateExtentLeft = boundsX0(new Date(panBounds.start)) - innerW * 0.1;
+      translateExtentRight = boundsX0(new Date(panBounds.end)) + innerW * 0.58;
+    }
     zoom
       .scaleExtent([0.35, Math.max(120, data.length / 8)])
-      .translateExtent([[-freePad, 0], [width + freePad, height]])
+      .translateExtent([[translateExtentLeft, 0], [translateExtentRight, height]])
       .extent([[margin.left, margin.top], [margin.left + innerW, margin.top + innerH]]);
     overlay.call(zoom as any);
     svg.call(zoom as any);
     applyOverlayZoomTransform(overlay);
-    priceStripG.raise();
     crossG.raise();
 
     if (drawTool === 'edit' && chartDrawings.length && p.onDrawingsChange) {
@@ -9109,6 +10181,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     svg.on('wheel.priceZoom', null);
   };
 
+  const viewportClampKey = props.viewportClamp ? `${props.viewportClamp.start}|${props.viewportClamp.end}` : '';
   const savedOverlaysKey = (props.savedRangeOverlays || []).map((r) => `${r.rangeId}:${r.high}:${r.low}:${r.start}:${r.end}:${r.isActive}:${r.isParentContext}`).join('|');
   const draftOverlayKey = props.draftRangeOverlay?.visible ? `${props.draftRangeOverlay.high}:${props.draftRangeOverlay.low}:${props.draftRangeOverlay.start}:${props.draftRangeOverlay.end}:${props.draftRangeOverlay.structureLayer}` : '';
   const drawingsKey = (props.chartDrawings || []).map((d) => `${d.id}:${d.kind}`).join('|');
@@ -9119,11 +10192,45 @@ Date: ${shortTime(d.time,p.timeframe)}`);
 
   useEffect(() => {
     const svgEl = svgRef.current;
-    if (!svgEl || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => scheduleDraw());
-    ro.observe(svgEl);
-    return () => ro.disconnect();
+    const triggerChartRedraw = createDebouncedResizeHandler(() => scheduleDraw('resize'));
+
+    const onLayoutResize = () => {
+      const isInspectorOpen = latestProps.current.isInspectorOpen ?? false;
+      if (layoutResizeGuardRef.current.shouldIgnoreRedraw(isInspectorOpen)) {
+        triggerChartRedraw.cancel();
+        if (svgEl) {
+          const rect = svgEl.getBoundingClientRect();
+          renderGateRef.current.noteDimensions(rect.width, rect.height);
+        }
+        return;
+      }
+      triggerChartRedraw();
+    };
+
+    if (svgEl && typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(onLayoutResize);
+      ro.observe(svgEl);
+      window.addEventListener('resize', onLayoutResize);
+      return () => {
+        ro.disconnect();
+        window.removeEventListener('resize', onLayoutResize);
+        triggerChartRedraw.cancel();
+      };
+    }
+
+    window.addEventListener('resize', onLayoutResize);
+    return () => {
+      window.removeEventListener('resize', onLayoutResize);
+      triggerChartRedraw.cancel();
+    };
   }, []);
+
+  useEffect(() => {
+    if (!props.autoscaleToken) return;
+    manualZoomRef.current = false;
+    lastYBaseRef.current = null;
+    scheduleDraw();
+  }, [props.autoscaleToken]);
 
   useEffect(()=>{
     if (!svgRef.current || !props.candles.length || props.cameraMode !== 'LOCKED' || !props.lockedCameraDomain?.start || !props.lockedCameraDomain?.end) { draw(); return; }
@@ -9146,7 +10253,37 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
     }
     draw();
-  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays, drawingsKey, tradeIdeasRenderKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor, props.tradePickMode]);
+  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays, drawingsKey, tradeIdeasRenderKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor, props.tradePickMode, viewportClampKey, props.chartEmptyState]);
+
+  useEffect(() => {
+    if (!svgRef.current || !props.viewportClamp?.start || !props.viewportClamp?.end) return;
+    if (manualZoomRef.current) { draw(); return; }
+    const cutMs = props.replayCutTime ? new Date(String(props.replayCutTime)).getTime() : null;
+    const data = cutMs && Number.isFinite(cutMs)
+      ? safeArray(props.candles).filter((d:any)=>new Date(d.time).getTime() <= cutMs)
+      : safeArray(props.candles);
+    const span = intersectClampSpanWithCandles(props.viewportClamp, data);
+    if (!span || !data.length) { draw(); return; }
+    const svgEl = svgRef.current;
+    const metrics = getChartSurfaceMetrics(svgEl);
+    if (!metrics) { draw(); return; }
+    const a = new Date(span.start);
+    const b = new Date(span.end);
+    if (!Number.isFinite(a.getTime()) || !Number.isFinite(b.getTime()) || Math.abs(b.getTime()-a.getTime()) < 1) { draw(); return; }
+    const x0 = d3.scaleTime()
+      .domain([a, b])
+      .range([metrics.margin.left, metrics.margin.left + metrics.innerW]);
+    const pxA = x0(a);
+    const pxB = x0(b);
+    if (Number.isFinite(pxA) && Number.isFinite(pxB) && Math.abs(pxB-pxA) > 4) {
+      const lo = Math.min(pxA, pxB);
+      const spanPx = Math.abs(pxB-pxA);
+      const k = Math.max(0.35, Math.min(180, (metrics.innerW * 0.92) / spanPx));
+      const tx = (metrics.margin.left + metrics.innerW * 0.04) - k * lo;
+      transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
+    }
+    draw();
+  }, [viewportClampKey, props.candles.length, props.replayCutTime, props.timeframe]);
 
   useEffect(()=>{
     if (!svgRef.current || !props.candles.length) return;
@@ -9199,8 +10336,14 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       if (Number.isFinite(a) && Number.isFinite(b) && Math.abs(b - a) > 10) {
         const span = Math.max(10, Math.abs(b - a));
         const k = Math.max(1, Math.min(160, (metrics.innerW * 0.84) / span));
-        const tx = (metrics.margin.left + metrics.innerW * 0.08) - k * Math.min(a, b);
-        transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
+        const replayCenterTime = props.replayCutTime || centerTime;
+        const centered = replayCenterTime
+          ? translateTransformToCenterTime(x0, String(replayCenterTime), k, metrics, 0.5)
+          : null;
+        transformRef.current = centered || d3.zoomIdentity.translate(
+          (metrics.margin.left + metrics.innerW * 0.08) - k * Math.min(a, b),
+          0,
+        ).scale(k);
         draw();
         return;
       }
@@ -9213,6 +10356,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
 
   useEffect(() => {
     if (!svgRef.current || !props.replayCutTime || !props.candles.length) return;
+    if (manualZoomRef.current) return;
     if (lastReplayPanTimeRef.current === props.replayCutTime) return;
     lastReplayPanTimeRef.current = props.replayCutTime;
     const metrics = getChartSurfaceMetrics(svgRef.current);
@@ -9222,15 +10366,9 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     const data = safeArray(props.candles).filter((d: any) => new Date(d.time).getTime() <= cutMs);
     if (!data.length) return;
     const x0 = chartXScaleFromData(data, metrics);
-    const baseX = x0(new Date(String(props.replayCutTime)));
-    const x = transformRef.current.applyX(baseX);
-    const leftPad = metrics.margin.left + metrics.innerW * 0.2;
-    const rightPad = metrics.margin.left + metrics.innerW * 0.8;
-    if (x >= leftPad && x <= rightPad) return;
-    const targetX = x < leftPad ? leftPad : rightPad;
-    const dx = targetX - x;
     const k = transformRef.current.k || 1;
-    transformRef.current = transformRef.current.translate(dx / k, 0);
+    const centered = translateTransformToCenterTime(x0, String(props.replayCutTime), k, metrics, 0.5);
+    if (centered) transformRef.current = centered;
     draw();
   }, [props.replayCutTime]);
 
@@ -9239,6 +10377,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     const hasCommand = !!command && command.token > 0 && command.intent !== 'NONE';
     const hasManualFit = props.fitAllToken > 0 || !!props.goDate;
     if (!hasCommand && !hasManualFit) return;
+    if (hasCommand && command!.intent !== 'PRESERVE_OR_NEAREST_TIME') manualZoomRef.current = false;
     if (props.cameraMode === 'LOCKED' && props.lockedCameraDomain?.start && props.lockedCameraDomain?.end && !hasCommand && !hasManualFit) return;
     const rawData = props.candles || [];
     const cutMs = props.replayCutTime ? new Date(String(props.replayCutTime)).getTime() : null;
@@ -9268,7 +10407,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       yZoomRef.current = 1;
       return true;
     };
-    const fitWindow = (startRaw?:string|null, endRaw?:string|null, singleSpan = 0.35) => {
+    const fitWindow = (startRaw?:string|null, endRaw?:string|null, singleSpan = 0.35, centerTimeRaw?: string | null, centerScreenRatio = 0.08) => {
       const start = startRaw ? new Date(String(startRaw)) : null;
       const end = endRaw ? new Date(String(endRaw)) : null;
       let validStart = !!start && Number.isFinite(start.getTime());
@@ -9282,7 +10421,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       }
       if (!validStart && data.length && startRaw) {
         const around = buildCandleWindowFit(data, String(startRaw), 42);
-        if (around) return fitWindow(around.start, around.end);
+        if (around) return fitWindow(around.start, around.end, singleSpan, centerTimeRaw, centerScreenRatio);
       }
       if (!validStart) return false;
       const a = x0(start as Date);
@@ -9292,8 +10431,14 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       }
       const span = Math.max(10, Math.abs(b-a));
       const k = Math.max(1, Math.min(160, (innerW * 0.82) / span));
-      const leftTarget = margin.left + innerW * 0.08;
-      const tx = leftTarget - k * Math.min(a,b);
+      let tx: number;
+      if (centerTimeRaw) {
+        const centerDate = new Date(String(centerTimeRaw));
+        const centerPx = Number.isFinite(centerDate.getTime()) ? x0(centerDate) : Math.min(a, b);
+        tx = (margin.left + innerW * centerScreenRatio) - k * centerPx;
+      } else {
+        tx = (margin.left + innerW * centerScreenRatio) - k * Math.min(a, b);
+      }
       transformRef.current = d3.zoomIdentity.translate(tx,0).scale(k);
       return true;
     };
@@ -9424,7 +10569,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       const fw = command.fitWindow;
       if (data.length) {
         const clamped = clampFitTimesToCandles(fw.start, fw.end, data);
-        applied = fitWindow(clamped.start, clamped.end);
+        const centerReplay = String(command?.reason || '').includes('fit-replay') && targetTime;
+        applied = centerReplay
+          ? fitWindow(clamped.start, clamped.end, 0.35, targetTime, 0.5)
+          : fitWindow(clamped.start, clamped.end);
         if (applied) {
           if (Number.isFinite(fw.low) && Number.isFinite(fw.high) && fw.high > fw.low) {
             applyPriceDomain(fw.low, fw.high, fw.padRatio ?? 0.12);
@@ -9458,13 +10606,16 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     }
     syncZoomTransform();
     draw();
+    if (applied && hasCommand && command!.intent !== 'PRESERVE_OR_NEAREST_TIME') {
+      manualZoomRef.current = true;
+    }
   }, [props.fitAllToken, props.goDate, props.cameraCommand?.token]);
 
   return <svg ref={svgRef} className="d3CandleSvg" />;
 }
 
-function pageTitle(p: Page) { return ({ visual:'Saved Range Maps', mapstudio:'Map Studio', ideas:'Trade Ideas', brain:'Lifecycle Catch-Up', live:'Live Trade', journal:'Journal Reports', sql:'SQL / Backend', settings:'Display Settings', data:'Data Collection Statistics', historical:'Historical Lifecycle Builder' } as any)[p]; }
-function pageSubtitle(p: Page) { return ({ visual:'Weekly and Daily stay clean. Intraday gets the execution room it actually deserves.', mapstudio:'OHLC candles, range overlay, trajectory path, and event coordinates. Finally, candles with memory.', ideas:'Pre-plan the narrative before the market starts whispering nonsense.', brain:'Manually catch the machine up with Macro → Weekly → Daily → Intraday → Micro lifecycle state.', live:'Active trade state, TP status, and linked idea.', journal:'Historical live trades and future data collection view.', sql:'Backend status and recent records.', settings:'Set ranges, mitigation states, tick intervals, and editable map paths.', data:'Run the local Python analyst on selected packages and review structural statistics.', historical:'Create date-aware Weekly/Daily/Intraday lifecycle bundles. The machine links context by symbol + date.' } as any)[p]; }
+function pageTitle(p: Page) { return ({ mapstudio:'Map Studio', ideas:'Trade Ideas', brain:'Lifecycle Catch-Up', journal:'Journal Reports', sql:'SQL / Backend', settings:'Display Settings', data:'Data Collection Statistics', historical:'Historical Lifecycle Builder' } as Record<Page, string>)[p]; }
+function pageSubtitle(p: Page) { return ({ mapstudio:'OHLC candles, range overlay, trajectory path, and event coordinates. Finally, candles with memory.', ideas:'Pre-plan the narrative before the market starts whispering nonsense.', brain:'Manually catch the machine up with Macro → Weekly → Daily → Intraday → Micro lifecycle state.', journal:'Historical live trades and future data collection view.', sql:'Backend status and recent records.', settings:'Set ranges, mitigation states, tick intervals, and editable map paths.', data:'Run the local Python analyst on selected packages and review structural statistics.', historical:'Create date-aware Weekly/Daily/Intraday lifecycle bundles. The machine links context by symbol + date.' } as Record<Page, string>)[p]; }
 
 function XYTrajectoryPanel({ title, layerKey, layer, visual, updateVisual, accent, intraday, livePrice, readOnly = false, compact = false }: { title: string; layerKey: LayerKey; layer?: Layer; visual: VisualLayer; updateVisual: (k: LayerKey, p: Partial<VisualLayer>) => void; accent: string; intraday?: any; livePrice?: number | null; readOnly?: boolean; compact?: boolean }) {
   const currentZone = visual.currentZone || layer?.auto_location || layer?.location || (intraday?.phase_label || 'Fair');
@@ -9587,33 +10738,6 @@ function PointRow({ point, index, total, layerKey, hasRange, low, high, updatePo
     <span className="matrixCol">COL {anchorColumnIndex(point, index, total, layerKey || 'daily') + 1}</span>
     <label className="pointLiveToggle"><input type="checkbox" checked={!!point.live} onChange={e => updatePoint(point.id, { live: e.target.checked })}/> live</label>
     <button className="smallDanger" onClick={() => removePoint(point.id)}>×</button>
-  </div>;
-}
-
-
-function LifecycleBrainPanel({ brain }: any) {
-  const participation = brain?.participation || {};
-  const daily = brain?.daily || {};
-  const intraday = brain?.intraday || {};
-  const weekly = brain?.weekly || {};
-  const status = participation.participation_status || 'WAITING';
-  const allowed = !!participation.execution_allowed;
-  return <div className="card lifecycleBrainCard">
-    <div className="cardHeader tight"><div><h3>Trade Lifecycle Brain</h3><p>Daily direction → Intraday phase → Micro confirmation → participation.</p></div><Target className={allowed ? 'goldIcon' : 'blueIcon'} size={22}/></div>
-    <div className="metricGrid">
-      <Metric label="Participation" value={status} color={allowed ? '#42e68a' : '#ffbf2f'} />
-      <Metric label="Direction" value={participation.suggested_direction || 'NONE'} color={String(participation.suggested_direction).includes('BUY') ? '#42e68a' : String(participation.suggested_direction).includes('SELL') ? '#ff4d67' : '#7b8794'} />
-      <Metric label="Daily Bias" value={daily.daily_bias || 'WATCHING'} color="#dbeafe" />
-      <Metric label="Daily Position" value={fmtPctOrDash(daily.position_pct)} color="#dbeafe" />
-      <Metric label="Daily Range Source" value={daily?.source?.range || (daily.range_low && daily.range_high ? 'map' : 'missing')} color="#7dd3fc" />
-      <Metric label="Intraday" value={intraday.intraday_state || 'WAITING'} color="#00ffd0" />
-      <Metric label="Retest" value={intraday.retest_status || '-'} color="#ffbf2f" />
-      <Metric label="Favourable Trade" value={intraday.favourable_trade || '-'} color="#e5e7eb" />
-      <Metric label="Weekly" value={weekly.weekly_state || 'CONTEXT'} color="#a78bfa" />
-    </div>
-    <div className="machineMessage"><b>Machine says:</b><span>{participation.machine_message || participation.reason || 'No lifecycle snapshot yet. Save/load map state first.'}</span></div>
-    <div className="machineMessage mutedMessage"><b>Map pull:</b><span>Daily range/profile now derives from saved Map Settings unless the Catch-Up Wizard has an explicit non-default override.</span></div>
-    <div className="machineMessage mutedMessage"><b>Next:</b><span>{participation.next_required_step || 'Waiting for rule-chain progress.'}</span></div>
   </div>;
 }
 
@@ -9786,38 +10910,6 @@ function MitigationSequenceEditor({ value, onChange }: { value?: string[]; onCha
 }
 
 
-function LiveTradePanel({ data, idea, large }: any) {
-  const raw = data?.raw_status || data || {};
-  const open = Number(data?.position_count ?? raw.open_positions ?? 0);
-  const dir = raw.direction || data?.direction || idea?.direction || '-';
-  const lifecycle = data?.lifecycle_state || data?.derived_state?.current_lifecycle_state || raw.lifecycle_state || data?.status || 'NONE';
-  const closeLocked = truthy(data?.close_lock_active ?? data?.is_close_locked ?? data?.derived_state?.is_close_locked ?? raw.close_lock_active);
-  const dailyRangePosition = data?.daily_range_position_percent ?? data?.derived_state?.daily_range_position_percent ?? data?.retracement_percent ?? data?.daily_retracement_percent ?? raw.retracement_percent;
-  const unlockAtRaw = data?.close_lock_unlock_at ?? data?.derived_state?.close_lock_unlock_at ?? raw.close_lock_unlock_at;
-  const biasText = String(raw.direction || data?.direction || data?.derived_state?.direction || idea?.direction || '').toUpperCase();
-  const unlockAt = unlockAtRaw != null ? `${Number(unlockAtRaw).toFixed(0)}% ${biasText.includes('BEAR') || biasText === 'SELL' ? 'or higher' : 'or lower'}` : 'Daily High/Low required';
-  const totalRisk = data?.total_risk_percent ?? data?.current_trade_risk_pct ?? raw.total_risk_percent;
-  const events = data?.events || data?.recent_events || data?.trade_events || [];
-  return <div className={`card ${large?'largeCard':''}`}>
-    <div className="cardHeader tight"><div><h3>Live Trade</h3><p>Linked idea: {idea?.setupType || 'none'}</p></div><Zap className="goldIcon" size={20}/></div>
-    <div className="metricGrid">
-      <Metric label="Status" value={raw.status || data?.status || 'NONE'} />
-      <Metric label="Lifecycle" value={lifecycle} color="#00ffd0" />
-      <Metric label="Direction" value={dir} color={String(dir).toUpperCase()==='BUY' ? '#42e68a' : '#ff4d67'} />
-      <Metric label="Positions" value={open} />
-      <Metric label="Current R" value={raw.current_r ?? data?.current_r ?? '-'} color="#ffbf2f" />
-      <Metric label="Total Idea Risk" value={fmtPct(totalRisk)} color="#ffbf2f" />
-      <Metric label="Close Lock" value={closeLocked ? `LOCKED • ${unlockAt}` : 'Inactive'} color={closeLocked ? '#ff4d67' : '#7b8794'} />
-      <Metric label="Daily Range Position" value={fmtPctOrDash(dailyRangePosition)} color={closeLocked ? '#ff4d67' : '#dbeafe'} />
-    </div>
-    <div className="tpRow"><Check label="TP1" active={truthy(raw.tp1_confirmed || data?.two_r_hit)} /><Check label="TP2" active={truthy(raw.tp2_confirmed)} /><Check label="Runner SL" active={truthy(raw.runner_sl_moved)} /></div>
-    {large && <EventStream events={events} />}
-  </div>;
-}
-function EventStream({ events }: any) {
-  const rows = Array.isArray(events) ? events.slice(-8).reverse() : [];
-  return <div className="eventStream"><b>Forensic Event Stream</b>{rows.length === 0 && <p>No backend event stream yet.</p>}{rows.map((e:any,i:number)=><div className="eventRow" key={e.id || e.idempotency_key || i}><span>{String(e.timestamp_utc || e.created_at || '').slice(11,19) || '-'}</span><b>{e.event_type || e.type || '-'}</b><em>{e.event_reason || e.notes || ''}</em></div>)}</div>;
-}
 function HistoricalLifecycleBuilder({ symbol, visuals }: { symbol: string; visuals: VisualStore }) {
   const today = new Date().toISOString().slice(0,10);
   const [form, setForm] = useState<any>({
@@ -10039,6 +11131,8 @@ function normalizeMitigationLevels(raw: any): MitigationLevels {
 }
 
 function normalizeVisuals(raw: any): VisualStore { const out: any = {}; for (const k of LAYERS) { const base = defaultVisual[k]; const v = raw?.[k] || base; out[k] = { ...base, ...v, narrative: v.narrative || base.narrative || '', mapBias: v.mapBias || base.mapBias || 'manual', meta: { ...(base.meta || {}), ...(v.meta || {}) }, brokenExternal: v.brokenExternal || base.brokenExternal || 'NONE', brokenExternalPrice: v.brokenExternalPrice || base.brokenExternalPrice || '', useLiveCurrent: Boolean(v.useLiveCurrent ?? base.useLiveCurrent ?? false), projectionX: Number(v.projectionX ?? base.projectionX ?? 90), projectionPrice: v.projectionPrice || base.projectionPrice || '', liquidityCleanUpPrice: v.liquidityCleanUpPrice ?? base.liquidityCleanUpPrice ?? '', showLiquidityCleanUp: Boolean(v.showLiquidityCleanUp ?? base.showLiquidityCleanUp ?? false), mitigation: { ...base.mitigation, ...(v.mitigation || {}) }, mitigationLevels: normalizeMitigationLevels(v.mitigationLevels || v.mitigation_levels || base.mitigationLevels), mitigationSequence: Array.isArray(v.mitigationSequence || v.mitigation_sequence) ? (v.mitigationSequence || v.mitigation_sequence) : [], path: (v.path || base.path).map((p: any, idx: number) => ({ id: p.id || cryptoId(), label: p.label || p.anchorKey || '', anchorKey: p.anchorKey || p.label || '', status: p.status || 'INTACT', role: p.role || '', sequenceColumn: Number(p.sequenceColumn ?? idx + 1), zone: p.zone || 'Fair', x: Number(p.x ?? 50), price: p.price || '', live: Boolean(p.live) })) }; } return out; }
-function useLocalStorage<T>(key: string, initial: T): [T, (v: T) => void] { const [value, setValue] = useState<T>(() => { try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : initial; } catch { return initial; } }); const setStored = (v: T) => { setValue(v); localStorage.setItem(key, JSON.stringify(v)); }; return [value, setStored]; }
 
-createRoot(document.getElementById('root')!).render(<App />);
+const rootEl = document.getElementById('root')!;
+const fxRoot = window as Window & { __FX_TM_ROOT__?: ReturnType<typeof createRoot> };
+if (!fxRoot.__FX_TM_ROOT__) fxRoot.__FX_TM_ROOT__ = createRoot(rootEl);
+fxRoot.__FX_TM_ROOT__.render(<App />);

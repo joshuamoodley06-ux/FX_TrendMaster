@@ -178,5 +178,44 @@ class BatchRangePromoteTests(unittest.TestCase):
             self.assertIsNone(row["range_role"])
 
 
+    def test_filters_by_detection_run_id(self) -> None:
+        _insert_candidate(
+            self.conn,
+            "sug-batch-run-a",
+            candle_ms=1_704_067_200_000,
+            candidate_index=2,
+            detection_run_id="run-a",
+        )
+        _insert_candidate(
+            self.conn,
+            "sug-batch-run-b",
+            candle_ms=1_704_067_200_000 + 86_400_000 * 14,
+            candidate_index=3,
+            detection_run_id="run-b",
+        )
+        self.conn.commit()
+
+        run_a_filters = BatchPromoteFilters(
+            symbol="XAUUSD",
+            source_timeframe="W1",
+            structure_layer="WEEKLY",
+            candidate_kind="RANGE_CANDIDATE",
+            status="PENDING",
+            detection_run_id="run-a",
+        )
+        dry = batch_promote_range_candidates(self.conn, run_a_filters, confirm=False)
+        self.assertEqual(dry.counts.pending_candidates_found, 1)
+        self.assertEqual(dry.counts.would_promote, 1)
+        self.assertEqual(dry.items[0]["suggestion_id"], "sug-batch-run-a")
+
+    def test_summary_only_omits_items(self) -> None:
+        from detection_brain_batch_promote import batch_promote_result_to_dict
+
+        dry = batch_promote_range_candidates(self.conn, self.filters, confirm=False, include_items=False)
+        out = batch_promote_result_to_dict(dry, summary_only=True)
+        self.assertEqual(out["items"], [])
+        self.assertEqual(out["counts"]["would_promote"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

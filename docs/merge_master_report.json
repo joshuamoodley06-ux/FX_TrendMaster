@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-06-14T15:15:19.417535Z",
+  "master_case_id": "388d8181-a9b9-4faf-be16-3364ef741455",
+  "master_case_name": "XAUUSD_MASTER_2019_2026",
+  "case_ref": "raw:388d8181-a9b9-4faf-be16-3364ef741455",
+  "sources": [
+    {
+      "id": "6d89e12c-fe63-4d31-ab9e-5678b0e6c00d",
+      "name": "XAUUSD 2019 Q3-2020 Q1"
+    },
+    {
+      "id": "554bde23-5d0e-4142-948d-e91f80e2195a",
+      "name": "XAUUSD 2020 Q2-2021 Q1"
+    }
+  ],
+  "canonical_ranges": 71,
+  "duplicate_ranges_skipped": [
+    {
+      "fingerprint": [
+        "DAILY",
+        1703.17,
+        1562.89,
+        "2020-02-28"
+      ],
+      "kept_from": "XAUUSD 2019 Q3-2020 Q1",
+      "skipped": {
+        "case": "XAUUSD 2019 Q3-2020 Q1",
+        "range_id": "88"
+      }
+    },
+    {
+      "fingerprint": [
+        "WEEKLY",
+        1703.17,
+        1451.14,
+        "2020-03-08"
+      ],
+      "kept_from": "XAUUSD 2019 Q3-2020 Q1",
+      "skipped": {
+        "case": "XAUUSD 2020 Q2-2021 Q1",
+        "range_id": "107"
+      }
+    },
+    {
+      "fingerprint": [
+        "DAILY",
+        1690.24,
+        1638.23,
+        "2020-04-08"
+      ],
+      "kept_from": "XAUUSD 2019 Q3-2020 Q1",
+      "skipped": {
+        "case": "XAUUSD 2020 Q2-2021 Q1",
+        "range_id": "108"
+      }
+    },
+    {
+      "fingerprint": [
+        "DAILY",
+        1763.19,
+        1704.21,
+        "2020-06-15"
+      ],
+      "kept_from": "XAUUSD 2020 Q2-2021 Q1",
+      "skipped": {
+        "case": "XAUUSD 2020 Q2-2021 Q1",
+        "range_id": "123"
+      }
+    }
+  ],
+  "structural_events_inserted": 194,
+  "raw_events_merged": 0
+}

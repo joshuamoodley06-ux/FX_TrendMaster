@@ -16,7 +16,8 @@ from detector.period_scan import run_detector_period_scan
 from detector.pipeline import run_detector_v1
 from detector.range_mode import RANGE_MODE_SMOKE_V1, resolve_range_mode
 from detector.range_scale_mode import RANGE_SCALE_UNKNOWN, resolve_range_scale_mode
-from detector.range_seed import resolve_detector_seed_context, seed_resolution_to_meta
+from detector.range_seed import seed_resolution_to_meta
+from detector.range_step_seed import resolve_range_step_seed
 from detector.writer import write_suggestions
 
 
@@ -119,33 +120,15 @@ def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
     range_scale = str(payload.get("range_scale") or RANGE_SCALE_UNKNOWN).upper()
     range_role = str(payload.get("range_role") or "").strip() or None
 
-    seed_resolution = None
-    if range_mode != RANGE_MODE_SMOKE_V1:
-        with _connect() as conn:
-            seed_resolution = resolve_detector_seed_context(
-                conn,
-                payload,
-                symbol=symbol,
-                structure_layer=structure_layer or structure_layer_for_timeframe(timeframe),
-                source_timeframe=timeframe,
-                parent_range_id=parent_range_id,
-            )
-        if seed_resolution and seed_resolution.seed:
-            seed = seed_resolution.seed
-            range_high = seed.range_high
-            range_low = seed.range_low
-            active_range_id = seed.active_range_id
-            range_scale = str(seed.range_scale or range_scale).upper()
-            range_role = seed.range_role or range_role
-            if seed.parent_range_id is not None:
-                parent_range_id = seed.parent_range_id
-        else:
-            range_high = None
-            range_low = None
-            active_range_id = None
-    elif active_range_id in (None, 0) and not payload.get("include_active_range"):
-        range_high = None
-        range_low = None
+    discovery_mode = payload.get("discovery_mode", True)
+    if isinstance(discovery_mode, str):
+        discovery_mode = discovery_mode.strip().lower() not in {"false", "0", "no"}
+    allow_map_ranges = bool(
+        payload.get("allow_map_ranges")
+        or payload.get("use_manual_seed")
+        or payload.get("seed_from_electron")
+        or (not discovery_mode and active_range_id)
+    )
 
     common = dict(
         symbol=symbol,
@@ -174,6 +157,44 @@ def run_detector_and_store(payload: dict[str, Any]) -> dict[str, Any]:
             limit=limit,
             **common,
         )
+
+    seed_resolution = None
+    if range_mode != RANGE_MODE_SMOKE_V1:
+        layer = structure_layer or structure_layer_for_timeframe(timeframe)
+        if allow_map_ranges:
+            with _connect() as conn:
+                seed_resolution = resolve_range_step_seed(
+                    ctx,
+                    payload=payload,
+                    conn=conn,
+                    period_start_ms=visible_from_ms,
+                    discovery_mode=bool(discovery_mode),
+                    allow_map_ranges=True,
+                    structure_layer=layer,
+                    parent_range_id=parent_range_id,
+                )
+        else:
+            seed_resolution = resolve_range_step_seed(
+                ctx,
+                payload=payload,
+                period_start_ms=visible_from_ms,
+                discovery_mode=bool(discovery_mode),
+                allow_map_ranges=False,
+                structure_layer=layer,
+                parent_range_id=parent_range_id,
+            )
+        if seed_resolution and seed_resolution.seed:
+            seed = seed_resolution.seed
+            ctx.range_high = seed.range_high
+            ctx.range_low = seed.range_low
+            active_range_id = seed.active_range_id
+            range_scale = str(seed.range_scale or range_scale).upper()
+            range_role = seed.range_role or range_role
+            if seed.parent_range_id is not None:
+                parent_range_id = seed.parent_range_id
+    elif active_range_id in (None, 0) and not payload.get("include_active_range"):
+        ctx.range_high = None
+        ctx.range_low = None
 
     if seed_resolution is not None:
         ctx.range_seed = seed_resolution.seed

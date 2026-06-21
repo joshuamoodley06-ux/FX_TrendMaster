@@ -1,0 +1,285 @@
+{
+  "generated_at": "2026-06-14T19:51:55.693599+00:00",
+  "master_raw_case_id": "388d8181-a9b9-4faf-be16-3364ef741455",
+  "total_ranges": 83,
+  "tree_range_count": 45,
+  "orphan_count": 38,
+  "delete_count": 38,
+  "kept_macro_ids": [
+    152
+  ],
+  "orphans": [
+    {
+      "range_id": "166",
+      "structure_layer": "WEEKLY",
+      "range_start_time": "2020-04-19T00:00:00.000Z",
+      "parent_range_id": null,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "189",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-05-18T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "190",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-05-20T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "191",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-05-22T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "192",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-05-27T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "167",
+      "structure_layer": "WEEKLY",
+      "range_start_time": "2020-05-31T00:00:00.000Z",
+      "parent_range_id": null,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "193",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-06-02T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "194",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-06-04T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "195",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-06-05T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "196",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-06-15T00:00:00.000Z",
+      "parent_range_id": 166,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "197",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-06-22T00:00:00.000Z",
+      "parent_range_id": 167,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "198",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-06-26T00:00:00.000Z",
+      "parent_range_id": 167,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "199",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-07-01T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "200",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-07-06T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "168",
+      "structure_layer": "WEEKLY",
+      "range_start_time": "2020-07-12T00:00:00.000Z",
+      "parent_range_id": null,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "201",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-07-14T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "202",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-07-30T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "169",
+      "structure_layer": "WEEKLY",
+      "range_start_time": "2020-08-02T00:00:00.000Z",
+      "parent_range_id": null,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "203",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-08-03T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "204",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-08-07T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "205",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-08-18T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "206",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-11-09T00:00:00.000Z",
+      "parent_range_id": 168,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "207",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-11-26T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "208",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-11-30T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "209",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-12-07T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "210",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-12-08T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "211",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-12-14T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "212",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-12-21T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "213",
+      "structure_layer": "DAILY",
+      "range_start_time": "2020-12-28T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "214",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-01-06T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "215",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-01-12T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "216",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-01-18T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "217",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-01-27T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "218",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-02-01T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "219",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-02-03T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "220",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-02-04T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "221",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-02-10T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    },
+    {
+      "range_id": "222",
+      "structure_layer": "DAILY",
+      "range_start_time": "2021-02-19T00:00:00.000Z",
+      "parent_range_id": 169,
+      "status": "ARCHIVED"
+    }
+  ],
+  "hard_deleted": [],
+  "errors": [
+    {
+      "error": "POST /api/v1/map/ranges/hard-delete failed 404: {\"detail\":\"Not Found\"}"
+    }
+  ]
+}

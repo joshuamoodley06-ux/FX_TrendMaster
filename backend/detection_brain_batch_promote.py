@@ -107,16 +107,45 @@ def _duplicate_risk_count(conn: sqlite3.Connection, suggestion_ids: list[str]) -
     return len(rows)
 
 
+def _bulk_existing_ranges_for_suggestions(
+    conn: sqlite3.Connection,
+    suggestion_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    if not suggestion_ids:
+        return {}
+    placeholders = ",".join("?" for _ in suggestion_ids)
+    rows = conn.execute(
+        f"""
+        SELECT id, range_high_price, range_low_price, range_scale, confirmed_from_suggestion_id
+        FROM map_ranges
+        WHERE confirmed_from_suggestion_id IN ({placeholders})
+        ORDER BY id ASC
+        """,
+        suggestion_ids,
+    ).fetchall()
+    out: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        sid = str(row["confirmed_from_suggestion_id"])
+        if sid not in out:
+            out[sid] = dict(row)
+    return out
+
+
 def _classify_candidate(
     conn: sqlite3.Connection,
     suggestion: dict[str, Any],
+    *,
+    existing_lookup: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, str | None, int | None]:
     """Return (bucket, reason, existing_range_id)."""
     suggestion_id = str(suggestion.get("suggestion_id") or "")
     status = str(suggestion.get("status") or "").upper()
     kind = str(suggestion.get("candidate_kind") or "").upper()
 
-    existing = _existing_range_for_suggestion(conn, suggestion_id)
+    if existing_lookup is not None:
+        existing = existing_lookup.get(suggestion_id)
+    else:
+        existing = _existing_range_for_suggestion(conn, suggestion_id)
     if existing:
         return "already_promoted", "map_range exists", int(existing["id"])
 
@@ -166,6 +195,9 @@ def query_batch_candidates(conn: sqlite3.Connection, filters: BatchPromoteFilter
     if filters.detector_version:
         clauses.append("detector_version = ?")
         params.append(str(filters.detector_version))
+    if filters.detection_run_id:
+        clauses.append("json_extract(meta_json, '$.detection_run_id') = ?")
+        params.append(str(filters.detection_run_id).strip())
 
     rows = conn.execute(
         f"""
@@ -178,12 +210,9 @@ def query_batch_candidates(conn: sqlite3.Connection, filters: BatchPromoteFilter
     ).fetchall()
 
     out: list[dict[str, Any]] = []
-    run_id = str(filters.detection_run_id or "").strip() or None
     for row in rows:
         item = dict(row)
         item["meta_json"] = _json_loads(item.get("meta_json"))
-        if run_id and str((item.get("meta_json") or {}).get("detection_run_id") or "") != run_id:
-            continue
         out.append(item)
     return out
 
@@ -193,6 +222,7 @@ def batch_promote_range_candidates(
     filters: BatchPromoteFilters,
     *,
     confirm: bool = False,
+    include_items: bool = True,
 ) -> BatchPromoteResult:
     dry_run = not confirm
     candidates = query_batch_candidates(conn, filters)
@@ -201,13 +231,16 @@ def batch_promote_range_candidates(
 
     suggestion_ids = [str(c.get("suggestion_id") or "") for c in candidates if c.get("suggestion_id")]
     counts.duplicate_risks = _duplicate_risk_count(conn, suggestion_ids)
+    existing_lookup = _bulk_existing_ranges_for_suggestions(conn, suggestion_ids)
 
     if not dry_run:
         conn.execute("PRAGMA busy_timeout = 60000")
 
     for suggestion in candidates:
         suggestion_id = str(suggestion.get("suggestion_id") or "")
-        bucket, reason, existing_range_id = _classify_candidate(conn, suggestion)
+        bucket, reason, existing_range_id = _classify_candidate(
+            conn, suggestion, existing_lookup=existing_lookup,
+        )
         item: dict[str, Any] = {
             "suggestion_id": suggestion_id,
             "candidate_kind": suggestion.get("candidate_kind"),
@@ -222,21 +255,31 @@ def batch_promote_range_candidates(
 
         if bucket == "already_promoted":
             counts.already_promoted += 1
-            items.append(item)
+            if include_items:
+                items.append(item)
             continue
 
         if bucket == "skipped":
             counts.skipped += 1
-            items.append(item)
+            if include_items:
+                items.append(item)
             continue
 
         counts.would_promote += 1
         if dry_run:
-            items.append(item)
+            if include_items:
+                items.append(item)
             continue
 
         try:
-            result = review_suggestion(conn, suggestion_id, action="BATCH_APPROVE", commit=False)
+            result = review_suggestion(
+                conn,
+                suggestion_id,
+                action="BATCH_APPROVE",
+                commit=True,
+                suggestion_row=suggestion,
+                skip_duplicate_check=True,
+            )
             if result.get("duplicate"):
                 counts.already_promoted += 1
                 item["bucket"] = "already_promoted"
@@ -253,10 +296,8 @@ def batch_promote_range_candidates(
             counts.errors += 1
             item["bucket"] = "error"
             item["reason"] = str(exc)
-        items.append(item)
-
-    if not dry_run and (counts.promoted > 0 or counts.already_promoted > 0):
-        conn.commit()
+        if include_items or item.get("bucket") == "error":
+            items.append(item)
 
     date_range = _date_range_label(filters.date_from_ms, filters.date_to_ms)
     if dry_run:
@@ -295,7 +336,11 @@ def batch_promote_range_candidates(
     )
 
 
-def batch_promote_result_to_dict(result: BatchPromoteResult) -> dict[str, Any]:
+def batch_promote_result_to_dict(
+    result: BatchPromoteResult,
+    *,
+    summary_only: bool = False,
+) -> dict[str, Any]:
     return {
         "ok": result.ok,
         "dry_run": result.dry_run,
@@ -312,5 +357,5 @@ def batch_promote_result_to_dict(result: BatchPromoteResult) -> dict[str, Any]:
             "duplicate_risks": result.counts.duplicate_risks,
             "errors": result.counts.errors,
         },
-        "items": result.items,
+        "items": [] if summary_only else result.items,
     }

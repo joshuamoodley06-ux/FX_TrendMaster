@@ -130,7 +130,7 @@ class BosWithoutReclaimEmitterTests(unittest.TestCase):
             (95, 98, 94, 97),
             (97, 99, 96, 98),
             (98, 102, 97, 101),
-            (101, 104, 100, 103),
+            (101, 104, 100.01, 103),  # BOS up held; wick stays above RH
         ])
         seed = RangeSeedContext(range_high=100.0, range_low=90.0, active_range_id=42)
         ctx = _ctx(candles, active_index=3, seed=seed)
@@ -144,6 +144,7 @@ class BosWithoutReclaimEmitterTests(unittest.TestCase):
 
 class BullishRangeEmitterTests(unittest.TestCase):
     def _bullish_setup(self):
+        # Seed RH=102 so bar 4 (high 101) does not pre-BOS; single clean BOS@5 → reclaim@7 cycle.
         candles = _rows_to_candles([
             (95, 98, 94, 97),
             (97, 99, 96, 98),
@@ -151,31 +152,35 @@ class BullishRangeEmitterTests(unittest.TestCase):
             (99, 100, 98, 99),
             (99, 101, 98, 100),
             (101, 106, 100, 104),
-            (104, 105, 101, 103),
-            (103, 104, 100, 102),
+            (104, 105, 103, 104),
+            (103, 104, 102, 103),
             (102, 103, 98, 99),
         ])
-        seed = RangeSeedContext(range_high=100.0, range_low=90.0, active_range_id=42)
-        swings = [_swing(6, "SWING_LOW", 101.0, candles[6])]
+        seed = RangeSeedContext(range_high=102.0, range_low=90.0, active_range_id=42)
+        swings = [
+            _swing(4, "SWING_LOW", 98.0, candles[4]),
+            _swing(6, "SWING_LOW", 103.0, candles[6]),
+        ]
         bos = [_bos_draft("BOS_UP", 5, candles[5], suggestion_id="bos-up-main")]
-        reclaim = [_reclaim_draft("RECLAIM_DOWN", 8, candles[8], suggestion_id="reclaim-down-1")]
+        reclaim = [_reclaim_draft("RECLAIM_DOWN", 7, candles[7], suggestion_id="reclaim-down-1")]
         return candles, seed, swings, bos, reclaim
 
     def test_bullish_bos_reclaim_emits_range_major(self) -> None:
         candles, seed, swings, bos, reclaim = self._bullish_setup()
-        ctx = _ctx(candles, active_index=8, seed=seed)
+        ctx = _ctx(candles, active_index=7, seed=seed)
         out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings, scale_mode=RANGE_SCALE_MODE_LEGACY)
         self.assertEqual(len(out), 1)
         draft = out[0]
         self.assertEqual(draft.candidate_kind, "RANGE_MAJOR")
         self.assertEqual(draft.detector_version, RANGE_V2)
         self.assertEqual(draft.suggested_rh, 106.0)
-        self.assertEqual(draft.suggested_rl, 101.0)
+        self.assertEqual(draft.suggested_rl, 98.0)
         self.assertEqual(draft.range_role, "ACTIVE_CONTAINER")
         self.assertEqual(
             draft.meta_json["boundary_selection_reason"],
-            "OPPOSITE_SWING_BETWEEN_BOS_RECLAIM",
+            "STRUCTURAL_SWING_FLOOR_BEFORE_BOS",
         )
+        self.assertEqual(draft.meta_json["selected_rl_source"], "STRUCTURAL_SWING")
         self.assertEqual(draft.meta_json["bos_suggestion_id"], "bos-up-main")
         self.assertEqual(draft.meta_json["reclaim_suggestion_id"], "reclaim-down-1")
 
@@ -191,7 +196,8 @@ class BearishRangeEmitterTests(unittest.TestCase):
             (96, 97, 85, 86),
             (86, 88, 84, 85),
             (85, 87, 83, 84),
-            (84, 92, 83, 91),
+            (84, 90.5, 83, 89),     # HTF wick reclaim
+            (89, 91, 84, 90.5),     # body close inside
         ])
         seed = RangeSeedContext(range_high=100.0, range_low=90.0, active_range_id=42)
         swings = [_swing(6, "SWING_HIGH", 88.0, candles[6])]
@@ -206,20 +212,18 @@ class BearishRangeEmitterTests(unittest.TestCase):
 
 
 class UnclearOppositeSwingEmitterTests(unittest.TestCase):
-    def test_unclear_opposite_swing_returns_no_valid_range(self) -> None:
+    def test_no_swings_still_emits_seed_anchored_range(self) -> None:
         candles = _rows_to_candles([
             (95, 98, 94, 97),
             (98, 106, 97, 104),
-            (104, 105, 100, 99),
+            (104, 105, 99.5, 102),
         ])
         seed = RangeSeedContext(range_high=100.0, range_low=90.0, active_range_id=42)
         ctx = _ctx(candles, active_index=2, seed=seed)
         out = detect_range_v2_suggestions(ctx, seed, [], [], [])
-        self.assertEqual(out[0].candidate_kind, "NO_VALID_RANGE")
-        self.assertEqual(
-            out[0].meta_json["boundary_selection_reason"],
-            "UNCLEAR_OPPOSITE_SWING",
-        )
+        self.assertIn(out[0].candidate_kind, {"RANGE_MAJOR", "RANGE_CANDIDATE", CANDIDATE_KIND_RANGE})
+        self.assertEqual(out[0].meta_json["selected_rl_source"], "SEED_ANCHORED")
+        self.assertAlmostEqual(float(out[0].suggested_rl), 90.0, delta=0.01)
 
 
 class NoMinorStructureEmitterTests(unittest.TestCase):
@@ -231,15 +235,18 @@ class NoMinorStructureEmitterTests(unittest.TestCase):
             (99, 100, 98, 99),
             (99, 101, 98, 100),
             (101, 106, 100, 104),
-            (104, 105, 101, 103),
-            (103, 104, 100, 102),
+            (104, 105, 103, 104),
+            (103, 104, 102, 103),
             (102, 103, 98, 99),
         ])
-        seed = RangeSeedContext(range_high=100.0, range_low=90.0, active_range_id=42)
-        swings = [_swing(6, "SWING_LOW", 101.0, candles[6])]
+        seed = RangeSeedContext(range_high=102.0, range_low=90.0, active_range_id=42)
+        swings = [
+            _swing(4, "SWING_LOW", 98.0, candles[4]),
+            _swing(6, "SWING_LOW", 103.0, candles[6]),
+        ]
         ctx = _ctx(
             candles,
-            active_index=8,
+            active_index=7,
             seed=seed,
             extra_meta={"internal_structure_status": "NO_MINOR_STRUCTURE"},
         )
@@ -251,7 +258,7 @@ class NoMinorStructureEmitterTests(unittest.TestCase):
         self.assertEqual(draft.range_role, "EXPANSION_LEG")
         self.assertEqual(draft.meta_json["internal_structure_status"], "NO_MINOR_STRUCTURE")
         self.assertEqual(draft.suggested_rh, 106.0)
-        self.assertEqual(draft.suggested_rl, 101.0)
+        self.assertEqual(draft.suggested_rl, 98.0)
 
 
 class MetaJsonEmitterTests(unittest.TestCase):
@@ -263,15 +270,18 @@ class MetaJsonEmitterTests(unittest.TestCase):
             (99, 100, 98, 99),
             (99, 101, 98, 100),
             (101, 106, 100, 104),
-            (104, 105, 101, 103),
-            (103, 104, 100, 102),
+            (104, 105, 103, 104),
+            (103, 104, 102, 103),
             (102, 103, 98, 99),
         ])
-        seed = RangeSeedContext(range_high=100.0, range_low=90.0, active_range_id=42)
-        swings = [_swing(6, "SWING_LOW", 101.0, candles[6])]
+        seed = RangeSeedContext(range_high=102.0, range_low=90.0, active_range_id=42)
+        swings = [
+            _swing(4, "SWING_LOW", 98.0, candles[4]),
+            _swing(6, "SWING_LOW", 103.0, candles[6]),
+        ]
         bos = [_bos_draft("BOS_UP", 5, candles[5], suggestion_id="bos-meta")]
-        reclaim = [_reclaim_draft("RECLAIM_DOWN", 8, candles[8], suggestion_id="reclaim-meta")]
-        ctx = _ctx(candles, active_index=8, seed=seed)
+        reclaim = [_reclaim_draft("RECLAIM_DOWN", 7, candles[7], suggestion_id="reclaim-meta")]
+        ctx = _ctx(candles, active_index=7, seed=seed)
         out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings, scale_mode=RANGE_SCALE_MODE_LEGACY)
         meta = out[0].meta_json
 
@@ -284,9 +294,69 @@ class MetaJsonEmitterTests(unittest.TestCase):
         self.assertEqual(meta["parent_range_id"], 10)
         self.assertEqual(meta["bos_suggestion_id"], "bos-meta")
         self.assertEqual(meta["reclaim_suggestion_id"], "reclaim-meta")
-        self.assertEqual(meta["opposite_swing_index"], 6)
+        self.assertEqual(meta["opposite_swing_index"], 4)
+        self.assertEqual(meta["selected_rl_source"], "STRUCTURAL_SWING")
         self.assertIsNotNone(meta.get("visible_from_time_ms"))
         self.assertIsNotNone(meta.get("replay_until_time_ms"))
+
+
+class MarketTimeMetadataTests(unittest.TestCase):
+    def test_range_major_includes_bos_and_reclaim_market_times(self) -> None:
+        candles = _rows_to_candles([
+            (95, 98, 94, 97),
+            (97, 99, 96, 98),
+            (98, 99, 97, 98),
+            (99, 100, 98, 99),
+            (99, 101, 98, 100),
+            (101, 106, 100, 104),
+            (104, 105, 103, 104),
+            (103, 104, 102, 103),
+            (102, 103, 98, 99),
+        ])
+        seed = RangeSeedContext(range_high=102.0, range_low=90.0, active_range_id=42)
+        swings = [
+            _swing(4, "SWING_LOW", 98.0, candles[4]),
+            _swing(6, "SWING_LOW", 103.0, candles[6]),
+        ]
+        bos = [_bos_draft("BOS_UP", 5, candles[5], suggestion_id="bos-mt")]
+        reclaim = [_reclaim_draft("RECLAIM_DOWN", 7, candles[7], suggestion_id="reclaim-mt")]
+        ctx = _ctx(candles, active_index=7, seed=seed)
+        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings, scale_mode=RANGE_SCALE_MODE_LEGACY)
+        meta = out[0].meta_json
+
+        self.assertEqual(meta.get("candle_index_scope"), "replay_window")
+        self.assertEqual(meta.get("bos_time_ms"), candles[5].time_ms)
+        self.assertEqual(meta.get("reclaim_time_ms"), candles[7].time_ms)
+        self.assertEqual(meta.get("bos_candle_index"), 5)
+        self.assertEqual(meta.get("reclaim_candle_index"), 7)
+        self.assertNotEqual(meta.get("bos_candle_index"), 103)
+
+    def test_structural_boundaries_include_boundary_market_times(self) -> None:
+        candles = _rows_to_candles([
+            (95, 98, 94, 97),
+            (97, 99, 96, 98),
+            (98, 99, 97, 98),
+            (99, 100, 98, 99),
+            (99, 101, 98, 100),
+            (101, 106, 100, 104),
+            (104, 112, 103, 111),
+            (111, 112, 98, 99),
+        ])
+        seed = RangeSeedContext(range_high=102.0, range_low=90.0, active_range_id=42)
+        swings = [
+            _swing(4, "SWING_LOW", 98.0, candles[4]),
+            _swing(6, "SWING_HIGH", 112.0, candles[6]),
+        ]
+        bos = [_bos_draft("BOS_UP", 5, candles[5], suggestion_id="bos-mt2")]
+        reclaim = [_reclaim_draft("RECLAIM_DOWN", 7, candles[7], suggestion_id="reclaim-mt2")]
+        ctx = _ctx(candles, active_index=7, seed=seed)
+        out = detect_range_v2_suggestions(ctx, seed, bos, reclaim, swings, scale_mode=RANGE_SCALE_MODE_LEGACY)
+        meta = out[0].meta_json
+
+        self.assertEqual(meta.get("rh_boundary_time_ms"), candles[6].time_ms)
+        self.assertEqual(meta.get("rl_boundary_time_ms"), candles[4].time_ms)
+        self.assertIsNotNone(meta.get("rh_boundary_time"))
+        self.assertIsNotNone(meta.get("rl_boundary_time"))
 
 
 class EmitterIsolationTests(unittest.TestCase):

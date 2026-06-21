@@ -29,3 +29,47 @@ contextBridge.exposeInMainWorld('analyst', {
     return () => ipcRenderer.removeListener('analyst:log', handler);
   },
 });
+
+contextBridge.exposeInMainWorld('localResearch', {
+  getPaths: () => ipcRenderer.invoke('local-research:getPaths'),
+  getDatabaseStatus: (args) => ipcRenderer.invoke('local-research:getDatabaseStatus', args),
+  pickDatabaseFile: () => ipcRenderer.invoke('local-research:pickDatabaseFile'),
+  setDatabasePath: (args) => ipcRenderer.invoke('local-research:setDatabasePath', args),
+  openResearchFolder: () => ipcRenderer.invoke('local-research:openResearchFolder'),
+  pullVpsCandles: (args) => ipcRenderer.invoke('local-research:pull-vps-candles', args),
+  runLocalResearchSeed: (args) => ipcRenderer.invoke('local-research:seed', args),
+  runHistoricalRangeScan: (args) => ipcRenderer.invoke('local-research:historical-range-scan', args),
+  runBatchRangePromote: (args) => ipcRenderer.invoke('local-research:batch-range-promote', args),
+  runDetectorPerformance: (args) => ipcRenderer.invoke('local-research:detector-performance', args),
+  runDetectorLocal: (args) => ipcRenderer.invoke('local-research:run-detector', args),
+  listDetectorSuggestions: (args) => ipcRenderer.invoke('local-research:list-suggestions', args),
+  listDetectorRun: (args) => ipcRenderer.invoke('local-research:list-detector-run', args),
+  latestDetectorRun: (args) => ipcRenderer.invoke('local-research:latest-detector-run', args),
+  reviewSuggestionLocal: (args) => ipcRenderer.invoke('local-research:review-suggestion', args),
+  exportDetectionAudit: (args) => ipcRenderer.invoke('local-research:export-detection-audit', args),
+  runRandomRangeAudit: (args) => ipcRenderer.invoke('local-research:random-range-audit', args),
+  runRecordAuditVerdict: (args) => ipcRenderer.invoke('local-research:record-audit-verdict', args),
+});
+
+contextBridge.exposeInMainWorld('electronAPI', {
+  candles: {
+    fetch: (symbolOrArgs, timeframe, range) => {
+      const args = typeof symbolOrArgs === 'object' && symbolOrArgs !== null
+        ? symbolOrArgs
+        : { symbol: symbolOrArgs, timeframe, ...(range || {}) };
+      return ipcRenderer.invoke('candles:fetch', args);
+    },
+    upsert: (args) => ipcRenderer.invoke('candles:upsert', args),
+    status: (symbolOrArgs, timeframe) => {
+      const args = typeof symbolOrArgs === 'object' && symbolOrArgs !== null
+        ? symbolOrArgs
+        : { symbol: symbolOrArgs, timeframe };
+      return ipcRenderer.invoke('candles:status', args);
+    },
+  },
+  ranges: {
+    validate: (args) => ipcRenderer.invoke('ranges:validate', args),
+    upsert: (args) => ipcRenderer.invoke('ranges:upsert', args),
+    list: (args) => ipcRenderer.invoke('ranges:list', args),
+  },
+});

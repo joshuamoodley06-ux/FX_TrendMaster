@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  getLocalResearchBridge,
+  listDetectorSuggestionsLocalResearch,
+  runDetectorLocalResearch,
+} from './localResearchClient';
+import {
   type DetectorSuggestionRow,
   type RangeAuditSample,
   type RangeAuditViewTarget,
@@ -95,6 +100,27 @@ function newDetectionRunId() {
   return `run-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+async function resolveLocalResearchDatabase(
+  symbol: string,
+  timeframe: string,
+): Promise<string | null> {
+  const bridge = getLocalResearchBridge();
+  if (!bridge) return null;
+  const status = await bridge.getDatabaseStatus({ symbol, timeframe });
+  if (!status.ok || !status.databasePath) return null;
+  return status.databasePath;
+}
+
+type DetectorRunResponse = {
+  ok: boolean;
+  written_count?: number;
+  detection_run_id?: string;
+  replay_until_time_ms?: number | null;
+  detection_context?: Record<string, unknown>;
+  debug_summary?: Record<string, unknown>;
+  error?: string;
+};
+
 export function ReviewCandidatePanel(props: Props) {
   const [displayMode, setDisplayMode] = useState<DisplayMode>('collapsed');
   const [suggestions, setSuggestions] = useState<DetectorSuggestionRow[]>([]);
@@ -156,27 +182,51 @@ export function ReviewCandidatePanel(props: Props) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await fetchPendingSuggestions(props.apiBase, {
-        symbol: props.symbol,
-        structure_layer: props.structureLayer,
-        source_timeframe: props.sourceTimeframe,
-        parent_range_id: props.parentRangeId ?? undefined,
-        detection_run_id: lastDetectionRunId ?? undefined,
-        replay_until_time_ms: lastDetectionRunId
-          ? undefined
-          : (contextReplayUntilMs ?? props.activeCandleTimeMs ?? undefined),
-        limit: 100,
-      });
-      if (!data.ok) {
-        props.setMessage(`Review candidates load failed: ${data.error || 'unknown'}`);
-        setSuggestions([]);
-        return;
+      const localDb = await resolveLocalResearchDatabase(props.symbol, props.sourceTimeframe);
+      let rows: DetectorSuggestionRow[] = [];
+      if (localDb) {
+        const local = await listDetectorSuggestionsLocalResearch({
+          databasePath: localDb,
+          symbol: props.symbol,
+          structureLayer: props.structureLayer,
+          sourceTimeframe: props.sourceTimeframe,
+          detectionRunId: lastDetectionRunId ?? undefined,
+          replayUntilMs: lastDetectionRunId
+            ? undefined
+            : (contextReplayUntilMs ?? props.activeCandleTimeMs ?? undefined),
+          limit: 100,
+        });
+        if (!local.ok) {
+          props.setMessage(`Review candidates load failed: ${local.error || local.stderr || 'unknown'}`);
+          setSuggestions([]);
+          return;
+        }
+        const parsed = (local.parsed || {}) as { suggestions?: DetectorSuggestionRow[] };
+        rows = parsed.suggestions || [];
+      } else {
+        const data = await fetchPendingSuggestions(props.apiBase, {
+          symbol: props.symbol,
+          structure_layer: props.structureLayer,
+          source_timeframe: props.sourceTimeframe,
+          parent_range_id: props.parentRangeId ?? undefined,
+          detection_run_id: lastDetectionRunId ?? undefined,
+          replay_until_time_ms: lastDetectionRunId
+            ? undefined
+            : (contextReplayUntilMs ?? props.activeCandleTimeMs ?? undefined),
+          limit: 100,
+        });
+        if (!data.ok) {
+          props.setMessage(`Review candidates load failed: ${data.error || 'unknown'}`);
+          setSuggestions([]);
+          return;
+        }
+        rows = data.suggestions || [];
       }
-      const rows = filterRows(data.suggestions || []);
-      setSuggestions(rows);
-      if (!selectedId && rows.length) setSelectedId(rows[0].suggestion_id);
-      else if (selectedId && !rows.find(r => r.suggestion_id === selectedId)) {
-        setSelectedId(rows[0]?.suggestion_id || null);
+      const filtered = filterRows(rows);
+      setSuggestions(filtered);
+      if (!selectedId && filtered.length) setSelectedId(filtered[0].suggestion_id);
+      else if (selectedId && !filtered.find(r => r.suggestion_id === selectedId)) {
+        setSelectedId(filtered[0]?.suggestion_id || null);
       }
     } finally {
       setLoading(false);
@@ -191,10 +241,10 @@ export function ReviewCandidatePanel(props: Props) {
 
   const runDetector = async () => {
     setRunningDetector(true);
-    const detectionRunId = newDetectionRunId();
-    const replayUntilMs = props.activeCandleTimeMs ?? null;
     try {
-      const out = await runDetectorV1(props.apiBase, {
+      const detectionRunId = newDetectionRunId();
+      const replayUntilMs = props.activeCandleTimeMs ?? null;
+      const payload = {
         symbol: props.symbol,
         source_timeframe: props.sourceTimeframe,
         structure_layer: props.structureLayer,
@@ -203,13 +253,28 @@ export function ReviewCandidatePanel(props: Props) {
         range_scale: props.rangeScale || 'UNKNOWN',
         range_role: props.rangeRole ?? undefined,
         parent_range_id: props.parentRangeId ?? undefined,
-        active_range_id: props.activeRangeId ?? undefined,
-        seed_from_electron: props.activeRangeId != null && props.activeRangeId > 0,
         case_ref: props.caseRef ?? undefined,
         detection_run_id: detectionRunId,
         replay_until_time_ms: replayUntilMs ?? undefined,
         replay_until_time: props.activeCandleTimeLabel ?? undefined,
-      });
+        discovery_mode: true,
+        range_mode: 'doctrine_v2',
+        range_scale_mode: 'generic',
+        limit: 2000,
+      };
+
+      const localDb = await resolveLocalResearchDatabase(props.symbol, props.sourceTimeframe);
+      let out: DetectorRunResponse;
+      if (localDb) {
+        const local = await runDetectorLocalResearch({ databasePath: localDb, payload });
+        if (!local.ok) {
+          props.setMessage(`Local detector failed: ${local.error || local.stderr || 'unknown'}`);
+          return;
+        }
+        out = { ok: true, ...(local.parsed as DetectorRunResponse) };
+      } else {
+        out = await runDetectorV1(props.apiBase, payload);
+      }
       if (!out.ok) {
         props.setMessage(`Detector run failed: ${out.error || 'unknown'}`);
         return;
@@ -228,8 +293,8 @@ export function ReviewCandidatePanel(props: Props) {
       setLastDebugSummary(out.debug_summary ?? null);
       const dbg = out.debug_summary as Record<string, unknown> | undefined;
       const dbgLine = dbg
-        ? ` | mode=${String(dbg.range_mode ?? '?')} range=${String(dbg.range_candidate_kind ?? '?')} life=${String(dbg.lifecycle_state ?? '?')} seed=${String(dbg.seed_source ?? '?')} no_seed=${String(dbg.no_seed_context ?? '?')}`
-        : '';
+        ? ` | mode=${String(dbg.range_mode ?? '?')} range=${String(dbg.range_candidate_kind ?? '?')} life=${String(dbg.lifecycle_state ?? '?')} seed=${String(dbg.seed_source ?? '?')} no_seed=${String(dbg.no_seed_context ?? '?')}${localDb ? ' local=1' : ''}`
+        : localDb ? ' | local=1' : '';
       const at = props.activeCandleTimeLabel ? ` @ ${props.activeCandleTimeLabel}` : '';
       props.setMessage(`Python detector wrote ${out.written_count ?? 0} suggestion(s)${at}${dbgLine}.`);
       if (displayMode === 'collapsed') setDisplayMode('compact');

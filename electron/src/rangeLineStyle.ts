@@ -1,0 +1,48 @@
+/** Saved / context range line styling — active full opacity, context ghost at 0.3. */
+
+export const ACTIVE_RANGE_LINE_OPACITY = 1;
+export const CONTEXT_RANGE_LINE_OPACITY = 0.3;
+
+export type RangeLineStyle = {
+  opacity: number;
+  dash: string;
+  width: number;
+};
+
+export type SavedRangeLineStyleOpts = {
+  isActive?: boolean;
+  isParentContext?: boolean;
+  isGuidedParentContext?: boolean;
+  rangeScope?: string;
+};
+
+function isBrokenStatus(status: string): boolean {
+  const s = String(status || 'ACTIVE').toUpperCase();
+  return s === 'BROKEN' || s === 'ABANDONED' || s === 'INACTIVE' || s === 'REPLACED';
+}
+
+export function savedRangeLineStyle(
+  status: string,
+  opts?: SavedRangeLineStyleOpts,
+): RangeLineStyle {
+  const broken = isBrokenStatus(status);
+  const isMinor = opts?.rangeScope === 'MINOR';
+
+  if (opts?.isActive && !broken) {
+    return {
+      opacity: ACTIVE_RANGE_LINE_OPACITY,
+      dash: isMinor ? '5 4' : '',
+      width: isMinor ? 3.4 : 4.2,
+    };
+  }
+
+  return {
+    opacity: CONTEXT_RANGE_LINE_OPACITY,
+    dash: broken ? '5 5' : (isMinor ? '4 5' : '4 6'),
+    width: isMinor ? 2.2 : 2.4,
+  };
+}
+
+export function draftRangeLineStyle(): RangeLineStyle {
+  return { opacity: 0.85, dash: '4 6', width: 3.2 };
+}

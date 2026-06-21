@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from detector.context_window import build_detection_window_meta
+from detector.context_window import build_detection_window_meta, ms_to_date_label
 from detector.models import DetectionContext, SuggestionDraft, SwingPoint
 from detector.range_boundary import derive_boundaries
 from detector.range_lifecycle import evaluate_lifecycle
+from detector.retracement import measure_retracement_for_chain
 from detector.range_state import (
+    BOUNDARY_SOURCE_SEED_ANCHORED,
     BosDirection,
     BosReclaimChain,
     BoundarySelection,
@@ -25,6 +27,112 @@ from detector.range_scale_mode import (
     is_generic_scale_mode,
 )
 from detector.versions import ENGINE_SOURCE, RANGE_V2
+
+
+REPLAY_WINDOW_INDEX_SCOPE = "replay_window"
+
+
+def _candle_time_ms_at(ctx: DetectionContext, index: int | None) -> int | None:
+    if index is None:
+        return None
+    try:
+        idx = int(index)
+    except (TypeError, ValueError):
+        return None
+    candles = ctx.candles
+    if idx < 0 or idx >= len(candles):
+        return None
+    return int(candles[idx].time_ms)
+
+
+def _apply_market_time_meta(
+    meta: dict[str, Any],
+    ctx: DetectionContext,
+    chain: BosReclaimChain | None,
+    boundaries: BoundarySelection | None,
+) -> None:
+    """Durable market-time keys for BOS/reclaim/boundaries (indices are replay-window hints)."""
+    meta["candle_index_scope"] = REPLAY_WINDOW_INDEX_SCOPE
+
+    if chain is not None:
+        bos_ms = _candle_time_ms_at(ctx, chain.bos_index)
+        reclaim_ms = _candle_time_ms_at(ctx, chain.reclaim_index)
+        meta["bos_time_ms"] = bos_ms
+        meta["reclaim_time_ms"] = reclaim_ms
+        meta["bos_time"] = ms_to_date_label(bos_ms)
+        meta["reclaim_time"] = ms_to_date_label(reclaim_ms)
+
+    if boundaries is None:
+        meta["rh_boundary_time_ms"] = None
+        meta["rl_boundary_time_ms"] = None
+        return
+
+    rh_ms, rl_ms = _boundary_times(ctx, chain, boundaries) if chain is not None else (None, None)
+
+    if boundaries.selected_rh_source == BOUNDARY_SOURCE_SEED_ANCHORED:
+        rh_ms = None
+    if boundaries.selected_rl_source == BOUNDARY_SOURCE_SEED_ANCHORED:
+        rl_ms = None
+
+    meta["rh_boundary_time_ms"] = rh_ms
+    meta["rl_boundary_time_ms"] = rl_ms
+    meta["rh_boundary_time"] = ms_to_date_label(rh_ms)
+    meta["rl_boundary_time"] = ms_to_date_label(rl_ms)
+
+
+def _max_reclaim_lag_bars(ctx: DetectionContext) -> int | None:
+    raw = (ctx.detection_window_meta or {}).get("max_reclaim_lag_bars")
+    if raw is None:
+        return None
+    try:
+        lag = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(0, lag)
+
+
+def _min_reclaim_time_ms(ctx: DetectionContext) -> int | None:
+    raw = (ctx.detection_window_meta or {}).get("min_reclaim_time_ms")
+    if raw is None:
+        return None
+    try:
+        ms = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return ms if ms > 0 else None
+
+
+def _reclaim_cycle_is_fresh(ctx: DetectionContext, lifecycle: LifecycleEvaluation) -> bool:
+    lag = _max_reclaim_lag_bars(ctx)
+    if lag is None or lifecycle.chain is None:
+        return True
+    return int(lifecycle.chain.reclaim_index) >= int(ctx.active_index) - lag
+
+
+def _boundaries_coherent_with_active(
+    ctx: DetectionContext,
+    boundaries: BoundarySelection,
+    *,
+    span_tolerance: float = 0.5,
+) -> bool:
+    active = ctx.active_candle
+    if active is None:
+        return True
+    rh = boundaries.suggested_rh
+    rl = boundaries.suggested_rl
+    if rh is None or rl is None:
+        return False
+    try:
+        rh_f = float(rh)
+        rl_f = float(rl)
+        close_f = float(active.close)
+    except (TypeError, ValueError):
+        return False
+    if rh_f <= rl_f:
+        return False
+    span = rh_f - rl_f
+    pad = span * span_tolerance
+    return (rl_f - pad) <= close_f <= (rh_f + pad)
 
 
 def _resolve_seed(
@@ -164,6 +272,10 @@ def _build_meta_json(
         meta["broken_boundary"] = chain.broken_boundary.value
         meta["bos_candle_index"] = chain.bos_index
         meta["reclaim_candle_index"] = chain.reclaim_index
+        meta["reclaim_confirmation"] = chain.reclaim_confirmation
+        if chain.reclaim_touch_index is not None:
+            meta["reclaim_touch_index"] = chain.reclaim_touch_index
+            meta["reclaim_touch_kind"] = "RECLAIM_TOUCH"
 
         bos_draft = _match_bos_draft(
             bos_candidates,
@@ -194,6 +306,9 @@ def _build_meta_json(
         broken = _broken_boundary_for_state(lifecycle.state)
         if broken:
             meta["broken_boundary"] = broken
+        if lifecycle.reclaim_touch_index is not None:
+            meta["reclaim_touch_index"] = lifecycle.reclaim_touch_index
+            meta["reclaim_touch_kind"] = lifecycle.reclaim_touch_kind or "RECLAIM_TOUCH"
         direction = (
             BosDirection.UP
             if lifecycle.state == RangeLifecycleState.BREACHED_UP
@@ -217,6 +332,26 @@ def _build_meta_json(
             meta["opposite_swing_index"] = boundaries.opposite_swing_index
         if boundaries.opposite_swing_kind:
             meta["opposite_swing_kind"] = boundaries.opposite_swing_kind
+        if boundaries.selected_rh_source:
+            meta["selected_rh_source"] = boundaries.selected_rh_source
+        if boundaries.selected_rl_source:
+            meta["selected_rl_source"] = boundaries.selected_rl_source
+        trace = boundaries.boundary_trace or {}
+        if trace:
+            meta["boundary_candidates_considered"] = trace.get("boundary_candidates_considered")
+            meta["rejected_boundary_candidates"] = trace.get("rejected_boundary_candidates")
+            meta["selected_boundary_candidate"] = trace.get("selected_boundary_candidate")
+            leg_trace = trace.get("htf_leg_trace")
+            if leg_trace:
+                meta["htf_leg_trace"] = leg_trace
+        if chain is not None and boundaries.suggested_rh is not None and boundaries.suggested_rl is not None:
+            retr = measure_retracement_for_chain(
+                ctx.candles,
+                chain,
+                impulse_high=float(boundaries.suggested_rh),
+                impulse_low=float(boundaries.suggested_rl),
+            )
+            meta.update(retr.to_meta())
     elif lifecycle.no_range_reason == NoRangeReason.UNCLEAR_OPPOSITE_SWING:
         meta["boundary_selection_reason"] = OppositeSwingReason.UNCLEAR_OPPOSITE_SWING.value
     elif boundaries is None and lifecycle.state == RangeLifecycleState.NO_VALID_RANGE:
@@ -228,6 +363,7 @@ def _build_meta_json(
         seed,
         no_seed_context=seed is None,
     )
+    _apply_market_time_meta(meta, ctx, chain, boundaries)
     return meta
 
 
@@ -289,16 +425,27 @@ def _boundary_times(
     chain: BosReclaimChain,
     boundaries: BoundarySelection,
 ) -> tuple[int | None, int | None]:
+    leg = (boundaries.boundary_trace or {}).get("htf_leg_trace") or {}
+    if leg:
+        if chain.direction == BosDirection.UP:
+            rh_ms = leg.get("expansion_extreme_time_ms")
+            rl_ms = leg.get("opposite_anchor_time_ms")
+        else:
+            rh_ms = leg.get("opposite_anchor_time_ms")
+            rl_ms = leg.get("expansion_extreme_time_ms")
+        if rh_ms is not None or rl_ms is not None:
+            return rh_ms, rl_ms
+
     rh_ms: int | None = None
     rl_ms: int | None = None
-    if chain.direction == BosDirection.UP:
+    if boundaries.rh_swing_index is not None and 0 <= boundaries.rh_swing_index < len(ctx.candles):
+        rh_ms = ctx.candles[boundaries.rh_swing_index].time_ms
+    elif chain.direction == BosDirection.UP:
         rh_ms = ctx.candles[chain.bos_index].time_ms
-        if boundaries.opposite_swing_index is not None:
-            rl_ms = ctx.candles[boundaries.opposite_swing_index].time_ms
-    else:
+    if boundaries.rl_swing_index is not None and 0 <= boundaries.rl_swing_index < len(ctx.candles):
+        rl_ms = ctx.candles[boundaries.rl_swing_index].time_ms
+    elif chain.direction == BosDirection.DOWN:
         rl_ms = ctx.candles[chain.bos_index].time_ms
-        if boundaries.opposite_swing_index is not None:
-            rh_ms = ctx.candles[boundaries.opposite_swing_index].time_ms
     return rh_ms, rl_ms
 
 
@@ -360,6 +507,70 @@ def _valid_range_draft(
     )
 
 
+def _emit_fresh_valid_range_drafts(
+    ctx: DetectionContext,
+    *,
+    seed: RangeSeedContext,
+    lifecycle: LifecycleEvaluation,
+    boundaries: BoundarySelection,
+    bos_candidates: list[SuggestionDraft],
+    reclaim_candidates: list[SuggestionDraft],
+    scale_mode: str | None,
+) -> list[SuggestionDraft]:
+    from detector.range_discovery_split import (
+        attach_persistence_context_meta,
+        promoted_lifecycle_trace,
+        uses_persistence_context,
+    )
+
+    if _internal_structure_status(ctx) == "NO_MINOR_STRUCTURE" and not is_generic_scale_mode(scale_mode):
+        drafts = [
+            _valid_range_draft(
+                ctx,
+                seed=seed,
+                lifecycle=lifecycle,
+                boundaries=boundaries,
+                bos_candidates=bos_candidates,
+                reclaim_candidates=reclaim_candidates,
+                candidate_kind="NO_MINOR_STRUCTURE",
+                range_role="EXPANSION_LEG",
+                range_scale="MAJOR",
+                internal_structure_status="NO_MINOR_STRUCTURE",
+                scale_mode=scale_mode,
+            )
+        ]
+    else:
+        candidate_kind, range_scale, range_role = _range_kind_for_scale(
+            str(ctx.range_scale or RANGE_SCALE_UNKNOWN).upper(),
+            scale_mode=scale_mode,
+        )
+        drafts = [
+            _valid_range_draft(
+                ctx,
+                seed=seed,
+                lifecycle=lifecycle,
+                boundaries=boundaries,
+                bos_candidates=bos_candidates,
+                reclaim_candidates=reclaim_candidates,
+                candidate_kind=candidate_kind,
+                range_role=range_role,
+                range_scale=range_scale,
+                internal_structure_status="HAS_MINORS",
+                scale_mode=scale_mode,
+            )
+        ]
+
+    if uses_persistence_context(seed, ctx):
+        trace = promoted_lifecycle_trace()
+        for draft in drafts:
+            attach_persistence_context_meta(
+                draft.meta_json,
+                persistence_seed=seed,
+                trace=trace,
+            )
+    return drafts
+
+
 def detect_range_v2_suggestions(
     ctx: DetectionContext,
     seed_context: RangeSeedContext | None,
@@ -398,11 +609,12 @@ def detect_range_v2_suggestions(
         ctx.active_index,
         seed,
         break_rule=ctx.break_rule,
+        min_reclaim_time_ms=_min_reclaim_time_ms(ctx),
     )
     swings_used = swings or ctx.swings or []
 
     if lifecycle.can_suggest_range:
-        boundaries = derive_boundaries(lifecycle, swings_used)
+        boundaries = derive_boundaries(lifecycle, swings_used, candles=ctx.candles)
         if not boundaries.is_valid:
             reason = boundaries.reason_text or "Reclaim confirmed; no linked opposite swing"
             return [
@@ -417,42 +629,70 @@ def detect_range_v2_suggestions(
                 )
             ]
 
-        if _internal_structure_status(ctx) == "NO_MINOR_STRUCTURE" and not is_generic_scale_mode(scale_mode):
+        if not _reclaim_cycle_is_fresh(ctx, lifecycle):
+            from detector.range_discovery_split import (
+                attempt_local_active_discovery,
+                stale_persistence_no_valid_draft,
+                uses_persistence_context,
+            )
+
+            if uses_persistence_context(seed, ctx):
+                local_drafts, trace = attempt_local_active_discovery(
+                    ctx,
+                    persistence_seed=seed,
+                    swings=swings_used,
+                    bos_candidates=bos_candidates,
+                    reclaim_candidates=reclaim_candidates,
+                    scale_mode=scale_mode,
+                )
+                if local_drafts:
+                    return local_drafts
+                return [
+                    stale_persistence_no_valid_draft(
+                        ctx,
+                        persistence_seed=seed,
+                        lifecycle=lifecycle,
+                        boundaries=boundaries,
+                        bos_candidates=bos_candidates,
+                        reclaim_candidates=reclaim_candidates,
+                        trace=trace,
+                    )
+                ]
+
             return [
-                _valid_range_draft(
+                _no_valid_range_draft(
                     ctx,
                     seed=seed,
                     lifecycle=lifecycle,
                     boundaries=boundaries,
                     bos_candidates=bos_candidates,
                     reclaim_candidates=reclaim_candidates,
-                    candidate_kind="NO_MINOR_STRUCTURE",
-                    range_role="EXPANSION_LEG",
-                    range_scale="MAJOR",
-                    internal_structure_status="NO_MINOR_STRUCTURE",
-                    scale_mode=scale_mode,
+                    reason_text="Reclaim cycle completed before active replay week",
                 )
             ]
 
-        candidate_kind, range_scale, range_role = _range_kind_for_scale(
-            str(ctx.range_scale or RANGE_SCALE_UNKNOWN).upper(),
+        if not _boundaries_coherent_with_active(ctx, boundaries):
+            return [
+                _no_valid_range_draft(
+                    ctx,
+                    seed=seed,
+                    lifecycle=lifecycle,
+                    boundaries=boundaries,
+                    bos_candidates=bos_candidates,
+                    reclaim_candidates=reclaim_candidates,
+                    reason_text="Suggested RH/RL do not match active-week price",
+                )
+            ]
+
+        return _emit_fresh_valid_range_drafts(
+            ctx,
+            seed=seed,
+            lifecycle=lifecycle,
+            boundaries=boundaries,
+            bos_candidates=bos_candidates,
+            reclaim_candidates=reclaim_candidates,
             scale_mode=scale_mode,
         )
-        return [
-            _valid_range_draft(
-                ctx,
-                seed=seed,
-                lifecycle=lifecycle,
-                boundaries=boundaries,
-                bos_candidates=bos_candidates,
-                reclaim_candidates=reclaim_candidates,
-                candidate_kind=candidate_kind,
-                range_role=range_role,
-                range_scale=range_scale,
-                internal_structure_status="HAS_MINORS",
-                scale_mode=scale_mode,
-            )
-        ]
 
     reason_text = lifecycle.reason_text or "No valid RANGE_V2 container"
     if lifecycle.no_range_reason == NoRangeReason.BOS_WITHOUT_RECLAIM:

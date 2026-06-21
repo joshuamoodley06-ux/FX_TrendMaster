@@ -160,12 +160,99 @@ def _patch_event_detection_fields(
     )
 
 
-def _promote_range(
+def _promote_range_direct(
     conn: sqlite3.Connection,
     suggestion: dict[str, Any],
     final: dict[str, Any],
     user_action: str,
 ) -> int:
+    """Fast path for batch promote — uses caller connection, no per-row init_db/connect."""
+    rh = final.get("suggested_rh")
+    rl = final.get("suggested_rl")
+    if rh is None or rl is None or float(rh) <= float(rl):
+        raise PromotionError("Range promotion requires valid suggested_rh > suggested_rl")
+
+    range_scale, range_role = _confirmed_range_fields(suggestion, final)
+    now = candle_store.now_iso()
+    meta_json = json.dumps(
+        {
+            "promoted_from": "detector_suggestions",
+            "suggestion_id": suggestion["suggestion_id"],
+            "detector_version": suggestion["detector_version"],
+            "user_action": user_action,
+        },
+        ensure_ascii=False,
+        default=str,
+    )
+    tf = str(suggestion.get("source_timeframe") or "W1")
+    structure_layer = str(suggestion.get("structure_layer") or "WEEKLY")
+    cur = conn.execute(
+        """
+        INSERT INTO map_ranges(
+            symbol, timeframe, name, range_high, range_low,
+            range_high_price, range_low_price, range_high_time, range_low_time,
+            range_start_time, range_end_time, active_from_time,
+            status, range_key, source, structure_layer, chart_timeframe, source_timeframe,
+            range_scope, range_scale, parent_link_status, structure_version, meta_json,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            suggestion["symbol"],
+            tf,
+            f"{suggestion['symbol']} {tf} detector range",
+            float(rh),
+            float(rl),
+            float(rh),
+            float(rl),
+            _ms_to_time_text(final.get("suggested_rh_time_ms")),
+            _ms_to_time_text(final.get("suggested_rl_time_ms")),
+            _ms_to_time_text(final.get("suggested_rh_time_ms")),
+            _ms_to_time_text(final.get("suggested_rl_time_ms")),
+            _ms_to_time_text(final.get("suggested_rh_time_ms")),
+            "ACTIVE",
+            f"detector_{suggestion['suggestion_id']}",
+            "python_detector",
+            structure_layer,
+            suggestion.get("chart_timeframe") or tf,
+            tf,
+            range_scale,
+            range_scale,
+            "NEEDS_REVIEW",
+            "STRUCTURE_ONLY_V1",
+            meta_json,
+            now,
+            now,
+        ),
+    )
+    range_id = int(cur.lastrowid or 0)
+    if not range_id:
+        raise PromotionError("range promotion returned no range_id")
+
+    _patch_range_detection_fields(
+        conn,
+        range_id,
+        suggestion_id=str(suggestion["suggestion_id"]),
+        detector_version=str(suggestion["detector_version"]),
+        user_action=user_action,
+        range_scale=range_scale,
+        range_role=range_role,
+    )
+    return range_id
+
+
+def _promote_range(
+    conn: sqlite3.Connection,
+    suggestion: dict[str, Any],
+    final: dict[str, Any],
+    user_action: str,
+    *,
+    batch_fast: bool = False,
+) -> int:
+    # Batch promote always uses the caller connection — never upsert_map_range (avoids DB lock).
+    if user_action == "BATCH_APPROVE" or batch_fast:
+        return _promote_range_direct(conn, suggestion, final, user_action)
+
     rh = final.get("suggested_rh")
     rl = final.get("suggested_rl")
     if rh is None or rl is None or float(rh) <= float(rl):
@@ -333,13 +420,16 @@ def review_suggestion(
     error_category: str | None = None,
     notes: str = "",
     commit: bool = True,
+    suggestion_row: dict[str, Any] | None = None,
+    skip_duplicate_check: bool = False,
+    fast_promote: bool = False,
 ) -> dict[str, Any]:
     """APPROVE | BATCH_APPROVE | EDIT | REJECT | AUDIT_PASS | AUDIT_FAIL a suggestion."""
     action_u = str(action or "").strip().upper()
     if action_u not in {"APPROVE", "BATCH_APPROVE", "EDIT", "REJECT", "AUDIT_PASS", "AUDIT_FAIL"}:
         raise PromotionError(f"invalid action: {action}")
 
-    suggestion = get_suggestion(conn, suggestion_id)
+    suggestion = suggestion_row if suggestion_row is not None else get_suggestion(conn, suggestion_id)
     if not suggestion:
         raise PromotionError("suggestion not found", 404)
 
@@ -355,18 +445,19 @@ def review_suggestion(
         }
 
     if action_u in {"APPROVE", "BATCH_APPROVE", "EDIT"}:
-        existing = conn.execute(
-            "SELECT id FROM map_ranges WHERE confirmed_from_suggestion_id = ? LIMIT 1",
-            (suggestion_id,),
-        ).fetchone()
-        if existing:
-            return {
-                "ok": True,
-                "duplicate": True,
-                "promoted_range_id": int(existing["id"]),
-                "suggestion": suggestion,
-                "message": "range already promoted for suggestion",
-            }
+        if not skip_duplicate_check:
+            existing = conn.execute(
+                "SELECT id FROM map_ranges WHERE confirmed_from_suggestion_id = ? LIMIT 1",
+                (suggestion_id,),
+            ).fetchone()
+            if existing:
+                return {
+                    "ok": True,
+                    "duplicate": True,
+                    "promoted_range_id": int(existing["id"]),
+                    "suggestion": suggestion,
+                    "message": "range already promoted for suggestion",
+                }
 
     if suggestion.get("status") != "PENDING":
         raise PromotionError(f"suggestion status {suggestion.get('status')} is not reviewable")
@@ -381,8 +472,11 @@ def review_suggestion(
 
     if action_u in {"APPROVE", "BATCH_APPROVE", "EDIT"}:
         kind = str(suggestion.get("candidate_kind") or "").upper()
+        batch_fast = action_u == "BATCH_APPROVE" or fast_promote
         if kind in RANGE_KINDS:
-            promoted_range_id = _promote_range(conn, suggestion, final, action_u)
+            promoted_range_id = _promote_range(
+                conn, suggestion, final, action_u, batch_fast=batch_fast,
+            )
         elif kind in BOS_KINDS:
             promoted_event_id = _promote_bos(conn, suggestion, final, action_u)
         else:
@@ -437,7 +531,7 @@ def review_suggestion(
 
     if commit:
         conn.commit()
-    refreshed = get_suggestion(conn, suggestion_id)
+    refreshed = get_suggestion(conn, suggestion_id) if commit else suggestion
     return {
         "ok": True,
         "action": action_u,

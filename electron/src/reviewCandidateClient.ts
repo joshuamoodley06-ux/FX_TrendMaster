@@ -1,3 +1,5 @@
+import { buildVpsUrl } from './vpsConfig';
+
 export type DetectorSuggestionRow = {
   suggestion_id: string;
   candidate_kind: string;
@@ -60,7 +62,31 @@ export type RangeAuditSample = {
   range_end_time?: string | null;
   lifecycle_state?: string | null;
   boundary_selection_reason?: string | null;
+  retracement_percent?: number | null;
+  retracement_class?: string | null;
+  retracement_price?: number | null;
+  retracement_time_ms?: number | null;
+  bos_candle_index?: number | null;
+  reclaim_candle_index?: number | null;
   meta_json?: Record<string, unknown> | null;
+  status?: string | null;
+  promoted_range_id?: number | null;
+  reason_text?: string | null;
+};
+
+export type ResearchChartOverlay = {
+  rangeId: string;
+  structureLayer: string;
+  rangeScope: string;
+  status: string;
+  high: number;
+  low: number;
+  start?: string | null;
+  end?: string | null;
+  isActive?: boolean;
+  isResearch?: boolean;
+  /** Short chart label, e.g. 2025-01-12 */
+  overlayLabel?: string | null;
 };
 
 export type RangeAuditViewTarget = {
@@ -79,6 +105,10 @@ export type RangeAuditViewTarget = {
   boundary_selection_reason?: string | null;
   suggestion_id?: string | null;
   range_id?: number | null;
+  retracement_percent?: number | null;
+  retracement_class?: string | null;
+  retracement_price?: number | null;
+  retracement_time_ms?: number | null;
 };
 
 async function parseJson<T>(res: Response): Promise<T> {
@@ -97,20 +127,22 @@ export async function fetchPendingSuggestions(
     replay_until_time_ms?: number | null;
   },
 ): Promise<{ ok: boolean; suggestions?: DetectorSuggestionRow[]; count?: number; error?: string }> {
-  const url = new URL(`${apiBase.replace(/\/$/, '')}/api/v1/detection-brain/suggestions`);
-  url.searchParams.set('symbol', filters.symbol);
-  url.searchParams.set('status', 'PENDING');
-  if (filters.structure_layer) url.searchParams.set('structure_layer', filters.structure_layer);
-  if (filters.source_timeframe) url.searchParams.set('source_timeframe', filters.source_timeframe);
-  if (filters.parent_range_id != null && filters.parent_range_id !== '') {
-    url.searchParams.set('parent_range_id', String(filters.parent_range_id));
-  }
-  if (filters.limit) url.searchParams.set('limit', String(filters.limit));
-  if (filters.detection_run_id) url.searchParams.set('detection_run_id', filters.detection_run_id);
-  if (filters.replay_until_time_ms != null && filters.replay_until_time_ms > 0) {
-    url.searchParams.set('replay_until_time_ms', String(filters.replay_until_time_ms));
-  }
-  const res = await fetch(url.toString());
+  const url = buildVpsUrl('/api/v1/detection-brain/suggestions', apiBase, {
+    symbol: filters.symbol,
+    status: 'PENDING',
+    structure_layer: filters.structure_layer,
+    source_timeframe: filters.source_timeframe,
+    parent_range_id: filters.parent_range_id != null && filters.parent_range_id !== ''
+      ? String(filters.parent_range_id)
+      : undefined,
+    limit: filters.limit,
+    detection_run_id: filters.detection_run_id ?? undefined,
+    replay_until_time_ms:
+      filters.replay_until_time_ms != null && filters.replay_until_time_ms > 0
+        ? filters.replay_until_time_ms
+        : undefined,
+  });
+  const res = await fetch(url);
   const data = await parseJson<{ ok: boolean; suggestions?: DetectorSuggestionRow[]; count?: number; error?: string; detail?: string }>(res);
   if (!res.ok || !data.ok) {
     return { ok: false, suggestions: [], count: 0, error: data.error || data.detail || res.statusText };
@@ -147,6 +179,8 @@ export async function runDetectorV1(
     date_to?: string;
     period_scan?: boolean;
     range_scale_mode?: string;
+    discovery_mode?: boolean;
+    allow_map_ranges?: boolean;
   },
 ): Promise<{
   ok: boolean;
@@ -178,26 +212,103 @@ export async function runDetectorV1(
   return data;
 }
 
+export function auditSampleOverlayKey(sample: RangeAuditSample, index = 0): string {
+  return String(sample.suggestion_id || sample.id || sample.range_id || `idx-${index}`);
+}
+
+export function weekLabelFromSample(sample: RangeAuditSample): string {
+  const raw = sample.replay_until_time || sample.range_end_time || sample.range_start_time || '';
+  return String(raw).slice(0, 10) || 'range';
+}
+
+/** Chart review: one active range, optionally the prior week for comparison. */
+export function auditSamplesToFocusedOverlays(
+  samples: RangeAuditSample[],
+  activeIndex: number,
+  opts?: { includePrior?: boolean },
+): ResearchChartOverlay[] {
+  if (!samples.length) return [];
+  const idx = Math.min(Math.max(0, activeIndex), samples.length - 1);
+  const indices: number[] = [idx];
+  if (opts?.includePrior && idx > 0) indices.unshift(idx - 1);
+
+  const overlays: ResearchChartOverlay[] = [];
+  for (const i of indices) {
+    const sample = samples[i];
+    const rh = Number(sample.rh ?? sample.range_high_price);
+    const rl = Number(sample.rl ?? sample.range_low_price);
+    if (!Number.isFinite(rh) || !Number.isFinite(rl) || rh <= rl) continue;
+    const week = weekLabelFromSample(sample);
+    overlays.push({
+      rangeId: `wk-${week}-${i}`,
+      overlayLabel: week,
+      structureLayer: String(sample.structure_layer || 'WEEKLY').toUpperCase(),
+      rangeScope: 'MAJOR',
+      status: sample.source === 'confirmed_ranges' ? 'CONFIRMED' : 'RESEARCH',
+      high: rh,
+      low: rl,
+      start: sample.range_start_time || sample.replay_until_time || sample.first_candle_time || null,
+      end: sample.range_end_time || sample.replay_until_time || sample.last_candle_time || null,
+      isActive: i === idx,
+      isResearch: true,
+    });
+  }
+  return overlays;
+}
+
+export function auditSamplesToChartOverlays(
+  samples: RangeAuditSample[],
+  activeKey?: string | null,
+): ResearchChartOverlay[] {
+  const overlays: ResearchChartOverlay[] = [];
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index];
+    const rh = Number(sample.rh ?? sample.range_high_price);
+    const rl = Number(sample.rl ?? sample.range_low_price);
+    if (!Number.isFinite(rh) || !Number.isFinite(rl) || rh <= rl) continue;
+    const key = auditSampleOverlayKey(sample, index);
+    const rangeId = sample.range_id != null ? String(sample.range_id) : `rs-${key}`;
+    overlays.push({
+      rangeId,
+      structureLayer: String(sample.structure_layer || 'WEEKLY').toUpperCase(),
+      rangeScope: 'MAJOR',
+      status: sample.source === 'confirmed_ranges' ? 'CONFIRMED' : 'RESEARCH',
+      high: rh,
+      low: rl,
+      start: sample.range_start_time || sample.replay_until_time || sample.first_candle_time || null,
+      end: sample.range_end_time || sample.replay_until_time || sample.last_candle_time || null,
+      isActive: activeKey ? key === activeKey : index === 0,
+      isResearch: true,
+    });
+  }
+  return overlays;
+}
+
 export function auditSampleToViewTarget(sample: RangeAuditSample): RangeAuditViewTarget | null {
   const rh = Number(sample.rh ?? sample.range_high_price);
   const rl = Number(sample.rl ?? sample.range_low_price);
   if (!Number.isFinite(rh) || !Number.isFinite(rl) || rh <= rl) return null;
+  const jumpTime = sample.replay_until_time || sample.range_end_time || sample.range_start_time || sample.first_candle_time;
   return {
     kind: sample.source === 'confirmed_ranges' ? 'confirmed_range' : 'suggestion',
     rh,
     rl,
-    range_start_time: sample.range_start_time || sample.first_candle_time || null,
-    range_end_time: sample.range_end_time || sample.last_candle_time || sample.replay_until_time || null,
+    range_start_time: sample.range_start_time || sample.replay_until_time || sample.first_candle_time || null,
+    range_end_time: sample.range_end_time || sample.replay_until_time || sample.last_candle_time || null,
     source_timeframe: sample.source_timeframe,
     chart_timeframe: sample.chart_timeframe || sample.source_timeframe,
     structure_layer: sample.structure_layer,
     candidate_kind: sample.candidate_kind,
     detector_version: sample.detector_version,
-    replay_until_time: sample.replay_until_time || null,
+    replay_until_time: jumpTime || null,
     lifecycle_state: sample.lifecycle_state || null,
     boundary_selection_reason: sample.boundary_selection_reason || null,
     suggestion_id: sample.suggestion_id || (sample.source === 'suggestions' ? sample.id : null),
     range_id: sample.range_id ?? null,
+    retracement_percent: sample.retracement_percent ?? (sample.meta_json?.retracement_percent as number | undefined) ?? null,
+    retracement_class: sample.retracement_class ?? (sample.meta_json?.retracement_class as string | undefined) ?? null,
+    retracement_price: sample.retracement_price ?? (sample.meta_json?.retracement_price as number | undefined) ?? null,
+    retracement_time_ms: sample.retracement_time_ms ?? (sample.meta_json?.retracement_time_ms as number | undefined) ?? null,
   };
 }
 

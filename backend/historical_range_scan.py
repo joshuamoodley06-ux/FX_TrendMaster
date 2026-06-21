@@ -10,6 +10,12 @@ import sys
 import candle_store
 from detection_brain_schema import init_detection_brain_schema
 from detector.range_mode import RANGE_MODE_DOCTRINE_V2
+from detector.historical_range_chain import (
+    HistoricalRangeChainConfig,
+    format_bootstrap_trace_report,
+    format_chain_summary,
+    run_historical_range_chain,
+)
 from detector.range_scan_runner import (
     HistoricalRangeScanConfig,
     HistoricalScanError,
@@ -20,6 +26,7 @@ from detector.range_scan_runner import (
     run_historical_range_scan,
     sample_scan_suggestions,
 )
+from detector.range_seed import SEED_POLICY_DEFAULT, SEED_POLICY_REVIEWED_TRUTH_ONLY
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -47,6 +54,32 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candle-limit", type=int, default=5000, help="max candles loaded from DB")
     parser.add_argument("--sample", type=int, default=0, help="print N random audit rows after scan")
     parser.add_argument("--dry-run", action="store_true", help="detect only; do not write suggestions")
+    parser.add_argument(
+        "--chain",
+        action="store_true",
+        help="EXPERIMENTAL: candles-only historical chain (not Weekly Research default)",
+    )
+    parser.add_argument(
+        "--use-manual-seed",
+        action="store_true",
+        help="with --chain: optional Advanced override to use ACTIVE map_ranges seed",
+    )
+    parser.add_argument(
+        "--bootstrap-trace",
+        action="store_true",
+        help="with --chain: print first-step bootstrap candidate trace (included in summary)",
+    )
+    parser.add_argument(
+        "--seed-policy",
+        default=SEED_POLICY_DEFAULT,
+        choices=[SEED_POLICY_DEFAULT, SEED_POLICY_REVIEWED_TRUTH_ONLY],
+        help=(
+            "seed roll policy for historical walk: "
+            f"default={SEED_POLICY_DEFAULT!r}, "
+            f"reviewed_truth_only={SEED_POLICY_REVIEWED_TRUTH_ONLY!r} "
+            "(promoted map_ranges beat in-scan raw candidate)"
+        ),
+    )
     parser.add_argument("--db", default=None, help="SQLite path override")
     return parser
 
@@ -73,26 +106,50 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    config = HistoricalRangeScanConfig(
-        symbol=args.symbol,
-        source_timeframe=args.timeframe,
-        structure_layer=layer,
-        date_from_ms=date_from_ms,
-        date_to_ms=date_to_ms,
-        range_mode=args.range_mode,
-        range_scale_mode=args.range_scale_mode,
-        detection_run_id=args.detection_run_id,
-        candidate_kind_filter=args.candidate_kind,
-        candle_limit=args.candle_limit,
-        max_steps=args.limit,
-        dry_run=args.dry_run,
-    )
-
     try:
         with candle_store.connect() as conn:
             init_detection_brain_schema(conn)
-            result = run_historical_range_scan(conn, config)
-            print(format_scan_summary(result))
+            if args.chain:
+                chain_config = HistoricalRangeChainConfig(
+                    symbol=args.symbol,
+                    source_timeframe=args.timeframe,
+                    structure_layer=layer,
+                    date_from_ms=date_from_ms,
+                    date_to_ms=date_to_ms,
+                    range_mode=args.range_mode,
+                    range_scale_mode=args.range_scale_mode,
+                    detection_run_id=args.detection_run_id,
+                    candidate_kind_filter=args.candidate_kind,
+                    candle_limit=args.candle_limit,
+                    max_steps=args.limit,
+                    dry_run=args.dry_run,
+                    use_manual_seed=args.use_manual_seed,
+                    seed_policy=args.seed_policy,
+                )
+                result = run_historical_range_chain(conn, chain_config)
+                print(format_chain_summary(result))
+                if args.bootstrap_trace and result.bootstrap_trace is None:
+                    print()
+                    print("Historical Bootstrap Trace")
+                    print("  (no bootstrap evaluation on first chain step)")
+            else:
+                config = HistoricalRangeScanConfig(
+                    symbol=args.symbol,
+                    source_timeframe=args.timeframe,
+                    structure_layer=layer,
+                    date_from_ms=date_from_ms,
+                    date_to_ms=date_to_ms,
+                    range_mode=args.range_mode,
+                    range_scale_mode=args.range_scale_mode,
+                    detection_run_id=args.detection_run_id,
+                    candidate_kind_filter=args.candidate_kind,
+                    candle_limit=args.candle_limit,
+                    max_steps=args.limit,
+                    dry_run=args.dry_run,
+                    seed_policy=args.seed_policy,
+                )
+                result = run_historical_range_scan(conn, config)
+                print(format_scan_summary(result))
             if args.sample and args.sample > 0 and not args.dry_run:
                 sample_kind = args.candidate_kind or "RANGE_CANDIDATE"
                 rows = sample_scan_suggestions(

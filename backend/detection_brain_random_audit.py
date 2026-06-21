@@ -54,6 +54,10 @@ def _suggestion_audit_row(row: dict[str, Any]) -> dict[str, Any]:
     rh = row.get("suggested_rh")
     rl = row.get("suggested_rl")
     replay_until = meta.get("replay_until_time") or _ms_to_time_text(meta.get("replay_until_time_ms"))
+    rl_time = _ms_to_time_text(row.get("suggested_rl_time_ms"))
+    rh_time = _ms_to_time_text(row.get("suggested_rh_time_ms"))
+    range_start = rl_time or replay_until or meta.get("first_candle_time")
+    range_end = rh_time or replay_until or meta.get("last_candle_time")
     return {
         "source": "suggestions",
         "id": row.get("suggestion_id"),
@@ -75,8 +79,14 @@ def _suggestion_audit_row(row: dict[str, Any]) -> dict[str, Any]:
         "last_candle_time": meta.get("last_candle_time"),
         "lifecycle_state": meta.get("lifecycle_state"),
         "boundary_selection_reason": meta.get("boundary_selection_reason"),
-        "range_start_time": meta.get("first_candle_time") or _ms_to_time_text(row.get("suggested_rh_time_ms")),
-        "range_end_time": meta.get("last_candle_time") or meta.get("replay_until_time") or _ms_to_time_text(row.get("suggested_rl_time_ms")),
+        "range_start_time": range_start,
+        "range_end_time": range_end,
+        "retracement_percent": meta.get("retracement_percent"),
+        "retracement_class": meta.get("retracement_class"),
+        "retracement_price": meta.get("retracement_price"),
+        "retracement_time_ms": meta.get("retracement_time_ms"),
+        "bos_candle_index": meta.get("bos_candle_index"),
+        "reclaim_candle_index": meta.get("reclaim_candle_index"),
         "status": row.get("status"),
         "meta_json": meta,
     }
@@ -186,16 +196,19 @@ def _parse_time_ms(value: Any) -> int | None:
 
 
 def _query_confirmed_pool(conn: sqlite3.Connection, filters: RandomAuditFilters) -> list[dict[str, Any]]:
+    tf = filters.source_timeframe.upper()
     clauses = [
         "symbol = ?",
         "structure_layer = ?",
-        "timeframe = ?",
+        "(timeframe = ? OR source_timeframe = ?)",
         "confirmed_from_suggestion_id IS NOT NULL",
+        "confirmed_from_suggestion_id != ''",
     ]
     params: list[Any] = [
         filters.symbol.upper(),
         filters.structure_layer.upper(),
-        filters.source_timeframe.upper(),
+        tf,
+        tf,
     ]
     if filters.detector_version:
         clauses.append("detector_version_at_confirm = ?")
@@ -265,7 +278,10 @@ def sample_random_audit_rows(
         }
 
     n = min(limit, len(pool))
-    picked = random.sample(pool, n)
+    if filters.detection_run_id:
+        picked = pool[:n]
+    else:
+        picked = random.sample(pool, n)
     samples = [mapper(item) for item in picked]
     return {
         "ok": True,

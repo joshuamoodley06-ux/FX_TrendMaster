@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class RangeLifecycleState(str, Enum):
@@ -25,6 +26,7 @@ class NoRangeReason(str, Enum):
     UNRESOLVED_TRANSITION = "UNRESOLVED_TRANSITION"
     NO_LINKED_OPPOSITE_SWING = "NO_LINKED_OPPOSITE_SWING"
     UNCLEAR_OPPOSITE_SWING = "UNCLEAR_OPPOSITE_SWING"
+    STALE_RECLAIM_CYCLE = "STALE_RECLAIM_CYCLE"
     RANGE_ABANDONED = "RANGE_ABANDONED"
 
 
@@ -41,7 +43,31 @@ class BosDirection(str, Enum):
 class OppositeSwingReason(str, Enum):
     OPPOSITE_SWING_BETWEEN_BOS_RECLAIM = "OPPOSITE_SWING_BETWEEN_BOS_RECLAIM"
     LAST_OPPOSITE_SWING_BEFORE_BOS = "LAST_OPPOSITE_SWING_BEFORE_BOS"
+    STRUCTURAL_SWING_IMPULSE_LEG = "STRUCTURAL_SWING_IMPULSE_LEG"
+    STRUCTURAL_SWING_FLOOR_BEFORE_BOS = "STRUCTURAL_SWING_FLOOR_BEFORE_BOS"
+    STRUCTURAL_SWING_CEILING_BEFORE_BOS = "STRUCTURAL_SWING_CEILING_BEFORE_BOS"
     UNCLEAR_OPPOSITE_SWING = "UNCLEAR_OPPOSITE_SWING"
+
+
+POST_BOS_RETRACEMENT_POINT_NOT_BOUNDARY = "POST_BOS_RETRACEMENT_POINT_NOT_BOUNDARY"
+
+BOUNDARY_SOURCE_STRUCTURAL_SWING = "STRUCTURAL_SWING"
+BOUNDARY_SOURCE_BOS_BAR = "BOS_BAR"
+BOUNDARY_SOURCE_LEG_EXPANSION = "LEG_EXPANSION"
+BOUNDARY_SOURCE_RETRACEMENT_POINT = "RETRACEMENT_POINT"
+BOUNDARY_SOURCE_SEED_ANCHORED = "SEED_ANCHORED"
+
+EXPANSION_OWNER_BOS_CANDLE = "BOS_CANDLE"
+EXPANSION_OWNER_REF_CANDLE = "REF_CANDLE"
+EXPANSION_OWNER_IMPULSE_SWING = "IMPULSE_SWING"
+
+LEG_STATE_EXPANSION = "EXPANSION"
+LEG_STATE_RECLAIM = "RECLAIM"
+
+RELATION_BEFORE_BOS = "BEFORE_BOS"
+RELATION_BOS_BAR = "BOS_BAR"
+RELATION_BETWEEN_BOS_RECLAIM = "BETWEEN_BOS_RECLAIM"
+RELATION_AFTER_RECLAIM = "AFTER_RECLAIM"
 
 
 @dataclass(frozen=True)
@@ -75,6 +101,8 @@ class BosReclaimChain:
     broken_boundary: BrokenBoundary
     old_range_high: float
     old_range_low: float
+    reclaim_touch_index: int | None = None
+    reclaim_confirmation: str = "RECLAIM_CLOSE"
 
 
 @dataclass
@@ -83,6 +111,8 @@ class LifecycleEvaluation:
     chain: BosReclaimChain | None = None
     no_range_reason: NoRangeReason | None = None
     reason_text: str = ""
+    reclaim_touch_index: int | None = None
+    reclaim_touch_kind: str | None = None
 
     @property
     def can_suggest_range(self) -> bool:
@@ -100,10 +130,15 @@ class BoundarySelection:
     opposite_swing_index: int | None = None
     opposite_swing_kind: str | None = None
     opposite_swing_price: float | None = None
+    rh_swing_index: int | None = None
+    rl_swing_index: int | None = None
+    selected_rh_source: str = ""
+    selected_rl_source: str = ""
     boundary_selection_reason: str = ""
     confidence: str = "MEDIUM"
     no_range_reason: NoRangeReason | None = None
     reason_text: str = ""
+    boundary_trace: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_valid(self) -> bool:

@@ -26,7 +26,19 @@ except ImportError:  # pragma: no cover
 SEED_SOURCE_EXPLICIT = "explicit_payload"
 SEED_SOURCE_ELECTRON = "electron_selected_range"
 SEED_SOURCE_BACKEND = "backend_active_lookup"
+SEED_SOURCE_PROMOTED_RANGE = "PROMOTED_RANGE"
+SEED_SOURCE_TEMP_PREVIOUS_CANDIDATE = "TEMP_PREVIOUS_CANDIDATE"
 SEED_SOURCE_NONE = "none"
+
+DISCOVERY_SOURCE_LOCAL_ACTIVE_REPLAY = "LOCAL_ACTIVE_REPLAY"
+DISCOVERY_SOURCE_PROMOTED_SEED_LIFECYCLE = "PROMOTED_SEED_LIFECYCLE"
+DISCOVERY_SOURCE_BOOTSTRAP_RETRY = "BOOTSTRAP_RETRY"
+
+SEED_POLICY_DEFAULT = "default"
+SEED_POLICY_REVIEWED_TRUTH_ONLY = "reviewed_truth_only"
+
+PROMOTED_SEED_SUGGESTION_STATUSES = frozenset({"APPROVED", "EDITED"})
+PROMOTED_SEED_USER_ACTIONS = frozenset({"APPROVE", "EDIT", "BATCH_APPROVE"})
 
 SEED_LOOKUP_MULTIPLE = "MULTIPLE_ACTIVE_RANGES"
 SEED_LOOKUP_MISMATCH = "RANGE_MISMATCH"
@@ -157,6 +169,41 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return dict(row)
 
 
+def _electron_chart_seed_from_payload(
+    payload: dict[str, Any],
+    *,
+    structure_layer: str,
+    source_timeframe: str,
+    parent_range_id: int | None,
+) -> RangeSeedContext | None:
+    """Chart RH/RL from Electron — manual seed for Review Candidate (no map_ranges row required)."""
+    layer = _norm_layer(structure_layer, source_timeframe)
+    tf = _norm_tf(source_timeframe, source_timeframe)
+    rh = parse_float(payload.get("range_high") or payload.get("range_high_price"), None) if parse_float else None
+    rl = parse_float(payload.get("range_low") or payload.get("range_low_price"), None) if parse_float else None
+    if rh is None or rl is None:
+        try:
+            if payload.get("range_high") is not None:
+                rh = float(payload["range_high"])
+            if payload.get("range_low") is not None:
+                rl = float(payload["range_low"])
+        except (TypeError, ValueError):
+            rh = rl = None
+    if rh is None or rl is None or float(rh) <= float(rl):
+        return None
+    return RangeSeedContext(
+        range_high=float(rh),
+        range_low=float(rl),
+        is_manual_seed=True,
+        range_scale=str(payload.get("range_scale") or "UNKNOWN").upper(),
+        range_role=str(payload.get("range_role") or "").strip() or None,
+        parent_range_id=parent_range_id,
+        structure_layer=layer,
+        source_timeframe=tf,
+        seed_source=SEED_SOURCE_ELECTRON,
+    )
+
+
 def load_active_range_seed_context(
     conn: sqlite3.Connection,
     *,
@@ -228,7 +275,7 @@ def resolve_detector_seed_context(
     """
     Resolve RANGE_V2 seed with priority:
     1. explicit active_range_id (+ verified map_ranges row)
-    2. electron selected range (same payload path, tagged source)
+    2. electron chart RH/RL (Review Candidate anchors — beats stale backend ACTIVE)
     3. backend ACTIVE lookup by symbol/layer/timeframe[/parent]
     """
     layer = _norm_layer(structure_layer, source_timeframe)
@@ -270,6 +317,15 @@ def resolve_detector_seed_context(
         if err:
             return SeedResolutionResult(seed=None, seed_source=SEED_SOURCE_NONE, seed_lookup_error=err)
 
+    chart_seed = _electron_chart_seed_from_payload(
+        payload,
+        structure_layer=layer,
+        source_timeframe=tf,
+        parent_range_id=parent_range_id,
+    )
+    if chart_seed is not None:
+        return SeedResolutionResult(seed=chart_seed, seed_source=SEED_SOURCE_ELECTRON)
+
     if conn is not None:
         seed, err = load_active_range_seed_context(
             conn,
@@ -301,6 +357,73 @@ def resolve_detector_seed_context(
             return SeedResolutionResult(seed=resolved, seed_source=SEED_SOURCE_BACKEND)
 
     return SeedResolutionResult(seed=None, seed_source=SEED_SOURCE_NONE)
+
+
+def load_latest_promoted_range_seed(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str,
+    structure_layer: str,
+    source_timeframe: str,
+    before_replay_time_ms: int,
+    parent_range_id: int | None = None,
+) -> SeedResolutionResult:
+    """
+    Latest APPROVED/EDITED promoted map_range strictly before active replay time.
+
+    Rejected or unpromoted suggestions are excluded (no confirmed_from_suggestion_id join).
+    """
+    sym = str(symbol).upper()
+    layer = _norm_layer(structure_layer, source_timeframe)
+    tf = _norm_tf(source_timeframe, source_timeframe)
+
+    clauses = [
+        "m.symbol = ?",
+        "COALESCE(m.structure_layer, m.layer) = ?",
+        "COALESCE(m.source_timeframe, m.timeframe) = ?",
+        "m.confirmed_from_suggestion_id IS NOT NULL",
+        "TRIM(m.confirmed_from_suggestion_id) != ''",
+        "s.status IN ('APPROVED', 'EDITED')",
+        "COALESCE(m.user_action_at_confirm, '') IN ('APPROVE', 'EDIT', 'BATCH_APPROVE')",
+        "s.candle_time_utc_ms < ?",
+    ]
+    args: list[Any] = [sym, layer, tf, int(before_replay_time_ms)]
+    if parent_range_id is not None:
+        clauses.append("m.parent_range_id = ?")
+        args.append(int(parent_range_id))
+
+    sql = f"""
+        SELECT m.*, s.candle_time_utc_ms AS promoted_candle_time_ms
+        FROM map_ranges m
+        INNER JOIN detector_suggestions s
+            ON s.suggestion_id = m.confirmed_from_suggestion_id
+        WHERE {' AND '.join(clauses)}
+        ORDER BY s.candle_time_utc_ms DESC, m.id DESC
+        LIMIT 1
+    """
+    row = conn.execute(sql, args).fetchone()
+    if row is None:
+        return SeedResolutionResult(seed=None, seed_source=SEED_SOURCE_NONE)
+
+    data = _row_to_dict(row)
+    seed = _seed_from_row(data, seed_source=SEED_SOURCE_PROMOTED_RANGE)
+    if seed is None:
+        return SeedResolutionResult(seed=None, seed_source=SEED_SOURCE_NONE)
+
+    verified = RangeSeedContext(
+        range_high=seed.range_high,
+        range_low=seed.range_low,
+        active_range_id=seed.active_range_id,
+        is_manual_seed=False,
+        range_scale=seed.range_scale,
+        range_role=seed.range_role,
+        parent_range_id=seed.parent_range_id,
+        structure_layer=seed.structure_layer or layer,
+        source_timeframe=seed.source_timeframe or tf,
+        status=seed.status,
+        seed_source=SEED_SOURCE_PROMOTED_RANGE,
+    )
+    return SeedResolutionResult(seed=verified, seed_source=SEED_SOURCE_PROMOTED_RANGE)
 
 
 def seed_resolution_to_meta(result: SeedResolutionResult) -> dict[str, Any]:

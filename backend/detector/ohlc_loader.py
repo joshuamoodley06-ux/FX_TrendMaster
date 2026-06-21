@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any, Callable
 
 from detector.break_rules import normalise_timeframe
@@ -19,6 +20,17 @@ def default_db_candle_loader(symbol: str, timeframe: str, limit: int) -> list[di
 
     payload = candle_store.get_candles(symbol=symbol, timeframe=timeframe, limit=limit)
     return list(payload.get("candles") or [])
+
+
+def make_conn_candle_loader(conn: sqlite3.Connection) -> CandleLoader:
+    """Load candles on the scan connection to avoid SQLite lock from a second connect()."""
+
+    def _load(symbol: str, timeframe: str, limit: int) -> list[dict[str, Any]]:
+        import candle_store
+
+        return candle_store.fetch_candles(conn, symbol=symbol, timeframe=timeframe, limit=limit)
+
+    return _load
 
 
 def _apply_window(

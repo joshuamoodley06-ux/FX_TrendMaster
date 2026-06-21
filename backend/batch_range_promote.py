@@ -34,6 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--detection-run-id", default=None)
     parser.add_argument("--confirm", action="store_true", help="actually promote (default: dry-run)")
     parser.add_argument("--json", action="store_true", help="print full JSON result")
+    parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="omit per-item details from JSON (counts and filters only)",
+    )
     parser.add_argument("--db", default=None, help="SQLite path override")
     return parser
 
@@ -72,9 +77,14 @@ def main(argv: list[str] | None = None) -> int:
 
     with candle_store.connect() as conn:
         init_detection_brain_schema(conn)
-        result = batch_promote_range_candidates(conn, filters, confirm=bool(args.confirm))
+        result = batch_promote_range_candidates(
+            conn,
+            filters,
+            confirm=bool(args.confirm),
+            include_items=not bool(args.summary_only),
+        )
 
-    out = batch_promote_result_to_dict(result)
+    out = batch_promote_result_to_dict(result, summary_only=bool(args.summary_only))
     if args.json:
         print(json.dumps(out, indent=2, default=str))
     else:

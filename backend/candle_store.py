@@ -39,6 +39,25 @@ def _resolve_db_path() -> Path:
 
 
 DB_PATH = _resolve_db_path()
+
+
+def normalize_db_path(raw: str | Path) -> Path:
+    """Normalize CLI/env database paths to an absolute pathlib.Path."""
+    backend_dir = Path(__file__).resolve().parent
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = backend_dir / path
+    return path
+
+
+def ensure_db_path() -> Path:
+    """Coerce module DB_PATH to pathlib.Path (CLI --db and tests may assign str)."""
+    global DB_PATH
+    if not isinstance(DB_PATH, Path):
+        DB_PATH = normalize_db_path(DB_PATH)
+    return DB_PATH
+
+
 def _default_common_files_path() -> Path:
     r"""Return MT5 Common\Files path for the current Windows user, with env override."""
     override = os.environ.get("MT5_COMMON_FILES_PATH")
@@ -106,9 +125,10 @@ def now_iso() -> str:
 
 
 def connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH, timeout=60.0)
+    conn = sqlite3.connect(ensure_db_path(), timeout=60.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 60000")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -129,7 +149,8 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: list[tuple[st
 
 
 def init_db() -> None:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    path = ensure_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.execute(
             """
@@ -845,8 +866,16 @@ def upsert_candles(candles: list[dict[str, Any]], source: str = "unknown") -> di
     return {"ok": True, "upserted": inserted + updated, "inserted_or_updated": inserted, "skipped": skipped, "db": str(DB_PATH)}
 
 
-def get_candles(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 500, start: str | None = None, end: str | None = None) -> dict[str, Any]:
-    init_db()
+def fetch_candles(
+    conn: sqlite3.Connection,
+    *,
+    symbol: str = "XAUUSD",
+    timeframe: str = "D1",
+    limit: int = 500,
+    start: str | None = None,
+    end: str | None = None,
+) -> list[dict[str, Any]]:
+    """Read candles using an existing connection (no init_db / no extra connect)."""
     tf = normalise_timeframe(timeframe)
     limit = max(1, min(int(limit or 500), 10000))
     start = normalise_candle_query_time(start, bound="start")
@@ -861,9 +890,23 @@ def get_candles(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 500,
         params.append(end)
     sql += " ORDER BY time DESC LIMIT ?"
     params.append(limit)
-    with connect() as conn:
-        rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+    rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     rows.reverse()
+    return rows
+
+
+def get_candles(symbol: str = "XAUUSD", timeframe: str = "D1", limit: int = 500, start: str | None = None, end: str | None = None) -> dict[str, Any]:
+    init_db()
+    tf = normalise_timeframe(timeframe)
+    with connect() as conn:
+        rows = fetch_candles(
+            conn,
+            symbol=symbol,
+            timeframe=tf,
+            limit=limit,
+            start=start,
+            end=end,
+        )
     return {"ok": True, "symbol": symbol, "timeframe": tf, "count": len(rows), "candles": rows}
 
 

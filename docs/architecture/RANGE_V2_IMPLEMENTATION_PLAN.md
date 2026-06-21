@@ -732,7 +732,46 @@ DETECTOR_RANGE_SCALE_MODE=generic
 
 **Status:** Implemented after `RANGE_CANDIDATE` generic mode (2026-06-17).
 
-**Purpose:** Generate enough range suggestions over a date period (e.g. 2025–2026) for random audit and later profile analytics — without promotion or profile classification.
+**Unified step engine (Review Candidate + yearly W1 scan):**
+
+At every replay bar (one week or fifty-two), the same loop runs:
+
+1. **Resolve seed** — rolled prior candidate → coherent chart RH/RL → swing bootstrap → (advanced) map_ranges
+2. **Run RANGE_V2** — BOS → reclaim → opposite swing → `RANGE_CANDIDATE`
+3. **Roll forward** — accepted candidate RH/RL becomes next step's seed
+
+Implementation: `backend/detector/range_step_seed.py`, `range_scan_runner.py`, `detection_brain_api.py` (`discovery_mode` default on).
+
+| Path | What it is |
+|------|------------|
+| **Review Candidate → Run Detector** | Single step of the engine at active replay week |
+| **Weekly Research scan** | Full year walk — same seed rule each step, seed rolls after each range |
+| **`--chain` CLI** | Legacy alias; prefer default scan (now uses bootstrap) |
+
+**Trusted baseline (Weekly Research + Review Candidate):**
+
+| Path | Engine | Seed | Status |
+|------|--------|------|--------|
+| **Review Candidate → Run Detector** | `run_detector_v1` + `RANGE_V2` | Chart RH/RL (beats stale `map_ranges` ACTIVE) | **Trusted baseline** |
+| **`historical_range_scan.py` (no `--chain`)** | Per-week replay via `range_scan_runner.py` | ACTIVE seed / explicit context | **Weekly Research default** |
+| **`historical_range_scan.py --chain`** | `historical_range_chain.py` candles-only bootstrap | Self-derived swing box | **Experimental — not default** |
+
+Weekly Research must **not** default to `--chain` until bootstrap matches the Review Candidate baseline.
+
+**Reclaim doctrine (Josh — HTF wick vs LTF body close):**
+
+| Timeframe | Range birth (reclaim confirmed) |
+|-----------|----------------------------------|
+| W1, D1, H4, H1 (wick break rule) | **Wick tag** of old RH/RL completes reclaim (`RECLAIM_TOUCH` = confirmed) |
+| M15 and below (`BODY_CLOSE`) | **Body close** back inside old boundary required (`RECLAIM_CLOSE`) |
+
+Meta still records `reclaim_touch_index` / `reclaim_confirmation` for replay audit. On HTF, `RECLAIM_CLOSE` is informational only (not required for birth).
+
+Implementation: `backend/detector/break_rules.py` (`reclaim_confirmed_after_bos_*`), `backend/detector/range_lifecycle.py`.
+
+Seed priority for Review Candidate: explicit `active_range_id` → **chart RH/RL** → backend ACTIVE lookup (`range_seed.py`).
+
+**Purpose:** Generate enough range suggestions over a date period (e.g. 2025–2026) for random audit — without promotion or profile classification.
 
 | Item | Detail |
 |------|--------|

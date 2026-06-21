@@ -1,3 +1,6 @@
+import { inspectorCommitOrThrow, type InspectorCommitSource } from './inspectorCommit';
+import { buildVpsUrl, vpsFetchPath } from './vpsConfig';
+
 export const RAW_EVENT_TYPES = [
   'SET_INITIAL_ANCHOR',
   'SET_ANCHOR',
@@ -429,7 +432,7 @@ export async function createRawCase(
   apiBase: string,
   payload: RawMappingCaseCreateRequest,
 ): Promise<RawMappingCaseCreateResponse> {
-  const response = await fetch(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/cases`, {
+  const response = await fetch(vpsFetchPath('/api/v1/raw-mapping/cases', apiBase), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -441,14 +444,18 @@ export async function createRawCase(
 export async function saveRawEvent(
   apiBase: string,
   payload: RawMappingEventCreateRequest,
+  source: InspectorCommitSource = 'manual_mark',
 ): Promise<RawMappingEventCreateResponse> {
-  const response = await fetch(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/events`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+  const body = await inspectorCommitOrThrow<RawMappingEventCreateResponse>({
+    baseUrl: apiBase,
+    kind: 'raw_mapping_event',
+    source,
+    payload: payload as unknown as Record<string, unknown>,
   });
-  const body = await parseJsonResponse<RawMappingEventCreateResponse>(response);
-  return assertRawApiOk(response, body, 'Save raw event');
+  if (!body?.ok) {
+    throw new RawMappingError(body?.error || 'Save raw event failed', { payload: body });
+  }
+  return body;
 }
 
 export async function deleteRawEvent(
@@ -457,13 +464,16 @@ export async function deleteRawEvent(
   eventId: string,
   notes = 'Deleted from Electron raw mapping UI',
 ): Promise<RawMappingEventCreateResponse> {
-  const response = await fetch(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/events/delete`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ case_id: caseId, event_id: eventId, notes }),
+  const body = await inspectorCommitOrThrow<RawMappingEventCreateResponse>({
+    baseUrl: apiBase,
+    kind: 'raw_mapping_event_delete',
+    source: 'raw_delete',
+    payload: { case_id: caseId, event_id: eventId, notes },
   });
-  const body = await parseJsonResponse<RawMappingEventCreateResponse>(response);
-  return assertRawApiOk(response, body, 'Delete raw event');
+  if (!body?.ok) {
+    throw new RawMappingError(body?.error || 'Delete raw event failed', { payload: body });
+  }
+  return body;
 }
 
 export async function clearRawCases(
@@ -471,10 +481,11 @@ export async function clearRawCases(
   symbol: string,
   confirm = 'RESET',
 ): Promise<RawMappingCasesListResponse & { deleted_cases?: number; deleted_events?: number }> {
-  const url = new URL(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/cases`);
-  url.searchParams.set('symbol', String(symbol || '').toUpperCase());
-  url.searchParams.set('confirm', confirm);
-  const response = await fetch(url.toString(), { method: 'DELETE' });
+  const url = buildVpsUrl('/api/v1/raw-mapping/cases', apiBase, {
+    symbol: String(symbol || '').toUpperCase(),
+    confirm,
+  });
+  const response = await fetch(url, { method: 'DELETE' });
   const body = await parseJsonResponse<RawMappingCasesListResponse & { deleted_cases?: number; deleted_events?: number }>(response);
   if (!response.ok || !body?.ok) {
     return {
@@ -494,10 +505,11 @@ export async function listRawCases(
   symbol: string,
   limit = 200,
 ): Promise<RawMappingCasesListResponse & { httpStatus?: number }> {
-  const url = new URL(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/cases`);
-  url.searchParams.set('symbol', String(symbol || '').toUpperCase());
-  url.searchParams.set('limit', String(limit));
-  const response = await fetch(url.toString());
+  const url = buildVpsUrl('/api/v1/raw-mapping/cases', apiBase, {
+    symbol: String(symbol || '').toUpperCase(),
+    limit,
+  });
+  const response = await fetch(url);
   const body = await parseJsonResponse<RawMappingCasesListResponse>(response);
   if (!response.ok || !body?.ok) {
     return {
@@ -516,9 +528,8 @@ export async function exportRawCaseEvents(
   apiBase: string,
   caseId: string,
 ): Promise<RawMappingExportResponse> {
-  const url = new URL(`${apiBase.replace(/\/$/, '')}/api/v1/raw-mapping/events/export`);
-  url.searchParams.set('case_id', caseId);
-  const response = await fetch(url.toString());
+  const url = buildVpsUrl('/api/v1/raw-mapping/events/export', apiBase, { case_id: caseId });
+  const response = await fetch(url);
   const body = await parseJsonResponse<RawMappingExportResponse>(response);
   return assertRawApiOk(response, body, 'Export raw case events');
 }
