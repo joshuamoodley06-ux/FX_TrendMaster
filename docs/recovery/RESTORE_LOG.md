@@ -50,5 +50,5 @@ Restoration follows `docs/recovery/RECOVERY_AUDIT.md` one feature at a time. No 
 | **Files changed** | `electron/src/chartFocusMode.ts`, `electron/src/chartFocusMode.test.ts`, `electron/src/main.tsx` |
 | **Tests run** | `npm test` (electron vitest): **234 passed** |
 | **Manual smoke result** | Re-test required — INTRADAY/MICRO auto-focus, ghost ancestors, parent lines, Focus toggle |
-| **Commit hash** | pending |
+| **Commit hash** | `355d17f` |
 | **Remaining missing features** | Guided Mapping Cursor, Campaign Manager, Auto BOS Save |
