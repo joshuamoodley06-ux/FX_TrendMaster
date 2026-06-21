@@ -89,6 +89,12 @@ import {
 } from './viewportClamping';
 import { writeAutoResumeSession } from './autoResumeStorage';
 import { useAutoResume } from './hooks/useAutoResume';
+import {
+  deriveLayerActiveIdsFromRanges,
+  useMappingSessionPersistence,
+} from './hooks/useMappingSessionPersistence';
+import { activeRangeIdForLayer, yearFromWindow } from './mappingSessionPersistence';
+import { MappingSessionResumeModal } from './mappingSessionResumeModal';
 import { ghostRangeUiClearMessage } from './rangeRehydrationService';
 import {
   persistRemoteCandlesToCache,
@@ -5119,6 +5125,113 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       : `Selected saved range #${id}. RH/RL loaded — use ↑/↓ for BOS after range is active.`);
   };
 
+  const mappingSessionLayerIds = useMemo(
+    () => deriveLayerActiveIdsFromRanges(savedStructuralRanges, activeStructuralRangeId),
+    [savedStructuralRanges, activeStructuralRangeId],
+  );
+
+  const mappingSessionSnapshot = useMemo(() => {
+    const mappingCase = getCurrentMappingCaseRef();
+    return {
+      symbol,
+      caseId: mappingCase.case_id,
+      rawCaseId: mappingCase.raw_case_id,
+      caseRef: mappingCase.case_ref,
+      year: explorerYearFilter !== 'all'
+        ? explorerYearFilter
+        : yearFromWindow(rangeWindow.start, rangeWindow.end),
+      structureLayer,
+      ...mappingSessionLayerIds,
+      selectedParentRangeId,
+      activeStructuralRangeId,
+      chartTimeframe: timeframe,
+      sourceTimeframe,
+      rangeScope,
+      researchWindowStart: rangeWindow.start ?? null,
+      researchWindowEnd: rangeWindow.end ?? null,
+      currentCandidateIndex: 0,
+    };
+  }, [
+    symbol,
+    activeCaseId,
+    rawActiveCaseId,
+    activeCaseLabel,
+    explorerYearFilter,
+    structureLayer,
+    mappingSessionLayerIds,
+    selectedParentRangeId,
+    activeStructuralRangeId,
+    timeframe,
+    sourceTimeframe,
+    rangeScope,
+    rangeWindow.start,
+    rangeWindow.end,
+  ]);
+
+  const mappingSessionActions = useMemo(() => ({
+    setStructureLayer,
+    setRangeScope,
+    setSourceTimeframe,
+    setTimeframe: (tf: string) => {
+      activeTimeframeRef.current = tf;
+      setTimeframe(tf);
+    },
+    setSelectedParentRangeId,
+    setActiveStructuralRangeId,
+    setExplorerYearFilter,
+    setRawActiveCaseId,
+    onSymbolChange,
+    selectSavedStructuralRange,
+    savedStructuralRanges,
+  }), [
+    onSymbolChange,
+    savedStructuralRanges,
+  ]);
+
+  const {
+    pendingResume: pendingMappingSession,
+    resumeSession: resumeMappingSession,
+    startNewSession: startNewMappingSession,
+    dismissResume: dismissMappingSessionResume,
+  } = useMappingSessionPersistence(mappingSessionSnapshot, mappingSessionActions, {
+    enabled: autoResume.phase !== 'booting' && !autoResume.isAutoResuming,
+    bootDelayMs: 600,
+  });
+
+  const handleMappingSessionResume = useCallback(async () => {
+    if (!pendingMappingSession) return;
+    const stored = pendingMappingSession;
+    skipBootstrapOnceRef.current = true;
+    resumeMappingSession();
+    setMessage(`Resuming mapping session · ${stored.active_layer} · ${stored.chart_timeframe}…`);
+    let rows = savedStructuralRanges;
+    if (getCurrentMappingCaseRef().hasCase) {
+      try { rows = await refreshSavedRangesForCurrentCase(); } catch { /* non-blocking */ }
+      try { await refreshStructuralMapEventsForChart(stored.chart_timeframe); } catch { /* non-blocking */ }
+    }
+    const activeId = stored.active_structural_range_id || activeRangeIdForLayer(stored, stored.active_layer);
+    if (activeId) {
+      const row = rows.find((r: any) => String(r.range_id || r.id) === String(activeId));
+      if (row) selectSavedStructuralRange(row, { routeInspector: false });
+    }
+    await loadCandles(stored.chart_timeframe, { cacheFullHistory: true });
+  }, [
+    pendingMappingSession,
+    resumeMappingSession,
+    savedStructuralRanges,
+    selectSavedStructuralRange,
+  ]);
+
+  const handleMappingSessionStartNew = useCallback(() => {
+    startNewMappingSession();
+  }, [startNewMappingSession]);
+
+  const handleMappingSessionOpenExplorer = useCallback(() => {
+    dismissMappingSessionResume();
+    setRightDeckTab('gps');
+    setNavOverlayPanelOpen(true);
+  }, [dismissMappingSessionResume]);
+
   const explorerYearOptions = useMemo(() => {
     const years = new Set<number>();
     for (const r of savedStructuralRanges) {
@@ -8651,6 +8764,14 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <span className="dockMetaText">{candles.length ? `${Math.min(effectiveReplayIndex + 1, candles.length)}/${candles.length}` : 'No candles'}{replayCandle ? ` · ${shortTime(replayCandle.time, timeframe)}` : ''}</span>
       <button type="button" className="tvReplayExit" onClick={exitBarReplayToLive} disabled={!candles.length} title="Exit replay and jump to latest">⏩|</button>
     </div>}
+    {pendingMappingSession && (
+      <MappingSessionResumeModal
+        session={pendingMappingSession}
+        onResume={() => void handleMappingSessionResume()}
+        onStartNew={handleMappingSessionStartNew}
+        onOpenExplorer={handleMappingSessionOpenExplorer}
+      />
+    )}
   </div>;
 }
 
