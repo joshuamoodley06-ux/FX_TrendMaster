@@ -152,6 +152,16 @@ export function resolveFocusTier(
   return 'hidden';
 }
 
+export function overlayLineStyleWithFocus(
+  base: { opacity: number; width: number; dash: string },
+  focusMode: boolean,
+  tier?: FocusOverlayTier,
+  opts?: { isDraft?: boolean; isParentEndMarker?: boolean },
+): FocusVisualStyle {
+  if (!focusMode) return { ...base, showLabel: true };
+  return focusVisualStyle(tier || 'active', opts);
+}
+
 export function focusVisualStyle(
   tier: FocusOverlayTier,
   opts?: { isDraft?: boolean; isParentEndMarker?: boolean },

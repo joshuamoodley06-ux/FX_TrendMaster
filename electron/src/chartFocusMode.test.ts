@@ -14,6 +14,7 @@ import {
   focusYExtentsWithParent,
   mergeFocusFitPriceDomain,
   mergeResearchWindowForFitActive,
+  overlayLineStyleWithFocus,
   resolveFocusTier,
   shouldUseCandleOnlyYScale,
 } from './chartFocusMode';
@@ -260,6 +261,16 @@ describe('chartFocusMode', () => {
   it('resolveFocusTier marks parent layer correctly for DAILY mapping', () => {
     expect(resolveFocusTier('DAILY', 'WEEKLY', { parentRangeId: '7', overlayRangeId: '7' })).toBe('parent');
     expect(resolveFocusTier('DAILY', 'DAILY', { isActive: true })).toBe('active');
+  });
+
+  it('overlayLineStyleWithFocus preserves base style when focus off', () => {
+    const base = { opacity: 0.8, width: 2, dash: '4 4' };
+    expect(overlayLineStyleWithFocus(base, false)).toEqual({ ...base, showLabel: true });
+  });
+
+  it('overlayLineStyleWithFocus applies ghost style for ancestors', () => {
+    const style = overlayLineStyleWithFocus({ opacity: 1, width: 3, dash: '' }, true, 'ancestor');
+    expect(style.opacity).toBe(0.3);
   });
 
   it('focusYExtentsWithParent unions parent RH/RL into y domain', () => {

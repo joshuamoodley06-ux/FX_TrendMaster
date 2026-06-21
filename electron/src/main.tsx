@@ -89,6 +89,14 @@ import {
   resolveRangeChartTimeframe,
 } from './hierarchyRangeNavigation';
 import {
+  annotateOverlayFocusTiers,
+  filterFocusModeOverlays,
+  focusYExtentsWithParent,
+  overlayLineStyleWithFocus,
+  shouldUseCandleOnlyYScale,
+  type FocusOverlayTier,
+} from './chartFocusMode';
+import {
   clampChartTransformToTimeBounds,
   intersectClampSpanWithCandles,
   resolveChartPanBounds,
@@ -1459,6 +1467,7 @@ type SavedRangeChartLine = {
   end?: string | null;
   isActive?: boolean;
   isParentContext?: boolean;
+  focusTier?: FocusOverlayTier;
 };
 
 type DraftRangeChartLine = {
@@ -2665,6 +2674,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [hierarchyShowAll, setHierarchyShowAll] = useLocalStorage<boolean>('fx_tm_hierarchy_show_all_v1', false);
   const [hierarchyCollapsedIds, setHierarchyCollapsedIds] = useState<string[]>([]);
   const [rangeLineHiddenByCase, setRangeLineHiddenByCase] = useLocalStorage<Record<string, string[]>>('fx_tm_range_line_hidden_v1', {});
+  const [chartMappingFocusMode, setChartMappingFocusMode] = useLocalStorage<boolean>('fx_tm_chart_mapping_focus_v1', false);
+  const [chartFocusShowAllRanges, setChartFocusShowAllRanges] = useLocalStorage<boolean>('fx_tm_chart_focus_show_all_v1', false);
+  const prevStructureLayerForFocusRef = useRef<StructureLayer | null>(null);
+  useEffect(() => {
+    if (prevStructureLayerForFocusRef.current === structureLayer) return;
+    prevStructureLayerForFocusRef.current = structureLayer;
+    if (structureLayer === 'INTRADAY' || structureLayer === 'MICRO') {
+      setChartMappingFocusMode(true);
+    } else {
+      setChartMappingFocusMode(false);
+      setChartFocusShowAllRanges(false);
+    }
+  }, [structureLayer, setChartMappingFocusMode, setChartFocusShowAllRanges]);
   const [explorerMappingMode, setExplorerMappingMode] = useLocalStorage<ExplorerMappingMode>(
     'fx_tm_explorer_mapping_mode_v1',
     'htf',
@@ -3278,20 +3300,54 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const overlays: SavedRangeChartLine[] = [];
     const selectedId = String(activeStructuralRangeId || '');
     const parentId = String(selectedParentRangeId || '');
-    const visibleIds = chartVisibleRangeIds(allRanges, selectedId, parentId);
+    const chain = selectedId ? collectParentContextChain(selectedId, allRanges) : [];
+    const resolvedParentId = parentId || String(chain[1] || '');
+    const ancestorIds = chain.slice(2);
+    const visibleIds = chartMappingFocusMode
+      ? null
+      : chartVisibleRangeIds(allRanges, selectedId, resolvedParentId);
 
     for (const r of allRanges) {
       const id = String(r?.range_id || r?.id || '');
-      if (!id || !visibleIds.has(id)) continue;
+      if (!id) continue;
       if (hiddenIds.has(id)) continue;
-      const isParentContext = id === parentId && id !== selectedId;
+      if (visibleIds && !visibleIds.has(id)) continue;
+      const isParentContext = id === resolvedParentId && id !== selectedId;
       const line = structuralRangeToChartLine(r, activeStructuralRangeId, { isParentContext });
       if (!line) continue;
       line.isActive = id === selectedId;
       overlays.push(line);
     }
-    return overlays;
-  }, [savedStructuralRanges, activeStructuralRangeId, selectedParentRangeId, activeCaseDisplayId, rangeLineHiddenByCase]);
+
+    if (!chartMappingFocusMode) return overlays;
+
+    const hasDraft = structuralRangeDraftDirty
+      || !!String(rhAnchor.price || '').trim()
+      || !!String(rlAnchor.price || '').trim();
+    const annotated = annotateOverlayFocusTiers(overlays, {
+      activeMappingLayer: structureLayer,
+      parentRangeId: resolvedParentId || null,
+      ancestorIds,
+      hasDraft,
+    });
+    return filterFocusModeOverlays(annotated, {
+      focusMode: true,
+      showAllRanges: chartFocusShowAllRanges,
+      activeMappingLayer: structureLayer,
+    });
+  }, [
+    savedStructuralRanges,
+    activeStructuralRangeId,
+    selectedParentRangeId,
+    activeCaseDisplayId,
+    rangeLineHiddenByCase,
+    chartMappingFocusMode,
+    chartFocusShowAllRanges,
+    structureLayer,
+    structuralRangeDraftDirty,
+    rhAnchor.price,
+    rlAnchor.price,
+  ]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
     const draftHigh = parseNum(rhAnchor.price);
@@ -7000,6 +7056,24 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         <button type="button" className="hierarchyCtrlBtn" onClick={() => setHierarchyCollapsedIds(hierarchyBranchIds)}>Collapse All</button>
         <button type="button" className="hierarchyCtrlBtn" onClick={showAllRangeLines} title="Show RH/RL guide lines for all ranges">Lines All</button>
         <button type="button" className="hierarchyCtrlBtn" onClick={hideAllRangeLines} title="Hide all range guide lines on chart">Lines None</button>
+        <button
+          type="button"
+          className={`hierarchyCtrlBtn${chartMappingFocusMode ? ' active' : ''}`}
+          onClick={() => setChartMappingFocusMode((v) => !v)}
+          title="Focus Mode: candle-first Y-scale with ghost parent/ancestor RH/RL"
+        >
+          Focus {chartMappingFocusMode ? 'ON' : 'OFF'}
+        </button>
+        {chartMappingFocusMode && (
+          <button
+            type="button"
+            className={`hierarchyCtrlBtn${chartFocusShowAllRanges ? ' active' : ''}`}
+            onClick={() => setChartFocusShowAllRanges((v) => !v)}
+            title="Show all structural layers while keeping candle-first Y-scale"
+          >
+            All Layers
+          </button>
+        )}
       </div>
       <div className={scrollClass}>
         {!explorerTreeRanges.length && <div className="caseLedgerEmpty">{savedStructuralRanges.length ? 'No ranges match this filter.' : 'No saved structural ranges for this case yet.'}</div>}
@@ -8665,9 +8739,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           caseEnd={activeCaseLedger?.end || ''}
           caseHigh={activeCaseLedger?.high || ''}
           caseLow={activeCaseLedger?.low || ''}
-          parentOverlays={[]}
+          parentOverlays={activeParentRangeOverlay}
           savedRangeOverlays={chartSavedRangeOverlays}
           draftRangeOverlay={chartDraftRangeOverlay}
+          focusMode={chartMappingFocusMode}
           showFibOverlays={false}
           events={visibleEvents}
           selectedCandleTime={selectedCandle?.time || null}
@@ -8981,6 +9056,7 @@ type D3CandleMapProps = {
   parentOverlays?:ParentRangeOverlayLine[];
   savedRangeOverlays?:SavedRangeChartLine[];
   draftRangeOverlay?:DraftRangeChartLine|null;
+  focusMode?:boolean;
   showFibOverlays?:boolean;
   events:MapEvent[];
   selectedCandleTime?:string|null;
@@ -9461,7 +9537,7 @@ function D3CandleMap(props:D3CandleMapProps) {
       const visibleLo = d3.min(v, d=>d.low) ?? loData;
       const parentOverlayPrices = safeArray<any>(p.parentOverlays || []).map((x:any)=>Number(x.price)).filter(Number.isFinite);
       const savedOverlayPrices = safeArray<SavedRangeChartLine>(p.savedRangeOverlays || [])
-        .filter((r) => r.isActive || r.isParentContext)
+        .filter((r) => !p.focusMode && (r.isActive || r.isParentContext))
         .flatMap((r)=>[r.high, r.low])
         .filter(Number.isFinite);
       const draftOverlayPrices = p.draftRangeOverlay?.visible ? [p.draftRangeOverlay.high, p.draftRangeOverlay.low].filter(Number.isFinite) : [];
@@ -9469,17 +9545,31 @@ function D3CandleMap(props:D3CandleMapProps) {
       const parentLo = parentOverlayPrices.length ? Math.min(...parentOverlayPrices) : undefined;
       const savedHi = savedOverlayPrices.length ? Math.max(...savedOverlayPrices) : undefined;
       const savedLo = savedOverlayPrices.length ? Math.min(...savedOverlayPrices) : undefined;
+      const useCandleOnlyY = shouldUseCandleOnlyYScale(!!p.focusMode);
       let yHi = hiData, yLo = loData;
-      if (p.hasRange && p.scaleMode === 'range' && v.length) { yHi = Math.max(p.rangeHigh, visibleHi); yLo = Math.min(p.rangeLow, visibleLo); }
-      if (Number.isFinite(parentHi as any)) yHi = Math.max(yHi, Number(parentHi));
-      if (Number.isFinite(parentLo as any)) yLo = Math.min(yLo, Number(parentLo));
-      if (Number.isFinite(savedHi as any)) yHi = Math.max(yHi, Number(savedHi));
-      if (Number.isFinite(savedLo as any)) yLo = Math.min(yLo, Number(savedLo));
-      if (draftOverlayPrices.length) {
-        yHi = Math.max(yHi, ...draftOverlayPrices);
-        yLo = Math.min(yLo, ...draftOverlayPrices);
+      if (useCandleOnlyY && v.length) {
+        const candleY = focusYExtentsWithParent(
+          v.map((d) => ({ time: d.time, high: d.high, low: d.low })),
+          parentHi,
+          parentLo,
+        );
+        if (candleY) {
+          yHi = candleY.high;
+          yLo = candleY.low;
+        }
+      } else {
+        if (p.hasRange && p.scaleMode === 'range' && v.length) { yHi = Math.max(p.rangeHigh, visibleHi); yLo = Math.min(p.rangeLow, visibleLo); }
+        if (Number.isFinite(parentHi as any)) yHi = Math.max(yHi, Number(parentHi));
+        if (Number.isFinite(parentLo as any)) yLo = Math.min(yLo, Number(parentLo));
+        if (Number.isFinite(savedHi as any)) yHi = Math.max(yHi, Number(savedHi));
+        if (Number.isFinite(savedLo as any)) yLo = Math.min(yLo, Number(savedLo));
+        if (draftOverlayPrices.length) {
+          yHi = Math.max(yHi, ...draftOverlayPrices);
+          yLo = Math.min(yLo, ...draftOverlayPrices);
+        }
       }
-      const pad = Math.max((yHi-yLo)*0.18, 1);
+      const padRatio = useCandleOnlyY ? 0.1 : 0.18;
+      const pad = Math.max((yHi-yLo)*padRatio, 1);
       baseLo = yLo - pad;
       baseHi = yHi + pad;
       lastYBaseRef.current = { baseLo, baseHi, innerH };
@@ -9513,7 +9603,10 @@ function D3CandleMap(props:D3CandleMapProps) {
     if (savedRanges.length) {
       const sg = plot.append('g').attr('class','savedRangeLines').attr('pointer-events','none');
       const savedRows = savedRanges.flatMap((r) => {
-        const style = savedRangeLineStyle(r.status, { isParentContext: r.isParentContext, isActive: r.isActive, rangeScope: r.rangeScope });
+        const baseStyle = savedRangeLineStyle(r.status, { isParentContext: r.isParentContext, isActive: r.isActive, rangeScope: r.rangeScope });
+        const style = p.focusMode
+          ? overlayLineStyleWithFocus(baseStyle, true, r.focusTier || (r.isActive ? 'active' : r.isParentContext ? 'parent' : undefined))
+          : baseStyle;
         const color = structureLayerLineColor(r.structureLayer);
         const prefix = r.isParentContext ? 'ctx ' : '';
         const scopeLabel = r.rangeScope === 'MINOR' ? ' MINOR' : '';
@@ -9539,7 +9632,10 @@ function D3CandleMap(props:D3CandleMapProps) {
     const parentOverlayLines = safeArray<ParentRangeOverlayLine>(p.parentOverlays || []);
     if (parentOverlayLines.length) {
       const pg = plot.append('g').attr('class','parentRangeLines').attr('pointer-events','none');
-      const parentStyle = savedRangeLineStyle('ACTIVE', { isParentContext: true });
+      const parentBaseStyle = savedRangeLineStyle('ACTIVE', { isParentContext: true });
+      const parentStyle = p.focusMode
+        ? overlayLineStyleWithFocus(parentBaseStyle, true, 'parent')
+        : parentBaseStyle;
       const savedPriceKeys = new Set(
         savedRanges.flatMap((r) => [Number(r.high).toFixed(2), Number(r.low).toFixed(2)]),
       );
