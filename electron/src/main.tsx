@@ -83,6 +83,12 @@ import {
   type MappingViewContext,
 } from './mappingViewContext';
 import {
+  expandRangeSpanX,
+  rangeWindowFieldsFromSavedRange,
+  resolveCandleWindowTargetRange,
+  resolveRangeChartTimeframe,
+} from './hierarchyRangeNavigation';
+import {
   clampChartTransformToTimeBounds,
   intersectClampSpanWithCandles,
   resolveChartPanBounds,
@@ -91,9 +97,11 @@ import { writeAutoResumeSession } from './autoResumeStorage';
 import { useAutoResume } from './hooks/useAutoResume';
 import {
   deriveLayerActiveIdsFromRanges,
+  executeMappingSessionResume,
+  isMappingSessionOrchestrating,
+  readMappingSessionForSymbol,
   useMappingSessionPersistence,
 } from './hooks/useMappingSessionPersistence';
-import { activeRangeIdForLayer, yearFromWindow } from './mappingSessionPersistence';
 import { MappingSessionResumeModal } from './mappingSessionResumeModal';
 import { ghostRangeUiClearMessage } from './rangeRehydrationService';
 import {
@@ -1104,7 +1112,12 @@ function resolveCandleLoadWindow(
     return { start: rangeStart, end: rangeEnd, label: 'active case window' };
   }
   if (!isIntradayChartTimeframe(targetTf)) return null;
-  const contextRange = resolveMappingContextRange(savedRanges, selectedParentRangeId, activeStructuralRangeId);
+  const contextRange = resolveCandleWindowTargetRange(
+    targetTf,
+    savedRanges,
+    activeStructuralRangeId,
+    selectedParentRangeId,
+  );
   if (contextRange) {
     const fit = structuralRangeFitDomain(contextRange, []);
     if (fit?.start && fit?.end) {
@@ -3270,7 +3283,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     for (const r of allRanges) {
       const id = String(r?.range_id || r?.id || '');
       if (!id || !visibleIds.has(id)) continue;
-      if (hiddenIds.has(id) && id !== selectedId) continue;
+      if (hiddenIds.has(id)) continue;
       const isParentContext = id === parentId && id !== selectedId;
       const line = structuralRangeToChartLine(r, activeStructuralRangeId, { isParentContext });
       if (!line) continue;
@@ -3656,7 +3669,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     });
   }, [mappingEventsScopeKey]);
 
-  const loadCandles = async (requestedTf = timeframe, opts?: { quiet?: boolean; skipCamera?: boolean; cacheFullHistory?: boolean }) => {
+  const loadCandles = async (requestedTf = timeframe, opts?: {
+    quiet?: boolean;
+    skipCamera?: boolean;
+    cacheFullHistory?: boolean;
+    loadWindow?: { start: string; end: string; label?: string } | null;
+  }) => {
     const targetTf = String(requestedTf || timeframe).toUpperCase();
     const quiet = !!opts?.quiet;
     if (quiet && candleLoadInFlightRef.current) return;
@@ -3673,7 +3691,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const preferredWindow = pendingForLoad?.fitWindow?.start && pendingForLoad?.fitWindow?.end
       ? { start: pendingForLoad.fitWindow.start, end: pendingForLoad.fitWindow.end }
       : null;
-    const loadWindow = resolveCandleLoadWindow(
+    const loadWindow = opts?.loadWindow ?? resolveCandleLoadWindow(
       targetTf,
       savedStructuralRanges,
       selectedParentRangeId,
@@ -3924,6 +3942,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const skipBootstrapOnceRef = useRef(false);
+  const deferAutoResumeForMappingSessionRef = useRef<boolean | null>(null);
+  if (deferAutoResumeForMappingSessionRef.current === null) {
+    deferAutoResumeForMappingSessionRef.current = readMappingSessionForSymbol(symbol) !== null;
+  }
   const candleSyncInFlightRef = useRef(false);
   const candleLoadInFlightRef = useRef(false);
 
@@ -5067,6 +5089,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const autoResume = useAutoResume({
     symbol,
     timeframe,
+    deferInitialResume: deferAutoResumeForMappingSessionRef.current === true,
     onSymbolChange,
     onTimeframeChange: (tf) => {
       activeTimeframeRef.current = tf;
@@ -5137,9 +5160,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       caseId: mappingCase.case_id,
       rawCaseId: mappingCase.raw_case_id,
       caseRef: mappingCase.case_ref,
-      year: explorerYearFilter !== 'all'
-        ? explorerYearFilter
-        : yearFromWindow(rangeWindow.start, rangeWindow.end),
+      year: explorerYearFilter,
       structureLayer,
       ...mappingSessionLayerIds,
       selectedParentRangeId,
@@ -5168,69 +5189,74 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     rangeWindow.end,
   ]);
 
-  const mappingSessionActions = useMemo(() => ({
-    setStructureLayer,
-    setRangeScope,
-    setSourceTimeframe,
-    setTimeframe: (tf: string) => {
-      activeTimeframeRef.current = tf;
-      setTimeframe(tf);
-    },
-    setSelectedParentRangeId,
-    setActiveStructuralRangeId,
-    setExplorerYearFilter,
-    setRawActiveCaseId,
-    onSymbolChange,
-    selectSavedStructuralRange,
-    savedStructuralRanges,
-  }), [
-    onSymbolChange,
-    savedStructuralRanges,
-  ]);
-
   const {
     pendingResume: pendingMappingSession,
-    resumeSession: resumeMappingSession,
+    orchestrationRef: mappingSessionOrchestrationRef,
+    beginResumeFlow: beginMappingSessionResume,
+    completeResumeFlow: completeMappingSessionResume,
     startNewSession: startNewMappingSession,
-    dismissResume: dismissMappingSessionResume,
-  } = useMappingSessionPersistence(mappingSessionSnapshot, mappingSessionActions, {
-    enabled: autoResume.phase !== 'booting' && !autoResume.isAutoResuming,
-    bootDelayMs: 600,
+  } = useMappingSessionPersistence(mappingSessionSnapshot, {
+    bootDelayMs: 300,
   });
+
+  const blockMappingBootEffects = () =>
+    isMappingSessionOrchestrating(mappingSessionOrchestrationRef)
+    || pendingMappingSession !== null;
 
   const handleMappingSessionResume = useCallback(async () => {
     if (!pendingMappingSession) return;
-    const stored = pendingMappingSession;
+    beginMappingSessionResume();
     skipBootstrapOnceRef.current = true;
-    resumeMappingSession();
-    setMessage(`Resuming mapping session · ${stored.active_layer} · ${stored.chart_timeframe}…`);
-    let rows = savedStructuralRanges;
-    if (getCurrentMappingCaseRef().hasCase) {
-      try { rows = await refreshSavedRangesForCurrentCase(); } catch { /* non-blocking */ }
-      try { await refreshStructuralMapEventsForChart(stored.chart_timeframe); } catch { /* non-blocking */ }
+    try {
+      const result = await executeMappingSessionResume({
+        stored: pendingMappingSession,
+        hasCase: () => getCurrentMappingCaseRef().hasCase,
+        scopeActions: {
+          setStructureLayer,
+          setRangeScope,
+          setSourceTimeframe,
+          setTimeframe: (tf: string) => {
+            activeTimeframeRef.current = tf;
+            setTimeframe(tf);
+          },
+          setSelectedParentRangeId,
+          setActiveStructuralRangeId,
+          setExplorerYearFilter,
+          setRawActiveCaseId,
+          onSymbolChange,
+        },
+        refreshSavedRanges: refreshSavedRangesForCurrentCase,
+        refreshMapEvents: refreshStructuralMapEventsForChart,
+        loadCandles: (tf) => loadCandles(tf, { cacheFullHistory: true }),
+        selectSavedStructuralRange,
+      });
+      writeAutoResumeSession(symbol, result.chartTimeframe);
+      skipBootstrapOnceRef.current = true;
+      completeMappingSessionResume();
+      setMessage(result.message);
+    } catch (err: any) {
+      skipBootstrapOnceRef.current = true;
+      completeMappingSessionResume();
+      setMessage(`Mapping session resume failed: ${err?.message || err}`);
     }
-    const activeId = stored.active_structural_range_id || activeRangeIdForLayer(stored, stored.active_layer);
-    if (activeId) {
-      const row = rows.find((r: any) => String(r.range_id || r.id) === String(activeId));
-      if (row) selectSavedStructuralRange(row, { routeInspector: false });
-    }
-    await loadCandles(stored.chart_timeframe, { cacheFullHistory: true });
   }, [
     pendingMappingSession,
-    resumeMappingSession,
-    savedStructuralRanges,
+    symbol,
+    onSymbolChange,
+    beginMappingSessionResume,
+    completeMappingSessionResume,
     selectSavedStructuralRange,
   ]);
 
   const handleMappingSessionStartNew = useCallback(() => {
     startNewMappingSession();
+    skipBootstrapOnceRef.current = false;
   }, [startNewMappingSession]);
 
   const handleMappingSessionOpenExplorer = useCallback(() => {
-    dismissMappingSessionResume();
     setRightDeckTab('gps');
     setNavOverlayPanelOpen(true);
-  }, [dismissMappingSessionResume]);
+  }, []);
 
   const explorerYearOptions = useMemo(() => {
     const years = new Set<number>();
@@ -6510,82 +6536,74 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const rangeLayer = normalizeStructureLayer(range?.structure_layer || range?.layer);
     const neededParentLayer = expectedParentStructureLayer(structureLayer);
 
-    if (rangeLayer === structureLayer) {
-      selectSavedStructuralRange(range, opts);
-      return;
-    }
-
-    setActiveStructuralRangeId(id);
-    const high = range.range_high_price ?? range.range_high;
-    const low = range.range_low_price ?? range.range_low;
-    if (high !== undefined && high !== null && high !== '') {
-      const next = { price: String(high), time: String(range.range_high_time || ''), candle: null };
-      setRhAnchor(next);
-      setRangeHigh(String(high));
-    }
-    if (low !== undefined && low !== null && low !== '') {
-      const next = { price: String(low), time: String(range.range_low_time || ''), candle: null };
-      setRlAnchor(next);
-      setRangeLow(String(low));
-    }
-    setRangeWindowByTf(prev => ({
-      ...prev,
-      [timeframe]: {
-        ...(prev[timeframe] || {}),
-        start: range.range_start_time || range.range_high_time || prev[timeframe]?.start || '',
-        end: range.range_end_time || range.range_low_time || prev[timeframe]?.end || '',
-      },
-    }));
-    setStructuralRangeDraftDirty(false);
-
-    const hint = buildRangeSelectionHint({
-      rangeId: id,
-      structureLayer: rangeLayer || structureLayer,
-      rangeScope: normalizeRangeScope(range?.range_scope),
-      rangeHigh: high,
-      rangeLow: low,
-    });
-
-    if (opts?.routeInspector === false) {
-      setInspectorContextHint(hint);
-      if (rangeLayer && neededParentLayer && rangeLayer === neededParentLayer) {
-        setSelectedParentRangeId(id);
-        setMessage(`Parent context: ${rangeLayer} #${id} → mapping ${structureLayer}.`);
-      } else {
-        setMessage(`Selected ${rangeLayer || 'range'} #${id} for navigation.`);
-      }
-      return;
-    }
-
-    if (rangeLayer && neededParentLayer && rangeLayer === neededParentLayer) {
+    if (rangeLayer && neededParentLayer && rangeLayer === neededParentLayer && rangeLayer !== structureLayer) {
       setSelectedParentRangeId(id);
-      applyInspectorRoute(routeInspectorForRangeSelection(), hint);
+      setRangeLineHiddenByCase((prev) => {
+        const key = activeCaseDisplayId || 'global';
+        const current = new Set(prev[key] || []);
+        current.delete(id);
+        return { ...prev, [key]: Array.from(current) };
+      });
+      const high = range.range_high_price ?? range.range_high;
+      const low = range.range_low_price ?? range.range_low;
+      const hint = buildRangeSelectionHint({
+        rangeId: id,
+        structureLayer: rangeLayer,
+        rangeScope: normalizeRangeScope(range?.range_scope),
+        rangeHigh: high,
+        rangeLow: low,
+      });
+      if (opts?.routeInspector === false) {
+        setInspectorContextHint(hint);
+      } else {
+        applyInspectorRoute(routeInspectorForRangeSelection(), hint);
+      }
       setMessage(`Parent context: ${rangeLayer} #${id} → mapping ${structureLayer}.`);
-    } else {
-      applyInspectorRoute(routeInspectorForRangeSelection(), hint);
-      setMessage(`Selected ${rangeLayer || 'range'} #${id} for navigation.`);
+      return;
     }
+
+    selectSavedStructuralRange(range, opts);
   };
 
   const jumpToStructuralRange = (range: any) => {
-    const start = range?.range_start_time || range?.range_high_time || range?.active_from_time;
-    const startStr = start ? String(start) : '';
-    const chartTf = String(range?.chart_timeframe || range?.source_timeframe || range?.timeframe || timeframe).toUpperCase();
+    const id = String(range?.range_id || range?.id || '');
+    if (!id) return;
+    const rangeLayer = normalizeStructureLayer(range?.structure_layer || range?.layer);
+    const neededParentLayer = expectedParentStructureLayer(structureLayer);
+    const isParentOnlyPick = !!(
+      rangeLayer && neededParentLayer && rangeLayer === neededParentLayer && rangeLayer !== structureLayer
+    );
+    const { start: startRaw, end: endRaw } = rangeWindowFieldsFromSavedRange(range);
+    const startStr = startRaw || '';
+    const chartTf = resolveRangeChartTimeframe(range, timeframe);
     const needsTfSwitch = chartTf !== String(timeframe).toUpperCase();
     const fitWindow = structuralRangeFitDomain(range, needsTfSwitch ? [] : candles);
+    const startDay = isoDay(startStr || endRaw);
+    const endDay = isoDay(endRaw || startStr);
+    const explicitLoadWindow = !isParentOnlyPick && startDay && endDay && isIntradayChartTimeframe(chartTf)
+      ? { start: startDay, end: endDay, label: formatStructuralRangeOptionLabel(range) }
+      : null;
+
     applyExplorerRowSelection(range, { routeInspector: false });
-    if (needsTfSwitch) {
-      pendingCameraIntentRef.current = {
-        intent: 'FIT_STRUCTURAL_RANGE',
-        targetTime: startStr || selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null,
-        reason: 'explorer-jump-fit',
-        fitWindow,
-      };
-      activeTimeframeRef.current = chartTf;
-      setTimeframe(chartTf);
-    } else {
+
+    if (!isParentOnlyPick) {
+      setRangeWindowByTf((prev) => ({
+        ...prev,
+        [chartTf]: { start: startStr || endRaw, end: endRaw || startStr },
+      }));
+    }
+
+    skipBootstrapOnceRef.current = true;
+    pendingCameraIntentRef.current = {
+      intent: 'FIT_STRUCTURAL_RANGE',
+      targetTime: startStr || selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null,
+      reason: 'explorer-jump-fit',
+      fitWindow,
+      contextRangeId: id,
+    };
+
+    const finishJump = () => {
       if (startStr) {
-        setCandleReplayFrameByTime(startStr);
         setJumpDate(startStr.slice(0, 10));
       }
       if (fitWindow) {
@@ -6593,7 +6611,33 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       } else if (startStr) {
         applyCameraCommand('PRESERVE_OR_NEAREST_TIME', startStr, 'explorer-jump');
       }
+    };
+
+    if (isParentOnlyPick) {
+      if (startStr) {
+        setCandleReplayFrameByTime(startStr);
+        setJumpDate(startStr.slice(0, 10));
+      }
+      finishJump();
+      return;
     }
+
+    if (needsTfSwitch) {
+      activeTimeframeRef.current = chartTf;
+      setTimeframe(chartTf);
+      void loadCandles(chartTf, { loadWindow: explicitLoadWindow }).then(finishJump);
+      return;
+    }
+
+    if (explicitLoadWindow || isIntradayChartTimeframe(chartTf)) {
+      void loadCandles(chartTf, { loadWindow: explicitLoadWindow }).then(finishJump);
+      return;
+    }
+
+    if (startStr) {
+      setCandleReplayFrameByTime(startStr);
+    }
+    finishJump();
   };
 
   const loadRangeAuditOnChart = (target: RangeAuditViewTarget) => {
@@ -7348,10 +7392,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   );
 
   useEffect(() => {
+    if (blockMappingBootEffects()) return;
     if (!showStructuralMappingRibbon) return;
     if (isChartTimeframeAllowedForLayer(timeframe, structureLayer)) return;
     switchTimeframePreserveCase(defaultChartTimeframeForStructureLayer(structureLayer));
-  }, [showStructuralMappingRibbon, structureLayer, timeframe]);
+  }, [showStructuralMappingRibbon, structureLayer, timeframe, pendingMappingSession]);
 
   const handleChartTfSwitch = (nextTf: string) => {
     const tf = String(nextTf || timeframe).toUpperCase();
@@ -7707,6 +7752,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const markerSections = useMemo(() => markerGroupsForTimeframe(timeframe), [timeframe]);
 
   useEffect(() => {
+    if (blockMappingBootEffects()) return;
     if (autoResume.phase !== 'welcome' || candles.length) return;
     let cancelled = false;
     void (async () => {
@@ -7716,9 +7762,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (!cancelled) autoResume.markSessionActive(symbol, timeframe);
     })();
     return () => { cancelled = true; };
-  }, [autoResume.phase, symbol, timeframe, candles.length]);
+  }, [pendingMappingSession, autoResume.phase, symbol, timeframe, candles.length]);
 
   useEffect(() => {
+    if (blockMappingBootEffects()) return;
     if (autoResume.phase === 'booting' || autoResume.isAutoResuming) return;
     let cancelled = false;
     (async () => {
@@ -7748,9 +7795,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       });
     })();
     return () => { cancelled = true; };
-  }, [symbol, timeframe, activeCaseDisplayId, autoResume.phase, autoResume.isAutoResuming]);
+  }, [symbol, timeframe, activeCaseDisplayId, autoResume.phase, autoResume.isAutoResuming, pendingMappingSession]);
 
   useEffect(() => {
+    if (blockMappingBootEffects()) return;
     if (autoResume.phase === 'booting' || autoResume.isAutoResuming) return;
     let cancelled = false;
     const stopBackgroundSync = initBackgroundCandleSync({
@@ -7768,7 +7816,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       cancelled = true;
       stopBackgroundSync();
     };
-  }, [symbol, timeframe, autoResume.phase, autoResume.isAutoResuming]);
+  }, [symbol, timeframe, autoResume.phase, autoResume.isAutoResuming, pendingMappingSession]);
 
   const selectStructureLayer = (layer: StructureLayer) => {
     const nextAnchorsByLayer: Partial<Record<StructureLayer, LayerAnchorPair>> = {
@@ -9210,9 +9258,7 @@ function rangeSpanX(
     const xA = zx(a!);
     const xB = zx(b!);
     if (Number.isFinite(xA) && Number.isFinite(xB)) {
-      const x1 = clampX(Math.min(xA, xB));
-      const x2 = clampX(Math.max(xA, xB));
-      if (x2 - x1 >= 24) return { x1, x2 };
+      return expandRangeSpanX(xA, xB, plotLeft, plotRight);
     }
   }
   if (aOk) {
