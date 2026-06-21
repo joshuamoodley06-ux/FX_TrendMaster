@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type RefObject } from 'react';
 import {
   activeRangeIdForLayer,
   buildMappingSessionState,
@@ -10,6 +10,8 @@ import {
 } from '../mappingSessionPersistence';
 
 export type MappingSessionStructureLayer = MappingSessionLayer;
+
+export type MappingSessionOrchestration = 'idle' | 'pending_modal' | 'resuming';
 
 export type MappingSessionSnapshot = {
   symbol: string;
@@ -32,7 +34,7 @@ export type MappingSessionSnapshot = {
   currentCandidateIndex?: number;
 };
 
-export type MappingSessionRestoreActions = {
+export type MappingSessionScopeActions = {
   setStructureLayer: (layer: MappingSessionStructureLayer) => void;
   setRangeScope: (scope: 'MAJOR' | 'MINOR') => void;
   setSourceTimeframe: (tf: string) => void;
@@ -42,8 +44,30 @@ export type MappingSessionRestoreActions = {
   setExplorerYearFilter: (year: string) => void;
   setRawActiveCaseId?: (id: string) => void;
   onSymbolChange?: (symbol: string) => void;
+};
+
+export type MappingSessionRestoreActions = MappingSessionScopeActions & {
   selectSavedStructuralRange?: (range: any, opts?: { routeInspector?: boolean }) => void;
   savedStructuralRanges?: any[];
+};
+
+export type MappingSessionResumeResult = {
+  message: string;
+  staleParentId: string | null;
+  staleActiveId: string | null;
+  restoredActive: boolean;
+  restoredParent: boolean;
+  chartTimeframe: string;
+};
+
+export type ExecuteMappingSessionResumeArgs = {
+  stored: MappingSessionState;
+  scopeActions: MappingSessionScopeActions;
+  hasCase: () => boolean;
+  refreshSavedRanges: () => Promise<any[]>;
+  refreshMapEvents: (timeframe: string) => Promise<void>;
+  loadCandles: (timeframe: string) => Promise<void>;
+  selectSavedStructuralRange: (range: any, opts?: { routeInspector?: boolean }) => void;
 };
 
 function normalizeLayer(value: unknown): MappingSessionLayer | null {
@@ -52,6 +76,55 @@ function normalizeLayer(value: unknown): MappingSessionLayer | null {
     return layer;
   }
   return null;
+}
+
+export function isMappingSessionOrchestrating(
+  orchestrationRef: RefObject<MappingSessionOrchestration>,
+): boolean {
+  return orchestrationRef.current !== 'idle';
+}
+
+export function readMappingSessionForSymbol(symbol: string): MappingSessionState | null {
+  const stored = loadMappingSession();
+  if (!stored) return null;
+  if (String(stored.symbol).toUpperCase() !== String(symbol).toUpperCase()) return null;
+  return stored;
+}
+
+export function findSavedRangeById(ranges: any[], id: string | null | undefined): any | null {
+  if (!id) return null;
+  const needle = String(id);
+  return ranges.find((row: any) => String(row.range_id || row.id) === needle) || null;
+}
+
+export function validateMappingSessionRangeIds(
+  stored: MappingSessionState,
+  ranges: any[],
+): {
+  parentId: string | null;
+  activeId: string | null;
+  staleParentId: string | null;
+  staleActiveId: string | null;
+  parentRow: any | null;
+  activeRow: any | null;
+} {
+  const parentRaw = stored.current_parent_range_id ? String(stored.current_parent_range_id) : null;
+  const layerActiveId = activeRangeIdForLayer(stored, stored.active_layer);
+  const activeRaw = stored.active_structural_range_id
+    ? String(stored.active_structural_range_id)
+    : (layerActiveId ? String(layerActiveId) : null);
+
+  const parentRow = findSavedRangeById(ranges, parentRaw);
+  const activeRow = findSavedRangeById(ranges, activeRaw);
+
+  return {
+    parentId: parentRow ? String(parentRaw) : null,
+    activeId: activeRow ? String(activeRaw) : null,
+    staleParentId: parentRaw && !parentRow ? parentRaw : null,
+    staleActiveId: activeRaw && !activeRow ? activeRaw : null,
+    parentRow,
+    activeRow,
+  };
 }
 
 export function snapshotToMappingSession(snapshot: MappingSessionSnapshot): MappingSessionState {
@@ -77,9 +150,11 @@ export function snapshotToMappingSession(snapshot: MappingSessionSnapshot): Mapp
   });
 }
 
-export function applyMappingSessionRestore(
+/** Scope restore without parent/active/year/chart TF when deferChartTimeframe is true. */
+export function applyMappingSessionScopeRestore(
   stored: MappingSessionState,
-  actions: MappingSessionRestoreActions,
+  actions: MappingSessionScopeActions,
+  opts?: { deferChartTimeframe?: boolean },
 ): void {
   if (stored.symbol && actions.onSymbolChange) {
     actions.onSymbolChange(String(stored.symbol).toUpperCase());
@@ -87,15 +162,24 @@ export function applyMappingSessionRestore(
   actions.setStructureLayer(stored.active_layer);
   actions.setRangeScope(stored.range_scope);
   actions.setSourceTimeframe(stored.source_timeframe);
-  actions.setTimeframe(stored.chart_timeframe);
-  if (stored.year) actions.setExplorerYearFilter(stored.year);
+  if (!opts?.deferChartTimeframe) {
+    actions.setTimeframe(stored.chart_timeframe);
+  }
   if (stored.raw_case_id && actions.setRawActiveCaseId) {
     actions.setRawActiveCaseId(String(stored.raw_case_id));
   }
+}
+
+/** @deprecated Use applyMappingSessionScopeRestore + executeMappingSessionResume instead. */
+export function applyMappingSessionRestore(
+  stored: MappingSessionState,
+  actions: MappingSessionRestoreActions,
+): void {
+  applyMappingSessionScopeRestore(stored, actions);
+  if (stored.year) actions.setExplorerYearFilter(stored.year);
   if (stored.current_parent_range_id) {
     actions.setSelectedParentRangeId(String(stored.current_parent_range_id));
   }
-
   const activeId = stored.active_structural_range_id || activeRangeIdForLayer(stored, stored.active_layer);
   if (activeId && actions.selectSavedStructuralRange && actions.savedStructuralRanges?.length) {
     const row = actions.savedStructuralRanges.find(
@@ -109,58 +193,136 @@ export function applyMappingSessionRestore(
   if (activeId) actions.setActiveStructuralRangeId(String(activeId));
 }
 
+export function buildMappingSessionResumeMessage(
+  stored: MappingSessionState,
+  validation: ReturnType<typeof validateMappingSessionRangeIds>,
+): string {
+  const parts = [
+    `Resumed mapping session · ${stored.active_layer} · ${stored.chart_timeframe}`,
+  ];
+  if (validation.staleActiveId) {
+    parts.push(`Active range #${validation.staleActiveId} is no longer in the case — cleared.`);
+  }
+  if (validation.staleParentId) {
+    parts.push(`Parent range #${validation.staleParentId} is no longer in the case — cleared.`);
+  }
+  return parts.join(' · ');
+}
+
+export async function executeMappingSessionResume(
+  args: ExecuteMappingSessionResumeArgs,
+): Promise<MappingSessionResumeResult> {
+  const { stored, scopeActions } = args;
+  const chartTimeframe = String(stored.chart_timeframe || 'D1').toUpperCase();
+
+  applyMappingSessionScopeRestore(stored, scopeActions, { deferChartTimeframe: true });
+
+  let ranges: any[] = [];
+  if (args.hasCase()) {
+    try {
+      ranges = await args.refreshSavedRanges();
+    } catch {
+      ranges = [];
+    }
+  }
+
+  const validation = validateMappingSessionRangeIds(stored, ranges);
+
+  if (validation.activeRow) {
+    args.selectSavedStructuralRange(validation.activeRow, { routeInspector: false });
+  } else {
+    scopeActions.setActiveStructuralRangeId('');
+    if (validation.parentRow) {
+      scopeActions.setSelectedParentRangeId(String(validation.parentId));
+    } else {
+      scopeActions.setSelectedParentRangeId('');
+    }
+  }
+
+  scopeActions.setTimeframe(chartTimeframe);
+  await args.loadCandles(chartTimeframe);
+
+  if (args.hasCase()) {
+    try {
+      await args.refreshMapEvents(chartTimeframe);
+    } catch {
+      /* non-blocking */
+    }
+  }
+
+  scopeActions.setExplorerYearFilter(stored.year ? String(stored.year) : 'all');
+
+  return {
+    message: buildMappingSessionResumeMessage(stored, validation),
+    staleParentId: validation.staleParentId,
+    staleActiveId: validation.staleActiveId,
+    restoredActive: !!validation.activeRow,
+    restoredParent: !!(validation.activeRow?.parent_range_id || validation.parentRow),
+    chartTimeframe,
+  };
+}
+
 export function useMappingSessionPersistence(
   snapshot: MappingSessionSnapshot,
-  actions: MappingSessionRestoreActions,
-  options?: { enabled?: boolean; bootDelayMs?: number },
+  options?: { bootDelayMs?: number },
 ) {
-  const enabled = options?.enabled !== false;
   const [pendingResume, setPendingResume] = useState<MappingSessionState | null>(null);
+  const orchestrationRef = useRef<MappingSessionOrchestration>('idle');
   const bootCheckedRef = useRef(false);
   const lastSavedRef = useRef('');
+  const persistBlockedRef = useRef(false);
 
   useEffect(() => {
-    if (!enabled || bootCheckedRef.current) return;
-    bootCheckedRef.current = true;
-    const stored = loadMappingSession();
-    if (!stored) return;
-    if (String(stored.symbol).toUpperCase() !== String(snapshot.symbol).toUpperCase()) {
-      return;
-    }
-    const timer = window.setTimeout(() => setPendingResume(stored), options?.bootDelayMs ?? 350);
+    if (bootCheckedRef.current) return;
+    const timer = window.setTimeout(() => {
+      bootCheckedRef.current = true;
+      const stored = readMappingSessionForSymbol(snapshot.symbol);
+      if (!stored) {
+        persistBlockedRef.current = false;
+        orchestrationRef.current = 'idle';
+        return;
+      }
+      persistBlockedRef.current = true;
+      orchestrationRef.current = 'pending_modal';
+      setPendingResume(stored);
+    }, options?.bootDelayMs ?? 300);
     return () => window.clearTimeout(timer);
-  }, [enabled, snapshot.symbol, options?.bootDelayMs]);
+  }, [snapshot.symbol, options?.bootDelayMs]);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (persistBlockedRef.current || pendingResume) return;
     const next = snapshotToMappingSession(snapshot);
     const serial = JSON.stringify(next);
     if (serial === lastSavedRef.current) return;
     lastSavedRef.current = serial;
     saveMappingSession(next);
-  }, [enabled, snapshot]);
+  }, [snapshot, pendingResume]);
 
-  const resumeSession = useCallback(() => {
-    if (!pendingResume) return;
-    applyMappingSessionRestore(pendingResume, actions);
+  const beginResumeFlow = useCallback(() => {
+    orchestrationRef.current = 'resuming';
+  }, []);
+
+  const completeResumeFlow = useCallback(() => {
+    persistBlockedRef.current = false;
+    orchestrationRef.current = 'idle';
     setPendingResume(null);
-  }, [pendingResume, actions]);
+  }, []);
 
   const startNewSession = useCallback(() => {
     clearMappingSession();
+    persistBlockedRef.current = false;
+    orchestrationRef.current = 'idle';
     setPendingResume(null);
     lastSavedRef.current = '';
   }, []);
 
-  const dismissResume = useCallback(() => {
-    setPendingResume(null);
-  }, []);
-
   return {
     pendingResume,
-    resumeSession,
+    orchestrationRef,
+    beginResumeFlow,
+    completeResumeFlow,
     startNewSession,
-    dismissResume,
+    isPersistBlocked: pendingResume !== null,
   };
 }
 

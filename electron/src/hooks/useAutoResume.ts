@@ -13,6 +13,8 @@ export type UseAutoResumeArgs = {
   onResume: (session: AutoResumeSession) => Promise<void>;
   onSymbolChange?: (symbol: string) => void;
   onTimeframeChange?: (timeframe: string) => void;
+  /** When true, skip symbol/TF warm boot so mapping session resume modal owns boot. */
+  deferInitialResume?: boolean;
 };
 
 export type UseAutoResumeResult = {
@@ -45,6 +47,11 @@ export function useAutoResume(args: UseAutoResumeArgs): UseAutoResumeResult {
     if (startedRef.current) return;
     startedRef.current = true;
 
+    if (args.deferInitialResume) {
+      setPhase('ready');
+      return;
+    }
+
     const session = readAutoResumeSession();
     if (!session) {
       setPhase('welcome');
@@ -54,7 +61,7 @@ export function useAutoResume(args: UseAutoResumeArgs): UseAutoResumeResult {
     void runResume(session).catch(() => {
       setPhase('ready');
     });
-  }, [runResume]);
+  }, [runResume, args.deferInitialResume]);
 
   const beginFirstSession = useCallback(async () => {
     const session = {
