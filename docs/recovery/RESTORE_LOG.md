@@ -102,6 +102,6 @@ Restoration follows `docs/recovery/RECOVERY_AUDIT.md` one feature at a time. No 
 | **Files changed** | `electron/src/autoBosNextRangePrompt.ts` (new), `electron/src/autoBosNextRangePrompt.test.ts` (new), `electron/src/main.tsx`, `electron/src/chartFocusMode.ts`, `electron/src/rangeLineStyle.ts`, `electron/src/styles.css`, tests |
 | **Tests run** | `npm test` (electron vitest): **256 passed** |
 | **Manual smoke result** | Re-test required — Daily BOS inside Weekly, Intraday BOS inside Daily, duplicate suppression, Weekly/Daily line visibility in Focus Mode |
-| **Commit hash** | *(pending commit)* |
+| **Commit hash** | `caca4e7` |
 | **Remaining missing features** | Campaign Manager |
 
