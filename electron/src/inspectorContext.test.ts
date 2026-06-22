@@ -7,18 +7,16 @@ import {
 } from './inspectorContext';
 
 describe('inspectorContext', () => {
-  it('routes candle selection to Mark / HTF', () => {
+  it('routes candle selection to Campaign (chart-native marking)', () => {
     expect(routeInspectorForCandleSelection()).toEqual({
-      tab: 'mark',
-      markWorkspaceMode: 'htf',
+      tab: 'campaign',
       reason: 'candle-selected',
     });
   });
 
-  it('routes range selection to Mark / HTF', () => {
+  it('routes range selection to Hierarchy browse', () => {
     expect(routeInspectorForRangeSelection()).toEqual({
-      tab: 'mark',
-      markWorkspaceMode: 'htf',
+      tab: 'gps',
       reason: 'range-selected',
     });
   });

@@ -14,16 +14,14 @@ export type InspectorContextRoute = {
 
 export function routeInspectorForCandleSelection(): InspectorContextRoute {
   return {
-    tab: 'mark',
-    markWorkspaceMode: 'htf',
+    tab: 'campaign',
     reason: 'candle-selected',
   };
 }
 
 export function routeInspectorForRangeSelection(): InspectorContextRoute {
   return {
-    tab: 'mark',
-    markWorkspaceMode: 'htf',
+    tab: 'gps',
     reason: 'range-selected',
   };
 }

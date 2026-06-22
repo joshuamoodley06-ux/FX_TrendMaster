@@ -51,6 +51,9 @@ export function savedRangeLineStyle(
   };
 }
 
-export function draftRangeLineStyle(): RangeLineStyle {
+export function draftRangeLineStyle(anchorsComplete = false): RangeLineStyle {
+  if (anchorsComplete) {
+    return { opacity: ACTIVE_RANGE_LINE_OPACITY, dash: '', width: 4.2 };
+  }
   return { opacity: 0.85, dash: '4 6', width: 3.2 };
 }

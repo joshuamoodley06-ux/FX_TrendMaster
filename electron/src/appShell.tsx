@@ -35,7 +35,7 @@ export function NavRail({
   return (
     <div
       className="map-studio-nav-rail"
-      aria-label="O-N-G-M-C-T navigation rail"
+      aria-label="F-H-C-A-Tools navigation rail"
       data-nav-rail-visible="true"
     >
       <NavOverlay activeTab={activeTab} onTabChange={onTabChange} panelOpen={panelOpen} />

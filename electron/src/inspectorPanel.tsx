@@ -3,7 +3,17 @@
 import React from 'react';
 import type { InspectorContextHint } from './inspectorContext';
 
-export type InspectorTabId = 'dashboard' | 'narrative' | 'gps' | 'campaign' | 'mark' | 'seed' | 'trade';
+/** Primary rail ids + legacy ids kept for renderTab/tools migration. */
+export type InspectorTabId =
+  | 'seed'
+  | 'gps'
+  | 'campaign'
+  | 'audit'
+  | 'tools'
+  | 'mark'
+  | 'dashboard'
+  | 'narrative'
+  | 'trade';
 
 export type InspectorTabDef = {
   id: InspectorTabId;
@@ -11,23 +21,35 @@ export type InspectorTabDef = {
   title: string;
 };
 
-export const INSPECTOR_TABS: InspectorTabDef[] = [
-  { id: 'dashboard', shortLabel: 'O', title: 'Dashboard' },
-  { id: 'narrative', shortLabel: 'N', title: 'Narrative' },
-  { id: 'gps', shortLabel: 'G', title: 'Hierarchy Tree' },
-  { id: 'campaign', shortLabel: 'P', title: 'Campaign' },
-  { id: 'mark', shortLabel: 'M', title: 'Mark Event' },
-  { id: 'seed', shortLabel: 'C', title: 'Case Manager' },
-  { id: 'trade', shortLabel: 'T', title: 'Trade Idea' },
+/** Candle-first skeleton mapping rail — five tabs only. */
+export const INSPECTOR_RAIL_TABS: InspectorTabDef[] = [
+  { id: 'seed', shortLabel: 'F', title: 'Folder / Case' },
+  { id: 'gps', shortLabel: 'H', title: 'Hierarchy' },
+  { id: 'campaign', shortLabel: 'C', title: 'Campaign' },
+  { id: 'audit', shortLabel: 'A', title: 'Audit / Export' },
+  { id: 'tools', shortLabel: '⚙', title: 'Tools' },
 ];
 
-export function inspectorTabTitle(tab: InspectorTabId): string {
-  return INSPECTOR_TABS.find((t) => t.id === tab)?.title ?? 'Inspector';
+export const INSPECTOR_TABS = INSPECTOR_RAIL_TABS;
+
+export function normalizeInspectorTabId(stored: string | null | undefined): InspectorTabId {
+  const tab = String(stored || '').trim();
+  if (tab === 'mark' || tab === 'dashboard' || tab === 'narrative' || tab === 'trade') return 'tools';
+  if (INSPECTOR_RAIL_TABS.some((t) => t.id === tab)) return tab as InspectorTabId;
+  return 'campaign';
 }
 
-/** Mapping tab — Structural Map must not share the render tree with Dashboard. */
+export function inspectorTabTitle(tab: InspectorTabId): string {
+  if (tab === 'mark') return 'Mark / Correction';
+  if (tab === 'dashboard') return 'Dashboard';
+  if (tab === 'narrative') return 'Narrative';
+  if (tab === 'trade') return 'Trade Ideas';
+  return INSPECTOR_RAIL_TABS.find((t) => t.id === tab)?.title ?? 'Inspector';
+}
+
+/** Chart-native marking — no dedicated Mark rail tab required. */
 export function isMappingInspectorTab(tab: InspectorTabId): boolean {
-  return tab === 'mark';
+  return ['campaign', 'gps', 'seed', 'audit', 'tools', 'mark'].includes(tab);
 }
 
 type PanelProps = {
@@ -52,16 +74,17 @@ export function InspectorPanel({
   className = '',
   onClosePanel,
 }: PanelProps) {
+  const normalizedTab = normalizeInspectorTabId(activeTab);
   return (
     <div className={`inspectorPanelInner ${className}`.trim()}>
-      <nav className="inspectorTabRail" aria-label="Inspector sections">
-        {INSPECTOR_TABS.map((tab) => (
+      <nav className="inspectorTabRail" aria-label="Map Studio sections">
+        {INSPECTOR_RAIL_TABS.map((tab) => (
           <button
             key={tab.id}
             type="button"
-            className={activeTab === tab.id ? 'active' : ''}
+            className={normalizedTab === tab.id ? 'active' : ''}
             title={tab.title}
-            aria-current={activeTab === tab.id ? 'page' : undefined}
+            aria-current={normalizedTab === tab.id ? 'page' : undefined}
             onClick={() => onTabChange(tab.id)}
           >
             {tab.shortLabel}
@@ -72,7 +95,7 @@ export function InspectorPanel({
       <div className="inspectorBody">
         <header className="inspectorHeader">
           <div>
-            <b>{inspectorTabTitle(activeTab)}</b>
+            <b>{inspectorTabTitle(normalizedTab)}</b>
             <span>{symbol} · {timeframe}</span>
             {contextHint && (
               <span className="inspectorContextHint" title={contextHint.detail}>
@@ -86,8 +109,8 @@ export function InspectorPanel({
             </button>
           )}
         </header>
-        <div className="inspectorContent" data-active-tab={activeTab}>
-          <InspectorExclusivePane activeTab={activeTab} renderTab={renderTab} />
+        <div className="inspectorContent" data-active-tab={normalizedTab}>
+          <InspectorExclusivePane activeTab={normalizedTab} renderTab={renderTab} />
         </div>
       </div>
     </div>
@@ -102,9 +125,10 @@ export function InspectorExclusivePane({
   activeTab: InspectorTabId;
   renderTab: (tab: InspectorTabId) => React.ReactNode;
 }) {
+  const normalizedTab = normalizeInspectorTabId(activeTab);
   return (
-    <div className="inspectorTabPane active" data-tab={activeTab} data-active="true">
-      {renderTab(activeTab)}
+    <div className="inspectorTabPane active" data-tab={normalizedTab} data-active="true">
+      {renderTab(normalizedTab)}
     </div>
   );
 }
