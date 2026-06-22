@@ -4,11 +4,14 @@ import {
   isCurrentCandleLoadRequest,
   loadWindowKey,
   resolveStructuralCandleLoadWindow,
+  resolveStructuralContextAndReplayWindows,
   resolveStructuralDataLoadWindow,
   shouldApplyParsedCandles,
   shouldBlockQuietFullHistoryReload,
   shouldUseWindowedCandleLoad,
   structuralDataLoadPadding,
+  trimStructuralCandlesToHorizon,
+  trimStructuralCandlesToMaxBars,
 } from './candleLoadPolicy';
 
 describe('candleLoadPolicy', () => {
@@ -144,5 +147,53 @@ describe('candleLoadPolicy', () => {
     const out = filterCandlesToLoadWindow(candles, { start: '2025-06-01', end: '2025-06-10', label: 'x' });
     expect(out).toHaveLength(1);
     expect(out[0].time).toContain('2025-06-05');
+  });
+
+  it('resolveStructuralContextAndReplayWindows separates visual context from padded data load', () => {
+    const out = resolveStructuralContextAndReplayWindows({
+      rangeSpan: { start: '2025-06-01T00:00:00.000Z', end: '2025-06-10T00:00:00.000Z' },
+      chartTf: 'D1',
+      structureLayer: 'WEEKLY',
+      label: 'Weekly #3 context',
+    });
+    expect(out).not.toBeNull();
+    expect(out!.visualContext.start).toBe('2025-06-01');
+    expect(out!.visualContext.end).toBe('2025-06-10');
+    expect(out!.dataLoad.start < out!.visualContext.start).toBe(true);
+    expect(out!.dataLoad.end > out!.visualContext.end).toBe(true);
+  });
+
+  it('resolveStructuralDataLoadWindow trims oldest history first when span exceeds maxSpanDays', () => {
+    const out = resolveStructuralDataLoadWindow({
+      rangeSpan: { start: '2020-01-01T00:00:00.000Z', end: '2025-06-10T00:00:00.000Z' },
+      chartTf: 'D1',
+      structureLayer: 'WEEKLY',
+      label: 'Weekly context',
+    });
+    expect(out).not.toBeNull();
+    expect(out!.end >= '2025-06-10').toBe(true);
+    const spanDays = Math.round(
+      (new Date(`${out!.end}T00:00:00.000Z`).getTime() - new Date(`${out!.start}T00:00:00.000Z`).getTime()) / 86400000,
+    );
+    expect(spanDays).toBeLessThanOrEqual(180);
+  });
+
+  it('trimStructuralCandlesToMaxBars keeps newest bars', () => {
+    const candles = Array.from({ length: 10 }, (_, i) => ({ time: `2025-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z` }));
+    const out = trimStructuralCandlesToMaxBars(candles, 4);
+    expect(out).toHaveLength(4);
+    expect(out[0].time).toContain('2025-01-07');
+    expect(out[3].time).toContain('2025-01-10');
+  });
+
+  it('trimStructuralCandlesToHorizon keeps lookback before visual context and lookahead after', () => {
+    const candles = Array.from({ length: 300 }, (_, i) => ({
+      time: new Date(Date.UTC(2025, 0, 1 + i)).toISOString(),
+    }));
+    const visualContext = { start: '2025-06-01', end: '2025-06-10' };
+    const out = trimStructuralCandlesToHorizon(candles, 80, visualContext, 'D1');
+    expect(out.length).toBeLessThanOrEqual(80);
+    expect(out[0].time < `${visualContext.start}T00:00:00.000Z`).toBe(true);
+    expect(out[out.length - 1].time > `${visualContext.end}T23:59:59.999Z`).toBe(true);
   });
 });

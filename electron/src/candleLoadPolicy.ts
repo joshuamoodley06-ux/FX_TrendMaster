@@ -85,6 +85,61 @@ export function structuralDataLoadPadding(chartTf: string, structureLayer?: stri
   return { beforeDays: 45, afterDays: 21, maxSpanDays: 120 };
 }
 
+/** Forward replay horizon beyond parent visual context end — not a live tail. */
+export function structuralReplayLookaheadDays(chartTf: string, structureLayer?: string | null): number {
+  const tf = String(chartTf || 'D1').toUpperCase();
+  const layer = String(structureLayer || '').toUpperCase();
+  if (tf === 'M5' || tf === 'M15') return 10;
+  if (tf === 'H1') return 14;
+  if (tf === 'H4') return 21;
+  if (tf === 'D1') return layer === 'WEEKLY' || layer === 'MACRO' ? 60 : 45;
+  if (tf === 'W1') return 90;
+  if (tf === 'MN1') return 180;
+  return 30;
+}
+
+/** Chunk size when replay reaches loaded horizon and needs more bars. */
+export function structuralReplayChunkDays(chartTf: string): number {
+  const tf = String(chartTf || 'D1').toUpperCase();
+  if (tf === 'M5' || tf === 'M15') return 5;
+  if (tf === 'H1') return 7;
+  if (tf === 'H4') return 10;
+  if (tf === 'D1') return 21;
+  if (tf === 'W1') return 60;
+  return 14;
+}
+
+export type StructuralWindowPair = {
+  /** Parent/visual context span — overlays, focus, camera fit. */
+  visualContext: CandleLoadWindow;
+  /** Padded data load window — replay may continue into forward buffer. */
+  dataLoad: CandleLoadWindow;
+};
+
+export function resolveStructuralContextAndReplayWindows(args: {
+  rangeSpan: { start?: string; end?: string };
+  chartTf: string;
+  structureLayer?: string | null;
+  label?: string;
+}): StructuralWindowPair | null {
+  const startDay = isoDay(args.rangeSpan.start || args.rangeSpan.end);
+  const endDay = isoDay(args.rangeSpan.end || args.rangeSpan.start);
+  if (!startDay || !endDay) return null;
+  const visualContext: CandleLoadWindow = {
+    start: startDay,
+    end: endDay,
+    label: args.label || 'structural context',
+  };
+  const dataLoad = resolveStructuralDataLoadWindow({
+    rangeSpan: { start: startDay, end: endDay },
+    chartTf: args.chartTf,
+    structureLayer: args.structureLayer,
+    label: args.label || 'structural context',
+  });
+  if (!dataLoad) return null;
+  return { visualContext, dataLoad };
+}
+
 /** DATA load window — padded around saved range span, never pinned to live tail. */
 export function loadWindowEndInclusiveIsoDay(day: string): string {
   return `${day}T23:59:59.999Z`;
@@ -119,6 +174,88 @@ export function maxBarsForStructuralWindow(chartTf: string): number {
   return 800;
 }
 
+/** Trim oldest bars first — preserve forward replay horizon beyond parent context. */
+export function trimStructuralCandlesToMaxBars<T>(candles: T[], maxBars: number): T[] {
+  if (!Number.isFinite(maxBars) || maxBars <= 0 || candles.length <= maxBars) return candles;
+  return candles.slice(candles.length - maxBars);
+}
+
+function candleIndexAtOrBeforePolicy<T extends { time: string }>(candles: T[], timeMs: number): number {
+  if (!candles.length || !Number.isFinite(timeMs)) return 0;
+  let idx = 0;
+  for (let i = 0; i < candles.length; i += 1) {
+    const ms = new Date(String(candles[i].time)).getTime();
+    if (Number.isFinite(ms) && ms <= timeMs) idx = i;
+    if (Number.isFinite(ms) && ms > timeMs) break;
+  }
+  return idx;
+}
+
+/**
+ * Trim to maxBars while keeping historic lookback before visual context and replay lookahead after it.
+ * Parent visual context is NOT the data universe.
+ */
+export function trimStructuralCandlesToHorizon<T extends { time: string }>(
+  candles: T[],
+  maxBars: number,
+  visualContext: { start?: string | null; end?: string | null } | null | undefined,
+  chartTf: string,
+): T[] {
+  if (!Number.isFinite(maxBars) || maxBars <= 0 || candles.length <= maxBars) return candles;
+  const ctxStartDay = isoDay(visualContext?.start);
+  const ctxEndDay = isoDay(visualContext?.end || visualContext?.start);
+  if (!ctxStartDay && !ctxEndDay) return trimStructuralCandlesToMaxBars(candles, maxBars);
+
+  const ctxStartMs = ctxStartDay
+    ? new Date(loadWindowStartIsoDay(ctxStartDay)).getTime()
+    : new Date(String(candles[0].time)).getTime();
+  const ctxEndMs = ctxEndDay
+    ? new Date(loadWindowEndInclusiveIsoDay(ctxEndDay)).getTime()
+    : new Date(String(candles[candles.length - 1].time)).getTime();
+
+  const anchorLo = candleIndexAtOrBeforePolicy(candles, ctxStartMs);
+  const anchorHi = candleIndexAtOrBeforePolicy(candles, ctxEndMs);
+  const pad = structuralDataLoadPadding(chartTf);
+  const replayLookahead = structuralReplayLookaheadDays(chartTf);
+  const lookbackBars = Math.max(8, Math.min(Math.floor(maxBars * 0.4), pad.beforeDays));
+  const lookaheadBars = Math.max(8, Math.min(Math.floor(maxBars * 0.4), pad.afterDays + replayLookahead));
+
+  let lo = Math.max(0, anchorLo - lookbackBars);
+  let hi = Math.min(candles.length - 1, anchorHi + lookaheadBars);
+  if (hi - lo + 1 > maxBars) {
+    const excess = (hi - lo + 1) - maxBars;
+    const trimBefore = Math.min(excess, lo);
+    lo += trimBefore;
+    const remaining = excess - trimBefore;
+    hi = Math.max(lo, hi - remaining);
+  }
+  if (hi - lo + 1 > maxBars) {
+    return trimStructuralCandlesToMaxBars(candles.slice(lo, hi + 1), maxBars);
+  }
+  return candles.slice(lo, hi + 1);
+}
+
+export function mergeCandleSeriesByTime<T extends { time: string }>(left: T[], right: T[]): T[] {
+  const byTime = new Map<string, T>();
+  for (const row of left) byTime.set(String(row.time), row);
+  for (const row of right) byTime.set(String(row.time), row);
+  return Array.from(byTime.values()).sort(
+    (a, b) => new Date(String(a.time)).getTime() - new Date(String(b.time)).getTime(),
+  );
+}
+
+export function extendStructuralDataLoadWindow(
+  window: CandleLoadWindow,
+  extendDays: number,
+): CandleLoadWindow | null {
+  if (!window?.end || !Number.isFinite(extendDays) || extendDays <= 0) return null;
+  return {
+    ...window,
+    end: addIsoDays(window.end, extendDays),
+    label: window.label || 'structural context',
+  };
+}
+
 export function resolveStructuralDataLoadWindow(args: {
   rangeSpan: { start?: string; end?: string };
   chartTf: string;
@@ -129,18 +266,18 @@ export function resolveStructuralDataLoadWindow(args: {
   const endDay = isoDay(args.rangeSpan.end || args.rangeSpan.start);
   if (!startDay || !endDay) return null;
   const pad = structuralDataLoadPadding(args.chartTf, args.structureLayer);
+  const replayLookahead = structuralReplayLookaheadDays(args.chartTf, args.structureLayer);
   let loadStart = addIsoDays(startDay, -pad.beforeDays);
-  let loadEnd = addIsoDays(endDay, pad.afterDays);
+  let loadEnd = addIsoDays(endDay, pad.afterDays + replayLookahead);
   const spanDays = Math.max(
     1,
     Math.round((new Date(`${loadEnd}T00:00:00.000Z`).getTime() - new Date(`${loadStart}T00:00:00.000Z`).getTime()) / 86400000),
   );
   if (spanDays > pad.maxSpanDays) {
-    const trim = spanDays - pad.maxSpanDays;
-    const trimBefore = Math.ceil(trim * 0.65);
-    const trimAfter = trim - trimBefore;
-    loadStart = addIsoDays(loadStart, trimBefore);
-    loadEnd = addIsoDays(loadEnd, -trimAfter);
+    // Preserve forward replay horizon; trim oldest history first.
+    const cappedStart = addIsoDays(loadEnd, -(pad.maxSpanDays - 1));
+    const paddedStart = addIsoDays(startDay, -pad.beforeDays);
+    loadStart = paddedStart < cappedStart ? cappedStart : paddedStart;
   }
   if (loadEnd < loadStart) loadEnd = loadStart;
   return {

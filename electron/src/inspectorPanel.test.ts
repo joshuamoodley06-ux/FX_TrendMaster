@@ -4,7 +4,10 @@ import { isMappingInspectorTab, INSPECTOR_TABS } from './inspectorPanel';
 describe('inspectorPanel context isolation', () => {
   it('identifies Mark (M) as the mapping tab', () => {
     expect(INSPECTOR_TABS.find((t) => t.shortLabel === 'M')?.id).toBe('mark');
+    expect(INSPECTOR_TABS.find((t) => t.shortLabel === 'P')?.title).toBe('Campaign');
+    expect(INSPECTOR_TABS.find((t) => t.id === 'gps')?.title).toBe('Hierarchy Tree');
     expect(isMappingInspectorTab('mark')).toBe(true);
+    expect(isMappingInspectorTab('campaign')).toBe(false);
     expect(isMappingInspectorTab('dashboard')).toBe(false);
   });
 

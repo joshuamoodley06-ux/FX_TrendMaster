@@ -3,7 +3,7 @@
 import React from 'react';
 import type { InspectorContextHint } from './inspectorContext';
 
-export type InspectorTabId = 'dashboard' | 'narrative' | 'gps' | 'mark' | 'seed' | 'trade';
+export type InspectorTabId = 'dashboard' | 'narrative' | 'gps' | 'campaign' | 'mark' | 'seed' | 'trade';
 
 export type InspectorTabDef = {
   id: InspectorTabId;
@@ -15,6 +15,7 @@ export const INSPECTOR_TABS: InspectorTabDef[] = [
   { id: 'dashboard', shortLabel: 'O', title: 'Dashboard' },
   { id: 'narrative', shortLabel: 'N', title: 'Narrative' },
   { id: 'gps', shortLabel: 'G', title: 'Hierarchy Tree' },
+  { id: 'campaign', shortLabel: 'P', title: 'Campaign' },
   { id: 'mark', shortLabel: 'M', title: 'Mark Event' },
   { id: 'seed', shortLabel: 'C', title: 'Case Manager' },
   { id: 'trade', shortLabel: 'T', title: 'Trade Idea' },

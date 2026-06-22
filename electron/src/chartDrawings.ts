@@ -44,6 +44,7 @@ export const CHART_DRAWING_COLORS = [
 
 const DRAWINGS_STORE_KEY = 'fx_tm_chart_drawings_v1';
 const REPLAY_CURSOR_STORE_KEY = 'fx_tm_replay_cursor_by_case_v1';
+const STRUCTURAL_REPLAY_CURSOR_STORE_KEY = 'fx_tm_structural_replay_cursor_v1';
 const LEGACY_REPLAY_CURSOR_KEY = 'fx_tm_replay_cursor_time_v087_22';
 
 function safeParseRecord(raw: string | null): Record<string, string> {
@@ -83,10 +84,11 @@ export function saveChartDrawings(storageKey: string, drawings: ChartDrawing[]):
   window.localStorage.setItem(DRAWINGS_STORE_KEY, JSON.stringify(store));
 }
 
-export function loadReplayCursorForKey(storageKey: string): string | null {
+export function loadReplayCursorForKey(storageKey: string, opts?: { allowLegacy?: boolean }): string | null {
   if (typeof window === 'undefined' || !storageKey) return null;
   const store = safeParseRecord(window.localStorage.getItem(REPLAY_CURSOR_STORE_KEY));
   if (store[storageKey]) return store[storageKey];
+  if (opts?.allowLegacy === false) return null;
   const legacy = window.localStorage.getItem(LEGACY_REPLAY_CURSOR_KEY);
   return legacy || null;
 }
@@ -98,6 +100,21 @@ export function saveReplayCursorForKey(storageKey: string, time: string | null):
   else delete store[storageKey];
   window.localStorage.setItem(REPLAY_CURSOR_STORE_KEY, JSON.stringify(store));
   if (time) window.localStorage.setItem(LEGACY_REPLAY_CURSOR_KEY, time);
+}
+
+/** Scoped structural replay cursor: symbol + case + tf + range + load window. */
+export function loadStructuralReplayCursorForScope(scopeKey: string): string | null {
+  if (typeof window === 'undefined' || !scopeKey) return null;
+  const store = safeParseRecord(window.localStorage.getItem(STRUCTURAL_REPLAY_CURSOR_STORE_KEY));
+  return store[scopeKey] || null;
+}
+
+export function saveStructuralReplayCursorForScope(scopeKey: string, time: string | null): void {
+  if (typeof window === 'undefined' || !scopeKey) return;
+  const store = safeParseRecord(window.localStorage.getItem(STRUCTURAL_REPLAY_CURSOR_STORE_KEY));
+  if (time) store[scopeKey] = time;
+  else delete store[scopeKey];
+  window.localStorage.setItem(STRUCTURAL_REPLAY_CURSOR_STORE_KEY, JSON.stringify(store));
 }
 
 export function normalizeVLineDrawing(d: ChartVLineDrawing): ChartVLineDrawing {

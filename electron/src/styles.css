@@ -3020,6 +3020,97 @@ h1{font-size:20px;margin:0;font-weight:700} .brandBlock p{margin:2px 0 0;color:v
 .gpsHierarchyTabPanel .explorerLineToggle{
   min-width:42px;
 }
+.campaignTabPanel{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:10px 12px;
+  min-height:0;
+  overflow:auto;
+}
+.campaignYearRow{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  font-size:11px;
+  color:var(--muted);
+}
+.campaignYearRow select{
+  min-width:88px;
+}
+.mappingCampaignPanel{
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  padding:10px;
+  border:1px solid var(--border);
+  border-radius:8px;
+  background:rgba(15,23,42,.35);
+}
+.mappingCampaignHeader{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+}
+.mappingCampaignHeader b{
+  font-size:12px;
+}
+.mappingCampaignContinueBtn{
+  font-size:11px;
+  padding:4px 10px;
+}
+.mappingCampaignFields{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:8px 12px;
+  margin:0;
+}
+.mappingCampaignField{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+  min-width:0;
+}
+.mappingCampaignField dt{
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+  color:var(--muted);
+}
+.mappingCampaignField dd{
+  margin:0;
+  font-size:12px;
+  line-height:1.3;
+  word-break:break-word;
+}
+.mappingCampaignField dd.campaignNext{
+  color:#fbbf24;
+}
+.mappingCampaignField dd.campaignComplete{
+  color:#86efac;
+}
+.mappingCampaignTiers{
+  display:flex;
+  flex-wrap:wrap;
+  gap:6px;
+}
+.mappingCampaignTierBadge{
+  font-size:10px;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  color:var(--muted);
+}
+.mappingCampaignTierBadge.complete{
+  border-color:rgba(34,197,94,.35);
+  color:#86efac;
+}
+.mappingCampaignHint{
+  margin:0;
+  line-height:1.35;
+}
 .explorerTreeRow{
   display:grid;
   grid-template-columns:16px auto 4px minmax(0,1fr);
