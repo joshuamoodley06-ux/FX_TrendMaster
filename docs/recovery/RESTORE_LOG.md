@@ -88,6 +88,6 @@ Restoration follows `docs/recovery/RECOVERY_AUDIT.md` one feature at a time. No 
 | **Files changed** | `electron/src/main.tsx`, `electron/src/hooks/useMappingSessionPersistence.ts`, `electron/src/styles.css`, `docs/recovery/RESTORE_LOG.md` |
 | **Tests run** | `npm test` (electron vitest): **247 passed** |
 | **Manual smoke result** | Re-test required — gap queue click, cursor vlines, ChildMappingPanel scan/save/advance, session resume |
-| **Commit hash** | *(pending commit)* |
+| **Commit hash** | `51a9d87` |
 | **Remaining missing features** | Campaign Manager, Auto BOS Save |
 
