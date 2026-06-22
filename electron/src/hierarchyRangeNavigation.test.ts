@@ -36,6 +36,15 @@ describe('hierarchyRangeNavigation', () => {
     expect(resolveCandleWindowTargetRange('D1', ranges, '12', '')?.range_id).toBe('12');
   });
 
+  it('resolveCandleWindowTargetRange keeps active daily/w weekly span when drilling to intraday TF', () => {
+    const ranges = [
+      { range_id: '3', structure_layer: 'WEEKLY' },
+      { range_id: '12', structure_layer: 'DAILY' },
+    ];
+    expect(resolveCandleWindowTargetRange('H1', ranges, '12', '')?.range_id).toBe('12');
+    expect(resolveCandleWindowTargetRange('M15', ranges, '3', '')?.range_id).toBe('3');
+  });
+
   it('expandRangeSpanX enforces minimum readable span', () => {
     const out = expandRangeSpanX(400, 410, 60, 900);
     expect(out.x2 - out.x1).toBeGreaterThanOrEqual(96);

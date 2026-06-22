@@ -89,6 +89,20 @@ import {
   resolveRangeChartTimeframe,
 } from './hierarchyRangeNavigation';
 import {
+  formatCandleLoadDiagnostic,
+  filterCandlesToLoadWindow,
+  isCurrentCandleLoadRequest,
+  loadWindowKey,
+  maxBarsForStructuralWindow,
+  resolveStructuralCandleLoadWindow,
+  resolveStructuralDataLoadWindow,
+  shouldApplyParsedCandles,
+  shouldBlockQuietFullHistoryReload,
+  shouldUseWindowedCandleLoad,
+  type CandleLoadContext,
+  type CandleLoadDiagnostics,
+} from './candleLoadPolicy';
+import {
   annotateOverlayFocusTiers,
   filterFocusModeOverlays,
   focusYExtentsWithParent,
@@ -953,21 +967,27 @@ function fallbackContextPathIds(allRanges: any[]): string[] {
   return [];
 }
 
-function structuralRangePaddingCandles(layer: StructureLayer | null): number {
-  if (layer === 'MACRO' || layer === 'WEEKLY') return 20;
-  if (layer === 'DAILY') return 15;
-  if (layer === 'INTRADAY') return 10;
-  if (layer === 'MICRO') return 8;
-  return 15;
+function structuralRangePaddingCandles(layer: StructureLayer | null, chartTf?: string): { before: number; after: number } {
+  const base = (() => {
+    if (layer === 'MACRO' || layer === 'WEEKLY') return 20;
+    if (layer === 'DAILY') return 15;
+    if (layer === 'INTRADAY') return 10;
+    if (layer === 'MICRO') return 8;
+    return 15;
+  })();
+  const tf = String(chartTf || 'D1').toUpperCase();
+  if (tf === 'H1' || tf === 'H4') return { before: Math.max(base * 3, 36), after: Math.max(base, 12) };
+  if (tf === 'M15' || tf === 'M5') return { before: Math.max(base * 2, 28), after: Math.max(base, 10) };
+  return { before: Math.max(base * 2, 24), after: Math.max(base, 10) };
 }
 
 function structuralRangeFitPadRatio(layer: StructureLayer | null): number {
   if (layer === 'MACRO' || layer === 'WEEKLY') return 0.16;
   if (layer === 'DAILY') return 0.12;
-  return 0.08;
+  return 0.1;
 }
 
-function structuralRangeFitDomain(range: any, candles: Candle[]): StructuralFitWindow | null {
+function structuralRangeFitDomain(range: any, candles: Candle[], chartTf?: string): StructuralFitWindow | null {
   const hi = Number(range?.range_high_price ?? range?.range_high);
   const lo = Number(range?.range_low_price ?? range?.range_low);
   if (!Number.isFinite(hi) || !Number.isFinite(lo) || hi <= lo) return null;
@@ -994,7 +1014,7 @@ function structuralRangeFitDomain(range: any, candles: Candle[]): StructuralFitW
     endMs = startMs + (layer === 'INTRADAY' || layer === 'MICRO' ? 6 * 3600 * 1000 : 7 * 24 * 3600 * 1000);
   }
 
-  const padCandles = structuralRangePaddingCandles(layer);
+  const pad = structuralRangePaddingCandles(layer, chartTf);
   let priceLow = lo;
   let priceHigh = hi;
   let startTime = new Date(startMs).toISOString();
@@ -1003,8 +1023,8 @@ function structuralRangeFitDomain(range: any, candles: Candle[]): StructuralFitW
   if (candles.length) {
     const startIdx = candleIndexAtOrBefore(candles, startTime);
     const endIdx = candleIndexAtOrAfter(candles, endTime);
-    const padStart = Math.max(0, startIdx - padCandles);
-    const padEnd = Math.min(candles.length - 1, endIdx + padCandles);
+    const padStart = Math.max(0, startIdx - pad.before);
+    const padEnd = Math.min(candles.length - 1, endIdx + pad.after);
     startTime = candles[padStart]?.time || startTime;
     endTime = candles[padEnd]?.time || endTime;
     for (let i = padStart; i <= padEnd; i++) {
@@ -1015,9 +1035,10 @@ function structuralRangeFitDomain(range: any, candles: Candle[]): StructuralFitW
     }
   } else {
     const spanMs = Math.max(endMs - startMs, 1);
-    const padMs = Math.max(spanMs * 0.12, 3600 * 1000);
-    startTime = new Date(startMs - padMs).toISOString();
-    endTime = new Date(endMs + padMs).toISOString();
+    const leftPadMs = Math.max(spanMs * 0.42, 3600 * 1000);
+    const rightPadMs = Math.max(spanMs * 0.14, 3600 * 1000);
+    startTime = new Date(startMs - leftPadMs).toISOString();
+    endTime = new Date(endMs + rightPadMs).toISOString();
   }
 
   return {
@@ -1108,36 +1129,36 @@ function resolveCandleLoadWindow(
   rangeWindow: { start?: string; end?: string },
   options?: { liveTail?: boolean; preferredWindow?: { start?: string | null; end?: string | null } | null },
 ): { start: string; end: string; label: string } | null {
-  const liveEnd = options?.liveTail ? todayIsoDay() : null;
-  const preferredStart = isoDay(options?.preferredWindow?.start);
-  const preferredEnd = liveEnd || isoDay(options?.preferredWindow?.end || options?.preferredWindow?.start);
-  if (preferredStart && preferredEnd) {
-    return { start: preferredStart, end: preferredEnd, label: 'chart viewport' };
-  }
-  const rangeStart = isoDay(rangeWindow.start);
-  const rangeEnd = liveEnd || isoDay(rangeWindow.end || rangeWindow.start);
-  if (rangeStart && rangeEnd && isIntradayChartTimeframe(targetTf)) {
-    return { start: rangeStart, end: rangeEnd, label: 'active case window' };
-  }
-  if (!isIntradayChartTimeframe(targetTf)) return null;
   const contextRange = resolveCandleWindowTargetRange(
     targetTf,
     savedRanges,
     activeStructuralRangeId,
     selectedParentRangeId,
-  );
+  ) || resolveMappingContextRange(savedRanges, selectedParentRangeId, activeStructuralRangeId);
   if (contextRange) {
-    const fit = structuralRangeFitDomain(contextRange, []);
-    if (fit?.start && fit?.end) {
-      const start = isoDay(fit.start);
-      const end = liveEnd || isoDay(fit.end);
-      if (start && end) {
-        return { start, end, label: formatStructuralRangeOptionLabel(contextRange) };
-      }
-    }
+    const span = rangeWindowFieldsFromSavedRange(contextRange);
+    const dataWindow = resolveStructuralDataLoadWindow({
+      rangeSpan: { start: span.start || span.end, end: span.end || span.start },
+      chartTf: targetTf,
+      structureLayer: contextRange?.structure_layer || contextRange?.layer,
+      label: `${formatStructuralRangeOptionLabel(contextRange)} context`,
+    });
+    if (dataWindow) return dataWindow;
   }
-  if (rangeStart && rangeEnd) return { start: rangeStart, end: rangeEnd, label: 'active case window' };
-  return null;
+  const contextFit = contextRange ? structuralRangeFitDomain(contextRange, [], targetTf) : null;
+  return resolveStructuralCandleLoadWindow({
+    rangeWindow,
+    preferredWindow: options?.preferredWindow,
+    liveTail: options?.liveTail,
+    pinStructuralEnd: !!contextRange,
+    contextFit: contextFit?.start && contextFit?.end
+      ? {
+          start: contextFit.start,
+          end: contextFit.end,
+          label: formatStructuralRangeOptionLabel(contextRange),
+        }
+      : null,
+  });
 }
 
 function candleWindowOverlapsRange(candles: Candle[], startRaw?: string | null, endRaw?: string | null): boolean {
@@ -2397,6 +2418,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [candleWidthScale, setCandleWidthScale] = useLocalStorage<number>('fx_tm_candle_width_scale_v087_27', 1);
   const [priceZoomScale, setPriceZoomScale] = useLocalStorage<number>('fx_tm_price_zoom_scale_v087_27', 1);
   const candleLoadSeqRef = useRef(0);
+  const candleLoadContextRef = useRef<CandleLoadContext>({ requestId: 0, symbol: '', caseId: '', tf: '', activeRangeId: '', loadWindowKey: 'full' });
+  const candleCountRef = useRef(0);
+  const chartBootstrapSeqRef = useRef(0);
+  const deferredCameraRef = useRef<{
+    intent: CameraIntent;
+    targetTime?: string | null;
+    reason?: string;
+    fitWindow?: StructuralFitWindow | null;
+    priceDomain?: { low: number; high: number } | null;
+  } | null>(null);
+  const [deferredCameraToken, setDeferredCameraToken] = useState(0);
+  const [candleLoadDiagnostics, setCandleLoadDiagnostics] = useState<CandleLoadDiagnostics | null>(null);
+  useEffect(() => { candleCountRef.current = candles.length; }, [candles.length]);
   const pendingCameraIntentRef = useRef<{intent:CameraIntent; targetTime?:string|null; reason?:string; fitWindow?: StructuralFitWindow | null; priceDomain?: { low: number; high: number } | null; contextRangeId?: string | null}>({ intent:'LATEST', reason:'initial-load' });
   const visibleCameraDomainRef = useRef<VisibleCameraDomain|null>(null);
   const cameraKeyRef = useRef('');
@@ -2637,6 +2671,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [lastSavedRangeConfirmation, setLastSavedRangeConfirmation] = useState<any>(null);
   const [selectedParentRangeId, setSelectedParentRangeId] = useLocalStorage<string>('fx_tm_selected_parent_range_id_phase3', '');
   const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
+  const activeStructuralRangeIdRef = useRef('');
+  const selectedParentRangeIdRef = useRef('');
+  const skipSavedReplayHydrateRef = useRef(false);
+  activeStructuralRangeIdRef.current = activeStructuralRangeId;
+  selectedParentRangeIdRef.current = selectedParentRangeId;
   const [rhAnchor, setRhAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const [rlAnchor, setRlAnchor] = useState<StructuralAnchor>({ price:'', time:'' });
   const rhAnchorRef = useRef(rhAnchor);
@@ -3585,14 +3624,20 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const pending = pendingCameraIntentRef.current;
     if (pending.intent && pending.intent !== 'NONE') return pending;
     if (cameraMode === 'LOCKED') return { intent:'RESTORE_LOCKED' as CameraIntent, targetTime:fallbackTime, reason:'locked-load' };
-    const contextRange = resolveMappingContextRange(savedStructuralRanges, selectedParentRangeId, activeStructuralRangeId);
-    if (isIntradayChartTimeframe(requestedTf) && contextRange) {
+    const contextRange = resolveCandleWindowTargetRange(
+      requestedTf,
+      savedStructuralRanges,
+      activeStructuralRangeId,
+      selectedParentRangeId,
+    ) || resolveMappingContextRange(savedStructuralRanges, selectedParentRangeId, activeStructuralRangeId);
+    if (contextRange) {
       const ctxTime = structuralContextTargetTime(contextRange) || fallbackTime;
       return {
         intent:'FIT_STRUCTURAL_RANGE' as CameraIntent,
         targetTime: ctxTime,
         reason:`${requestedTf}-context-load`,
         contextRangeId: String(contextRange.range_id || contextRange.id),
+        fitWindow: structuralRangeFitDomain(contextRange, [], requestedTf) || null,
       };
     }
     if (cameraMode === 'CASE' && !rawActiveCaseId && (activeCaseId === null || activeCaseId === undefined)) {
@@ -3607,6 +3652,41 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     cameraLog('camera intent applied', { intent, targetTime, reason, scaleFactor, fitWindow, priceDomain });
     setCameraCommand(prev => ({ intent, targetTime: targetTime || null, reason, scaleFactor, fitWindow: fitWindow || null, priceDomain: priceDomain || null, token: prev.token + 1 }));
   };
+
+  const scheduleDeferredCamera = (
+    intent: CameraIntent,
+    targetTime?: string | null,
+    reason?: string,
+    fitWindow?: StructuralFitWindow | null,
+    priceDomain?: { low: number; high: number } | null,
+  ) => {
+    deferredCameraRef.current = { intent, targetTime, reason, fitWindow, priceDomain };
+    setDeferredCameraToken((t) => t + 1);
+  };
+
+  const recordCandleLoadDiagnostic = (diag: CandleLoadDiagnostics) => {
+    setCandleLoadDiagnostics(diag);
+    cameraLog('candle load diagnostic', diag);
+    if (DEBUG_CAMERA) console.log('[candle-load]', formatCandleLoadDiagnostic(diag), diag);
+  };
+
+  useEffect(() => {
+    const pending = deferredCameraRef.current;
+    if (!pending || !candles.length) return;
+    deferredCameraRef.current = null;
+    const frame = window.requestAnimationFrame(() => {
+      applyCameraCommand(
+        pending.intent,
+        pending.targetTime || null,
+        pending.reason || 'deferred-camera-fit',
+        undefined,
+        pending.fitWindow || null,
+        pending.priceDomain || null,
+      );
+      cameraLog('deferred camera applied', pending);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [deferredCameraToken, candles.length]);
 
   const fitRangeView = () => {
     const hi = parseNum(rhAnchor.price);
@@ -3728,35 +3808,100 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const loadCandles = async (requestedTf = timeframe, opts?: {
     quiet?: boolean;
     skipCamera?: boolean;
+    deferCamera?: boolean;
     cacheFullHistory?: boolean;
+    structuralNavigation?: boolean;
     loadWindow?: { start: string; end: string; label?: string } | null;
+    reason?: string;
+    navigationPath?: string;
   }) => {
     const targetTf = String(requestedTf || timeframe).toUpperCase();
     const quiet = !!opts?.quiet;
+    const activeRangeIdNow = String(activeStructuralRangeIdRef.current || '');
+    const parentRangeIdNow = String(selectedParentRangeIdRef.current || '');
     if (quiet && candleLoadInFlightRef.current) return;
+    if (shouldBlockQuietFullHistoryReload({
+      quiet,
+      forceFullHistory: opts?.cacheFullHistory,
+      activeRangeId: activeRangeIdNow,
+      selectedParentRangeId: parentRangeIdNow,
+      incomingWindowKey: loadWindowKey(opts?.loadWindow ?? null),
+    })) {
+      cameraLog('quiet full-history reload blocked during structural mapping', { targetTf, activeRangeId: activeRangeIdNow });
+      return;
+    }
     if (quiet) candleLoadInFlightRef.current = true;
+    if (!quiet) deferredCameraRef.current = null;
     const requestId = candleLoadSeqRef.current + 1;
     candleLoadSeqRef.current = requestId;
+    const capturedPending = !quiet && pendingCameraIntentRef.current.intent !== 'NONE'
+      ? { ...pendingCameraIntentRef.current }
+      : null;
     const preservedTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const pendingIntent = quiet
       ? { intent: 'PRESERVE_OR_NEAREST_TIME' as CameraIntent, targetTime: preservedTime, reason: 'quiet-refresh' }
-      : resolveLoadCameraIntent(targetTf, preservedTime);
-    const pendingForLoad = quiet
-      ? null
-      : (pendingCameraIntentRef.current.intent !== 'NONE' ? pendingCameraIntentRef.current : null);
-    const preferredWindow = pendingForLoad?.fitWindow?.start && pendingForLoad?.fitWindow?.end
-      ? { start: pendingForLoad.fitWindow.start, end: pendingForLoad.fitWindow.end }
+      : (capturedPending || resolveLoadCameraIntent(targetTf, preservedTime));
+    const preferredWindow = capturedPending?.fitWindow?.start && capturedPending?.fitWindow?.end
+      ? { start: capturedPending.fitWindow.start, end: capturedPending.fitWindow.end }
       : null;
+    const preserveStructuralContext = !!(
+      opts?.structuralNavigation
+      || activeRangeIdNow
+      || parentRangeIdNow
+      || capturedPending?.contextRangeId
+      || opts?.loadWindow
+    );
+    const liveTail = !candleReplayMode && !preserveStructuralContext;
     const loadWindow = opts?.loadWindow ?? resolveCandleLoadWindow(
       targetTf,
       savedStructuralRanges,
-      selectedParentRangeId,
-      activeStructuralRangeId,
+      parentRangeIdNow,
+      activeRangeIdNow,
       rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
-      { liveTail: !candleReplayMode, preferredWindow },
+      { liveTail, preferredWindow },
     );
-    const isCurrentLoad = () => requestId === candleLoadSeqRef.current && activeTimeframeRef.current === targetTf;
-    cameraLog('candle load start', { requestId, targetTf, intent:pendingIntent.intent, targetTime:pendingIntent.targetTime, loadWindow, quiet });
+    const forceWindowed = !!(loadWindow && (preserveStructuralContext || opts?.structuralNavigation));
+    const useWindowedLoad = forceWindowed || shouldUseWindowedCandleLoad(loadWindow, {
+      forceFullHistory: preserveStructuralContext ? false : opts?.cacheFullHistory,
+    });
+    const loadContext: CandleLoadContext = {
+      requestId,
+      symbol: String(symbol).toUpperCase(),
+      caseId: String(activeCaseDisplayId || ''),
+      tf: targetTf,
+      activeRangeId: activeRangeIdNow,
+      loadWindowKey: loadWindowKey(loadWindow),
+    };
+    candleLoadContextRef.current = loadContext;
+    const previousCount = candleCountRef.current;
+    const navigationPath = opts?.navigationPath || opts?.reason || 'loadCandles';
+    const isCurrentLoad = () => isCurrentCandleLoadRequest(
+      loadContext,
+      candleLoadContextRef.current,
+      activeTimeframeRef.current,
+    );
+    const diagBase: CandleLoadDiagnostics = {
+      at: new Date().toISOString(),
+      rangeId: activeRangeIdNow,
+      parentRangeId: parentRangeIdNow,
+      layer: String(structureLayer || ''),
+      requestedTf: targetTf,
+      windowStart: loadWindow?.start || '',
+      windowEnd: loadWindow?.end || '',
+      mode: useWindowedLoad ? 'windowed' as const : 'full' as const,
+      liveTail,
+      navigationPath,
+      previousCount,
+      reason: opts?.reason || pendingIntent.reason || 'loadCandles',
+      cameraIntent: pendingIntent.intent,
+      returnedCount: 0,
+      filteredCount: 0,
+      accepted: false,
+      replayIndex: 0,
+      playForwardEnabled: false,
+      playForwardReason: 'pending',
+    };
+    cameraLog('candle load start', { requestId, targetTf, intent: pendingIntent.intent, targetTime: pendingIntent.targetTime, loadWindow, liveTail, preserveStructuralContext, useWindowedLoad, quiet, loadContext, navigationPath });
     if (!quiet) {
       setLoading(true);
       setMessage(loadWindow
@@ -3764,12 +3909,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         : `Loading ${targetTf} candles from backend...`);
     }
     try {
-      const sessionRange = opts?.cacheFullHistory || !loadWindow
-        ? null
-        : { start: loadWindow.start, end: loadWindow.end };
+      const sessionRange = useWindowedLoad && loadWindow
+        ? { start: loadWindow.start, end: loadWindow.end }
+        : null;
       const mappingCase = getCurrentMappingCaseRef();
       const syncLoad = await loadSessionFromSyncArchitect(symbol, targetTf, {
-        refresh: !quiet,
+        refresh: !quiet && !useWindowedLoad,
+        skipVpsSync: useWindowedLoad && preserveStructuralContext,
         range: sessionRange,
         caseId: mappingCase.caseRef || activeCaseDisplayId || null,
       });
@@ -3780,6 +3926,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (!syncLoad.ok && isStaleRehydrationLoad(syncLoad)) {
         applyStaleCacheBlockedUiClear(targetTf);
         if (!quiet) setLoading(false);
+        recordCandleLoadDiagnostic({ ...diagBase, returnedCount: 0, accepted: false, detail: 'stale-cache-blocked', cameraIntent: 'NONE' });
         cameraLog('stale cache blocked chart load', { requestId, targetTf, rehydration: syncLoad.rehydration, state: STALE_CACHE_BLOCKED });
         return;
       }
@@ -3792,9 +3939,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           setMessage(`Loaded ${parsed.length} ${targetTf} candles from local cache…`);
         }
       }
-      let r: any = null;
       if (!parsed.length) {
-        r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, loadWindow, !quiet));
+        const r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, useWindowedLoad ? loadWindow : null, !quiet));
         if (!isCurrentLoad()) { cameraLog('candle load ignored as stale', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
         if (!r.ok) throw new Error(r.error || 'Backend returned no candles');
         parsed = parseCandleRows(r.candles);
@@ -3802,43 +3948,74 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           void persistRemoteCandlesToCache(symbol, targetTf, r, 'chart_load').catch(() => {});
         }
       }
-      let contextMiss = false;
-      if (!parsed.length && loadWindow) {
-        r = await fetchJsonWithTimeout(buildCandleFetchUrl(symbol, targetTf, null, !quiet));
-        if (!isCurrentLoad()) return;
-        parsed = parseCandleRows(r.candles);
-        if (parsed.length) {
-          void persistRemoteCandlesToCache(symbol, targetTf, r, 'chart_load_fallback').catch(() => {});
+      const rawCount = parsed.length;
+      if (useWindowedLoad && loadWindow && parsed.length) {
+        parsed = filterCandlesToLoadWindow(parsed, {
+          start: loadWindow.start,
+          end: loadWindow.end,
+          label: loadWindow.label || 'structural context',
+        });
+        const maxBars = maxBarsForStructuralWindow(targetTf);
+        if (parsed.length > maxBars) {
+          parsed = parsed.slice(0, maxBars);
         }
-        contextMiss = parsed.length > 0;
-      } else if (loadWindow && parsed.length && !candleWindowOverlapsRange(parsed, loadWindow.start, loadWindow.end)) {
+      }
+      let contextMiss = false;
+      if (useWindowedLoad && loadWindow && parsed.length && !candleWindowOverlapsRange(parsed, loadWindow.start, loadWindow.end)) {
         contextMiss = true;
       }
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after parse', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
-      setCandles(parsed);
-      if (!parsed.length) {
-        setCandleReplayIndex(0);
-        setSelectedCandle(null);
-        setSelectedCandlePoint(null);
-        pendingCameraIntentRef.current = { intent:'NONE' };
+      const applyDecision = shouldApplyParsedCandles({
+        parsedCount: parsed.length,
+        previousCount,
+        hadLoadWindow: useWindowedLoad,
+      });
+      if (!applyDecision.apply || (useWindowedLoad && !parsed.length)) {
+        const detail = applyDecision.detail || (useWindowedLoad && !parsed.length ? 'empty-window-load' : 'rejected');
+        recordCandleLoadDiagnostic({
+          ...diagBase,
+          returnedCount: parsed.length,
+          accepted: false,
+          detail,
+          cameraIntent: 'NONE',
+        });
+        deferredCameraRef.current = null;
+        pendingCameraIntentRef.current = { intent: 'NONE' };
         if (!quiet) {
-          setMessage(`No ${targetTf} candles for ${symbol} on VPS. Use XAUUSD (has OHLC loaded) or Tools → Import EA CSV / Sync MT5.`);
+          setMessage(applyDecision.statusMessage || `No ${targetTf} candles for selected range window. Keeping prior chart data.`);
         }
-        cameraLog('candle load empty', { requestId, targetTf });
+        cameraLog('candle load rejected', { requestId, targetTf, parsed: parsed.length, previousCount, loadWindow, contextMiss, detail });
         return;
       }
+      setCandles(parsed);
+      candleCountRef.current = parsed.length;
       writeAutoResumeSession(symbol, targetTf);
-      const targetTime = pendingIntent.targetTime || preservedTime;
-      const nearestIdx = targetTime ? candleIndexNearest(parsed, targetTime) : parsed.length - 1;
-      const safeIdx = clamp(nearestIdx, 0, parsed.length - 1);
+      const structuralTargetTime = pendingIntent.targetTime || preservedTime;
+      const replaySeedTime = structuralTargetTime
+        || (useWindowedLoad && loadWindow?.start ? `${loadWindow.start}T00:00:00.000Z` : null);
+      let safeIdx = replaySeedTime
+        ? clamp(candleIndexAtOrBefore(parsed, replaySeedTime), 0, parsed.length - 1)
+        : clamp(parsed.length > 0 ? parsed.length - 1 : 0, 0, Math.max(0, parsed.length - 1));
       const nearest = parsed[safeIdx];
+      const playForwardEnabled = parsed.length > 0 && safeIdx < parsed.length - 1;
+      const playForwardReason = playForwardEnabled
+        ? 'ok'
+        : (parsed.length <= 1 ? 'at-last-bar-or-single-bar' : 'at-last-bar');
       if (!quiet) {
         setCandleReplayIndex(safeIdx);
-        if (targetTime && nearest) {
+        if (nearest) {
           setSelectedCandle(nearest);
           setSelectedCandlePoint({ price: Number(nearest.close.toFixed(2)) });
-          if (candleReplayMode || pendingIntent.intent === 'REPLAY') setCandleReplayCursorTime(nearest.time);
-          cameraLog('selected/replay nearest-candle mapping', { requestId, targetTf, targetTime, nearestTime:nearest.time, safeIdx });
+          if (preserveStructuralContext || opts?.structuralNavigation) {
+            skipSavedReplayHydrateRef.current = true;
+            setCandleReplayPlaying(false);
+            setCandleReplayMode(true);
+            setCandleReplayCursorTime(nearest.time);
+            saveReplayCursorForKey(chartDrawingsKey, nearest.time);
+          } else if (candleReplayMode || pendingIntent.intent === 'REPLAY') {
+            setCandleReplayCursorTime(nearest.time);
+          }
+          cameraLog('selected/replay nearest-candle mapping', { requestId, targetTf, replaySeedTime, nearestTime:nearest.time, safeIdx, playForwardEnabled });
         }
       }
       if (!quiet) setLoading(false);
@@ -3846,22 +4023,29 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after memory', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
       if (opts?.skipCamera) {
         pendingCameraIntentRef.current = { intent:'NONE' };
+        recordCandleLoadDiagnostic({ ...diagBase, returnedCount: parsed.length, accepted: true, cameraIntent: 'NONE', detail: 'skip-camera' });
         if (!quiet) {
           const ext = candleDataExtent(parsed);
           setMessage(`Loaded ${parsed.length} ${targetTf} candles${ext ? ` · latest ${shortTime(ext.end, targetTf)}` : ''}.`);
         }
         return;
       }
-      const commandTargetTime = pendingIntent.targetTime || targetTime || nearest?.time || null;
+      const commandTargetTime = pendingIntent.targetTime || structuralTargetTime || preservedTime || nearest?.time || null;
       let fitWindow = pendingIntent.fitWindow || null;
       let cameraIntent: CameraIntent = pendingIntent.intent === 'NONE' ? 'PRESERVE_OR_NEAREST_TIME' : pendingIntent.intent;
       const hasInheritedPrice = !!(pendingIntent.priceDomain
         && Number.isFinite(pendingIntent.priceDomain.low)
         && Number.isFinite(pendingIntent.priceDomain.high)
         && pendingIntent.priceDomain.high > pendingIntent.priceDomain.low);
-      if (!contextMiss && pendingIntent.contextRangeId && !fitWindow) {
-        const contextRange = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(pendingIntent.contextRangeId));
-        if (contextRange) fitWindow = structuralRangeFitDomain(contextRange, parsed) || fitWindow;
+      const contextRangeId = pendingIntent.contextRangeId || String(activeStructuralRangeId || '');
+      if (contextRangeId) {
+        const contextRange = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(contextRangeId));
+        if (contextRange) {
+          fitWindow = structuralRangeFitDomain(contextRange, parsed, targetTf) || fitWindow;
+        }
+      }
+      if (cameraIntent !== 'FIT_STRUCTURAL_RANGE' && fitWindow && contextRangeId) {
+        cameraIntent = 'FIT_STRUCTURAL_RANGE';
       }
       let useStructuralPrice = !!(fitWindow
         && Number.isFinite(fitWindow.low)
@@ -3869,9 +4053,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         && fitWindow.high > fitWindow.low
         && !hasInheritedPrice);
       if (contextMiss) {
-        cameraIntent = 'LATEST';
-        fitWindow = null;
-        useStructuralPrice = false;
+        if (!fitWindow && contextRangeId) {
+          const contextRange = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(contextRangeId));
+          if (contextRange) fitWindow = structuralRangeFitDomain(contextRange, parsed, targetTf) || fitWindow;
+        }
+        cameraIntent = fitWindow ? 'FIT_STRUCTURAL_RANGE' : (commandTargetTime ? 'PRESERVE_OR_NEAREST_TIME' : 'LATEST');
+        if (!fitWindow) useStructuralPrice = false;
       }
       const lockedDom = cameraMode === 'LOCKED' ? cameraDomainByCaseTf[cameraKey] : null;
       if (lockedDom?.start && lockedDom?.end && !candleWindowOverlapsRange(parsed, lockedDom.start, lockedDom.end)) {
@@ -3881,30 +4068,68 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       } else if (cameraIntent === 'CASE' && !commandTargetTime) {
         cameraIntent = 'LATEST';
       }
-      applyCameraCommand(
-        cameraIntent,
-        cameraIntent === 'LATEST' ? (parsed[parsed.length - 1]?.time || commandTargetTime) : commandTargetTime,
-        pendingIntent.reason || 'confirmed-candle-load',
-        undefined,
+      const cameraPayload = {
+        intent: cameraIntent,
+        targetTime: cameraIntent === 'LATEST' ? (parsed[parsed.length - 1]?.time || commandTargetTime) : commandTargetTime,
+        reason: pendingIntent.reason || opts?.reason || 'confirmed-candle-load',
         fitWindow,
-        useStructuralPrice ? null : (pendingIntent.priceDomain || null),
-      );
+        priceDomain: useStructuralPrice ? null : (pendingIntent.priceDomain || null),
+      };
+      if (opts?.deferCamera !== false) {
+        scheduleDeferredCamera(
+          cameraPayload.intent,
+          cameraPayload.targetTime,
+          cameraPayload.reason,
+          cameraPayload.fitWindow,
+          cameraPayload.priceDomain,
+        );
+      } else {
+        applyCameraCommand(
+          cameraPayload.intent,
+          cameraPayload.targetTime,
+          cameraPayload.reason,
+          undefined,
+          cameraPayload.fitWindow,
+          cameraPayload.priceDomain,
+        );
+      }
       pendingCameraIntentRef.current = { intent:'NONE' };
+      recordCandleLoadDiagnostic({
+        ...diagBase,
+        returnedCount: rawCount,
+        filteredCount: parsed.length,
+        accepted: true,
+        cameraIntent: cameraPayload.intent,
+        replayIndex: safeIdx,
+        playForwardEnabled,
+        playForwardReason,
+        detail: contextMiss ? 'context-miss-fit-range' : (rawCount !== parsed.length ? 'client-window-filter' : undefined),
+      });
       const ext = candleDataExtent(parsed);
       if (!quiet) {
+        const diagLine = formatCandleLoadDiagnostic({
+          ...diagBase,
+          returnedCount: rawCount,
+          filteredCount: parsed.length,
+          accepted: true,
+          cameraIntent: cameraPayload.intent,
+          replayIndex: safeIdx,
+          playForwardEnabled,
+          playForwardReason,
+        });
         if (contextMiss && ext && loadWindow) {
           setMessage(
-            `No ${targetTf} history for ${loadWindow.label} (${loadWindow.start} → ${loadWindow.end}). `
-            + `VPS only has ${shortTime(ext.start, targetTf)} → ${shortTime(ext.end, targetTf)} (${parsed.length} bars). `
-            + `Tools → Sync MT5 Now or Import EA CSV.`,
+            `${diagLine} · Partial ${targetTf} cache for ${loadWindow.label} (${loadWindow.start} → ${loadWindow.end}). `
+            + `Showing ${shortTime(ext.start, targetTf)} → ${shortTime(ext.end, targetTf)} (${parsed.length} bars).`,
           );
         } else {
-          setMessage(`Loaded ${parsed.length} ${targetTf} candles${loadWindow ? ` for ${loadWindow.start} → ${loadWindow.end}` : ''}${ext ? ` · latest ${shortTime(ext.end, targetTf)}` : ''}.`);
+          setMessage(`${diagLine}${loadWindow ? '' : ''}${ext ? ` · latest ${shortTime(ext.end, targetTf)}` : ''}.`);
         }
       }
-      cameraLog('candle load applied', { requestId, targetTf, intent:cameraIntent, commandTargetTime, contextMiss, loadWindow, quiet });
+      cameraLog('candle load applied', { requestId, targetTf, intent:cameraPayload.intent, commandTargetTime, contextMiss, loadWindow, quiet, loadContext });
     } catch(e:any) {
       if (!isCurrentLoad()) { cameraLog('candle load error ignored as stale', { requestId, targetTf, error:e?.message || e }); return; }
+      recordCandleLoadDiagnostic({ ...diagBase, returnedCount: 0, accepted: false, detail: e?.message || String(e), cameraIntent: 'NONE' });
       if (!quiet) setMessage(`Load ${targetTf} failed: ${e?.name === 'AbortError' ? 'timed out — check VPS connection and click Reload' : (e?.message || e)}`);
     }
     finally {
@@ -4712,6 +4937,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         setSelectedParentRangeId(String(activeStructuralRangeId));
       }
       setActiveStructuralRangeId('');
+      activeStructuralRangeIdRef.current = '';
       setLastSavedRangeConfirmation(null);
       return;
     }
@@ -5158,13 +5384,24 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         try { await refreshSavedRangesForCurrentCase(); } catch {}
         try { await refreshStructuralMapEventsForChart(session.timeframe); } catch {}
       }
-      await loadCandles(session.timeframe, { cacheFullHistory: true });
+      await loadCandles(session.timeframe, (() => {
+        const tf = String(session.timeframe).toUpperCase();
+        const loadWindow = resolveCandleLoadWindow(
+          tf,
+          savedStructuralRanges,
+          selectedParentRangeId,
+          activeStructuralRangeId,
+          rangeWindowByTf[tf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+        );
+        return { loadWindow, cacheFullHistory: !shouldUseWindowedCandleLoad(loadWindow) };
+      })());
     },
   });
 
   const selectSavedStructuralRange = (range:any, opts?: { routeInspector?: boolean }) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
+    activeStructuralRangeIdRef.current = id;
     setActiveStructuralRangeId(id);
     const nextLayer = normalizeStructureLayer(range.structure_layer || range.layer) || structureLayer;
     setStructureLayer(nextLayer);
@@ -5283,7 +5520,20 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         },
         refreshSavedRanges: refreshSavedRangesForCurrentCase,
         refreshMapEvents: refreshStructuralMapEventsForChart,
-        loadCandles: (tf) => loadCandles(tf, { cacheFullHistory: true }),
+        loadCandles: (tf) => {
+          const targetTf = String(tf).toUpperCase();
+          const loadWindow = resolveCandleLoadWindow(
+            targetTf,
+            savedStructuralRanges,
+            selectedParentRangeId,
+            activeStructuralRangeId,
+            rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+          );
+          return loadCandles(targetTf, {
+            loadWindow,
+            cacheFullHistory: !shouldUseWindowedCandleLoad(loadWindow),
+          });
+        },
         selectSavedStructuralRange,
       });
       writeAutoResumeSession(symbol, result.chartTimeframe);
@@ -6629,71 +6879,36 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const isParentOnlyPick = !!(
       rangeLayer && neededParentLayer && rangeLayer === neededParentLayer && rangeLayer !== structureLayer
     );
-    const { start: startRaw, end: endRaw } = rangeWindowFieldsFromSavedRange(range);
+    const { start: startRaw } = rangeWindowFieldsFromSavedRange(range);
     const startStr = startRaw || '';
     const chartTf = resolveRangeChartTimeframe(range, timeframe);
-    const needsTfSwitch = chartTf !== String(timeframe).toUpperCase();
-    const fitWindow = structuralRangeFitDomain(range, needsTfSwitch ? [] : candles);
-    const startDay = isoDay(startStr || endRaw);
-    const endDay = isoDay(endRaw || startStr);
-    const explicitLoadWindow = !isParentOnlyPick && startDay && endDay && isIntradayChartTimeframe(chartTf)
-      ? { start: startDay, end: endDay, label: formatStructuralRangeOptionLabel(range) }
-      : null;
 
     applyExplorerRowSelection(range, { routeInspector: false });
 
-    if (!isParentOnlyPick) {
-      setRangeWindowByTf((prev) => ({
-        ...prev,
-        [chartTf]: { start: startStr || endRaw, end: endRaw || startStr },
-      }));
-    }
-
-    skipBootstrapOnceRef.current = true;
-    pendingCameraIntentRef.current = {
-      intent: 'FIT_STRUCTURAL_RANGE',
-      targetTime: startStr || selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null,
-      reason: 'explorer-jump-fit',
-      fitWindow,
-      contextRangeId: id,
-    };
-
-    const finishJump = () => {
-      if (startStr) {
-        setJumpDate(startStr.slice(0, 10));
-      }
-      if (fitWindow) {
-        applyCameraCommand('FIT_STRUCTURAL_RANGE', startStr || null, 'explorer-jump-fit', undefined, fitWindow);
-      } else if (startStr) {
-        applyCameraCommand('PRESERVE_OR_NEAREST_TIME', startStr, 'explorer-jump');
-      }
-    };
-
     if (isParentOnlyPick) {
+      const fitWindow = structuralRangeFitDomain(range, candles);
+      pendingCameraIntentRef.current = {
+        intent: 'FIT_STRUCTURAL_RANGE',
+        targetTime: startStr || selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null,
+        reason: 'explorer-parent-context',
+        fitWindow,
+        contextRangeId: id,
+      };
       if (startStr) {
         setCandleReplayFrameByTime(startStr);
         setJumpDate(startStr.slice(0, 10));
       }
-      finishJump();
+      scheduleDeferredCamera('FIT_STRUCTURAL_RANGE', startStr || null, 'explorer-parent-context', fitWindow);
       return;
     }
 
-    if (needsTfSwitch) {
-      activeTimeframeRef.current = chartTf;
-      setTimeframe(chartTf);
-      void loadCandles(chartTf, { loadWindow: explicitLoadWindow }).then(finishJump);
-      return;
-    }
-
-    if (explicitLoadWindow || isIntradayChartTimeframe(chartTf)) {
-      void loadCandles(chartTf, { loadWindow: explicitLoadWindow }).then(finishJump);
-      return;
-    }
-
-    if (startStr) {
-      setCandleReplayFrameByTime(startStr);
-    }
-    finishJump();
+    void navigateStructuralChartContext({
+      targetTf: chartTf,
+      range,
+      reason: 'explorer-jump-fit',
+    }).then(() => {
+      if (startStr) setJumpDate(startStr.slice(0, 10));
+    });
   };
 
   const loadRangeAuditOnChart = (target: RangeAuditViewTarget) => {
@@ -7105,7 +7320,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setToolMode('scrub');
     setReplaySelectBarMode(true);
     if (!candleReplayCursorTime && candles.length) {
-      setCandleReplayFrame(candles.length - 1);
+      const ctxTime = rhAnchor.time || rlAnchor.time || selectedCandle?.time || null;
+      if (ctxTime) setCandleReplayFrameByTime(ctxTime);
+      else setCandleReplayFrame(0);
     }
     setMessage('Bar Replay on — click a candle or use Select bar to scrub.');
   };
@@ -7313,9 +7530,71 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     } as any;
   };
 
+  const buildStructuralNavigationPlan = (range: any, chartTf: string) => {
+    const span = rangeWindowFieldsFromSavedRange(range);
+    const layer = normalizeStructureLayer(range?.structure_layer || range?.layer);
+    const tf = String(chartTf).toUpperCase();
+    const loadWindow = resolveStructuralDataLoadWindow({
+      rangeSpan: { start: span.start || span.end, end: span.end || span.start },
+      chartTf: tf,
+      structureLayer: layer,
+      label: `${formatStructuralRangeOptionLabel(range)} context`,
+    }) || (() => {
+      const startDay = isoDay(span.start || span.end);
+      const endDay = isoDay(span.end || span.start);
+      if (!startDay || !endDay) return null;
+      return { start: startDay, end: endDay, label: `${formatStructuralRangeOptionLabel(range)} fallback` };
+    })();
+    const fitWindow = structuralRangeFitDomain(range, [], tf);
+    return {
+      rangeId: String(range?.range_id || range?.id || ''),
+      startStr: span.start || span.end || '',
+      endStr: span.end || span.start || '',
+      chartTf: tf,
+      fitWindow,
+      loadWindow,
+      targetTime: structuralContextTargetTime(range) || span.start || null,
+    };
+  };
+
+  const navigateStructuralChartContext = (args: {
+    targetTf: string;
+    range: any;
+    reason: string;
+  }) => {
+    const plan = buildStructuralNavigationPlan(args.range, args.targetTf);
+    if (plan.startStr || plan.endStr) {
+      setRangeWindowByTf((prev) => ({
+        ...prev,
+        [plan.chartTf]: { start: plan.startStr || plan.endStr, end: plan.endStr || plan.startStr },
+      }));
+    }
+    skipBootstrapOnceRef.current = true;
+    pendingCameraIntentRef.current = {
+      intent: 'FIT_STRUCTURAL_RANGE',
+      targetTime: plan.targetTime,
+      reason: args.reason,
+      fitWindow: plan.fitWindow,
+      contextRangeId: plan.rangeId,
+    };
+    activeTimeframeRef.current = plan.chartTf;
+    setTimeframe(plan.chartTf);
+    return loadCandles(plan.chartTf, {
+      loadWindow: plan.loadWindow,
+      cacheFullHistory: false,
+      structuralNavigation: true,
+      reason: args.reason,
+      navigationPath: `navigateStructural:${args.reason}`,
+      deferCamera: true,
+    });
+  };
+
   const switchTimeframePreserveCase = (nextTf:string) => {
     const tf = String(nextTf || timeframe).toUpperCase();
     const sourceTf = String(timeframe).toUpperCase();
+    const activeRangeIdNow = String(activeStructuralRangeIdRef.current || '');
+    const parentRangeIdNow = String(selectedParentRangeIdRef.current || '');
+    cameraLog('chart tf switch requested', { from: sourceTf, to: tf, activeRangeId: activeRangeIdNow, parentRangeId: parentRangeIdNow, layer: structureLayer });
     const sourceKey = `${activeCaseDisplayId || 'global'}_${sourceTf}`;
     let targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const dom = visibleCameraDomainRef.current;
@@ -7336,7 +7615,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const savedDestPrice = cameraPriceDomainByCaseTf[nextKey];
     const inheritedTime = validDomTime ? { start: dom!.start, end: dom!.end } : null;
     const drillingDown = isDrillingDownTimeframe(sourceTf, tf);
-    const contextRange = resolveMappingContextRange(savedStructuralRanges, selectedParentRangeId, activeStructuralRangeId);
+    const windowTarget = resolveCandleWindowTargetRange(tf, savedStructuralRanges, activeRangeIdNow, parentRangeIdNow);
+    const contextRange = windowTarget || resolveMappingContextRange(savedStructuralRanges, parentRangeIdNow, activeRangeIdNow);
+
+    const hasStructuralContext = !!(activeRangeIdNow || parentRangeIdNow || windowTarget);
+    if (cameraMode !== 'LOCKED' && contextRange && hasStructuralContext) {
+      cameraLog('timeframe switch using navigateStructuralChartContext', { tf, contextRangeId: contextRange.range_id || contextRange.id, hasStructuralContext });
+      void navigateStructuralChartContext({
+        targetTf: tf,
+        range: contextRange,
+        reason: `timeframe-switch:${sourceTf}->${tf}`,
+      });
+      if (autoResume.isWelcome) autoResume.markSessionActive(symbol, tf);
+      return;
+    }
+
+    let explicitLoadWindow: { start: string; end: string; label?: string } | null = null;
 
     let intent: CameraIntent = cameraMode === 'LOCKED'
       ? 'RESTORE_LOCKED'
@@ -7386,14 +7680,25 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         };
         priceDomain = inheritedPrice;
         targetTime = targetTime || inheritedTime.start;
-      } else if (isIntradayChartTimeframe(tf) && contextRange) {
+      } else if (contextRange) {
         intent = 'FIT_STRUCTURAL_RANGE';
         contextRangeId = String(contextRange.range_id || contextRange.id);
         targetTime = targetTime || structuralContextTargetTime(contextRange);
+        fitWindow = structuralRangeFitDomain(contextRange, [], tf) || fitWindow;
+        const span = rangeWindowFieldsFromSavedRange(contextRange);
+        if (span.start || span.end) {
+          setRangeWindowByTf(prev => ({ ...prev, [tf]: { start: span.start || span.end, end: span.end || span.start } }));
+          explicitLoadWindow = resolveStructuralDataLoadWindow({
+            rangeSpan: { start: span.start || span.end, end: span.end || span.start },
+            chartTf: tf,
+            structureLayer: contextRange?.structure_layer || contextRange?.layer,
+            label: `${formatStructuralRangeOptionLabel(contextRange)} context`,
+          });
+        }
       }
     }
 
-    cameraLog('timeframe switch start', { from: sourceTf, to: tf, intent, targetTime, priceDomain, contextRangeId, drillingDown, inheritedTime });
+    cameraLog('timeframe switch start', { from: sourceTf, to: tf, intent, targetTime, priceDomain, contextRangeId, drillingDown, inheritedTime, explicitLoadWindow });
     pendingCameraIntentRef.current = {
       intent,
       targetTime,
@@ -7404,13 +7709,33 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     };
     if (drillingDown && inheritedTime) {
       setRangeWindowByTf(prev => ({ ...prev, [tf]: { start: inheritedTime.start, end: inheritedTime.end } }));
+      explicitLoadWindow = resolveStructuralCandleLoadWindow({
+        rangeWindow: { start: inheritedTime.start, end: inheritedTime.end },
+        preferredWindow: { start: inheritedTime.start, end: inheritedTime.end },
+      });
     } else {
       const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
       if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
+      if (!explicitLoadWindow && (w.start || w.end)) {
+        explicitLoadWindow = resolveStructuralCandleLoadWindow({
+          rangeWindow: { start: w.start || w.end, end: w.end || w.start },
+        });
+      }
     }
+    if (!explicitLoadWindow && fitWindow?.start && fitWindow?.end) {
+      explicitLoadWindow = resolveStructuralCandleLoadWindow({
+        rangeWindow: { start: fitWindow.start, end: fitWindow.end },
+        preferredWindow: { start: fitWindow.start, end: fitWindow.end },
+      });
+    }
+    skipBootstrapOnceRef.current = true;
     activeTimeframeRef.current = tf;
     setTimeframe(tf);
     if (autoResume.isWelcome) autoResume.markSessionActive(symbol, tf);
+    void loadCandles(tf, {
+      loadWindow: explicitLoadWindow,
+      cacheFullHistory: !shouldUseWindowedCandleLoad(explicitLoadWindow),
+    });
   };
 
   const handleMappingViewContextChange = (next: MappingViewContext) => {
@@ -7474,6 +7799,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const handleChartTfSwitch = (nextTf: string) => {
     const tf = String(nextTf || timeframe).toUpperCase();
+    cameraLog('chart tf chip clicked', { tf, activeRangeId: activeStructuralRangeIdRef.current, parentRangeId: selectedParentRangeIdRef.current, layer: structureLayer });
     if (showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf)) {
       setMessage(`Chart ${tf} is blocked while mapping ${structureLayer}. Use ${mappingAllowedChartTfs.join(' or ')} — or change scope first.`);
       return;
@@ -7497,10 +7823,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setSeedAnchors((prev:any)=>({ ...prev, case_scope: nextScope, case_timeframe: nextTf }));
       setHistoryMarkMode('ACTIVE_CASE');
       pendingCameraIntentRef.current = { intent: cameraMode === 'LOCKED' ? 'RESTORE_LOCKED' : 'PRESERVE_OR_NEAREST_TIME', targetTime: idea.replay_candle_time || selectedCandle?.time || candleReplayCursorTime || null, reason:'open-raw-case' };
+      skipBootstrapOnceRef.current = true;
       activeTimeframeRef.current = nextTf;
       setTimeframe(nextTf);
       setSeedIdeas(prev => mergeSavedCases(prev, rawCaseRecentRow(rawId, idea.raw_case)));
       const { eventCount, rangeCount } = await restoreCaseWorkspaceFromVps(rawId, nextTf);
+      const caseWindow = rangeWindowByTf[nextTf] || { start: seedAnchors.range_start_date || '', end: seedAnchors.range_end_date || '' };
+      const loadWindow = resolveStructuralCandleLoadWindow({ rangeWindow: caseWindow });
+      await loadCandles(nextTf, {
+        loadWindow,
+        cacheFullHistory: !shouldUseWindowedCandleLoad(loadWindow),
+      });
       setMessage(`Opened raw Case ${rawId.slice(0,8)} from VPS${eventCount ? ` · ${eventCount} ledger event${eventCount===1?'':'s'}` : ''}${rangeCount ? ` · ${rangeCount} structural range${rangeCount===1?'':'s'}` : ''}.`);
       return;
     }
@@ -7522,6 +7855,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (w.start || w.end) setRangeWindowByTf(prev => ({ ...prev, [nextTf]: { ...(prev[nextTf] || {}), start: w.start || prev[nextTf]?.start || '', end: w.end || prev[nextTf]?.end || '' } }));
     setHistoryMarkMode('ACTIVE_CASE');
     pendingCameraIntentRef.current = { intent: cameraMode === 'LOCKED' ? 'RESTORE_LOCKED' : 'CASE', targetTime: w.start || idea.replay_candle_time || selectedCandle?.time || candleReplayCursorTime || null, reason:'open-saved-case' };
+    skipBootstrapOnceRef.current = true;
     activeTimeframeRef.current = nextTf;
     setTimeframe(nextTf);
     try {
@@ -7559,6 +7893,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         }
       }
     } catch { /* payload is helpful but not mandatory */ }
+    const loadWindow = resolveStructuralCandleLoadWindow({ rangeWindow: w });
+    await loadCandles(nextTf, {
+      loadWindow,
+      cacheFullHistory: !shouldUseWindowedCandleLoad(loadWindow),
+    });
     setMessage(`Opened Case #${id}. Restored ${nextTf} workspace and case camera ${w.start ? String(w.start).slice(0,10) : 'start?'} → ${w.end ? String(w.end).slice(0,10) : 'end?'}. Switch W1/D1 and the camera stays in this case window.`);
   };
 
@@ -7604,6 +7943,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   useEffect(() => {
     setChartDrawings(loadChartDrawings(chartDrawingsKey));
     setSelectedDrawingId(null);
+    if (skipSavedReplayHydrateRef.current) {
+      skipSavedReplayHydrateRef.current = false;
+      return;
+    }
     const savedReplay = loadReplayCursorForKey(chartDrawingsKey);
     if (savedReplay && !replayCursorByKey[chartDrawingsKey]) {
       setReplayCursorByKey((prev) => ({ ...prev, [chartDrawingsKey]: savedReplay }));
@@ -7832,7 +8175,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     void (async () => {
       const cacheCount = await readLocalCacheBarCount(symbol, timeframe);
       if (cancelled || cacheCount <= 0) return;
-      await loadCandles(timeframe, { cacheFullHistory: true });
+      const loadWindow = resolveCandleLoadWindow(
+        timeframe,
+        savedStructuralRanges,
+        selectedParentRangeId,
+        activeStructuralRangeId,
+        rangeWindowByTf[timeframe] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+      );
+      await loadCandles(timeframe, {
+        loadWindow,
+        cacheFullHistory: !shouldUseWindowedCandleLoad(loadWindow),
+      });
       if (!cancelled) autoResume.markSessionActive(symbol, timeframe);
     })();
     return () => { cancelled = true; };
@@ -7842,6 +8195,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (blockMappingBootEffects()) return;
     if (autoResume.phase === 'booting' || autoResume.isAutoResuming) return;
     let cancelled = false;
+    const bootId = chartBootstrapSeqRef.current + 1;
+    chartBootstrapSeqRef.current = bootId;
     (async () => {
       if (skipBootstrapOnceRef.current) {
         skipBootstrapOnceRef.current = false;
@@ -7851,25 +8206,38 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         try { await refreshSavedRangesForCurrentCase(); } catch {}
         try { await refreshStructuralMapEventsForChart(timeframe); } catch {}
       }
+      if (cancelled || bootId !== chartBootstrapSeqRef.current) return;
+      const loadWindow = resolveCandleLoadWindow(
+        timeframe,
+        savedStructuralRanges,
+        selectedParentRangeId,
+        activeStructuralRangeId,
+        rangeWindowByTf[timeframe] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+      );
+      const windowed = shouldUseWindowedCandleLoad(loadWindow);
       const cacheCount = await readLocalCacheBarCount(symbol, timeframe);
-      if (cacheCount > 0) {
-        await loadCandles(timeframe, { cacheFullHistory: true });
+      if (cancelled || bootId !== chartBootstrapSeqRef.current) return;
+      if (cacheCount > 0 || windowed) {
+        await loadCandles(timeframe, { loadWindow, cacheFullHistory: !windowed });
       } else {
         await loadCandles(timeframe);
       }
-      if (cancelled) return;
+      if (cancelled || bootId !== chartBootstrapSeqRef.current) return;
+      if (windowed || activeStructuralRangeId || selectedParentRangeId) return;
       void syncSymbolAllTimeframesToCache(symbol, { reason: 'boot_sync', baseUrl: BASE_URL }).then(async (sync) => {
-        if (cancelled) return;
+        if (cancelled || bootId !== chartBootstrapSeqRef.current) return;
         if (sync.ok) {
           await loadCandles(timeframe, { quiet: true, skipCamera: true, cacheFullHistory: true });
           return;
         }
         await bootstrapCandleFeed();
-        if (!cancelled) await loadCandles(timeframe, { quiet: true, skipCamera: true });
+        if (!cancelled && bootId === chartBootstrapSeqRef.current) {
+          await loadCandles(timeframe, { quiet: true, skipCamera: true });
+        }
       });
     })();
     return () => { cancelled = true; };
-  }, [symbol, timeframe, activeCaseDisplayId, autoResume.phase, autoResume.isAutoResuming, pendingMappingSession]);
+  }, [symbol, timeframe, autoResume.phase, autoResume.isAutoResuming, pendingMappingSession]);
 
   useEffect(() => {
     if (blockMappingBootEffects()) return;
@@ -7882,7 +8250,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         if (cancelled || status.phase !== 'ready') return;
         if (status.symbol && status.symbol !== symbol) return;
         if (candleLoadInFlightRef.current) return;
-        void loadCandles(timeframe, { quiet: true, skipCamera: true, cacheFullHistory: true });
+        const loadWindow = resolveCandleLoadWindow(
+          timeframe,
+          savedStructuralRanges,
+          selectedParentRangeId,
+          activeStructuralRangeId,
+          rangeWindowByTf[timeframe] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+        );
+        void loadCandles(timeframe, {
+          quiet: true,
+          skipCamera: true,
+          loadWindow,
+          cacheFullHistory: !shouldUseWindowedCandleLoad(loadWindow),
+        });
       },
     });
     getSyncService().onSymbolSelected(symbol);
@@ -8096,11 +8476,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       {saveBlockReason && (
         <span className="ribbonSaveHint" title={saveBlockReason}>{saveBlockReason}</span>
       )}
-      <span className="ribbonStatus" title={`${structureLayer} · source ${sourceTimeframe} · chart ${timeframe}${activeStructuralRangeId ? ` · active #${activeStructuralRangeId}` : ''}`}>
+      <span className="ribbonStatus" title={`${structureLayer} · source ${sourceTimeframe} · chart ${timeframe}${activeStructuralRangeId ? ` · active #${activeStructuralRangeId}` : ''}${candleLoadDiagnostics ? `\n${formatCandleLoadDiagnostic(candleLoadDiagnostics)}${candleLoadDiagnostics.detail ? `\n${candleLoadDiagnostics.detail}` : ''}` : ''}`}>
         {chartFullscreen
           ? `${STRUCTURE_LAYER_CHIP[structureLayer]}/${sourceTimeframe}/${timeframe}${activeStructuralRangeId ? ` · #${activeStructuralRangeId}` : ''}`
           : `Status: ${structureLayer} · source ${sourceTimeframe} · chart ${timeframe}${activeStructuralRangeId ? ` · active #${activeStructuralRangeId}` : ''}`}
       </span>
+      {candleLoadDiagnostics && !chartFullscreen && (
+        <span className="ribbonLoadDiag" title={candleLoadDiagnostics.detail || candleLoadDiagnostics.reason}>
+          {formatCandleLoadDiagnostic(candleLoadDiagnostics)}
+        </span>
+      )}
       <button type="button" className={`ribbonChainToggle ${autoChainSave ? 'active' : ''}`} onClick={() => setAutoChainSave(v => !v)} title="After BOS break, auto Save Next Range when RH and RL are set">
         {chartFullscreen ? `Auto ${autoChainSave ? 'ON' : 'OFF'}` : `Auto Chain Save: ${autoChainSave ? 'ON' : 'OFF'}`}
       </button>
@@ -10833,9 +11218,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       if (data.length) {
         const clamped = clampFitTimesToCandles(fw.start, fw.end, data);
         const centerReplay = String(command?.reason || '').includes('fit-replay') && targetTime;
+        const centerAnchor = targetTime || clamped.start;
         applied = centerReplay
           ? fitWindow(clamped.start, clamped.end, 0.35, targetTime, 0.5)
-          : fitWindow(clamped.start, clamped.end);
+          : fitWindow(clamped.start, clamped.end, 0.35, centerAnchor, 0.42);
         if (applied) {
           if (Number.isFinite(fw.low) && Number.isFinite(fw.high) && fw.high > fw.low) {
             applyPriceDomain(fw.low, fw.high, fw.padRatio ?? 0.12);

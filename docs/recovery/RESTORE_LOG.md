@@ -52,3 +52,28 @@ Restoration follows `docs/recovery/RECOVERY_AUDIT.md` one feature at a time. No 
 | **Manual smoke result** | Re-test required — INTRADAY/MICRO auto-focus, ghost ancestors, parent lines, Focus toggle |
 | **Commit hash** | `355d17f` |
 | **Remaining missing features** | Guided Mapping Cursor, Campaign Manager, Auto BOS Save |
+
+### Viewport patch 2 (candle-load stability)
+
+**Root cause:** Boot effect always used `cacheFullHistory: true` and re-ran on every case change; `resolveCandleLoadWindow` skipped W1/D1 windows; TF switch relied on boot without explicit windowed load; stale-load guard only checked request id + TF (not symbol/case); suspicious 1-bar window loads replaced full series; `contextMiss` forced `LATEST` camera jump.
+
+**Fix:** `candleLoadPolicy.ts` guards; windowed loads for all structural contexts; unified TF switch + explicit `loadCandles`; boot seq coalescing without case-id retrigger; preserve candles until valid replacement; fit range on context miss when active range exists.
+
+**Tests:** `npm test` → **239 passed**
+
+### Viewport patch 2 round 4 (smoke passed)
+
+**Root cause:** Stale React state — TF chip read empty `activeStructuralRangeId` right after range select and fell back to legacy path with `cacheFullHistory: true`. Local cache/VPS returned unfiltered bars even when `loadWindow` was set. `liveTail` still extended structural loads when context was missed. VPS sync ran on every structural navigation (H4 lag). Play Forward blocked because replay defaulted to last bar and stale localStorage cursor rehydrated to ~2026 end.
+
+**Fix:** `activeStructuralRangeIdRef` / `selectedParentRangeIdRef`; `resolveStructuralDataLoadWindow()` separate from camera fit; `filterCandlesToLoadWindow()` + `maxBarsForStructuralWindow()`; `skipVpsSync` for windowed structural loads; unified TF switch with `structuralNavigation: true`; replay seeded at range start with `skipSavedReplayHydrateRef`; expanded `CandleLoadDiagnostics`.
+
+**Files:** `electron/src/candleLoadPolicy.ts` (new), `electron/src/candleLoadPolicy.test.ts` (new), `electron/src/main.tsx`, `electron/src/hierarchyRangeNavigation.ts`, `electron/src/hierarchyRangeNavigation.test.ts`, `electron/src/syncArchitectLoad.ts`
+
+**Tests:** `npm test` (electron vitest): **247 passed**
+
+**Manual smoke result:** Passed (Josh) — H1 structural TF switch, Micro/M15 no incorrect jump, windowed loading, full-history reload resolved, Play Forward after saved range, replay cursor near range start, chart focus usable
+
+**Commit hash:** *(pending commit)*
+
+**Remaining missing features:** Guided Mapping Cursor, Campaign Manager, Auto BOS Save
+

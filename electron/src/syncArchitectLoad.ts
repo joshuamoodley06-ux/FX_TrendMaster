@@ -28,6 +28,7 @@ export async function loadSessionFromSyncArchitect(
   timeframe: string,
   options?: {
     refresh?: boolean;
+    skipVpsSync?: boolean;
     range?: { start?: string; end?: string } | null;
     caseId?: string | null;
   },
@@ -35,10 +36,12 @@ export async function loadSessionFromSyncArchitect(
   const sym = String(symbol || 'XAUUSD').trim().toUpperCase();
   const tf = String(timeframe || 'D1').trim().toUpperCase();
 
-  const sync = await syncTimeframeFromVps(sym, tf, {
-    reason: 'warm_boot',
-    refresh: !!options?.refresh,
-  });
+  const sync = options?.skipVpsSync
+    ? { ok: true, skipped: true }
+    : await syncTimeframeFromVps(sym, tf, {
+      reason: 'warm_boot',
+      refresh: !!options?.refresh,
+    });
 
   const rehydration = await validateRangeRehydration(sym, tf, options?.caseId ?? null);
   const shouldClearUi = shouldClearRangeUiFromRehydration(rehydration);

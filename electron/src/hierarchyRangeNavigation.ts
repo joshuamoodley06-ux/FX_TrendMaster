@@ -61,6 +61,9 @@ export function resolveCandleWindowTargetRange(
     if (active && isIntradayNavTimeframe(targetTf) && (activeLayer === 'INTRADAY' || activeLayer === 'MICRO')) {
       return active;
     }
+    if (active && isIntradayNavTimeframe(targetTf) && (activeLayer === 'DAILY' || activeLayer === 'WEEKLY' || activeLayer === 'MACRO')) {
+      return active;
+    }
     if (active && !isIntradayNavTimeframe(targetTf) && (activeLayer === 'DAILY' || activeLayer === 'WEEKLY' || activeLayer === 'MACRO')) {
       return active;
     }
