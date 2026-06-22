@@ -66,7 +66,25 @@ import { draftRangeLineStyle, savedRangeLineStyle } from './rangeLineStyle';
 import { CockpitOverviewProvider } from './cockpitOverviewContext';
 import { InspectorOverviewDashboard } from './inspectorOverviewDashboard';
 import { ReviewCandidatePanel } from './reviewCandidatePanel';
-import type { RangeAuditViewTarget } from './reviewCandidateClient';
+import type { RangeAuditSample, RangeAuditViewTarget } from './reviewCandidateClient';
+import { auditSampleToViewTarget } from './reviewCandidateClient';
+import { ChildMappingPanel } from './childMappingPanel';
+import {
+  openChildMappingSetup,
+  restoreChildMappingSession,
+  type ChildMappingSession,
+} from './childMappingWorkflow';
+import {
+  advanceGuidedCursorAfterChildSave,
+  buildGuidedCursorFromParent,
+  guidedCursorFromSessionFields,
+  guidedCursorResearchWindow,
+  guidedCursorToSessionFields,
+  markGuidedParentComplete,
+  skipGuidedCursorGap,
+  type GuidedMappingCursor,
+} from './guidedMappingCursor';
+import { getLocalResearchBridge } from './localResearchClient';
 import { useMappingDraft } from './hooks/useMappingDraft';
 import { useReactiveMappingEventsPersistence } from './hooks/useReactiveMappingEventsPersistence';
 import { useFingerErrorStack } from './fingerErrorStack';
@@ -120,6 +138,7 @@ import { useAutoResume } from './hooks/useAutoResume';
 import {
   deriveLayerActiveIdsFromRanges,
   executeMappingSessionResume,
+  findSavedRangeById,
   isMappingSessionOrchestrating,
   readMappingSessionForSymbol,
   useMappingSessionPersistence,
@@ -2705,6 +2724,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [structuralBosDraftDirty, setStructuralBosDraftDirty] = useState(false);
   const [lastRangeLifecyclePatchWarning, setLastRangeLifecyclePatchWarning] = useState<string | null>(null);
   const [chainDraftMode, setChainDraftMode] = useState(false);
+  const [guidedCursor, setGuidedCursor] = useState<GuidedMappingCursor | null>(null);
+  const [childMappingSession, setChildMappingSession] = useState<ChildMappingSession | null>(null);
+  const lastGuidedChildSaveRef = useRef<{
+    rangeId: string;
+    rangeEndTime?: string | null;
+    bosTime?: string | null;
+  } | null>(null);
   const [autoChainSave, setAutoChainSave] = useLocalStorage<boolean>('fx_tm_auto_chain_save_v1', true);
   const autoChainSaveAttemptRef = useRef<string>('');
   const [hierarchyPathOnly, setHierarchyPathOnly] = useLocalStorage<boolean>('fx_tm_hierarchy_path_only_v1', true);
@@ -4926,6 +4952,150 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return true;
   };
 
+  const closeGuidedChildMapping = () => {
+    setChildMappingSession(null);
+    setGuidedCursor(null);
+    lastGuidedChildSaveRef.current = null;
+  };
+
+  const applyGuidedCursorAdvance = (next: GuidedMappingCursor) => {
+    setGuidedCursor(next);
+    setChildMappingSession((prev) => {
+      if (!prev) return prev;
+      const win = guidedCursorResearchWindow(next);
+      return {
+        ...prev,
+        researchWindow: {
+          start: win.start,
+          end: win.end,
+          dateFrom: win.dateFrom,
+          dateTo: win.dateTo,
+        },
+        phase: 'scanning',
+        candidates: [],
+        candidateIndex: 0,
+        detectionRunId: null,
+      };
+    });
+    if (next.cursor_time_ms) {
+      setCandleReplayFrameByTime(new Date(next.cursor_time_ms).toISOString());
+    }
+  };
+
+  const startGuidedChildMapping = (
+    parentRange: Record<string, unknown>,
+    opts?: { coverage?: MappingGap['coverage'] },
+  ) => {
+    const parentId = String(parentRange?.range_id || parentRange?.id || '').trim();
+    if (!parentId) {
+      setMessage('Cannot start guided mapping — parent range id missing.');
+      return false;
+    }
+    const gapStartMs = opts?.coverage?.first_gap_start_ms ?? null;
+    const gapEndMs = opts?.coverage?.first_gap_end_ms ?? null;
+    const cursor = buildGuidedCursorFromParent(
+      parentRange,
+      explorerYearFilter,
+      gapStartMs,
+      gapEndMs,
+    );
+    const setup = openChildMappingSetup(parentRange);
+    if (!setup) {
+      setMessage('No child mapping layer below this range.');
+      return false;
+    }
+    const researchWin = guidedCursorResearchWindow(cursor);
+    const session: ChildMappingSession = {
+      ...setup.session,
+      researchWindow: {
+        start: researchWin.start,
+        end: researchWin.end,
+        dateFrom: researchWin.dateFrom,
+        dateTo: researchWin.dateTo,
+      },
+      phase: 'scanning',
+      candidates: [],
+      candidateIndex: 0,
+      detectionRunId: null,
+    };
+    setGuidedCursor(cursor);
+    setChildMappingSession(session);
+    lastGuidedChildSaveRef.current = null;
+    setStructureLayer(session.childLayer);
+    setRangeScope('MAJOR');
+    setSourceTimeframe(session.childSourceTf);
+    setSelectedParentRangeId(parentId);
+    setActiveStructuralRangeId('');
+    clearStructuralRangeDraft();
+    setRhAnchor({ price: '', time: '', candle: null });
+    setRlAnchor({ price: '', time: '', candle: null });
+    setStructuralRangeDraftDirty(false);
+    const childChartTf = setup.chartTimeframe;
+    if (childChartTf !== String(timeframe).toUpperCase()) {
+      activeTimeframeRef.current = childChartTf;
+      setTimeframe(childChartTf);
+    }
+    jumpToStructuralRange(parentRange);
+    if (cursor.cursor_time_ms) {
+      setCandleReplayFrameByTime(new Date(cursor.cursor_time_ms).toISOString());
+    }
+    setMessage(`Guided mapping: ${cursor.active_child_layer} under ${cursor.active_parent_layer} #${parentId}.`);
+    return true;
+  };
+
+  const handleGuidedNextChild = () => {
+    if (!guidedCursor?.active) return;
+    const saved = lastGuidedChildSaveRef.current;
+    if (saved?.rangeId) {
+      applyGuidedCursorAdvance(advanceGuidedCursorAfterChildSave(guidedCursor, saved));
+      lastGuidedChildSaveRef.current = null;
+      void refreshSavedRangesForCurrentCase().catch(() => {});
+      void refreshHierarchyAudit().catch(() => {});
+      return;
+    }
+    applyGuidedCursorAdvance(skipGuidedCursorGap(guidedCursor));
+  };
+
+  const handleGuidedSkipGap = () => {
+    if (!guidedCursor?.active) return;
+    applyGuidedCursorAdvance(skipGuidedCursorGap(guidedCursor));
+    setMessage('Skipped guided mapping gap — cursor advanced.');
+  };
+
+  const handleGuidedParentComplete = () => {
+    if (!guidedCursor?.active) return;
+    setGuidedCursor(markGuidedParentComplete(guidedCursor));
+    setMessage('Parent marked complete for guided mapping.');
+  };
+
+  const handleChildMappingSave = async (): Promise<{
+    ok: boolean;
+    rangeId?: string;
+    rangeEndTime?: string | null;
+    bosWarning?: string | null;
+  }> => {
+    const ok = await saveStructuralRange();
+    if (!ok) return { ok: false };
+    const rangeId = String(activeStructuralRangeId || lastSavedRangeConfirmation?.range_id || '').trim();
+    const rangeEndTime = rlAnchor.time || rhAnchor.time || null;
+    if (rangeId) {
+      lastGuidedChildSaveRef.current = { rangeId, rangeEndTime };
+    }
+    return { ok: true, rangeId: rangeId || undefined, rangeEndTime };
+  };
+
+  const handleApplyChildCandidate = (sample: RangeAuditSample) => {
+    const target = auditSampleToViewTarget(sample);
+    if (target) loadRangeAuditOnChart(target);
+  };
+
+  const handleChildManualCreate = () => {
+    setRhAnchor({ price: '', time: '', candle: null });
+    setRlAnchor({ price: '', time: '', candle: null });
+    setActiveStructuralRangeId('');
+    clearStructuralRangeDraft();
+  };
+
   useEffect(() => {
     if (!activeStructuralRangeId) return;
     const row = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId));
@@ -5448,6 +5618,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const mappingSessionSnapshot = useMemo(() => {
     const mappingCase = getCurrentMappingCaseRef();
+    const guidedFields = guidedCursorToSessionFields(guidedCursor);
+    const childResearchWindow = childMappingSession?.researchWindow;
     return {
       symbol,
       caseId: mappingCase.case_id,
@@ -5461,9 +5633,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       chartTimeframe: timeframe,
       sourceTimeframe,
       rangeScope,
-      researchWindowStart: rangeWindow.start ?? null,
-      researchWindowEnd: rangeWindow.end ?? null,
-      currentCandidateIndex: 0,
+      researchWindowStart: childResearchWindow?.start ?? rangeWindow.start ?? null,
+      researchWindowEnd: childResearchWindow?.end ?? rangeWindow.end ?? null,
+      currentCandidateIndex: childMappingSession?.candidateIndex ?? 0,
+      childMappingActive: !!childMappingSession,
+      childMappingDetectionRunId: childMappingSession?.detectionRunId ?? null,
+      childMappingPhase: childMappingSession?.phase ?? null,
+      ...guidedFields,
     };
   }, [
     symbol,
@@ -5480,6 +5656,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     rangeScope,
     rangeWindow.start,
     rangeWindow.end,
+    guidedCursor,
+    childMappingSession,
   ]);
 
   const {
@@ -5538,6 +5716,43 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       });
       writeAutoResumeSession(symbol, result.chartTimeframe);
       skipBootstrapOnceRef.current = true;
+      const stored = pendingMappingSession;
+      const restoredCursor = guidedCursorFromSessionFields(stored);
+      if (restoredCursor) setGuidedCursor(restoredCursor);
+      if (stored.child_mapping_active && stored.current_parent_range_id) {
+        try {
+          const ranges = await refreshSavedRangesForCurrentCase();
+          const parentRow = findSavedRangeById(ranges, stored.current_parent_range_id);
+          if (parentRow) {
+            const bridge = getLocalResearchBridge();
+            const dbStatus = bridge
+              ? await bridge.getDatabaseStatus({ symbol, timeframe: stored.source_timeframe })
+              : null;
+            const session = await restoreChildMappingSession({
+              parentRange: parentRow,
+              detectionRunId: stored.child_mapping_detection_run_id,
+              candidateIndex: stored.current_candidate_index,
+              phase: stored.child_mapping_phase,
+              symbol,
+              databasePath: dbStatus?.databasePath,
+            });
+            if (session) {
+              if (restoredCursor) {
+                const win = guidedCursorResearchWindow(restoredCursor);
+                session.researchWindow = {
+                  start: win.start,
+                  end: win.end,
+                  dateFrom: win.dateFrom,
+                  dateTo: win.dateTo,
+                };
+              }
+              setChildMappingSession(session);
+            }
+          }
+        } catch {
+          /* non-blocking */
+        }
+      }
       completeMappingSessionResume();
       setMessage(result.message);
     } catch (err: any) {
@@ -5556,6 +5771,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const handleMappingSessionStartNew = useCallback(() => {
     startNewMappingSession();
+    closeGuidedChildMapping();
     skipBootstrapOnceRef.current = false;
   }, [startNewMappingSession]);
 
@@ -6983,28 +7199,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const activateMappingGap = (gap: MappingGap) => {
-    const parent = gap.parentRange;
-    const childLayer = normalizeStructureLayer(gap.expectedChildLayer) || structureLayer;
-    const parentId = String(parent.range_id || parent.id || '');
-    if (!parentId) return;
-
-    setStructureLayer(childLayer);
-    setRangeScope('MAJOR');
-    setSourceTimeframe(defaultSourceTimeframeForStructureLayer(childLayer));
-    setSelectedParentRangeId(parentId);
-    setActiveStructuralRangeId('');
-    setRhAnchor({ price: '', time: '', candle: null });
-    setRlAnchor({ price: '', time: '', candle: null });
-    setStructuralRangeDraftDirty(false);
-
-    const childChartTf = defaultChartTimeframeForStructureLayer(childLayer);
-    if (childChartTf !== String(timeframe).toUpperCase()) {
-      activeTimeframeRef.current = childChartTf;
-      setTimeframe(childChartTf);
-    }
-
-    jumpToStructuralRange(parent);
-    setMessage(`Map ${childLayer} under ${gap.parentLayer} #${parentId} — parent set, chart jumped.`);
+    startGuidedChildMapping(gap.parentRange, { coverage: gap.coverage });
   };
 
   const editStructuralRangeFromTree = (range: any) => {
@@ -8772,6 +8967,26 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
               />
             </section>
 
+            {childMappingSession && (
+              <section className="structuralReviewSection">
+                <ChildMappingPanel
+                  symbol={symbol}
+                  session={childMappingSession}
+                  guidedCursor={guidedCursor}
+                  onSessionChange={setChildMappingSession}
+                  onViewOnChart={loadRangeAuditOnChart}
+                  onApplyCandidate={handleApplyChildCandidate}
+                  onManualCreate={handleChildManualCreate}
+                  onRequestSave={handleChildMappingSave}
+                  onSkipGap={guidedCursor?.active ? handleGuidedSkipGap : undefined}
+                  onParentComplete={guidedCursor?.active ? handleGuidedParentComplete : undefined}
+                  onNextChild={guidedCursor?.active ? handleGuidedNextChild : undefined}
+                  onClose={closeGuidedChildMapping}
+                  setMessage={setMessage}
+                />
+              </section>
+            )}
+
             <details className="structuralPanelDetails collapsedSection">
               <summary>Save Preview · {savePreview.actionLabel}</summary>
               <div className="htfLiteGrid compactStateGrid miniPreviewGrid">
@@ -9128,6 +9343,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           savedRangeOverlays={chartSavedRangeOverlays}
           draftRangeOverlay={chartDraftRangeOverlay}
           focusMode={chartMappingFocusMode}
+          guidedCursorTimeMs={guidedCursor?.active ? guidedCursor.cursor_time_ms : null}
+          guidedParentEndMs={guidedCursor?.active ? guidedCursor.parent_end_time_ms : null}
           showFibOverlays={false}
           events={visibleEvents}
           selectedCandleTime={selectedCandle?.time || null}
@@ -9442,6 +9659,8 @@ type D3CandleMapProps = {
   savedRangeOverlays?:SavedRangeChartLine[];
   draftRangeOverlay?:DraftRangeChartLine|null;
   focusMode?:boolean;
+  guidedCursorTimeMs?:number|null;
+  guidedParentEndMs?:number|null;
   showFibOverlays?:boolean;
   events:MapEvent[];
   selectedCandleTime?:string|null;
@@ -10075,6 +10294,41 @@ function D3CandleMap(props:D3CandleMapProps) {
         .attr('stroke-opacity', draftStyle.opacity)
         .attr('stroke-width', draftStyle.width)
         .attr('stroke-dasharray', draftStyle.dash);
+    }
+
+    const guidedLines: Array<{ id: string; x: number; stroke: string; width: number; opacity?: number; dash: string }> = [];
+    if (p.guidedCursorTimeMs && Number.isFinite(p.guidedCursorTimeMs)) {
+      const cx = snapChartStrokePx(zx(new Date(p.guidedCursorTimeMs)));
+      if (Number.isFinite(cx) && cx >= margin.left && cx <= margin.left + innerW) {
+        guidedLines.push({ id: 'guided-cursor', x: cx, stroke: '#38bdf8', width: 1.5, dash: '4 4' });
+      }
+    }
+    if (p.guidedParentEndMs && Number.isFinite(p.guidedParentEndMs)) {
+      const ex = snapChartStrokePx(zx(new Date(p.guidedParentEndMs)));
+      if (Number.isFinite(ex) && ex >= margin.left && ex <= margin.left + innerW) {
+        guidedLines.push({
+          id: 'guided-parent-end',
+          x: ex,
+          stroke: '#f59e0b',
+          width: p.focusMode ? 1.1 : 1.25,
+          opacity: p.focusMode ? 0.35 : 1,
+          dash: '6 3',
+        });
+      }
+    }
+    if (guidedLines.length) {
+      const gg = plot.append('g').attr('class', 'guidedMappingLines').attr('pointer-events', 'none');
+      gg.selectAll('line.guidedVLine').data(guidedLines).join('line')
+        .attr('class', (d) => d.id === 'guided-cursor' ? 'guidedCursorVLine guidedVLine' : 'guidedParentEndVLine guidedVLine')
+        .attr('x1', (d) => d.x)
+        .attr('x2', (d) => d.x)
+        .attr('y1', margin.top)
+        .attr('y2', margin.top + innerH)
+        .attr('stroke', (d) => d.stroke)
+        .attr('stroke-width', (d) => d.width)
+        .attr('stroke-opacity', (d) => d.opacity ?? 1)
+        .attr('stroke-dasharray', (d) => d.dash)
+        .attr('shape-rendering', 'crispEdges');
     }
 
     const slotW = barSpacingPx;
@@ -10832,6 +11086,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
   const viewportClampKey = props.viewportClamp ? `${props.viewportClamp.start}|${props.viewportClamp.end}` : '';
   const savedOverlaysKey = (props.savedRangeOverlays || []).map((r) => `${r.rangeId}:${r.high}:${r.low}:${r.start}:${r.end}:${r.isActive}:${r.isParentContext}`).join('|');
   const draftOverlayKey = props.draftRangeOverlay?.visible ? `${props.draftRangeOverlay.high}:${props.draftRangeOverlay.low}:${props.draftRangeOverlay.start}:${props.draftRangeOverlay.end}:${props.draftRangeOverlay.structureLayer}` : '';
+  const guidedCursorKey = `${props.guidedCursorTimeMs ?? ''}|${props.guidedParentEndMs ?? ''}|${props.focusMode ? 1 : 0}`;
   const drawingsKey = (props.chartDrawings || []).map((d) => `${d.id}:${d.kind}`).join('|');
   const tradeIdeasRenderKey = (props.chartTradeIdeas || []).map((i) => `${i.id}:${i.updatedAt}`).join('|')
     + '|draft:' + JSON.stringify(props.tradeIdeaDraft || null)
@@ -10901,7 +11156,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
     }
     draw();
-  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, props.showFibOverlays, drawingsKey, tradeIdeasRenderKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor, props.tradePickMode, viewportClampKey, props.chartEmptyState]);
+  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, guidedCursorKey, props.showFibOverlays, drawingsKey, tradeIdeasRenderKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor, props.tradePickMode, viewportClampKey, props.chartEmptyState]);
 
   useEffect(() => {
     if (!svgRef.current || !props.viewportClamp?.start || !props.viewportClamp?.end) return;

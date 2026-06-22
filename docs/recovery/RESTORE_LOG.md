@@ -73,7 +73,21 @@ Restoration follows `docs/recovery/RECOVERY_AUDIT.md` one feature at a time. No 
 
 **Manual smoke result:** Passed (Josh) — H1 structural TF switch, Micro/M15 no incorrect jump, windowed loading, full-history reload resolved, Play Forward after saved range, replay cursor near range start, chart focus usable
 
-**Commit hash:** *(pending commit)*
+**Commit hash:** `d076413`
 
-**Remaining missing features:** Guided Mapping Cursor, Campaign Manager, Auto BOS Save
+**Remaining missing features:** Campaign Manager, Auto BOS Save
+
+---
+
+## 4. Guided Mapping Cursor
+
+| Field | Detail |
+|-------|--------|
+| **Feature restored** | Guided hierarchy mapping cursor — gap queue boots sequential child walk with cursor line, ChildMappingPanel, session persistence |
+| **Root cause** | Full cursor model existed in `guidedMappingCursor.ts` and `childMappingPanel.tsx` but was never wired in `main.tsx`; gap queue only drilled layer/TF without cursor bootstrap |
+| **Files changed** | `electron/src/main.tsx`, `electron/src/hooks/useMappingSessionPersistence.ts`, `electron/src/styles.css`, `docs/recovery/RESTORE_LOG.md` |
+| **Tests run** | `npm test` (electron vitest): **247 passed** |
+| **Manual smoke result** | Re-test required — gap queue click, cursor vlines, ChildMappingPanel scan/save/advance, session resume |
+| **Commit hash** | *(pending commit)* |
+| **Remaining missing features** | Campaign Manager, Auto BOS Save |
 

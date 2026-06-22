@@ -8,6 +8,8 @@ import {
   type MappingSessionLayer,
   type MappingSessionState,
 } from '../mappingSessionPersistence';
+import type { ChildMappingPhase } from '../childMappingWorkflow';
+import type { GuidedCursorStatus } from '../guidedMappingCursor';
 
 export type MappingSessionStructureLayer = MappingSessionLayer;
 
@@ -32,6 +34,26 @@ export type MappingSessionSnapshot = {
   researchWindowStart?: string | null;
   researchWindowEnd?: string | null;
   currentCandidateIndex?: number;
+  childMappingActive?: boolean;
+  childMappingDetectionRunId?: string | null;
+  childMappingPhase?: ChildMappingPhase | null;
+  guidedCursorActive?: boolean;
+  guidedCampaignYear?: string | null;
+  guidedParentRangeId?: string | null;
+  guidedParentLayer?: string | null;
+  guidedChildLayer?: string | null;
+  guidedCursorTimeMs?: number | null;
+  guidedParentStartMs?: number | null;
+  guidedParentEndMs?: number | null;
+  guidedParentRh?: number | null;
+  guidedParentRl?: number | null;
+  guidedCurrentChildRangeId?: string | null;
+  guidedCurrentChildIndex?: number;
+  guidedCursorStatus?: GuidedCursorStatus | null;
+  guidedPendingBosDirection?: 'UP' | 'DOWN' | null;
+  guidedPendingBosTime?: string | null;
+  guidedPendingBosPrice?: number | null;
+  guidedSavedChildIds?: string[];
 };
 
 export type MappingSessionScopeActions = {
@@ -147,6 +169,26 @@ export function snapshotToMappingSession(snapshot: MappingSessionSnapshot): Mapp
     researchWindowStart: snapshot.researchWindowStart ?? null,
     researchWindowEnd: snapshot.researchWindowEnd ?? null,
     currentCandidateIndex: snapshot.currentCandidateIndex ?? 0,
+    childMappingActive: snapshot.childMappingActive === true,
+    childMappingDetectionRunId: snapshot.childMappingDetectionRunId ?? null,
+    childMappingPhase: snapshot.childMappingPhase ?? null,
+    guidedCursorActive: snapshot.guidedCursorActive === true,
+    guidedCampaignYear: snapshot.guidedCampaignYear ?? null,
+    guidedParentRangeId: snapshot.guidedParentRangeId ?? null,
+    guidedParentLayer: snapshot.guidedParentLayer ?? null,
+    guidedChildLayer: snapshot.guidedChildLayer ?? null,
+    guidedCursorTimeMs: snapshot.guidedCursorTimeMs ?? null,
+    guidedParentStartMs: snapshot.guidedParentStartMs ?? null,
+    guidedParentEndMs: snapshot.guidedParentEndMs ?? null,
+    guidedParentRh: snapshot.guidedParentRh ?? null,
+    guidedParentRl: snapshot.guidedParentRl ?? null,
+    guidedCurrentChildRangeId: snapshot.guidedCurrentChildRangeId ?? null,
+    guidedCurrentChildIndex: snapshot.guidedCurrentChildIndex ?? 0,
+    guidedCursorStatus: snapshot.guidedCursorStatus ?? null,
+    guidedPendingBosDirection: snapshot.guidedPendingBosDirection ?? null,
+    guidedPendingBosTime: snapshot.guidedPendingBosTime ?? null,
+    guidedPendingBosPrice: snapshot.guidedPendingBosPrice ?? null,
+    guidedSavedChildIds: snapshot.guidedSavedChildIds ?? [],
   });
 }
 
