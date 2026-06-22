@@ -3995,6 +3995,21 @@ body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-chart.d3Wo
   font-weight:700;
   font-size:11px;
 }
+.structuralMappingRibbon .bosNextRangePromptBanner{
+  flex-basis:100%;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  padding:4px 8px;
+  border-radius:8px;
+  background:rgba(56,189,248,.12);
+  border:1px solid rgba(56,189,248,.45);
+  color:#bae6fd;
+  font-weight:700;
+  font-size:11px;
+}
+.structuralMappingRibbon .bosNextRangePromptBanner button{font-size:11px;padding:4px 8px}
 .structuralMappingRibbon .chainDrillBtn{
   margin-left:auto;
   border:1px solid rgba(96,165,250,.45);

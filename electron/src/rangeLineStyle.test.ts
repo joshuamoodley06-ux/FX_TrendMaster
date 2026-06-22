@@ -16,6 +16,12 @@ describe('rangeLineStyle', () => {
     expect(style.opacity).toBe(CONTEXT_RANGE_LINE_OPACITY);
   });
 
+  it('Weekly/Daily context lines stay stronger than generic ghost lines', () => {
+    const weekly = savedRangeLineStyle('ACTIVE', { isActive: false, structureLayer: 'WEEKLY' });
+    const generic = savedRangeLineStyle('ACTIVE', { isActive: false, structureLayer: 'INTRADAY' });
+    expect(weekly.opacity).toBeGreaterThan(generic.opacity);
+  });
+
   it('non-active sibling range uses ghost opacity', () => {
     const style = savedRangeLineStyle('ACTIVE', { isActive: false });
     expect(style.opacity).toBe(CONTEXT_RANGE_LINE_OPACITY);

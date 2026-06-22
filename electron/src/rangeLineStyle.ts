@@ -14,7 +14,14 @@ export type SavedRangeLineStyleOpts = {
   isParentContext?: boolean;
   isGuidedParentContext?: boolean;
   rangeScope?: string;
+  structureLayer?: string;
 };
+
+const PRIMARY_GUIDE_LAYERS = new Set(['WEEKLY', 'DAILY']);
+
+function isPrimaryGuideLayer(layer: unknown): boolean {
+  return PRIMARY_GUIDE_LAYERS.has(String(layer || '').toUpperCase());
+}
 
 function isBrokenStatus(status: string): boolean {
   const s = String(status || 'ACTIVE').toUpperCase();
@@ -36,10 +43,11 @@ export function savedRangeLineStyle(
     };
   }
 
+  const primaryGuide = isPrimaryGuideLayer(opts?.structureLayer);
   return {
-    opacity: CONTEXT_RANGE_LINE_OPACITY,
-    dash: broken ? '5 5' : (isMinor ? '4 5' : '4 6'),
-    width: isMinor ? 2.2 : 2.4,
+    opacity: primaryGuide ? 0.9 : CONTEXT_RANGE_LINE_OPACITY,
+    dash: broken ? '5 5' : (isMinor ? '4 5' : primaryGuide ? '' : '4 6'),
+    width: primaryGuide ? 3.2 : (isMinor ? 2.2 : 2.4),
   };
 }
 

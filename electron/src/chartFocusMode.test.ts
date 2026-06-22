@@ -273,6 +273,13 @@ describe('chartFocusMode', () => {
     expect(style.opacity).toBe(0.3);
   });
 
+  it('Weekly/Daily parent guides stay strong in Focus Mode', () => {
+    const weekly = overlayLineStyleWithFocus({ opacity: 1, width: 3, dash: '' }, true, 'parent', { structureLayer: 'WEEKLY' });
+    expect(weekly.opacity).toBeGreaterThanOrEqual(0.9);
+    const dailyAncestor = overlayLineStyleWithFocus({ opacity: 1, width: 3, dash: '' }, true, 'ancestor', { structureLayer: 'DAILY' });
+    expect(dailyAncestor.opacity).toBeGreaterThanOrEqual(0.85);
+  });
+
   it('focusYExtentsWithParent unions parent RH/RL into y domain', () => {
     const y = focusYExtentsWithParent(candles, 2200, 2050);
     expect(y?.low).toBeLessThanOrEqual(2050);

@@ -87,7 +87,21 @@ Restoration follows `docs/recovery/RECOVERY_AUDIT.md` one feature at a time. No 
 | **Root cause** | Full cursor model existed in `guidedMappingCursor.ts` and `childMappingPanel.tsx` but was never wired in `main.tsx`; gap queue only drilled layer/TF without cursor bootstrap |
 | **Files changed** | `electron/src/main.tsx`, `electron/src/hooks/useMappingSessionPersistence.ts`, `electron/src/styles.css`, `docs/recovery/RESTORE_LOG.md` |
 | **Tests run** | `npm test` (electron vitest): **247 passed** |
-| **Manual smoke result** | Re-test required — gap queue click, cursor vlines, ChildMappingPanel scan/save/advance, session resume |
+| **Manual smoke result** | Passed (Josh) — gap queue, cursor lines, guided controls, resume, chart/TF smooth |
 | **Commit hash** | `51a9d87` |
 | **Remaining missing features** | Campaign Manager, Auto BOS Save |
+
+---
+
+## 5. Auto BOS Save / BOS-to-next-range prompt
+
+| Field | Detail |
+|-------|--------|
+| **Feature restored** | Post-BOS prompt to map next same-layer range (confirm only — no auto-create); duplicate detection via `new_range_id` / `old_range_id` / `created_by_event_id` |
+| **Root cause** | BOS save always jumped straight into chain draft mode with no duplicate check and no user confirm when mapping inside a parent; Weekly/Daily guide lines were ghosted to 0.3 opacity in Focus Mode |
+| **Files changed** | `electron/src/autoBosNextRangePrompt.ts` (new), `electron/src/autoBosNextRangePrompt.test.ts` (new), `electron/src/main.tsx`, `electron/src/chartFocusMode.ts`, `electron/src/rangeLineStyle.ts`, `electron/src/styles.css`, tests |
+| **Tests run** | `npm test` (electron vitest): **256 passed** |
+| **Manual smoke result** | Re-test required — Daily BOS inside Weekly, Intraday BOS inside Daily, duplicate suppression, Weekly/Daily line visibility in Focus Mode |
+| **Commit hash** | *(pending commit)* |
+| **Remaining missing features** | Campaign Manager |
 

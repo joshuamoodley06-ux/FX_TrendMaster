@@ -85,6 +85,11 @@ import {
   type GuidedMappingCursor,
 } from './guidedMappingCursor';
 import { getLocalResearchBridge } from './localResearchClient';
+import {
+  bosNextRangePromptKey,
+  evaluateBosNextRangePrompt,
+  type BosNextRangePromptResult,
+} from './autoBosNextRangePrompt';
 import { useMappingDraft } from './hooks/useMappingDraft';
 import { useReactiveMappingEventsPersistence } from './hooks/useReactiveMappingEventsPersistence';
 import { useFingerErrorStack } from './fingerErrorStack';
@@ -2724,6 +2729,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [structuralBosDraftDirty, setStructuralBosDraftDirty] = useState(false);
   const [lastRangeLifecyclePatchWarning, setLastRangeLifecyclePatchWarning] = useState<string | null>(null);
   const [chainDraftMode, setChainDraftMode] = useState(false);
+  const [bosNextRangePrompt, setBosNextRangePrompt] = useState<BosNextRangePromptResult | null>(null);
+  const bosPromptHandledKeysRef = useRef<Set<string>>(new Set());
   const [guidedCursor, setGuidedCursor] = useState<GuidedMappingCursor | null>(null);
   const [childMappingSession, setChildMappingSession] = useState<ChildMappingSession | null>(null);
   const lastGuidedChildSaveRef = useRef<{
@@ -5267,6 +5274,92 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     });
   };
 
+  const enterChainDraftAfterBos = (
+    rangeId: string,
+    activeRange: any,
+    bosType: string,
+  ) => {
+    clearStructuralRangeDraft();
+    setChainDraftMode(true);
+    setBosNextRangePrompt(null);
+    if (activeRange && isRangeMajor(activeRange)) {
+      setSelectedParentRangeId(String(rangeId));
+    }
+    autoChainSaveAttemptRef.current = '';
+    if (activeRange && isRangeMajor(activeRange)) {
+      setRangeScope('MAJOR');
+    } else if (activeRange) {
+      setRangeScope('MINOR');
+    }
+    const scopeHint = activeRange && isRangeMajor(activeRange) ? 'MAJOR' : 'MINOR';
+    setMessage(`${bosType} saved. Range #${rangeId} marked BROKEN. Set RH/RL for the next ${structureLayer} ${scopeHint} range, then Save Next.`);
+  };
+
+  const applyBosNextRangePromptAfterSave = async (
+    rangeId: string,
+    activeRange: any,
+    bosType: string,
+    bosEventId: string | number | null | undefined,
+  ) => {
+    let refreshed = savedStructuralRanges;
+    try {
+      refreshed = await refreshSavedRangesForCurrentCase();
+    } catch {
+      /* use local snapshot */
+    }
+    const patchedBroken = findSavedRangeRowById(String(rangeId))
+      || refreshed.find((r: any) => String(r.range_id || r.id) === String(rangeId))
+      || activeRange;
+    const promptResult = evaluateBosNextRangePrompt({
+      brokenRange: {
+        ...(patchedBroken || {}),
+        range_id: rangeId,
+        id: rangeId,
+        status: 'BROKEN',
+        broken_by_event_id: patchedBroken?.broken_by_event_id ?? bosEventId ?? null,
+      },
+      ranges: refreshed,
+      bosEventId: patchedBroken?.broken_by_event_id ?? bosEventId ?? null,
+    });
+    const promptKey = bosNextRangePromptKey(promptResult);
+    if (promptResult.status === 'ALREADY_EXISTS') {
+      setBosNextRangePrompt(null);
+      setChainDraftMode(false);
+      setMessage(`BOS saved. ${promptResult.message}`);
+      return;
+    }
+    if (promptResult.status === 'UNCERTAIN') {
+      setBosNextRangePrompt(null);
+      setChainDraftMode(false);
+      setMessage(`BOS saved. ${promptResult.message}`);
+      return;
+    }
+    if (promptResult.status === 'PROMPT' && !bosPromptHandledKeysRef.current.has(promptKey)) {
+      setBosNextRangePrompt(promptResult);
+      setChainDraftMode(false);
+      setMessage(`${bosType} saved. Range #${rangeId} marked BROKEN.`);
+      return;
+    }
+    enterChainDraftAfterBos(rangeId, activeRange, bosType);
+  };
+
+  const acceptBosNextRangePrompt = () => {
+    if (!bosNextRangePrompt) return;
+    bosPromptHandledKeysRef.current.add(bosNextRangePromptKey(bosNextRangePrompt));
+    const brokenId = String(bosNextRangePrompt.brokenRangeId || activeStructuralRangeId || '');
+    const brokenRange = findSavedRangeRowById(brokenId);
+    setBosNextRangePrompt(null);
+    enterChainDraftAfterBos(brokenId, brokenRange, 'BOS');
+  };
+
+  const dismissBosNextRangePrompt = () => {
+    if (!bosNextRangePrompt) return;
+    bosPromptHandledKeysRef.current.add(bosNextRangePromptKey(bosNextRangePrompt));
+    setBosNextRangePrompt(null);
+    setChainDraftMode(false);
+    setMessage('Next-range mapping deferred.');
+  };
+
   const selectedSavedRange = useMemo(() => {
     if (!activeStructuralRangeId) return null;
     return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
@@ -5582,10 +5675,33 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const low = range.range_low_price ?? range.range_low;
     const broken = isStructuralRangeBrokenStatus(range.status);
     if (broken) {
-      setChainDraftMode(true);
-      clearStructuralRangeDraft();
+      const promptResult = evaluateBosNextRangePrompt({
+        brokenRange: range,
+        ranges: savedStructuralRanges,
+        bosEventId: range.broken_by_event_id,
+      });
+      const promptKey = bosNextRangePromptKey(promptResult);
+      if (promptResult.status === 'ALREADY_EXISTS') {
+        setChainDraftMode(false);
+        setBosNextRangePrompt(null);
+        setMessage(`Selected BROKEN range #${id}. ${promptResult.message}`);
+      } else if (promptResult.status === 'UNCERTAIN') {
+        setChainDraftMode(false);
+        setBosNextRangePrompt(null);
+        setMessage(`Selected BROKEN range #${id}. ${promptResult.message}`);
+      } else if (promptResult.status === 'PROMPT' && !bosPromptHandledKeysRef.current.has(promptKey)) {
+        setChainDraftMode(false);
+        clearStructuralRangeDraft();
+        setBosNextRangePrompt(promptResult);
+        setMessage(`Selected BROKEN range #${id}. ${promptResult.promptMessage}`);
+      } else {
+        setChainDraftMode(true);
+        clearStructuralRangeDraft();
+        setMessage(`Selected BROKEN range #${id}. Set RH/RL for the next ${nextLayer} range, then Save Next.`);
+      }
     } else {
       setChainDraftMode(false);
+      setBosNextRangePrompt(null);
       hydrateStructuralAnchorsFromRange(range, { force: true, markDraft: false });
     }
     setRangeLineHiddenByCase(prev => {
@@ -6658,20 +6774,21 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             inactive_from_time: patchedRange.inactive_from_time || breakInactiveTime,
           };
         }));
-        clearStructuralRangeDraft();
-        setChainDraftMode(true);
+        const eventRef = resolveStructuralEventRef(data, payload);
         if (activeRange && isRangeMajor(activeRange)) {
           setSelectedParentRangeId(String(rangeId));
         }
-        autoChainSaveAttemptRef.current = '';
         if (activeRange && isRangeMajor(activeRange)) {
           setRangeScope('MAJOR');
         } else if (activeRange) {
           setRangeScope('MINOR');
         }
-        const scopeHint = activeRange && isRangeMajor(activeRange) ? 'MAJOR' : 'MINOR';
-        setMessage(`${bosType} saved. Range #${rangeId} marked BROKEN. Set RH/RL for the next ${structureLayer} ${scopeHint} range, then Save Next.`);
-        try { await refreshSavedRangesForCurrentCase(); } catch {}
+        await applyBosNextRangePromptAfterSave(
+          String(rangeId),
+          activeRange,
+          bosType,
+          eventRef.broken_by_event_id,
+        );
       } else if (!lifecyclePatchFailed) {
         setMessage(`Saved ${direction === 'UP' ? 'Break Up' : 'Break Down'} as ${bosType} · range #${rangeId} · ref ${refPrice ?? 'derived later'}`);
       }
@@ -8684,6 +8801,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <button type="button" className={`ribbonChainToggle ${autoChainSave ? 'active' : ''}`} onClick={() => setAutoChainSave(v => !v)} title="After BOS break, auto Save Next Range when RH and RL are set">
         {chartFullscreen ? `Auto ${autoChainSave ? 'ON' : 'OFF'}` : `Auto Chain Save: ${autoChainSave ? 'ON' : 'OFF'}`}
       </button>
+      {bosNextRangePrompt && (
+        <div className="bosNextRangePromptBanner">
+          <span>{bosNextRangePrompt.promptMessage}</span>
+          <button type="button" className="chainDrillBtn" onClick={acceptBosNextRangePrompt}>
+            Map next range
+          </button>
+          <button type="button" className="secondary" onClick={dismissBosNextRangePrompt}>
+            Not now
+          </button>
+        </div>
+      )}
       {chainDraftMode && (
         <div className="chainDraftBanner">
           <span>{chainScopeMismatch || (chartFullscreen ? `BROKEN · set RH/RL for next ${STRUCTURE_LAYER_CHIP[structureLayer]} ${rangeScope}` : `Range is BROKEN. Set RH/RL for the next ${structureLayer} ${rangeScope} range.`)}</span>
@@ -9513,16 +9641,18 @@ function structureLayerLineColor(layer: StructureLayer): string {
   return map[layer] || '#94a3b8';
 }
 
-function savedRangeLineStyle(status: string, opts?: { isParentContext?: boolean; isActive?: boolean; rangeScope?: RangeScope }) {
+function savedRangeLineStyle(status: string, opts?: { isParentContext?: boolean; isActive?: boolean; rangeScope?: RangeScope; structureLayer?: StructureLayer | string }) {
   const s = String(status || 'ACTIVE').toUpperCase();
   const broken = s === 'BROKEN' || s === 'ABANDONED' || s === 'INACTIVE' || s === 'REPLACED';
   const isMinor = opts?.rangeScope === 'MINOR';
+  const layer = String(opts?.structureLayer || '').toUpperCase();
+  const primaryGuide = layer === 'WEEKLY' || layer === 'DAILY';
 
   if (opts?.isParentContext) {
     return {
-      opacity: broken ? 0.88 : 0.96,
+      opacity: broken ? 0.88 : (primaryGuide ? 0.98 : 0.96),
       dash: broken ? '8 5' : (isMinor ? '4 4' : ''),
-      width: isMinor ? 2.8 : 3.4,
+      width: primaryGuide ? 3.6 : (isMinor ? 2.8 : 3.4),
     };
   }
   if (opts?.isActive && !broken) {
@@ -9534,7 +9664,11 @@ function savedRangeLineStyle(status: string, opts?: { isParentContext?: boolean;
   if (isMinor) {
     return { opacity: 0.88, dash: '4 5', width: 2.6 };
   }
-  return { opacity: 0.9, dash: '3 6', width: 3.0 };
+  return {
+    opacity: primaryGuide ? 0.94 : 0.9,
+    dash: primaryGuide ? '' : '3 6',
+    width: primaryGuide ? 3.4 : 3.0,
+  };
 }
 
 function draftRangeLineStyle() {
@@ -10207,9 +10341,19 @@ function D3CandleMap(props:D3CandleMapProps) {
     if (savedRanges.length) {
       const sg = plot.append('g').attr('class','savedRangeLines').attr('pointer-events','none');
       const savedRows = savedRanges.flatMap((r) => {
-        const baseStyle = savedRangeLineStyle(r.status, { isParentContext: r.isParentContext, isActive: r.isActive, rangeScope: r.rangeScope });
+        const baseStyle = savedRangeLineStyle(r.status, {
+          isParentContext: r.isParentContext,
+          isActive: r.isActive,
+          rangeScope: r.rangeScope,
+          structureLayer: r.structureLayer,
+        });
         const style = p.focusMode
-          ? overlayLineStyleWithFocus(baseStyle, true, r.focusTier || (r.isActive ? 'active' : r.isParentContext ? 'parent' : undefined))
+          ? overlayLineStyleWithFocus(
+            baseStyle,
+            true,
+            r.focusTier || (r.isActive ? 'active' : r.isParentContext ? 'parent' : undefined),
+            { structureLayer: r.structureLayer },
+          )
           : baseStyle;
         const color = structureLayerLineColor(r.structureLayer);
         const prefix = r.isParentContext ? 'ctx ' : '';
@@ -10236,10 +10380,6 @@ function D3CandleMap(props:D3CandleMapProps) {
     const parentOverlayLines = safeArray<ParentRangeOverlayLine>(p.parentOverlays || []);
     if (parentOverlayLines.length) {
       const pg = plot.append('g').attr('class','parentRangeLines').attr('pointer-events','none');
-      const parentBaseStyle = savedRangeLineStyle('ACTIVE', { isParentContext: true });
-      const parentStyle = p.focusMode
-        ? overlayLineStyleWithFocus(parentBaseStyle, true, 'parent')
-        : parentBaseStyle;
       const savedPriceKeys = new Set(
         savedRanges.flatMap((r) => [Number(r.high).toFixed(2), Number(r.low).toFixed(2)]),
       );
@@ -10248,12 +10388,16 @@ function D3CandleMap(props:D3CandleMapProps) {
         .map((x) => {
           const layer = x.structureLayer || 'WEEKLY';
           const color = structureLayerLineColor(layer);
+          const baseStyle = savedRangeLineStyle('ACTIVE', { isParentContext: true, structureLayer: layer });
+          const style = p.focusMode
+            ? overlayLineStyleWithFocus(baseStyle, true, 'parent', { structureLayer: layer })
+            : baseStyle;
           return {
             kind: x.kind,
             price: x.price,
             label: x.label,
             color,
-            style: parentStyle,
+            style,
             ...rangeSpanX(zx, x.start, x.end, margin, innerW),
           };
         });

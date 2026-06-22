@@ -156,7 +156,7 @@ export function overlayLineStyleWithFocus(
   base: { opacity: number; width: number; dash: string },
   focusMode: boolean,
   tier?: FocusOverlayTier,
-  opts?: { isDraft?: boolean; isParentEndMarker?: boolean },
+  opts?: { isDraft?: boolean; isParentEndMarker?: boolean; structureLayer?: string },
 ): FocusVisualStyle {
   if (!focusMode) return { ...base, showLabel: true };
   return focusVisualStyle(tier || 'active', opts);
@@ -164,7 +164,7 @@ export function overlayLineStyleWithFocus(
 
 export function focusVisualStyle(
   tier: FocusOverlayTier,
-  opts?: { isDraft?: boolean; isParentEndMarker?: boolean },
+  opts?: { isDraft?: boolean; isParentEndMarker?: boolean; structureLayer?: string },
 ): FocusVisualStyle {
   if (opts?.isParentEndMarker) {
     return { opacity: 0.35, width: 1.1, dash: '4 4', showLabel: false };
@@ -173,6 +173,15 @@ export function focusVisualStyle(
     return { opacity: 1.0, width: 3.6, dash: '', showLabel: true };
   }
   if (tier === 'parent' || tier === 'ancestor') {
+    const layer = String(opts?.structureLayer || '').toUpperCase();
+    if (layer === 'WEEKLY' || layer === 'DAILY') {
+      return {
+        opacity: tier === 'parent' ? 0.96 : 0.88,
+        width: tier === 'parent' ? 3.4 : 3.0,
+        dash: tier === 'ancestor' ? '4 5' : '',
+        showLabel: true,
+      };
+    }
     return { opacity: 0.3, width: 2.2, dash: '6 4', showLabel: true };
   }
   return { opacity: 0, width: 0, dash: '', showLabel: false };
