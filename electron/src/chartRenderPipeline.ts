@@ -144,16 +144,7 @@ export function ensureChartShell(
     .attr('height', metrics.height);
 }
 
-export function targetVisibleBarsForTimeframe(tf: string): number {
-  const t = String(tf || 'D1').toUpperCase();
-  if (t === 'M15' || t === 'M5') return 40;
-  if (t === 'H1') return 48;
-  if (t === 'H4') return 52;
-  if (t === 'D1') return 72;
-  if (t === 'W1') return 64;
-  if (t === 'MN1') return 42;
-  return 56;
-}
+export { targetVisibleBarsForTimeframe } from './chartViewportPolicy';
 
 function medianBarSpacingPx(
   candles: PipelineCandle[],

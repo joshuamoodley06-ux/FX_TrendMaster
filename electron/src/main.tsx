@@ -168,6 +168,18 @@ import {
   type FocusOverlayTier,
 } from './chartFocusMode';
 import {
+  autoCandleBodyWidthPx,
+  CHART_FUTURE_PAD_RATIO,
+  CHART_LATEST_ANCHOR_RATIO,
+  type CameraViewOwner,
+  inferViewOwnerFromCameraReason,
+  isExplicitCameraNavigationReason,
+  logCameraUpdate,
+  readablePadBarsForTimeframe,
+  shouldBlockAutomaticCameraRefit,
+  targetVisibleBarsForTimeframe,
+} from './chartViewportPolicy';
+import {
   clampChartTransformToTimeBounds,
   intersectClampSpanWithCandles,
   resolveChartPanBounds,
@@ -2488,6 +2500,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const saveCameraTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [visibleBarCount, setVisibleBarCount] = useState(0);
   const [cameraCommand, setCameraCommand] = useState<CameraCommand>({ intent:'NONE', token:0 });
+  const [cameraViewOwner, setCameraViewOwner] = useState<CameraViewOwner>('AUTO');
+  const cameraViewOwnerRef = useRef<CameraViewOwner>('AUTO');
+  const setCameraViewOwnerWithLog = (owner: CameraViewOwner, source: string, reason?: string) => {
+    cameraViewOwnerRef.current = owner;
+    setCameraViewOwner(owner);
+    logCameraUpdate(reason || owner, source, DEBUG_CAMERA);
+  };
   const cameraLog = (...args:any[]) => { if (DEBUG_CAMERA) console.log('[camera]', ...args); };
   const clampScale = (v:number) => Math.max(0.35, Math.min(4, Number(v) || 1));
   const bumpCandleWidth = (delta:number) => {
@@ -2508,6 +2527,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   useEffect(()=>{
     if (!chartFullscreen) return;
     if (cameraMode === 'LOCKED') return;
+    if (shouldBlockAutomaticCameraRefit(cameraViewOwnerRef.current)) return;
     const intent:CameraIntent = cameraMode === 'CASE' ? 'CASE' : cameraMode === 'REPLAY' ? 'REPLAY' : 'PRESERVE_OR_NEAREST_TIME';
     const targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const t = window.setTimeout(()=>applyCameraCommand(intent, targetTime, 'fullscreen-layout-ready'), 120);
@@ -3839,6 +3859,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const applyCameraCommand = (intent:CameraIntent, targetTime?:string|null, reason?:string, scaleFactor?:number, fitWindow?: StructuralFitWindow | null, priceDomain?: { low: number; high: number } | null) => {
+    setCameraViewOwnerWithLog(inferViewOwnerFromCameraReason(reason, intent), 'applyCameraCommand', reason || intent);
     cameraLog('camera intent applied', { intent, targetTime, reason, scaleFactor, fitWindow, priceDomain });
     setCameraCommand(prev => ({ intent, targetTime: targetTime || null, reason, scaleFactor, fitWindow: fitWindow || null, priceDomain: priceDomain || null, token: prev.token + 1 }));
   };
@@ -3850,6 +3871,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     fitWindow?: StructuralFitWindow | null,
     priceDomain?: { low: number; high: number } | null,
   ) => {
+    if (shouldBlockAutomaticCameraRefit(cameraViewOwnerRef.current) && !isExplicitCameraNavigationReason(reason)) {
+      cameraLog('deferred camera suppressed', { reason, owner: cameraViewOwnerRef.current, intent });
+      return;
+    }
     deferredCameraRef.current = { intent, targetTime, reason, fitWindow, priceDomain };
     setDeferredCameraToken((t) => t + 1);
   };
@@ -3863,6 +3888,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   useEffect(() => {
     const pending = deferredCameraRef.current;
     if (!pending || !candles.length) return;
+    if (shouldBlockAutomaticCameraRefit(cameraViewOwnerRef.current) && !isExplicitCameraNavigationReason(pending.reason)) {
+      deferredCameraRef.current = null;
+      cameraLog('deferred camera dropped', { pending, owner: cameraViewOwnerRef.current });
+      return;
+    }
     deferredCameraRef.current = null;
     const frame = window.requestAnimationFrame(() => {
       applyCameraCommand(
@@ -3900,6 +3930,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     fit.low = Math.min(lo, fit.low);
     fit.high = Math.max(hi, fit.high);
+    setCameraViewOwnerWithLog('FIT_RANGE', 'fitRangeView', 'fit-range');
     applyCameraCommand('FIT_STRUCTURAL_RANGE', clamped.start, 'fit-range', undefined, fit);
     setMessage(`Fit range · ${shortTime(clamped.start, timeframe)} → ${shortTime(clamped.end, timeframe)}`);
   };
@@ -3915,6 +3946,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setMessage('Could not fit replay view.');
       return;
     }
+    setCameraViewOwnerWithLog('FIT_REPLAY', 'fitReplayView', 'fit-replay');
     applyCameraCommand('FIT_STRUCTURAL_RANGE', targetTime, 'fit-replay', undefined, fit);
     setMessage(`Fit replay · ${shortTime(targetTime, timeframe)}`);
   };
@@ -3938,11 +3970,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       fit.low = Math.min(fit.low, caseLo);
       fit.high = Math.max(fit.high, caseHi);
     }
+    setCameraViewOwnerWithLog('FIT_CASE', 'fitCaseView', 'fit-case');
     applyCameraCommand('FIT_STRUCTURAL_RANGE', clamped.start, 'fit-case', undefined, fit);
     setMessage(`Fit case · ${shortTime(clamped.start, timeframe)} → ${shortTime(clamped.end, timeframe)}`);
   };
 
-  const fitAllView = () => applyCameraCommand('FIT_ALL', null, 'fit-all');
+  const fitAllView = () => {
+    setCameraViewOwnerWithLog('FIT_ALL', 'fitAllView', 'fit-all');
+    applyCameraCommand('FIT_ALL', null, 'fit-all');
+  };
 
   const lockCurrentView = () => {
     const dom = visibleCameraDomainRef.current;
@@ -3953,6 +3989,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setCameraDomainByCaseTf(prev => ({ ...prev, [cameraKey]: { start:dom.start, end:dom.end } }));
     setCameraPriceDomainByCaseTf(prev => ({ ...prev, [cameraKey]: { low:dom.priceLow, high:dom.priceHigh } }));
     setCameraMode('LOCKED');
+    setCameraViewOwnerWithLog('USER_LOCKED', 'lockCurrentView', 'lock-view');
     applyCameraCommand('RESTORE_LOCKED', null, 'lock-view');
     setMessage(`Locked view for ${timeframe}: ${shortTime(dom.start, timeframe)} → ${shortTime(dom.end, timeframe)}`);
   };
@@ -4240,7 +4277,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (!quiet) setLoading(false);
       void loadMapMemory(targetTf, requestId);
       if (!isCurrentLoad()) { cameraLog('candle load ignored as stale after memory', { requestId, targetTf, activeTf:activeTimeframeRef.current }); return; }
-      if (opts?.skipCamera) {
+      if (opts?.skipCamera || (shouldBlockAutomaticCameraRefit(cameraViewOwnerRef.current) && !isExplicitCameraNavigationReason(cameraPayload.reason))) {
         pendingCameraIntentRef.current = { intent:'NONE' };
         recordCandleLoadDiagnostic({ ...diagBase, returnedCount: parsed.length, accepted: true, cameraIntent: 'NONE', detail: 'skip-camera' });
         if (!quiet) {
@@ -8342,6 +8379,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       fitWindow: plan.fitWindow,
       contextRangeId: plan.rangeId,
     };
+    setCameraViewOwnerWithLog('TIMEFRAME_SWITCH', 'navigateStructuralChartContext', args.reason);
     activeTimeframeRef.current = plan.chartTf;
     setTimeframe(plan.chartTf);
     return loadCandles(plan.chartTf, {
@@ -8360,6 +8398,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const activeRangeIdNow = String(activeStructuralRangeIdRef.current || '');
     const parentRangeIdNow = String(selectedParentRangeIdRef.current || '');
     cameraLog('chart tf switch requested', { from: sourceTf, to: tf, activeRangeId: activeRangeIdNow, parentRangeId: parentRangeIdNow, layer: structureLayer });
+    setCameraViewOwnerWithLog('TIMEFRAME_SWITCH', 'switchTimeframePreserveCase', `timeframe-switch:${sourceTf}->${tf}`);
     const sourceKey = `${activeCaseDisplayId || 'global'}_${sourceTf}`;
     let targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const dom = visibleCameraDomainRef.current;
@@ -10076,6 +10115,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           lockedCameraDomain={lockedCameraDomain}
           lockedPriceDomain={cameraPriceDomainByCaseTf[cameraKey] || null}
           cameraKey={cameraKey}
+          cameraViewOwner={cameraViewOwner}
+          onCameraViewOwnerChange={setCameraViewOwnerWithLog}
           candleWidthScale={candleWidthScale}
           priceZoomScale={priceZoomScale}
           onCameraDomainChange={(dom)=>{ if (cameraMode === 'LOCKED') setCameraDomainByCaseTf(prev=>({ ...prev, [cameraKey]: dom })); }}
@@ -10387,6 +10428,8 @@ type D3CandleMapProps = {
   candleWidthScale?:number;
   priceZoomScale?:number;
   cameraKey?:string;
+  cameraViewOwner?: CameraViewOwner;
+  onCameraViewOwnerChange?:(owner: CameraViewOwner, source: string, reason?: string)=>void;
   onCameraDomainChange?:(domain:{start:string;end:string})=>void;
   onVisibleDomainChange?:(domain:VisibleCameraDomain)=>void;
   viewportClamp?:{start:string;end:string}|null;
@@ -10401,21 +10444,6 @@ function snapChartPx(value: number): number {
 
 function snapChartStrokePx(value: number): number {
   return Math.round(value) + 0.5;
-}
-
-function targetVisibleBarsForTimeframe(tf: string): number {
-  const t = String(tf || 'D1').toUpperCase();
-  if (t === 'M15' || t === 'M5') return 40;
-  if (t === 'H1') return 48;
-  if (t === 'H4') return 52;
-  if (t === 'D1') return 72;
-  if (t === 'W1') return 64;
-  if (t === 'MN1') return 42;
-  return 56;
-}
-
-function readablePadBarsForTimeframe(tf: string): number {
-  return Math.max(16, Math.round(targetVisibleBarsForTimeframe(tf) / 2));
 }
 
 function medianBarSpacingPx(candles: Candle[], zx: d3.ScaleTime<number, number>, maxSamples = 28): number {
@@ -11035,8 +11063,7 @@ function D3CandleMap(props:D3CandleMapProps) {
     }
 
     const slotW = barSpacingPx;
-    const widthScale = Math.max(0.35, Math.min(4, Number(p.candleWidthScale || 1)));
-    const candleW = Math.max(2, Math.min(48, snapChartPx(slotW * 0.8 * widthScale)));
+    const candleW = autoCandleBodyWidthPx(slotW, Number(p.candleWidthScale || 1));
 
     let restoreCrosshairSnap: CrosshairSnap | null = null;
     if (hoverActiveRef.current && hoverPointerRef.current) {
@@ -11500,6 +11527,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
           if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
             overlayPanMovedRef.current = true;
             manualZoomRef.current = true;
+            latestProps.current.onCameraViewOwnerChange?.('USER_PAN_ZOOM', 'D3CandleMap.yPan', 'user-pan-zoom');
           }
           yPanPxRef.current = snap.startPan + dy;
           scheduleDraw();
@@ -11555,6 +11583,7 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       const next = event.transform;
       transformRef.current = d3.zoomIdentity.translate(next.x, 0).scale(next.k);
       manualZoomRef.current = true;
+      latestProps.current.onCameraViewOwnerChange?.('USER_PAN_ZOOM', 'D3CandleMap.zoomed', 'user-pan-zoom');
       try {
         const pp = latestProps.current;
         const dataNow = pp.replayCutTime
@@ -11833,13 +11862,19 @@ Date: ${shortTime(d.time,p.timeframe)}`);
 
   useEffect(() => {
     if (!props.autoscaleToken) return;
+    if (shouldBlockAutomaticCameraRefit(props.cameraViewOwner)) { scheduleDraw(); return; }
     manualZoomRef.current = false;
     lastYBaseRef.current = null;
     scheduleDraw();
-  }, [props.autoscaleToken]);
+  }, [props.autoscaleToken, props.cameraViewOwner]);
+
+  useEffect(() => {
+    draw();
+  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, guidedCursorKey, props.showFibOverlays, drawingsKey, tradeIdeasRenderKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor, props.tradePickMode, viewportClampKey, props.chartEmptyState, props.cameraViewOwner]);
 
   useEffect(()=>{
-    if (!svgRef.current || !props.candles.length || props.cameraMode !== 'LOCKED' || !props.lockedCameraDomain?.start || !props.lockedCameraDomain?.end) { draw(); return; }
+    if (!svgRef.current || !props.candles.length || props.cameraMode !== 'LOCKED' || !props.lockedCameraDomain?.start || !props.lockedCameraDomain?.end) { return; }
+    if (props.cameraViewOwner !== 'USER_LOCKED') return;
     const a = new Date(String(props.lockedCameraDomain.start));
     const b = new Date(String(props.lockedCameraDomain.end));
     if (!Number.isFinite(a.getTime()) || !Number.isFinite(b.getTime()) || Math.abs(b.getTime()-a.getTime()) < 1) { draw(); return; }
@@ -11859,11 +11894,11 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       transformRef.current = d3.zoomIdentity.translate(tx, 0).scale(k);
     }
     draw();
-  }, [props.cameraKey, props.candles.length, props.replayCutTime, props.events, props.rangeHigh, props.rangeLow, props.rangeStart, props.rangeEnd, props.toolMode, props.scaleMode, props.timeframe, props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candleWidthScale, props.priceZoomScale, savedOverlaysKey, draftOverlayKey, guidedCursorKey, props.showFibOverlays, drawingsKey, tradeIdeasRenderKey, props.chartDrawTool, props.selectedDrawingId, props.chartDrawColor, props.tradePickMode, viewportClampKey, props.chartEmptyState]);
+  }, [props.cameraMode, props.lockedCameraDomain?.start, props.lockedCameraDomain?.end, props.candles.length, props.replayCutTime, props.cameraViewOwner, props.cameraCommand?.token]);
 
   useEffect(() => {
     if (!svgRef.current || !props.viewportClamp?.start || !props.viewportClamp?.end) return;
-    if (manualZoomRef.current) { draw(); return; }
+    if (manualZoomRef.current || shouldBlockAutomaticCameraRefit(props.cameraViewOwner)) { draw(); return; }
     const cutMs = props.replayCutTime ? new Date(String(props.replayCutTime)).getTime() : null;
     const data = cutMs && Number.isFinite(cutMs)
       ? safeArray(props.candles).filter((d:any)=>new Date(d.time).getTime() <= cutMs)
@@ -11899,10 +11934,11 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     if (!metrics) return;
     const bars = targetVisibleBarsForTimeframe(props.timeframe);
     const k = Math.max(1, props.candles.length / Math.max(1, bars));
-    const targetRight = metrics.margin.left + metrics.innerW * 0.78;
+    const targetRight = metrics.margin.left + metrics.innerW * CHART_LATEST_ANCHOR_RATIO;
     const tx = targetRight - k * (metrics.margin.left + metrics.innerW);
     const t = d3.zoomIdentity.translate(tx,0).scale(k);
     transformRef.current = t;
+    latestProps.current.onCameraViewOwnerChange?.('AUTO', 'D3CandleMap.jumpLatest', 'jump-latest');
     svg.call((d3.zoom() as any).transform, t);
     draw();
   }, [props.jumpLatestToken]);
@@ -11911,6 +11947,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     if (!svgRef.current || !props.candles.length) return;
     const key = `${props.timeframe}:${props.candles.length}:${props.replayCutTime || ''}:${props.cameraKey || ''}`;
     if (readableZoomKeyRef.current === key) return;
+    if (shouldBlockAutomaticCameraRefit(props.cameraViewOwner)) {
+      readableZoomKeyRef.current = key;
+      return;
+    }
     // Do not refit camera on each replay tick — manual pan/zoom only during bar replay.
     if (props.replayCutTime) {
       readableZoomKeyRef.current = key;
@@ -11960,16 +12000,24 @@ Date: ${shortTime(d.time,p.timeframe)}`);
       }
     }
     const k = Math.max(1, data.length / targetBars);
-    const targetRight = metrics.margin.left + metrics.innerW * 0.78;
+    const targetRight = metrics.margin.left + metrics.innerW * CHART_LATEST_ANCHOR_RATIO;
     transformRef.current = d3.zoomIdentity.translate(targetRight - k * (metrics.margin.left + metrics.innerW), 0).scale(k);
     draw();
-  }, [props.candles.length, props.timeframe, props.replayCutTime, props.cameraKey, props.selectedCandleTime]);
+  }, [props.candles.length, props.timeframe, props.replayCutTime, props.cameraKey, props.selectedCandleTime, props.cameraViewOwner]);
 
   useEffect(()=>{
     const command = props.cameraCommand;
     const hasCommand = !!command && command.token > 0 && command.intent !== 'NONE';
     const hasManualFit = props.fitAllToken > 0 || !!props.goDate;
     if (!hasCommand && !hasManualFit) return;
+    if (
+      hasCommand
+      && shouldBlockAutomaticCameraRefit(props.cameraViewOwner)
+      && !isExplicitCameraNavigationReason(command!.reason)
+    ) {
+      logCameraUpdate(command!.reason || command!.intent, 'D3CandleMap.cameraCommand:blocked', DEBUG_CAMERA);
+      return;
+    }
     if (hasCommand && command!.intent !== 'PRESERVE_OR_NEAREST_TIME') manualZoomRef.current = false;
     if (props.cameraMode === 'LOCKED' && props.lockedCameraDomain?.start && props.lockedCameraDomain?.end && !hasCommand && !hasManualFit) return;
     const rawData = props.candles || [];
@@ -11990,12 +12038,22 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     const fitLatest = () => {
       const bars = targetVisibleBarsForTimeframe(props.timeframe);
       const k = Math.max(1, data.length / Math.max(1, bars));
-      const targetRight = margin.left + innerW * 0.78;
+      const targetRight = margin.left + innerW * CHART_LATEST_ANCHOR_RATIO;
       const tx = targetRight - k * (margin.left + innerW);
       transformRef.current = d3.zoomIdentity.translate(tx,0).scale(k);
     };
     const fitAll = () => {
-      transformRef.current = d3.zoomIdentity;
+      const first = data[0];
+      const last = data[data.length - 1];
+      if (!first || !last) return false;
+      const a = x0(candleTimeDate(first.time));
+      const b = x0(candleTimeDate(last.time));
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+      const span = Math.max(10, Math.abs(b - a));
+      const usableW = innerW * (1 - CHART_FUTURE_PAD_RATIO);
+      const k = Math.max(0.35, Math.min(180, usableW / span));
+      const targetRight = margin.left + innerW * CHART_LATEST_ANCHOR_RATIO;
+      transformRef.current = d3.zoomIdentity.translate(targetRight - k * Math.max(a, b), 0).scale(k);
       yPanPxRef.current = 0;
       yZoomRef.current = 1;
       return true;
@@ -12203,7 +12261,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
     if (applied && hasCommand && command!.intent !== 'PRESERVE_OR_NEAREST_TIME') {
       manualZoomRef.current = true;
     }
-  }, [props.fitAllToken, props.goDate, props.cameraCommand?.token]);
+    if (hasCommand) {
+      logCameraUpdate(command!.reason || command!.intent, 'D3CandleMap.cameraCommand', DEBUG_CAMERA);
+    }
+  }, [props.fitAllToken, props.goDate, props.cameraCommand?.token, props.cameraViewOwner]);
 
   return <svg ref={svgRef} className="d3CandleSvg" />;
 }

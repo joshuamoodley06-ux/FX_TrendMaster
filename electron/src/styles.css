@@ -1582,6 +1582,36 @@ h1{font-size:20px;margin:0;font-weight:700} .brandBlock p{margin:2px 0 0;color:v
   gap:5px !important;
   padding:4px !important;
 }
+.compactMapToolbar.collapsedRibbon{
+  min-height:0 !important;
+}
+.compactMapToolbar.collapsedRibbon .scaleNudges,
+.compactMapToolbar.collapsedRibbon .fitNudges,
+.compactMapToolbar.collapsedRibbon .cameraModeSelect,
+.compactMapToolbar.collapsedRibbon .historyMarksControl,
+.compactMapToolbar.collapsedRibbon .historyMarksBtn,
+.compactMapToolbar.collapsedRibbon .toolsMenu,
+.compactMapToolbar.collapsedRibbon button.replayActiveBtn,
+.compactMapToolbar.collapsedRibbon button:not(.ribbonToggle):not(.active){
+  display:none !important;
+}
+body.mapStudioPilot .mapStudioShell .mapStudioToolbar.compactMapToolbar.collapsedRibbon{
+  padding:4px 8px !important;
+  gap:6px !important;
+}
+body.mapStudioPilot .mapStudioShell .mapStudioHeader{
+  display:none !important;
+}
+body.mapStudioPilot .mapStudioShell .crosshairReadout{
+  position:absolute !important;
+  right:8px !important;
+  bottom:8px !important;
+  z-index:12 !important;
+  max-width:min(420px, 42vw) !important;
+  padding:4px 8px !important;
+  font-size:11px !important;
+  pointer-events:none !important;
+}
 .compactStatus{font-size:11px !important;opacity:.78 !important;}
 .toolsMenu{position:relative;display:inline-flex;align-items:center;z-index:40;}
 .toolsMenu summary{

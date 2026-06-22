@@ -76,15 +76,10 @@ export function createDefaultViewConfig(timeframe = 'D1'): ActiveViewConfig {
   };
 }
 
+import { targetVisibleBarsForTimeframe as chartTargetVisibleBars } from './chartViewportPolicy';
+
 export function defaultCandleWindowSize(timeframe: string): number {
-  const tf = String(timeframe || 'D1').toUpperCase();
-  if (tf === 'M15' || tf === 'M5') return 40;
-  if (tf === 'H1') return 48;
-  if (tf === 'H4') return 52;
-  if (tf === 'D1') return 72;
-  if (tf === 'W1') return 64;
-  if (tf === 'MN1') return 42;
-  return 56;
+  return chartTargetVisibleBars(timeframe);
 }
 
 export function parseTimeMs(value: unknown): number | null {
