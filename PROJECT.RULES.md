@@ -17,6 +17,8 @@ In this repository, the full doctrine is stored at:
 
 Agents must read **`project rules.md`** and report **`PROJECT.RULES.md read: yes`** in task reports.
 
+See **Agent Report Length Rule** (§65) and **Agent Reporting Rule** (§52 in `project rules.md`).
+
 Do not rename or normalize rule files during production bug fixes. Filename cleanup belongs in a dedicated docs/repo-control task approved by Josh.
 
 ---
@@ -446,3 +448,43 @@ Protect Josh's time.
 His brain is for trading.
 
 The machine can do the plumbing.
+
+---
+
+# 65. Agent Report Length Rule
+
+Complements **Agent Reporting Rule** (§52 in `project rules.md`).
+
+Agent reports must be short by default.
+
+Default max:
+
+```text
+normal task report: 8 lines
+QA report: 10 lines
+Repo-Control report: 6 lines
+blocked/failure report: 12 lines max
+```
+
+Required short format:
+
+```text
+Task:
+Files:
+Tests:
+Smoke:
+Verdict/Blocker:
+Commit:
+Hash:
+```
+
+Agents may write a longer report only when:
+
+```text
+Josh explicitly asks
+QA verdict is BLOCK
+production safety risk exists
+rollback/revert is required
+```
+
+No pasted essays, no full diffs, no repeated doctrine summaries.
