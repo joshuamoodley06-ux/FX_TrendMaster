@@ -1,4 +1,4 @@
-import type { CandlestickData, Time } from 'lightweight-charts';
+import type { CandlestickData, SeriesMarker, Time } from 'lightweight-charts';
 
 export type FxtmCandleRow = {
   symbol?: string;
@@ -19,3 +19,33 @@ export type TradingViewAdapterResult = {
 };
 
 export type ChartRendererMode = 'd3' | 'tradingview';
+
+export type TradingViewOverlayMode = 'off' | 'readonly';
+
+export type TradingViewRangeLine = {
+  id: string;
+  rangeId?: string | number | null;
+  kind: 'RH' | 'RL';
+  role: 'selected' | 'saved' | 'parent';
+  label: string;
+  price: number;
+  color: string;
+  lineWidth: number;
+  lineStyle: 'solid' | 'dashed' | 'dotted';
+};
+
+export type TradingViewBosMarker = SeriesMarker<Time> & {
+  id: string;
+};
+
+export type TradingViewOverlaySet = {
+  priceLines: TradingViewRangeLine[];
+  markers: TradingViewBosMarker[];
+};
+
+export type TradingViewFitRequest = {
+  token: number;
+  from?: Time;
+  to?: Time;
+  target?: Time;
+};

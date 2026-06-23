@@ -231,10 +231,17 @@ import { createChartRenderGate } from './chartRenderGate';
 import {
   CHART_RENDERER_STORAGE_KEY,
   DEFAULT_CHART_RENDERER,
+  DEFAULT_TRADINGVIEW_OVERLAY_MODE,
   normalizeChartRendererMode,
+  normalizeTradingViewOverlayMode,
+  TRADINGVIEW_OVERLAYS_STORAGE_KEY,
 } from './chartRendererConfig';
+import {
+  adaptFitRequestForTradingView,
+  adaptOverlaysForTradingView,
+} from './tradingView/overlayAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
-import type { ChartRendererMode } from './tradingView/types';
+import type { ChartRendererMode, TradingViewOverlayMode } from './tradingView/types';
 import {
   buildLocalLibraryStatusLine,
   candlesChanged,
@@ -2499,6 +2506,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [topRibbonCollapsed, setTopRibbonCollapsed] = useLocalStorage<boolean>('fx_tm_top_ribbon_collapsed_v087_24', true);
   const [chartRendererRaw, setChartRendererRaw] = useLocalStorage<ChartRendererMode>(CHART_RENDERER_STORAGE_KEY, DEFAULT_CHART_RENDERER);
   const chartRenderer = normalizeChartRendererMode(chartRendererRaw);
+  const [tradingViewOverlayModeRaw] = useLocalStorage<TradingViewOverlayMode>(TRADINGVIEW_OVERLAYS_STORAGE_KEY, DEFAULT_TRADINGVIEW_OVERLAY_MODE);
+  const tradingViewOverlayMode = normalizeTradingViewOverlayMode(tradingViewOverlayModeRaw);
   const [chartFullscreen, setChartFullscreen] = useState(false);
   const [navOverlayPanelOpen, setNavOverlayPanelOpen] = useState(false);
   /** Pilot layout: O-N-G-M-C-T rail lives in the fixed 60px grid column; inspector toggles column 3 only. */
@@ -9535,6 +9544,39 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     rawActiveCaseId,
   ]);
 
+  const tradingViewOverlays = useMemo(() => {
+    if (chartRenderer !== 'tradingview' || tradingViewOverlayMode !== 'readonly') {
+      return { priceLines: [], markers: [] };
+    }
+    return adaptOverlaysForTradingView({
+      timeframe,
+      selectedRange: selectedSavedRange,
+      savedRangeOverlays: chartSavedRangeOverlays,
+      parentRangeOverlays: activeParentRangeOverlay,
+      visibleEvents,
+    });
+  }, [
+    chartRenderer,
+    tradingViewOverlayMode,
+    timeframe,
+    selectedSavedRange,
+    chartSavedRangeOverlays,
+    activeParentRangeOverlay,
+    visibleEvents,
+  ]);
+
+  const tradingViewFitRequest = useMemo(() => {
+    if (chartRenderer !== 'tradingview' || tradingViewOverlayMode !== 'readonly') return null;
+    return adaptFitRequestForTradingView({
+      token: cameraCommand.token,
+      intent: cameraCommand.intent,
+      reason: cameraCommand.reason,
+      fitWindow: cameraCommand.fitWindow,
+      targetTime: cameraCommand.targetTime,
+      timeframe,
+    });
+  }, [chartRenderer, tradingViewOverlayMode, cameraCommand, timeframe]);
+
   const handleInspectorStructuralCommit = async () => {
     let ok = false;
     if (inspectorCommitAction.kind === 'next_range') {
@@ -10358,6 +10400,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             loadedTimeframe={loadedCandleContext?.chartTimeframe || null}
             revision={candleDataRevision}
             statusMessage={message}
+            overlayMode={tradingViewOverlayMode}
+            overlays={tradingViewOverlays}
+            fitRequest={tradingViewFitRequest}
           />
         ) : (
         <D3CandleMap

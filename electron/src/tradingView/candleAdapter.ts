@@ -3,7 +3,7 @@ import type { FxtmCandleRow, TradingViewAdapterResult, TradingViewCandle } from 
 
 const DAILY_TIMEFRAMES = new Set(['W1', 'D1']);
 
-function parseFxtmTime(raw: string): { timestampSeconds: number; businessDay: BusinessDay; key: string } | null {
+export function parseFxtmTime(raw: string): { timestampSeconds: number; businessDay: BusinessDay; key: string } | null {
   const match = String(raw || '').trim().match(/^(\d{4})[.-](\d{2})[.-](\d{2})(?:[ T](\d{2}):(\d{2}))?/);
   if (!match) return null;
   const year = Number(match[1]);
@@ -28,13 +28,13 @@ function isValidOhlc(candle: FxtmCandleRow): candle is Required<Pick<FxtmCandleR
     && Number.isFinite(Number(candle.close));
 }
 
-function timeForTradingView(parsed: NonNullable<ReturnType<typeof parseFxtmTime>>, timeframe: string): Time {
+export function timeForTradingView(parsed: NonNullable<ReturnType<typeof parseFxtmTime>>, timeframe: string): Time {
   return DAILY_TIMEFRAMES.has(String(timeframe || '').toUpperCase())
     ? parsed.businessDay
     : parsed.timestampSeconds as UTCTimestamp;
 }
 
-function timeSortKey(time: Time): number {
+export function timeSortKey(time: Time): number {
   if (typeof time === 'number') return time;
   if (typeof time === 'string') return Date.parse(`${time}T00:00:00Z`) / 1000;
   return Math.floor(Date.UTC(time.year, time.month - 1, time.day) / 1000);
@@ -44,6 +44,11 @@ function timeDedupeKey(time: Time): string {
   if (typeof time === 'number') return String(time);
   if (typeof time === 'string') return time;
   return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
+}
+
+export function fxtmTimeToTradingViewTime(raw: string | null | undefined, timeframe: string): Time | null {
+  const parsed = parseFxtmTime(String(raw || ''));
+  return parsed ? timeForTradingView(parsed, timeframe) : null;
 }
 
 export function adaptCandlesForTradingView(candles: FxtmCandleRow[], timeframe: string): TradingViewAdapterResult {

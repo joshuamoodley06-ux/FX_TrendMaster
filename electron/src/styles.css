@@ -4451,6 +4451,10 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
   color:#fde68a;
   background:rgba(120,53,15,.34);
 }
+.tradingViewLiveNotice.readonlyOverlaySummary{
+  color:#bfdbfe;
+  background:rgba(30,64,175,.22);
+}
 .tradingViewChartCanvas{
   flex:1;
   min-height:480px;
