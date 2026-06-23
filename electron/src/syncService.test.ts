@@ -3,10 +3,12 @@ import {
   buildUpsertPayloadFromVpsResponse,
   buildVpsCandlesUrl,
   initWarmBoot,
+  INCREMENTAL_DELTA_LIMIT,
   normaliseSyncSymbol,
   normaliseUpsertCandleTime,
   resolveSymbolForWarmBoot,
   runWarmBoot,
+  syncIncrementalDeltaFromVps,
   syncTimeframeFromVps,
   transformVpsCandleRow,
 } from './syncService';
@@ -40,6 +42,7 @@ describe('syncService transforms', () => {
       close: 2305.25,
       volume: 123,
       source: 'vps-sync',
+      is_closed: 1,
     });
   });
 
@@ -85,6 +88,13 @@ describe('syncService transforms', () => {
 
 describe('syncTimeframeFromVps', () => {
   it('fetches VPS candles and writes through electronAPI.candles.upsert', async () => {
+    vi.spyOn(localResearchClient, 'getLocalCandlesStatus').mockResolvedValue({
+      ok: true,
+      databasePath: 'C:\\cache\\candle_cache.db',
+      exists: true,
+      readable: true,
+      symbolCandles: 0,
+    });
     const upsert = vi.spyOn(localResearchClient, 'upsertLocalCandles').mockResolvedValue({
       ok: true,
       databasePath: 'C:\\cache\\candle_cache.db',
@@ -128,6 +138,54 @@ describe('syncTimeframeFromVps', () => {
   });
 });
 
+describe('syncIncrementalDeltaFromVps', () => {
+  it('fetches only a small delta from last synced time', async () => {
+    vi.spyOn(localResearchClient, 'getLocalCandlesStatus').mockResolvedValue({
+      ok: true,
+      databasePath: 'C:\\cache\\candle_cache.db',
+      exists: true,
+      readable: true,
+      symbolCandles: 500,
+      lastTime: '2024.06.01 00:00',
+      syncState: {
+        symbol: 'XAUUSD',
+        timeframe: 'M15',
+        last_time: '2024.06.01 00:00',
+        last_sync_at: '2025-06-01T00:00:00.000Z',
+        last_mode: 'incremental_delta',
+      },
+    });
+    vi.spyOn(localResearchClient, 'upsertLocalCandles').mockResolvedValue({
+      ok: true,
+      databasePath: 'C:\\cache\\candle_cache.db',
+      upserted: 1,
+      skipped: 0,
+    });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        symbol: 'XAUUSD',
+        timeframe: 'M15',
+        candles: [
+          { time: '2024.06.01 00:15', open: 1, high: 2, low: 0.5, close: 1.5, volume: 1 },
+        ],
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await syncIncrementalDeltaFromVps('XAUUSD', 'M15', { reason: 'interval_5m' });
+    expect(result.ok).toBe(true);
+    expect(result.fetched).toBe(1);
+    const calledUrl = String(fetchMock.mock.calls[0]?.[0] || '');
+    expect(calledUrl).toContain(`limit=${INCREMENTAL_DELTA_LIMIT}`);
+    expect(calledUrl).toContain('start=');
+
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+});
+
 describe('warm boot', () => {
   it('resolves unavailable stored symbols to a known default', () => {
     const resolved = resolveSymbolForWarmBoot('DELETED_SYM', ['XAUUSD', 'US500.CASH']);
@@ -137,6 +195,13 @@ describe('warm boot', () => {
   });
 
   it('initWarmBoot falls back to defaults when chart load fails for stale symbol', async () => {
+    vi.spyOn(localResearchClient, 'getLocalCandlesStatus').mockResolvedValue({
+      ok: true,
+      databasePath: 'C:\\cache\\candle_cache.db',
+      exists: true,
+      readable: true,
+      symbolCandles: 0,
+    });
     vi.spyOn(localResearchClient, 'upsertLocalCandles').mockResolvedValue({
       ok: true,
       databasePath: 'C:\\cache\\candle_cache.db',
@@ -144,6 +209,14 @@ describe('warm boot', () => {
       skipped: 0,
     });
     vi.spyOn(localResearchClient, 'fetchLocalCandles')
+      .mockResolvedValueOnce({
+        ok: true,
+        symbol: 'XAUUSD',
+        timeframe: 'H1',
+        source: 'cache',
+        databasePath: 'C:\\cache\\candle_cache.db',
+        candles: [],
+      })
       .mockResolvedValueOnce({
         ok: true,
         symbol: 'XAUUSD',

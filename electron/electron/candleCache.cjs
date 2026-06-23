@@ -7,6 +7,7 @@ const { ensureResearchFolder } = require('./localResearchSettings.cjs');
 
 /** @type {import('node:sqlite').DatabaseSync | null} */
 let db = null;
+let loggedCachePath = false;
 
 const MAX_FETCH_LIMIT = 10_000;
 const DEFAULT_FETCH_LIMIT = 500;
@@ -15,16 +16,30 @@ function legacyCacheDbPath() {
   return path.join(app.getPath('userData'), 'candle_cache.db');
 }
 
+function legacyCacheDbCandidates() {
+  const appData = app.getPath('appData');
+  const userData = app.getPath('userData');
+  return Array.from(new Set([
+    legacyCacheDbPath(),
+    path.join(appData, 'fx-trendmaster-electron', 'candle_cache.db'),
+    path.join(appData, 'FX TrendMaster Cockpit', 'candle_cache.db'),
+    path.join(userData, '..', 'fx-trendmaster-electron', 'candle_cache.db'),
+  ].map((p) => path.resolve(p))));
+}
+
 function cacheDbPath() {
   return path.join(ensureResearchFolder(), 'candle_cache.db');
 }
 
 function migrateLegacyCacheIfNeeded() {
   const target = cacheDbPath();
-  const legacy = legacyCacheDbPath();
-  if (fs.existsSync(target) || !fs.existsSync(legacy)) {
+  if (fs.existsSync(target)) {
     return target;
   }
+  const legacy = legacyCacheDbCandidates().find((candidate) => (
+    candidate !== target && fs.existsSync(candidate)
+  ));
+  if (!legacy) return target;
   try {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(legacy, target);
@@ -34,6 +49,7 @@ function migrateLegacyCacheIfNeeded() {
         fs.copyFileSync(sidecar, `${target}${suffix}`);
       }
     }
+    console.info(`[candle-cache] migrated legacy cache source=${legacy} target=${target}`);
   } catch {
     // Best effort — fresh cache is still usable if migration fails.
   }
@@ -84,6 +100,7 @@ function initSchema(database) {
       volume REAL DEFAULT 0,
       source TEXT DEFAULT 'unknown',
       updated_at TEXT NOT NULL,
+      is_closed INTEGER DEFAULT 1,
       PRIMARY KEY (symbol, timeframe, time)
     );
 
@@ -122,12 +139,27 @@ function initSchema(database) {
     CREATE INDEX IF NOT EXISTS idx_mapping_ranges_parent
       ON mapping_ranges(parent_id);
   `);
+  migrateCandleSchema(database);
+}
+
+function migrateCandleSchema(database) {
+  const columns = database.prepare(`PRAGMA table_info(candles)`).all();
+  const names = new Set(columns.map((row) => String(row.name || '')));
+  if (!names.has('is_closed')) {
+    database.exec(`ALTER TABLE candles ADD COLUMN is_closed INTEGER DEFAULT 1`);
+  }
 }
 
 function connect() {
   if (db) return db;
   const dbPath = migrateLegacyCacheIfNeeded();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  if (!loggedCachePath) {
+    loggedCachePath = true;
+    console.info(`[candle-cache] research_folder=${ensureResearchFolder()}`);
+    console.info(`[candle-cache] candle_cache_db=${dbPath}`);
+    console.info(`[candle-cache] legacy_candidates=${legacyCacheDbCandidates().join(';')}`);
+  }
   const { DatabaseSync } = require('node:sqlite');
   db = new DatabaseSync(dbPath);
   db.exec('PRAGMA journal_mode = WAL');
@@ -162,8 +194,10 @@ function normaliseCandleRow(raw, defaults = {}) {
   if (![open, high, low, close].every(Number.isFinite)) {
     throw new Error(`invalid OHLC for ${symbol} ${timeframe} ${time}`);
   }
-  const volumeRaw = raw?.volume;
+  const volumeRaw = raw?.volume ?? raw?.tick_volume;
   const volume = volumeRaw == null || volumeRaw === '' ? 0 : Number(volumeRaw);
+  const isClosedRaw = raw?.is_closed ?? raw?.isClosed;
+  const isClosed = isClosedRaw === false || isClosedRaw === 0 || isClosedRaw === '0' ? 0 : 1;
   return {
     symbol,
     timeframe,
@@ -174,6 +208,7 @@ function normaliseCandleRow(raw, defaults = {}) {
     close,
     volume: Number.isFinite(volume) ? volume : 0,
     source: String(raw?.source ?? defaults.source ?? 'unknown'),
+    is_closed: isClosed,
   };
 }
 
@@ -186,7 +221,7 @@ function fetchCandles(args = {}) {
   const limit = Math.max(1, Math.min(Number(args.limit) || DEFAULT_FETCH_LIMIT, MAX_FETCH_LIMIT));
 
   let sql = `
-    SELECT time, open, high, low, close, volume
+    SELECT time, open, high, low, close, volume, source, updated_at, is_closed
     FROM candles
     WHERE symbol = ? AND timeframe = ?
   `;
@@ -218,6 +253,9 @@ function fetchCandles(args = {}) {
       low: row.low,
       close: row.close,
       volume: row.volume ?? 0,
+      source: row.source ?? 'cache',
+      synced_at: row.updated_at ?? null,
+      is_closed: row.is_closed == null ? true : Number(row.is_closed) !== 0,
     })),
   };
 }
@@ -264,8 +302,8 @@ function upsertCandles(args = {}) {
   const defaultSource = args.source || 'unknown';
   const updatedAt = nowIso();
   const insert = database.prepare(`
-    INSERT INTO candles(symbol, timeframe, time, open, high, low, close, volume, source, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO candles(symbol, timeframe, time, open, high, low, close, volume, source, updated_at, is_closed)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(symbol, timeframe, time) DO UPDATE SET
       open = excluded.open,
       high = excluded.high,
@@ -273,7 +311,8 @@ function upsertCandles(args = {}) {
       close = excluded.close,
       volume = excluded.volume,
       source = excluded.source,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      is_closed = excluded.is_closed
   `);
 
   let upserted = 0;
@@ -298,6 +337,7 @@ function upsertCandles(args = {}) {
           candle.volume,
           candle.source,
           updatedAt,
+          candle.is_closed ?? 1,
         );
         upserted += 1;
       } catch {

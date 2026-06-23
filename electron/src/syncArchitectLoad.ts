@@ -6,9 +6,7 @@ import {
 import {
   shouldClearRangeUiFromRehydration,
   validateRangeRehydration,
-  type RangeRehydrationListResult,
 } from './rangeRehydrationService';
-import { syncTimeframeFromVps } from './syncService';
 
 export type SyncArchitectLoadResult = {
   ok: boolean;
@@ -17,12 +15,12 @@ export type SyncArchitectLoadResult = {
   candles: LocalCandleRow[];
   source: 'local_sqlite' | 'cache' | 'none';
   synced: boolean;
-  rehydration: RangeRehydrationListResult | null;
+  rehydration: Awaited<ReturnType<typeof validateRangeRehydration>> | null;
   should_clear_ui: boolean;
   error?: string;
 };
 
-/** Sync Architect warm boot: VPS → local cache, rehydration check, then read local SQLite candles. */
+/** Local-first chart session load — VPS sync is handled separately by localCandleLibrary. */
 export async function loadSessionFromSyncArchitect(
   symbol: string,
   timeframe: string,
@@ -35,13 +33,6 @@ export async function loadSessionFromSyncArchitect(
 ): Promise<SyncArchitectLoadResult> {
   const sym = String(symbol || 'XAUUSD').trim().toUpperCase();
   const tf = String(timeframe || 'D1').trim().toUpperCase();
-
-  const sync = options?.skipVpsSync
-    ? { ok: true, skipped: true }
-    : await syncTimeframeFromVps(sym, tf, {
-      reason: 'warm_boot',
-      refresh: !!options?.refresh,
-    });
 
   const rehydration = await validateRangeRehydration(sym, tf, options?.caseId ?? null);
   const shouldClearUi = shouldClearRangeUiFromRehydration(rehydration);
@@ -64,9 +55,9 @@ export async function loadSessionFromSyncArchitect(
     timeframe: tf,
     candles: shouldClearUi ? [] : local.candles,
     source: shouldClearUi ? 'none' : (local.ok && local.candles.length ? local.source : 'none'),
-    synced: sync.ok,
+    synced: false,
     rehydration,
     should_clear_ui: shouldClearUi,
-    error: local.error || (!sync.ok ? sync.error : undefined),
+    error: local.error,
   };
 }

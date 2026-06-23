@@ -338,29 +338,97 @@ export function isCurrentCandleLoadRequest(
     && activeTf === started.tf;
 }
 
+export function formatWindowLoadDiagnostic(args: {
+  requestedTf: string;
+  parsedCount: number;
+  windowStart?: string;
+  windowEnd?: string;
+}): string {
+  const win = args.windowStart && args.windowEnd
+    ? `${args.windowStart} → ${args.windowEnd}`
+    : 'full history';
+  return `${args.requestedTf} load returned ${args.parsedCount} candle${args.parsedCount === 1 ? '' : 's'} · window ${win}`;
+}
+
+export function shouldClearCandlesOnLoadStart(args: {
+  quiet: boolean;
+  timeframeSwitch?: boolean;
+  targetTf: string;
+  loadedChartTf?: string | null;
+}): boolean {
+  if (args.quiet) return false;
+  if (args.timeframeSwitch) return true;
+  const loaded = String(args.loadedChartTf || '').toUpperCase();
+  const target = String(args.targetTf || '').toUpperCase();
+  return !!loaded && loaded !== target;
+}
+
+export function shouldDiscardDisplayedCandles(args: {
+  activeChartTf: string;
+  loadedChartTf?: string | null;
+  candleCount: number;
+}): boolean {
+  const active = String(args.activeChartTf || '').toUpperCase();
+  const loaded = String(args.loadedChartTf || '').toUpperCase();
+  return args.candleCount > 0 && !!loaded && loaded !== active;
+}
+
+/** Timeframe tab switch — never derive load window from camera viewport timestamps. */
+export function resolveTimeframeSwitchDataLoadWindow(args: {
+  targetTf: string;
+  contextRange?: { start?: string; end?: string; structure_layer?: string; layer?: string } | null;
+  caseWindow?: { start?: string; end?: string };
+}): CandleLoadWindow | null {
+  const targetTf = String(args.targetTf || '').toUpperCase();
+  if (args.contextRange && (args.contextRange.start || args.contextRange.end)) {
+    return resolveStructuralDataLoadWindow({
+      rangeSpan: {
+        start: args.contextRange.start || args.contextRange.end,
+        end: args.contextRange.end || args.contextRange.start,
+      },
+      chartTf: targetTf,
+      structureLayer: args.contextRange.structure_layer || args.contextRange.layer,
+      label: 'timeframe-switch context',
+    });
+  }
+  const caseWin = args.caseWindow;
+  if (caseWin?.start || caseWin?.end) {
+    return resolveStructuralDataLoadWindow({
+      rangeSpan: { start: caseWin.start || caseWin.end, end: caseWin.end || caseWin.start },
+      chartTf: targetTf,
+      label: 'timeframe-switch case window',
+    });
+  }
+  return null;
+}
+
 export function shouldApplyParsedCandles(args: {
   parsedCount: number;
   previousCount: number;
   hadLoadWindow: boolean;
+  requestedTf?: string;
+  windowStart?: string;
+  windowEnd?: string;
 }): { apply: boolean; statusMessage?: string; detail?: string } {
+  const tf = String(args.requestedTf || '').toUpperCase() || 'candles';
+  const windowDiag = formatWindowLoadDiagnostic({
+    requestedTf: tf,
+    parsedCount: args.parsedCount,
+    windowStart: args.windowStart,
+    windowEnd: args.windowEnd,
+  });
   if (args.parsedCount <= 0 && args.hadLoadWindow) {
     return {
       apply: false,
-      statusMessage: args.previousCount > 0
-        ? 'No candles for this timeframe/window — keeping prior chart. Sync local cache or widen parent range dates.'
-        : 'No candles for this timeframe/window — load a parent timeframe first or sync cache.',
+      statusMessage: `${windowDiag} — no valid ${tf} feed. Sync local cache or widen parent range dates.`,
       detail: 'empty-window-load',
     };
   }
-  if (
-    args.hadLoadWindow
-    && args.parsedCount < MIN_TRUSTED_WINDOW_BARS
-    && args.previousCount >= MIN_TRUSTED_WINDOW_BARS
-  ) {
+  if (args.hadLoadWindow && args.parsedCount < MIN_TRUSTED_WINDOW_BARS) {
     return {
       apply: false,
-      statusMessage: `Window load returned only ${args.parsedCount} bar(s) — keeping prior ${args.previousCount} bars. Check local cache or VPS sync.`,
-      detail: 'suspicious-window-load',
+      statusMessage: `${windowDiag} — too few bars for mapping. Check local cache, VPS sync, or parent range span.`,
+      detail: args.parsedCount <= 1 ? 'suspicious-single-bar' : 'suspicious-window-load',
     };
   }
   return { apply: true };

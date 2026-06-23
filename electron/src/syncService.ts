@@ -5,12 +5,17 @@ import {
   type CandlesUpsertResult,
   type UpsertCandleRow,
   fetchLocalCandles,
+  getLocalCandlesStatus,
   upsertLocalCandles,
 } from './localResearchClient';
 import { loadMappingSession, type MappingSessionState } from './mappingSessionPersistence';
 import type { MappingDraft } from './types';
 
 export const DEFAULT_SYNC_TIMEFRAMES = ['MN1', 'W1', 'D1', 'H4', 'H1', 'M15'] as const;
+/** Chart library TFs — M1 excluded; MN1 deferred. */
+export const CHART_LIBRARY_TIMEFRAMES = ['M15', 'H1', 'H4', 'D1', 'W1'] as const;
+export const INCREMENTAL_DELTA_LIMIT = 24;
+export const INITIAL_BOOTSTRAP_LIMIT = 500;
 export const DEFAULT_SYNC_LIMIT = 8000;
 export const DEFAULT_SYNC_TIMEOUT_MS = 45_000;
 export const DEFAULT_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
@@ -190,6 +195,9 @@ export function transformVpsCandleRow(
   }
   const volumeRaw = raw.volume ?? raw.tick_volume;
   const volume = parseFiniteNumber(volumeRaw);
+  const isClosedRaw = (raw as { is_closed?: unknown; isClosed?: unknown }).is_closed
+    ?? (raw as { isClosed?: unknown }).isClosed;
+  const isClosed = isClosedRaw === false || isClosedRaw === 0 || isClosedRaw === '0' ? 0 : 1;
   return {
     symbol: normaliseSyncSymbol(raw.symbol ?? defaults.symbol),
     timeframe: normaliseSyncTimeframe(raw.timeframe ?? defaults.timeframe),
@@ -200,6 +208,7 @@ export function transformVpsCandleRow(
     close,
     volume: volume ?? 0,
     source: String(raw.source ?? defaults.source ?? 'vps-sync'),
+    is_closed: isClosed,
   };
 }
 
@@ -301,25 +310,44 @@ export async function fetchVpsCandles(
 export async function syncTimeframeFromVps(
   symbol: string,
   timeframe: string,
-  options?: SyncServiceOptions & { reason?: string; refresh?: boolean },
+  options?: SyncServiceOptions & { reason?: string; refresh?: boolean; mode?: string },
 ): Promise<TimeframeSyncResult> {
   const tf = normaliseSyncTimeframe(timeframe);
   const sym = normaliseSyncSymbol(symbol);
   const source = options?.source ?? 'vps-sync';
   const reason = options?.reason ?? 'timeframe_sync';
+  const mode = options?.mode ?? reason;
 
   const remote = await fetchVpsCandles(sym, tf, {
     baseUrl: options?.baseUrl,
-    limit: options?.limit,
+    limit: options?.limit ?? DEFAULT_SYNC_LIMIT,
     refresh: options?.refresh,
     fetchTimeoutMs: options?.fetchTimeoutMs,
   });
 
+  return applyVpsCandlesToLocalCache(sym, tf, remote, { source, mode, reason });
+}
+
+export function mergeParsedCandleRows<T extends { time: string }>(left: T[], right: T[]): T[] {
+  const byTime = new Map<string, T>();
+  for (const row of left) byTime.set(String(row.time), row);
+  for (const row of right) byTime.set(String(row.time), row);
+  return Array.from(byTime.values()).sort(
+    (a, b) => new Date(String(a.time)).getTime() - new Date(String(b.time)).getTime(),
+  );
+}
+
+async function applyVpsCandlesToLocalCache(
+  sym: string,
+  tf: string,
+  remote: VpsCandlesResponse,
+  defaults: { source: string; mode: string; reason: string },
+): Promise<TimeframeSyncResult> {
   const payload = buildUpsertPayloadFromVpsResponse(remote, {
     symbol: sym,
     timeframe: tf,
-    source,
-    mode: reason,
+    source: defaults.source,
+    mode: defaults.mode,
   });
 
   if (!payload) {
@@ -332,6 +360,14 @@ export async function syncTimeframeFromVps(
       error: remote.error || 'VPS returned no candles',
     };
   }
+
+  const status = await getLocalCandlesStatus(sym, tf);
+  const priorCount = Number(status.symbolCandles ?? 0);
+  payload.syncState = {
+    ...payload.syncState!,
+    bar_count: Math.max(priorCount, payload.candles.length),
+    last_mode: defaults.mode,
+  };
 
   const upsert: CandlesUpsertResult = await upsertLocalCandles(payload);
   if (!upsert.ok) {
@@ -355,6 +391,82 @@ export async function syncTimeframeFromVps(
   };
 }
 
+/** Incremental VPS pull — latest delta only, not full history. */
+export async function syncIncrementalDeltaFromVps(
+  symbol: string,
+  timeframe: string,
+  options?: SyncServiceOptions & { reason?: string; mode?: string; quiet?: boolean },
+): Promise<TimeframeSyncResult> {
+  const sym = normaliseSyncSymbol(symbol);
+  const tf = normaliseSyncTimeframe(timeframe);
+  const status = await getLocalCandlesStatus(sym, tf);
+  const lastTime = status.syncState?.last_time ?? status.lastTime ?? null;
+  const limit = INCREMENTAL_DELTA_LIMIT;
+  const remote = await fetchVpsCandles(sym, tf, {
+    baseUrl: options?.baseUrl,
+    limit,
+    start: lastTime || undefined,
+    refresh: false,
+    fetchTimeoutMs: options?.fetchTimeoutMs,
+  });
+
+  return applyVpsCandlesToLocalCache(sym, tf, remote, {
+    source: options?.source ?? 'vps-sync',
+    mode: options?.mode ?? 'incremental_delta',
+    reason: options?.reason ?? 'incremental_delta',
+  });
+}
+
+/** Fetch only a missing chart window from VPS — used when local library has no bars for span. */
+export async function syncMissingWindowFromVps(
+  symbol: string,
+  timeframe: string,
+  window: { start?: string; end?: string },
+  options?: SyncServiceOptions & { reason?: string; mode?: string },
+): Promise<TimeframeSyncResult> {
+  const sym = normaliseSyncSymbol(symbol);
+  const tf = normaliseSyncTimeframe(timeframe);
+  const remote = await fetchVpsCandles(sym, tf, {
+    baseUrl: options?.baseUrl,
+    limit: options?.limit ?? 2000,
+    start: window.start,
+    end: window.end,
+    refresh: false,
+    fetchTimeoutMs: options?.fetchTimeoutMs,
+  });
+
+  return applyVpsCandlesToLocalCache(sym, tf, remote, {
+    source: options?.source ?? 'vps-sync',
+    mode: options?.mode ?? 'missing_window',
+    reason: options?.reason ?? 'missing_window',
+  });
+}
+
+/** First-time bootstrap for empty local library — moderate limit, not full 8000 history. */
+export async function syncBootstrapTimeframeFromVps(
+  symbol: string,
+  timeframe: string,
+  options?: SyncServiceOptions & { reason?: string },
+): Promise<TimeframeSyncResult> {
+  const sym = normaliseSyncSymbol(symbol);
+  const tf = normaliseSyncTimeframe(timeframe);
+  const status = await getLocalCandlesStatus(sym, tf);
+  if (Number(status.symbolCandles ?? 0) > 0) {
+    return syncIncrementalDeltaFromVps(sym, tf, { ...options, reason: options?.reason ?? 'bootstrap_skip' });
+  }
+  const remote = await fetchVpsCandles(sym, tf, {
+    baseUrl: options?.baseUrl,
+    limit: options?.limit ?? INITIAL_BOOTSTRAP_LIMIT,
+    refresh: false,
+    fetchTimeoutMs: options?.fetchTimeoutMs,
+  });
+  return applyVpsCandlesToLocalCache(sym, tf, remote, {
+    source: options?.source ?? 'vps-sync',
+    mode: 'initial_bootstrap',
+    reason: options?.reason ?? 'initial_bootstrap',
+  });
+}
+
 export async function syncSymbolFromVps(
   symbol: string,
   options?: SyncServiceOptions & { reason?: string; refresh?: boolean },
@@ -367,7 +479,7 @@ export async function syncSymbolFromVps(
   for (const timeframe of timeframes) {
     const tf = normaliseSyncTimeframe(timeframe);
     if (!tf) continue;
-    results.push(await syncTimeframeFromVps(sym, tf, { ...options, reason }));
+    results.push(await syncBootstrapTimeframeFromVps(sym, tf, { ...options, reason }));
   }
 
   const totalFetched = results.reduce((sum, row) => sum + row.fetched, 0);
@@ -531,14 +643,26 @@ export async function loadChartData(
   const sym = normaliseSyncSymbol(symbol);
   const tf = normaliseSyncTimeframe(timeframe);
 
-  const sync = await syncTimeframeFromVps(sym, tf, {
+  const localFirst = await fetchLocalCandles(sym, tf, { limit: options?.limit ?? DEFAULT_SYNC_LIMIT });
+  let candleCount = Array.isArray(localFirst.candles) ? localFirst.candles.length : 0;
+  if (localFirst.ok && candleCount > 0) {
+    return {
+      ok: true,
+      symbol: sym,
+      timeframe: tf,
+      candleCount,
+      sync: { timeframe: tf, ok: true, fetched: 0, upserted: 0, skipped: 0 },
+      localOk: true,
+    };
+  }
+
+  const sync = await syncBootstrapTimeframeFromVps(sym, tf, {
     ...options,
     reason: options?.reason ?? 'warm_boot_chart',
-    refresh: options?.refresh ?? false,
   });
 
   const local = await fetchLocalCandles(sym, tf, { limit: options?.limit ?? DEFAULT_SYNC_LIMIT });
-  const candleCount = Array.isArray(local.candles) ? local.candles.length : 0;
+  candleCount = Array.isArray(local.candles) ? local.candles.length : 0;
   const ok = sync.ok || (local.ok && candleCount > 0);
 
   return {
@@ -846,7 +970,25 @@ export class SyncService {
     if (!this.options.resyncIntervalMs || this.options.resyncIntervalMs <= 0) return;
     this.resyncTimer = setInterval(() => {
       const symbol = this.activeSymbol ?? this.readStoredSymbol();
-      void this.syncSymbol(symbol, { reason: 'interval', quiet: true, refresh: false });
+      void (async () => {
+        const sym = normaliseSyncSymbol(symbol);
+        for (const tf of CHART_LIBRARY_TIMEFRAMES) {
+          await syncIncrementalDeltaFromVps(sym, tf, {
+            baseUrl: this.options.baseUrl,
+            fetchTimeoutMs: this.options.fetchTimeoutMs,
+            source: this.options.source,
+            reason: 'interval_5m',
+            mode: 'incremental_delta',
+            quiet: true,
+          });
+        }
+        this.emitStatus({
+          phase: 'ready',
+          symbol: sym,
+          reason: 'interval_5m',
+          lastSyncAt: new Date().toISOString(),
+        });
+      })();
     }, this.options.resyncIntervalMs);
   }
 

@@ -254,6 +254,9 @@ export type LocalCandleRow = {
   low: number;
   close: number;
   volume?: number;
+  source?: string;
+  synced_at?: string | null;
+  is_closed?: boolean;
 };
 
 export type CandlesFetchResult = {
@@ -273,6 +276,11 @@ export type CandlesStatusResult = {
   readable: boolean;
   totalCandles?: number | null;
   symbolCandles?: number | null;
+  symbol?: string;
+  timeframe?: string;
+  firstTime?: string | null;
+  lastTime?: string | null;
+  syncState?: CandleSyncStateRow | null;
   error?: string;
 };
 
@@ -286,6 +294,7 @@ export type UpsertCandleRow = {
   close: number;
   volume?: number;
   source?: string;
+  is_closed?: number | boolean;
 };
 
 export type CandleSyncStateRow = {

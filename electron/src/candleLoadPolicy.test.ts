@@ -6,8 +6,10 @@ import {
   resolveStructuralCandleLoadWindow,
   resolveStructuralContextAndReplayWindows,
   resolveStructuralDataLoadWindow,
+  resolveTimeframeSwitchDataLoadWindow,
   shouldApplyParsedCandles,
   shouldBlockQuietFullHistoryReload,
+  shouldClearCandlesOnLoadStart,
   shouldUseWindowedCandleLoad,
   structuralDataLoadPadding,
   trimStructuralCandlesToHorizon,
@@ -132,10 +134,75 @@ describe('candleLoadPolicy', () => {
     expect(loadWindowKey({ start: '2025-06-01', end: '2025-06-10', label: 'x' })).toBe('2025-06-01|2025-06-10');
   });
 
-  it('shouldApplyParsedCandles keeps prior series on suspicious single-bar window load', () => {
-    const out = shouldApplyParsedCandles({ parsedCount: 1, previousCount: 120, hadLoadWindow: true });
+  it('shouldApplyParsedCandles rejects suspicious single-bar window load with diagnostic', () => {
+    const out = shouldApplyParsedCandles({
+      parsedCount: 1,
+      previousCount: 120,
+      hadLoadWindow: true,
+      requestedTf: 'H4',
+      windowStart: '2025-06-01',
+      windowEnd: '2025-06-10',
+    });
     expect(out.apply).toBe(false);
-    expect(out.statusMessage).toMatch(/only 1 bar/i);
+    expect(out.statusMessage).toMatch(/H4 load returned 1 candle/i);
+    expect(out.statusMessage).toMatch(/2025-06-01 → 2025-06-10/);
+  });
+
+  it('resolveTimeframeSwitchDataLoadWindow widens parent span for H4 instead of camera viewport', () => {
+    const out = resolveTimeframeSwitchDataLoadWindow({
+      targetTf: 'H4',
+      contextRange: {
+        start: '2025-06-01T00:00:00.000Z',
+        end: '2025-06-10T00:00:00.000Z',
+        structure_layer: 'DAILY',
+      },
+    });
+    expect(out).not.toBeNull();
+    expect(out!.start < '2025-06-01').toBe(true);
+    expect(out!.end > '2025-06-10').toBe(true);
+    expect(out!.label).toBe('timeframe-switch context');
+  });
+
+  it('resolveTimeframeSwitchDataLoadWindow requests M15 candles for micro switch not daily viewport', () => {
+    const out = resolveTimeframeSwitchDataLoadWindow({
+      targetTf: 'M15',
+      contextRange: {
+        start: '2025-06-01T00:00:00.000Z',
+        end: '2025-06-03T00:00:00.000Z',
+        structure_layer: 'MICRO',
+      },
+    });
+    expect(out).not.toBeNull();
+    expect(out!.start).toBeTruthy();
+    expect(out!.end >= '2025-06-03').toBe(true);
+  });
+
+  it('shouldClearCandlesOnLoadStart clears on explicit timeframe switch', () => {
+    expect(shouldClearCandlesOnLoadStart({
+      quiet: false,
+      timeframeSwitch: true,
+      targetTf: 'H4',
+      loadedChartTf: 'H1',
+    })).toBe(true);
+    expect(shouldClearCandlesOnLoadStart({
+      quiet: true,
+      timeframeSwitch: true,
+      targetTf: 'H4',
+      loadedChartTf: 'H1',
+    })).toBe(false);
+  });
+
+  it('isCurrentCandleLoadRequest rejects stale H4 result when active tab is M15', () => {
+    const started = {
+      requestId: 2,
+      symbol: 'XAUUSD',
+      caseId: 'a',
+      tf: 'H4',
+      activeRangeId: '12',
+      loadWindowKey: '2025-06-01|2025-06-10',
+    };
+    expect(isCurrentCandleLoadRequest(started, started, 'M15')).toBe(false);
+    expect(isCurrentCandleLoadRequest(started, { ...started, requestId: 3 }, 'M15')).toBe(false);
   });
 
   it('filterCandlesToLoadWindow trims out-of-window bars', () => {
