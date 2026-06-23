@@ -6,6 +6,9 @@ export const TRADINGVIEW_OVERLAYS_STORAGE_KEY = 'fx_tm_tradingview_overlays_v1';
 export const DEFAULT_TRADINGVIEW_OVERLAY_MODE: TradingViewOverlayMode = 'off';
 export const TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY = 'fx_tm_tradingview_selected_candle_v1';
 export const DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE: TradingViewSelectedCandleMode = 'off';
+export const TRADINGVIEW_DEBUG_STORAGE_KEY = 'fx_tm_tradingview_debug_v1';
+export type TradingViewDebugMode = 'off' | 'dev';
+export const DEFAULT_TRADINGVIEW_DEBUG_MODE: TradingViewDebugMode = 'off';
 
 export function normalizeChartRendererMode(value: unknown): ChartRendererMode {
   return value === 'tradingview' ? 'tradingview' : 'd3';
@@ -17,4 +20,8 @@ export function normalizeTradingViewOverlayMode(value: unknown): TradingViewOver
 
 export function normalizeTradingViewSelectedCandleMode(value: unknown): TradingViewSelectedCandleMode {
   return value === 'readonly' ? 'readonly' : 'off';
+}
+
+export function normalizeTradingViewDebugMode(value: unknown): TradingViewDebugMode {
+  return value === 'dev' ? 'dev' : 'off';
 }

@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
+import {
+  DEFAULT_TRADINGVIEW_DEBUG_MODE,
+  normalizeTradingViewDebugMode,
+  TRADINGVIEW_DEBUG_STORAGE_KEY,
+} from '../chartRendererConfig';
 import { TradingViewChart } from './TradingViewChart';
 import type {
   FxtmCandleRow,
@@ -71,6 +76,10 @@ export function LiveViewPanel({
   onOverlayModeChange,
   onSelectionModeChange,
 }: LiveViewPanelProps) {
+  const [debugMode] = useState(() => {
+    if (typeof window === 'undefined') return DEFAULT_TRADINGVIEW_DEBUG_MODE;
+    return normalizeTradingViewDebugMode(window.localStorage.getItem(TRADINGVIEW_DEBUG_STORAGE_KEY));
+  });
   const [stats, setStats] = useState({ rendered: 0, dropped: 0 });
   const [selectionDebug, setSelectionDebug] = useState<Required<TradingViewSelectionDebugEvent>>(emptySelectionDebug);
   const handleStats = useCallback((next: { rendered: number; dropped: number }) => setStats(next), []);
@@ -180,8 +189,10 @@ export function LiveViewPanel({
         </div>
       )}
       <div
-        className="tradingViewSelectionDebug"
+        className={`tradingViewSelectionDebug${debugMode === 'dev' ? '' : ' debugHidden'}`}
         aria-label="TradingView selection debug"
+        aria-hidden={debugMode === 'dev' ? 'false' : 'true'}
+        data-debug-mode={debugMode}
         data-click-received={selectionDebug.clickReceived ? 'yes' : 'no'}
         data-raw-tv-time={selectionDebug.rawTvTime}
         data-normalized-click-time={selectionDebug.normalizedClickTime}
