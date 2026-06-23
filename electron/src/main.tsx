@@ -229,6 +229,13 @@ import { useCockpitSync } from './hooks/useCockpitSync';
 import { resolveVpsBaseUrl } from './vpsConfig';
 import { createChartRenderGate } from './chartRenderGate';
 import {
+  CHART_RENDERER_STORAGE_KEY,
+  DEFAULT_CHART_RENDERER,
+  normalizeChartRendererMode,
+} from './chartRendererConfig';
+import { LiveViewPanel } from './tradingView/LiveViewPanel';
+import type { ChartRendererMode } from './tradingView/types';
+import {
   buildLocalLibraryStatusLine,
   candlesChanged,
   formatMissingCandleMessage,
@@ -2490,6 +2497,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (tab === 'trade') setChartDrawTool('off');
   };
   const [topRibbonCollapsed, setTopRibbonCollapsed] = useLocalStorage<boolean>('fx_tm_top_ribbon_collapsed_v087_24', true);
+  const [chartRendererRaw, setChartRendererRaw] = useLocalStorage<ChartRendererMode>(CHART_RENDERER_STORAGE_KEY, DEFAULT_CHART_RENDERER);
+  const chartRenderer = normalizeChartRendererMode(chartRendererRaw);
   const [chartFullscreen, setChartFullscreen] = useState(false);
   const [navOverlayPanelOpen, setNavOverlayPanelOpen] = useState(false);
   /** Pilot layout: O-N-G-M-C-T rail lives in the fixed 60px grid column; inspector toggles column 3 only. */
@@ -9717,6 +9726,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <button className={gpsMode==='active'?'active':''} onClick={()=>setGpsMode('active')}>GPS</button>
       <button className={candleReplayMode?'active replayActiveBtn':''} onClick={toggleBarReplay} title="TradingView-style bar replay">Bar Replay</button>
       <button className={chartFullscreen?'active':''} onClick={()=>setChartFullscreen(v=>!v)}>{chartFullscreen ? 'Exit Full' : 'Full Chart'}</button>
+      <div className="chartRendererToggle" role="group" aria-label="Chart renderer">
+        <button type="button" className={chartRenderer==='d3'?'active':''} onClick={()=>setChartRendererRaw('d3')}>D3 Map</button>
+        <button type="button" className={chartRenderer==='tradingview'?'active':''} onClick={()=>setChartRendererRaw('tradingview')}>Live View</button>
+      </div>
       <select className="cameraModeSelect" value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)} title="Camera mode"><option value="AUTO">Auto cam</option><option value="LOCKED">Locked cam</option><option value="CASE">Case cam</option><option value="REPLAY">Replay cam</option></select>
       <div className="scaleNudges"><button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}x</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button><button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}x</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button><button onClick={resetCameraScale}>Reset</button></div>
       <div className="scaleNudges fitNudges"><button onClick={fitRangeView}>Fit Range</button><button onClick={fitReplayView}>Fit Replay</button><button onClick={fitCaseView}>Fit Case</button><button onClick={fitAllView}>Fit All</button><button onClick={lockCurrentView}>Lock View</button></div>
@@ -10333,9 +10346,20 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           <b>{shortTime(chartHudCandleTime, timeframe)}</b>
           {chartHudPrice != null && Number.isFinite(Number(chartHudPrice)) && <span>{Number(chartHudPrice).toFixed(2)}</span>}
         </div>}
-        {!chartFullscreen && <div className="chartGestureHint" aria-hidden="true">Sel: one click picks a candle · Pan: drag chart · Scroll to zoom · Double-click resets price view</div>}
-        {!chartFullscreen && chartDrawToolbarEl}
+        {!chartFullscreen && chartRenderer === 'd3' && <div className="chartGestureHint" aria-hidden="true">Sel: one click picks a candle · Pan: drag chart · Scroll to zoom · Double-click resets price view</div>}
+        {!chartFullscreen && chartRenderer === 'd3' && chartDrawToolbarEl}
         <div className="chartMapCanvas chart-canvas">
+        {chartRenderer === 'tradingview' ? (
+          <LiveViewPanel
+            candles={candles}
+            symbol={symbol}
+            timeframe={timeframe}
+            sourceTimeframe={sourceTimeframe}
+            loadedTimeframe={loadedCandleContext?.chartTimeframe || null}
+            revision={candleDataRevision}
+            statusMessage={message}
+          />
+        ) : (
         <D3CandleMap
           candles={candles}
           candleDataRevision={candleDataRevision}
@@ -10421,6 +10445,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             if (typeof end === 'string') setRangeWindow({ end });
           }}
         />
+        )}
         </div>
         </div>
       </div>

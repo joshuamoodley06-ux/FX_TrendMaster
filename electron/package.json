@@ -20,6 +20,7 @@
     "@vitejs/plugin-react": "latest",
     "concurrently": "latest",
     "d3": "latest",
+    "lightweight-charts": "^5.2.0",
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",

@@ -4384,6 +4384,77 @@ body:has(.mapStudioShell.chartFullscreenActive) .mapStudioShell.chartFullscreenA
 }
 .chartCrosshairHud b{color:#ffdf76;font-size:13px}
 .chartCrosshairHud span{color:#cbd5e1}
+.chartRendererToggle{
+  display:inline-flex;
+  gap:4px;
+  align-items:center;
+  padding:2px;
+  border:1px solid rgba(148,163,184,.22);
+  border-radius:12px;
+  background:rgba(15,23,42,.72);
+}
+.chartRendererToggle button{
+  border:0 !important;
+  border-radius:9px !important;
+  padding:6px 9px !important;
+  font-size:12px !important;
+}
+.tradingViewLivePanel{
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  width:100%;
+  height:100%;
+  min-height:560px;
+  background:#020617;
+  border:1px solid rgba(148,163,184,.18);
+  border-radius:14px;
+  overflow:hidden;
+}
+.tradingViewLiveHeader{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:center;
+  padding:10px 12px;
+  border-bottom:1px solid rgba(148,163,184,.14);
+  background:rgba(15,23,42,.86);
+  color:#e5e7eb;
+  font-weight:900;
+}
+.tradingViewLiveHeader div:first-child{
+  display:flex;
+  flex-direction:column;
+  gap:2px;
+}
+.tradingViewLiveHeader span{
+  color:#94a3b8;
+  font-size:12px;
+}
+.tradingViewLiveStatus{
+  color:#86efac;
+  font-size:12px;
+  white-space:nowrap;
+}
+.tradingViewLiveStatus.warning{
+  color:#fbbf24;
+}
+.tradingViewLiveNotice{
+  padding:8px 12px;
+  color:#cbd5e1;
+  background:rgba(30,41,59,.72);
+  border-bottom:1px solid rgba(148,163,184,.14);
+  font-size:12px;
+  font-weight:800;
+}
+.tradingViewLiveNotice.warning{
+  color:#fde68a;
+  background:rgba(120,53,15,.34);
+}
+.tradingViewChartCanvas{
+  flex:1;
+  min-height:480px;
+}
 .mapStudioShell.chartFullscreenActive .chartMapStage{
   min-height:0 !important;
 }
