@@ -232,8 +232,11 @@ import {
   CHART_RENDERER_STORAGE_KEY,
   DEFAULT_CHART_RENDERER,
   DEFAULT_TRADINGVIEW_OVERLAY_MODE,
+  DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE,
   normalizeChartRendererMode,
   normalizeTradingViewOverlayMode,
+  normalizeTradingViewSelectedCandleMode,
+  TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY,
   TRADINGVIEW_OVERLAYS_STORAGE_KEY,
 } from './chartRendererConfig';
 import {
@@ -241,7 +244,7 @@ import {
   adaptOverlaysForTradingView,
 } from './tradingView/overlayAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
-import type { ChartRendererMode, TradingViewOverlayMode } from './tradingView/types';
+import type { ChartRendererMode, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
 import {
   buildLocalLibraryStatusLine,
   candlesChanged,
@@ -2508,6 +2511,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const chartRenderer = normalizeChartRendererMode(chartRendererRaw);
   const [tradingViewOverlayModeRaw] = useLocalStorage<TradingViewOverlayMode>(TRADINGVIEW_OVERLAYS_STORAGE_KEY, DEFAULT_TRADINGVIEW_OVERLAY_MODE);
   const tradingViewOverlayMode = normalizeTradingViewOverlayMode(tradingViewOverlayModeRaw);
+  const [tradingViewSelectedCandleModeRaw] = useLocalStorage<TradingViewSelectedCandleMode>(TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY, DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE);
+  const tradingViewSelectedCandleMode = normalizeTradingViewSelectedCandleMode(tradingViewSelectedCandleModeRaw);
+  const [tradingViewSelectedCandle, setTradingViewSelectedCandle] = useState<TradingViewSelectedCandle | null>(null);
+  const [tradingViewCrosshairCandle, setTradingViewCrosshairCandle] = useState<TradingViewSelectedCandle | null>(null);
+  const [tradingViewSelectionWarning, setTradingViewSelectionWarning] = useState<string | null>(null);
+  const tradingViewSelectionBridgeActive = chartRenderer === 'tradingview' && tradingViewSelectedCandleMode === 'readonly';
   const [chartFullscreen, setChartFullscreen] = useState(false);
   const [navOverlayPanelOpen, setNavOverlayPanelOpen] = useState(false);
   /** Pilot layout: O-N-G-M-C-T rail lives in the fixed 60px grid column; inspector toggles column 3 only. */
@@ -2766,6 +2775,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [bundleSaving, setBundleSaving] = useState(false);
   const [rawMarkSaving, setRawMarkSaving] = useState(false);
   const [structureLayer, setStructureLayer] = useLocalStorage<StructureLayer>('fx_tm_structure_layer_phase3', 'WEEKLY');
+  useEffect(() => {
+    setTradingViewSelectedCandle(null);
+    setTradingViewCrosshairCandle(null);
+    setTradingViewSelectionWarning(null);
+  }, [symbol, timeframe, structureLayer, candleDataRevision, chartRenderer, tradingViewSelectedCandleMode]);
   const [mappingViewContext, setMappingViewContext] = useState<MappingViewContext>('child');
   const mappingViewContextSyncRef = useRef(false);
   const campaignParentChartTf = useMemo(
@@ -4633,6 +4647,20 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const getCandleFeedGuard = (): CandleFeedGuardResult =>
     evaluateCandleFeedGuard(buildActiveCandleFeedSnapshot(), loadedCandleContextRef.current);
+
+  const handleTradingViewCandleClick = (candidate: TradingViewSelectedCandle) => {
+    const guard = evaluateCandleFeedGuard(buildActiveCandleFeedSnapshot(), loadedCandleContextRef.current);
+    if (!guard.ready) {
+      const warning = guard.message || 'TradingView selection blocked — candle feed not aligned.';
+      setTradingViewSelectedCandle(null);
+      setTradingViewSelectionWarning(warning);
+      setMessage(warning);
+      return;
+    }
+    setTradingViewSelectedCandle(candidate);
+    setTradingViewSelectionWarning(null);
+    setMessage(`TradingView selected ${shortTime(candidate.time, candidate.chartTimeframe)} · C ${candidate.close.toFixed(2)}. Read-only bridge; mapping keys remain D3-only.`);
+  };
 
   const assertCandleFeedReady = (actionLabel = 'Marking'): boolean => {
     const guard = getCandleFeedGuard();
@@ -9730,8 +9758,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     </div>
   );
 
-  const chartHudCandleTime = cursor?.time || (candleReplayMode && replayCandle?.time) || selectedCandle?.time || null;
-  const chartHudPrice = cursor?.price ?? cursor?.ohlc?.close ?? replayCandle?.close ?? selectedCandlePoint?.price ?? null;
+  const tradingViewHudCandle = tradingViewSelectionBridgeActive
+    ? (tradingViewCrosshairCandle || tradingViewSelectedCandle)
+    : null;
+  const chartHudCandleTime = tradingViewSelectionBridgeActive
+    ? (tradingViewHudCandle?.time || null)
+    : (cursor?.time || (candleReplayMode && replayCandle?.time) || selectedCandle?.time || null);
+  const chartHudPrice = tradingViewSelectionBridgeActive
+    ? (tradingViewHudCandle?.close ?? null)
+    : (cursor?.price ?? cursor?.ohlc?.close ?? replayCandle?.close ?? selectedCandlePoint?.price ?? null);
   const chartDrawToolbarEl = (
     <div className="chartDrawToolbar" aria-label="Chart drawing tools">
       <button type="button" className={chartDrawTool === 'off' && toolMode === 'inspect' ? 'active' : ''} onClick={() => { setChartDrawTool('off'); setToolMode('inspect'); }} title="Pan chart">Pan</button>
@@ -10403,6 +10438,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             overlayMode={tradingViewOverlayMode}
             overlays={tradingViewOverlays}
             fitRequest={tradingViewFitRequest}
+            selectionMode={tradingViewSelectedCandleMode}
+            selectedCandle={tradingViewSelectedCandle}
+            crosshairCandle={tradingViewCrosshairCandle}
+            selectionWarning={tradingViewSelectionWarning}
+            onCrosshairCandle={setTradingViewCrosshairCandle}
+            onCandleClick={handleTradingViewCandleClick}
           />
         ) : (
         <D3CandleMap

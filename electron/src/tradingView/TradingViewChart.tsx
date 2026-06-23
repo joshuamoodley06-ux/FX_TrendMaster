@@ -8,11 +8,17 @@ import {
   type IPriceLine,
   type ISeriesApi,
   type ISeriesMarkersPluginApi,
+  type MouseEventParams,
   type Time,
 } from 'lightweight-charts';
 import { adaptCandlesForTradingView } from './candleAdapter';
+import {
+  buildTradingViewSelectedCandle,
+  buildTradingViewSelectedCandleFromBarIndex,
+  selectionMarkerFromSelectedCandle,
+} from './selectedCandleBridge';
 import { tradingViewDarkTheme } from './tradingViewTheme';
-import type { FxtmCandleRow, TradingViewFitRequest, TradingViewOverlaySet, TradingViewRangeLine } from './types';
+import type { FxtmCandleRow, TradingViewFitRequest, TradingViewOverlaySet, TradingViewRangeLine, TradingViewSelectedCandle } from './types';
 
 type TradingViewChartProps = {
   candles: FxtmCandleRow[];
@@ -20,6 +26,12 @@ type TradingViewChartProps = {
   revision?: number;
   overlays?: TradingViewOverlaySet;
   fitRequest?: TradingViewFitRequest | null;
+  symbol: string;
+  sourceTimeframe?: string;
+  selectedCandle?: TradingViewSelectedCandle | null;
+  selectionBridgeEnabled?: boolean;
+  onCrosshairCandle?: (candle: TradingViewSelectedCandle | null) => void;
+  onCandleClick?: (candle: TradingViewSelectedCandle) => void;
   onStats?: (stats: { rendered: number; dropped: number }) => void;
 };
 
@@ -29,20 +41,105 @@ function lineStyleValue(style: TradingViewRangeLine['lineStyle']): LineStyle {
   return LineStyle.Solid;
 }
 
-export function TradingViewChart({ candles, timeframe, revision, overlays, fitRequest, onStats }: TradingViewChartProps) {
+export function TradingViewChart({
+  candles,
+  timeframe,
+  revision,
+  overlays,
+  fitRequest,
+  symbol,
+  sourceTimeframe,
+  selectedCandle,
+  selectionBridgeEnabled = false,
+  onCrosshairCandle,
+  onCandleClick,
+  onStats,
+}: TradingViewChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const captureLayerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick', Time> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+  const adaptedRef = useRef<ReturnType<typeof adaptCandlesForTradingView>>({ bars: [], dropped: 0 });
   const lastAutoFitTimeframeRef = useRef<string | null>(null);
   const lastFitTokenRef = useRef<number | null>(null);
+  const selectionBridgeRef = useRef({
+    candles,
+    timeframe,
+    symbol,
+    sourceTimeframe,
+    enabled: selectionBridgeEnabled,
+    onCrosshairCandle,
+    onCandleClick,
+  });
   const [chartReady, setChartReady] = useState(false);
 
   const adapted = useMemo(
     () => adaptCandlesForTradingView(candles, timeframe),
     [candles, timeframe, revision],
   );
+  adaptedRef.current = adapted;
+  selectionBridgeRef.current = {
+    candles,
+    timeframe,
+    symbol,
+    sourceTimeframe,
+    enabled: selectionBridgeEnabled,
+    onCrosshairCandle,
+    onCandleClick,
+  };
+
+  const selectedFromTime = (tvTime: Time | null | undefined): TradingViewSelectedCandle | null => {
+    const latest = selectionBridgeRef.current;
+    if (!latest.enabled || !tvTime) return null;
+    return buildTradingViewSelectedCandle({
+      symbol: latest.symbol,
+      chartTimeframe: latest.timeframe,
+      sourceTimeframe: latest.sourceTimeframe,
+      candles: latest.candles,
+      tvTime,
+    });
+  };
+
+  const selectedFromClientX = (clientX: number): TradingViewSelectedCandle | null => {
+    const chart = chartRef.current;
+    const container = containerRef.current;
+    if (!chart || !container) return null;
+    const bounds = container.getBoundingClientRect();
+    const x = clientX - bounds.left;
+    const tvTime = chart.timeScale().coordinateToTime(x);
+    const selected = selectedFromTime(tvTime);
+    if (selected) return selected;
+
+    const logical = chart.timeScale().coordinateToLogical(x);
+    const latest = selectionBridgeRef.current;
+    if (!latest.enabled) return null;
+    if (logical != null) {
+      const rounded = Math.round(Number(logical));
+      if (Math.abs(Number(logical) - rounded) <= 0.5) {
+        const byLogical = buildTradingViewSelectedCandleFromBarIndex({
+          symbol: latest.symbol,
+          chartTimeframe: latest.timeframe,
+          sourceTimeframe: latest.sourceTimeframe,
+          candles: latest.candles,
+          barIndex: rounded,
+        });
+        if (byLogical) return byLogical;
+      }
+    }
+
+    const latestAdapted = adaptedRef.current;
+    if (!latestAdapted.bars.length || bounds.width <= 0) return null;
+    const slot = Math.max(0, Math.min(latestAdapted.bars.length - 1, Math.round((x / bounds.width) * (latestAdapted.bars.length - 1))));
+    return buildTradingViewSelectedCandle({
+      symbol: latest.symbol,
+      chartTimeframe: latest.timeframe,
+      sourceTimeframe: latest.sourceTimeframe,
+      candles: latest.candles,
+      tvTime: latestAdapted.bars[slot].time,
+    });
+  };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -65,12 +162,37 @@ export function TradingViewChart({ candles, timeframe, revision, overlays, fitRe
     markersRef.current = createSeriesMarkers(series, [], { zOrder: 'top' });
     setChartReady(true);
 
+    const handleCrosshairMove = (param: MouseEventParams<Time>) => {
+      const selected = selectedFromTime(param.time);
+      selectionBridgeRef.current.onCrosshairCandle?.(selected);
+    };
+    const handleClick = (param: MouseEventParams<Time>) => {
+      const selected = selectedFromTime(param.time);
+      if (selected) selectionBridgeRef.current.onCandleClick?.(selected);
+    };
+    const handleSurfaceMouseMove = (event: MouseEvent) => {
+      const selected = selectedFromClientX(event.clientX);
+      selectionBridgeRef.current.onCrosshairCandle?.(selected);
+    };
+    const handleSurfaceClick = (event: MouseEvent) => {
+      const selected = selectedFromClientX(event.clientX);
+      if (selected) selectionBridgeRef.current.onCandleClick?.(selected);
+    };
+    chart.subscribeCrosshairMove(handleCrosshairMove);
+    chart.subscribeClick(handleClick);
+    container.addEventListener('mousemove', handleSurfaceMouseMove, true);
+    container.addEventListener('click', handleSurfaceClick, true);
+
     const resizeObserver = new ResizeObserver(() => {
       if (lastFitTokenRef.current == null) chart.timeScale().fitContent();
     });
     resizeObserver.observe(container);
 
     return () => {
+      chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      chart.unsubscribeClick(handleClick);
+      container.removeEventListener('mousemove', handleSurfaceMouseMove, true);
+      container.removeEventListener('click', handleSurfaceClick, true);
       resizeObserver.disconnect();
       for (const line of priceLinesRef.current) series.removePriceLine(line);
       priceLinesRef.current = [];
@@ -109,8 +231,9 @@ export function TradingViewChart({ candles, timeframe, revision, overlays, fitRe
         title: line.label,
       }));
     }
-    markersRef.current?.setMarkers(overlays?.markers || []);
-  }, [chartReady, overlays]);
+    const selectionMarker = selectionMarkerFromSelectedCandle(selectedCandle || null);
+    markersRef.current?.setMarkers(selectionMarker ? [...(overlays?.markers || []), selectionMarker] : (overlays?.markers || []));
+  }, [chartReady, overlays, selectedCandle]);
 
   useEffect(() => {
     if (!chartReady || !chartRef.current || !fitRequest) return;
@@ -121,5 +244,37 @@ export function TradingViewChart({ candles, timeframe, revision, overlays, fitRe
     }
   }, [chartReady, fitRequest]);
 
-  return <div ref={containerRef} className="tradingViewChartCanvas" aria-label="TradingView Live View candle chart" />;
+  useEffect(() => {
+    const layer = captureLayerRef.current;
+    if (!layer || !selectionBridgeEnabled) return;
+    const handleMove = (event: MouseEvent) => {
+      const selected = selectedFromClientX(event.clientX);
+      selectionBridgeRef.current.onCrosshairCandle?.(selected);
+    };
+    const handleClick = (event: MouseEvent) => {
+      const selected = selectedFromClientX(event.clientX);
+      if (selected) selectionBridgeRef.current.onCandleClick?.(selected);
+    };
+    layer.addEventListener('mousemove', handleMove);
+    layer.addEventListener('mousedown', handleClick);
+    layer.addEventListener('click', handleClick);
+    return () => {
+      layer.removeEventListener('mousemove', handleMove);
+      layer.removeEventListener('mousedown', handleClick);
+      layer.removeEventListener('click', handleClick);
+    };
+  }, [selectionBridgeEnabled, chartReady]);
+
+  return (
+    <div className="tradingViewChartFrame" aria-label="TradingView Live View candle chart">
+      <div ref={containerRef} className="tradingViewChartCanvas" />
+      {selectionBridgeEnabled && (
+        <div
+          ref={captureLayerRef}
+          className="tradingViewSelectionCaptureLayer"
+          aria-label="TradingView read-only candle selection layer"
+        />
+      )}
+    </div>
+  );
 }

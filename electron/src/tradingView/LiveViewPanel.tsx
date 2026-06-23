@@ -1,6 +1,13 @@
 import { useCallback, useState } from 'react';
 import { TradingViewChart } from './TradingViewChart';
-import type { FxtmCandleRow, TradingViewFitRequest, TradingViewOverlayMode, TradingViewOverlaySet } from './types';
+import type {
+  FxtmCandleRow,
+  TradingViewFitRequest,
+  TradingViewOverlayMode,
+  TradingViewOverlaySet,
+  TradingViewSelectedCandle,
+  TradingViewSelectedCandleMode,
+} from './types';
 
 type LiveViewPanelProps = {
   candles: FxtmCandleRow[];
@@ -13,6 +20,12 @@ type LiveViewPanelProps = {
   overlayMode?: TradingViewOverlayMode;
   overlays?: TradingViewOverlaySet;
   fitRequest?: TradingViewFitRequest | null;
+  selectionMode?: TradingViewSelectedCandleMode;
+  selectedCandle?: TradingViewSelectedCandle | null;
+  crosshairCandle?: TradingViewSelectedCandle | null;
+  selectionWarning?: string | null;
+  onCrosshairCandle?: (candle: TradingViewSelectedCandle | null) => void;
+  onCandleClick?: (candle: TradingViewSelectedCandle) => void;
 };
 
 export function LiveViewPanel({
@@ -26,6 +39,12 @@ export function LiveViewPanel({
   overlayMode = 'off',
   overlays,
   fitRequest,
+  selectionMode = 'off',
+  selectedCandle,
+  crosshairCandle,
+  selectionWarning,
+  onCrosshairCandle,
+  onCandleClick,
 }: LiveViewPanelProps) {
   const [stats, setStats] = useState({ rendered: 0, dropped: 0 });
   const handleStats = useCallback((next: { rendered: number; dropped: number }) => setStats(next), []);
@@ -34,6 +53,8 @@ export function LiveViewPanel({
   const overlaySummary = overlayMode === 'readonly' && overlays?.priceLines.length
     ? overlays.priceLines.slice(0, 4).map((line) => `${line.label} ${line.price.toFixed(2)}`).join(' · ')
     : '';
+  const displayCandle = selectionMode === 'readonly' ? (crosshairCandle || selectedCandle || null) : null;
+  const displayIsSelected = !!(selectedCandle && displayCandle && selectedCandle.time === displayCandle.time && selectedCandle.chartTimeframe === displayCandle.chartTimeframe);
 
   return (
     <section className="tradingViewLivePanel" aria-label="TradingView Live View">
@@ -63,12 +84,39 @@ export function LiveViewPanel({
           {overlaySummary}{overlays?.markers.length ? ` · BOS ${overlays.markers.length}` : ''}
         </div>
       )}
+      {selectionWarning && (
+        <div className="tradingViewLiveNotice warning">
+          {selectionWarning}
+        </div>
+      )}
+      {selectionMode === 'readonly' && (
+        <div className={`tradingViewSelectionStrip${selectedCandle ? ' hasSelection' : ''}`}>
+          {displayCandle ? (
+            <>
+              <b>{displayIsSelected ? 'Selected' : 'Preview'} {displayCandle.chartTimeframe}</b>
+              <span>{displayCandle.time}</span>
+              <span>O {displayCandle.open.toFixed(2)}</span>
+              <span>H {displayCandle.high.toFixed(2)}</span>
+              <span>L {displayCandle.low.toFixed(2)}</span>
+              <span>C {displayCandle.close.toFixed(2)}</span>
+            </>
+          ) : (
+            <span>TradingView selection bridge ready. Crosshair previews; click commits TV-only selection.</span>
+          )}
+        </div>
+      )}
       <TradingViewChart
         candles={candles}
         timeframe={timeframe}
         revision={revision}
         overlays={overlayMode === 'readonly' ? overlays : undefined}
         fitRequest={overlayMode === 'readonly' ? fitRequest : null}
+        symbol={symbol}
+        sourceTimeframe={sourceTimeframe}
+        selectedCandle={selectionMode === 'readonly' ? selectedCandle : null}
+        selectionBridgeEnabled={selectionMode === 'readonly'}
+        onCrosshairCandle={selectionMode === 'readonly' ? onCrosshairCandle : undefined}
+        onCandleClick={selectionMode === 'readonly' ? onCandleClick : undefined}
         onStats={handleStats}
       />
     </section>
