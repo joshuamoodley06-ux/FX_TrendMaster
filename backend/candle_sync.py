@@ -118,8 +118,11 @@ def _db_stats(symbol: str, timeframe: str) -> dict[str, Any]:
 
 
 def _rates_to_rows(rates: Any, symbol: str, timeframe: str) -> list[dict[str, Any]]:
+    if rates is None or len(rates) == 0:
+        return []
+
     rows: list[dict[str, Any]] = []
-    for r in rates or []:
+    for r in rates:
         rows.append(
             {
                 "symbol": symbol,
