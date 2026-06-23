@@ -123,19 +123,33 @@ def _rates_to_rows(rates: Any, symbol: str, timeframe: str) -> list[dict[str, An
 
     rows: list[dict[str, Any]] = []
     for r in rates:
+        tick_volume = _rate_value(r, "tick_volume")
+        real_volume = _rate_value(r, "real_volume")
+        volume = tick_volume if tick_volume is not None else real_volume
         rows.append(
             {
                 "symbol": symbol,
                 "timeframe": timeframe,
-                "time": format_mt5_time(r["time"]),
-                "open": float(r["open"]),
-                "high": float(r["high"]),
-                "low": float(r["low"]),
-                "close": float(r["close"]),
-                "volume": int(r.get("tick_volume") or r.get("real_volume") or 0),
+                "time": format_mt5_time(_rate_value(r, "time")),
+                "open": float(_rate_value(r, "open")),
+                "high": float(_rate_value(r, "high")),
+                "low": float(_rate_value(r, "low")),
+                "close": float(_rate_value(r, "close")),
+                "volume": int(volume if volume is not None else 0),
             }
         )
     return rows
+
+
+def _rate_value(row: Any, key: str, default: Any = None) -> Any:
+    if row is None:
+        return default
+    if isinstance(row, dict):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return default
 
 
 def _resolve_bar_count(timeframe: str, db_count: int, *, force_backfill: bool = False) -> tuple[int, str]:
