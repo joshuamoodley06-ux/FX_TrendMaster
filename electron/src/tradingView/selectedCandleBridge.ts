@@ -105,6 +105,42 @@ export function buildTradingViewSelectedCandleFromBarIndex(args: {
   return null;
 }
 
+export type MappingInputCandle = {
+  symbol: string;
+  timeframe: string;
+  time: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+};
+
+export function tradingViewSelectedCandleToCandle(
+  selected: TradingViewSelectedCandle | null | undefined,
+  fallbackSymbol?: string,
+  fallbackTimeframe?: string,
+): MappingInputCandle | null {
+  if (!selected?.time) return null;
+  const open = Number(selected.open);
+  const high = Number(selected.high);
+  const low = Number(selected.low);
+  const close = Number(selected.close);
+  if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+    return null;
+  }
+  return {
+    symbol: String(selected.symbol || fallbackSymbol || '').toUpperCase(),
+    timeframe: String(selected.chartTimeframe || fallbackTimeframe || '').toUpperCase(),
+    time: String(selected.time),
+    open,
+    high,
+    low,
+    close,
+    volume: selected.volume === undefined ? undefined : Number(selected.volume),
+  };
+}
+
 export function selectionMarkerFromSelectedCandle(selected: TradingViewSelectedCandle | null): TradingViewBosMarker | null {
   if (!selected) return null;
   const time = fxtmTimeToTradingViewTime(selected.time, selected.chartTimeframe);

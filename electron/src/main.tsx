@@ -233,9 +233,12 @@ import {
   DEFAULT_CHART_RENDERER,
   DEFAULT_TRADINGVIEW_OVERLAY_MODE,
   DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE,
+  DEFAULT_TRADINGVIEW_MAPPING_INPUT,
+  isTradingViewMappingInputEnabled,
   normalizeChartRendererMode,
   normalizeTradingViewOverlayMode,
   normalizeTradingViewSelectedCandleMode,
+  TRADINGVIEW_MAPPING_INPUT_STORAGE_KEY,
   TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY,
   TRADINGVIEW_OVERLAYS_STORAGE_KEY,
 } from './chartRendererConfig';
@@ -245,6 +248,7 @@ import {
 } from './tradingView/overlayAdapter';
 import { applyChartModeWindow } from './tradingView/candleAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
+import { tradingViewSelectedCandleToCandle } from './tradingView/selectedCandleBridge';
 import type { ChartRendererMode, TradingViewChartMode, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
 import {
   buildLocalLibraryStatusLine,
@@ -2514,6 +2518,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const tradingViewOverlayMode = normalizeTradingViewOverlayMode(tradingViewOverlayModeRaw);
   const [tradingViewSelectedCandleModeRaw, setTradingViewSelectedCandleModeRaw] = useLocalStorage<TradingViewSelectedCandleMode>(TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY, DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE);
   const tradingViewSelectedCandleMode = normalizeTradingViewSelectedCandleMode(tradingViewSelectedCandleModeRaw);
+  const [tradingViewMappingInputRaw] = useLocalStorage<string>(TRADINGVIEW_MAPPING_INPUT_STORAGE_KEY, DEFAULT_TRADINGVIEW_MAPPING_INPUT);
+  const tradingViewMappingInputEnabled = isTradingViewMappingInputEnabled(tradingViewMappingInputRaw);
   const [tradingViewSelectedCandle, setTradingViewSelectedCandle] = useState<TradingViewSelectedCandle | null>(null);
   const [tradingViewCrosshairCandle, setTradingViewCrosshairCandle] = useState<TradingViewSelectedCandle | null>(null);
   const [tradingViewSelectionWarning, setTradingViewSelectionWarning] = useState<string | null>(null);
@@ -3037,6 +3043,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return clamp(candleReplayIndex, 0, candles.length - 1);
   }, [candles, candleReplayMode, candleReplayCursorTime, candleReplayIndex]);
   const replayCandle = candles.length ? candles[clamp(effectiveReplayIndex, 0, candles.length - 1)] : null;
+  const mappingInputCandle = useMemo((): Candle | null => {
+    if (candleReplayMode && replayCandle) return replayCandle;
+    if (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled) {
+      return tradingViewSelectedCandleToCandle(tradingViewSelectedCandle, symbol, timeframe);
+    }
+    return selectedCandle || replayCandle;
+  }, [
+    candleReplayMode,
+    replayCandle,
+    chartRenderer,
+    tradingViewMappingInputEnabled,
+    tradingViewSelectedCandle,
+    selectedCandle,
+    symbol,
+    timeframe,
+  ]);
   const canStructuralReplayExtendHorizon = !!(
     (activeStructuralRangeId || selectedParentRangeId)
     && structuralDataLoadWindowRef.current?.end
@@ -4688,7 +4710,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     setTradingViewSelectedCandle(candidate);
     setTradingViewSelectionWarning(null);
-    setMessage(`TradingView selected ${shortTime(candidate.time, candidate.chartTimeframe)} · C ${candidate.close.toFixed(2)}. Read-only bridge; mapping keys remain D3-only.`);
+    setMessage(tradingViewMappingInputEnabled
+      ? `TradingView selected ${shortTime(candidate.time, candidate.chartTimeframe)} · C ${candidate.close.toFixed(2)} · H/L/↑/↓ ready.`
+      : `TradingView selected ${shortTime(candidate.time, candidate.chartTimeframe)} · C ${candidate.close.toFixed(2)}. Read-only bridge; mapping keys remain D3-only.`);
   };
 
   const assertCandleFeedReady = (actionLabel = 'Marking'): boolean => {
@@ -6871,7 +6895,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const setStructuralPoint = async (kind:'RH'|'RL'|'BH'|'BL') => {
-    if (chartRenderer === 'tradingview') {
+    if (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled) {
       setMessage('TradingView mapping input disabled.');
       setTradingViewSelectionWarning('TradingView mapping input disabled.');
       return;
@@ -6892,8 +6916,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (!assertCandleFeedReady(`${kind} mark`)) return;
     if (kind === 'BH') { await saveStructuralBos('UP', { quickButton:true }); return; }
     if (kind === 'BL') { await saveStructuralBos('DOWN', { quickButton:true }); return; }
-    const candle = selectedCandle || replayCandle;
-    if (!candle) { setMessage('Click a candle first · then H = RH · L = RL'); return; }
+    const candle = mappingInputCandle;
+    if (!candle) {
+      if (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled) {
+        setMessage('Click a TradingView candle first · then H = RH · L = RL');
+        setTradingViewSelectionWarning('No TradingView candle selected.');
+      } else {
+        setMessage('Click a candle first · then H = RH · L = RL');
+      }
+      return;
+    }
     const anchorPrice = kind === 'RL' ? candle.low : candle.high;
     const next = { price: Number(anchorPrice).toFixed(2), time: candle.time, candle };
     const nextNum = parseNum(next.price);
@@ -7315,7 +7347,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       return false;
     }
     if (!assertCandleFeedReady('BOS save')) return false;
-    const candle = selectedCandle || replayCandle;
+    const candle = mappingInputCandle;
     const quickAnchor = candle && options?.quickButton
       ? { price: Number(direction === 'UP' ? candle.high : candle.low).toFixed(2), time: candle.time, candle }
       : null;
@@ -7353,7 +7385,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     setStructuralSaving(true);
     try {
-      const candle = anchor.candle || selectedCandle || replayCandle;
+      const candle = anchor.candle || mappingInputCandle;
       if (!candle) { throw new Error(`Select a candle, then click ${direction === 'UP' ? '↑ Break Up' : '↓ Break Down'}.`); }
       const sourceBreakRole = direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN';
       const legacyBreakRole = direction === 'UP' ? 'BH' : 'BL';
@@ -9248,7 +9280,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (isTypingInEditableField(evt.target)) return;
       const action = resolveMapStudioKeyAction(evt.key);
       if (!action) return;
-      if (chartRenderer === 'tradingview' && ['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action)) {
+      if (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled && ['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action)) {
         evt.preventDefault();
         const warning = 'TradingView mapping input disabled.';
         setTradingViewSelectionWarning(warning);
@@ -9281,6 +9313,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     timeframe,
     structureLayer,
     chartRenderer,
+    tradingViewMappingInputEnabled,
   ]);
 
   const updateChartDrawings = (updater: ChartDrawing[] | ((prev: ChartDrawing[]) => ChartDrawing[])) => {
@@ -9882,13 +9915,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     loadedCandleContext,
     candles.length,
   ]);
-  const structuralQuickAnchorDisabled = structuralSaving || quickEventSaving || candleFeedLoading || !candleFeedGuard.ready || (!selectedCandle && !replayCandle);
+  const structuralQuickAnchorDisabled = structuralSaving || quickEventSaving || candleFeedLoading || !candleFeedGuard.ready
+    || (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled)
+    || !mappingInputCandle;
   const structuralQuickAnchorHint = candleFeedLoading
     ? 'Loading candle feed…'
+    : chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled
+      ? 'TradingView mapping input disabled.'
     : !candleFeedGuard.ready
       ? (candleFeedGuard.message || 'Candle feed mismatch — marking blocked')
-      : !selectedCandle && !replayCandle
-        ? 'Select a candle on the chart first (Sel tool)'
+      : !mappingInputCandle
+        ? (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled
+          ? 'Click a TradingView candle first'
+          : 'Select a candle on the chart first (Sel tool)')
         : structuralSaving
           ? 'Saving range…'
           : quickEventSaving

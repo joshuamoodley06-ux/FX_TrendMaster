@@ -4,6 +4,7 @@ import {
   buildTradingViewSelectedCandle,
   resolveFxtmCandleFromTvTime,
   selectionMarkerFromSelectedCandle,
+  tradingViewSelectedCandleToCandle,
 } from './selectedCandleBridge';
 
 const candles = [
@@ -75,6 +76,44 @@ describe('buildTradingViewSelectedCandleFromBarIndex', () => {
     });
 
     expect(selected?.time).toBe('2024.11.04 08:00');
+  });
+});
+
+describe('tradingViewSelectedCandleToCandle', () => {
+  it('maps a TradingView selected candle into the FXTM candle shape', () => {
+    const selected = buildTradingViewSelectedCandle({
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      candles,
+      tvTime: Date.UTC(2024, 10, 4, 9, 0, 0) / 1000,
+    });
+    const candle = tradingViewSelectedCandleToCandle(selected);
+
+    expect(candle).toMatchObject({
+      symbol: 'XAUUSD',
+      timeframe: 'H1',
+      time: '2024.11.04 09:00',
+      open: 2,
+      high: 3,
+      low: 1.5,
+      close: 2.5,
+      volume: 11,
+    });
+  });
+
+  it('returns null for invalid or missing OHLC rows', () => {
+    expect(tradingViewSelectedCandleToCandle(null)).toBeNull();
+    expect(tradingViewSelectedCandleToCandle({
+      source: 'tradingview',
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      time: '2024.11.04 09:00',
+      tvTime: 1,
+      open: Number.NaN,
+      high: 3,
+      low: 1.5,
+      close: 2.5,
+    })).toBeNull();
   });
 });
 
