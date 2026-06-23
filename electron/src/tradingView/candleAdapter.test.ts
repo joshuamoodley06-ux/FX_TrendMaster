@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { adaptCandlesForTradingView } from './candleAdapter';
+import { adaptCandlesForTradingView, applyChartModeWindow } from './candleAdapter';
+
+const makeCandles = (count: number, startHour = 0) => Array.from({ length: count }, (_, index) => ({
+  time: `2024.11.${String(1 + Math.floor((startHour + index) / 24)).padStart(2, '0')} ${String((startHour + index) % 24).padStart(2, '0')}:00`,
+  open: index,
+  high: index + 1,
+  low: index - 1,
+  close: index + 0.5,
+}));
 
 describe('adaptCandlesForTradingView', () => {
   it('sorts intraday candles ascending and converts time to unix seconds', () => {
@@ -51,5 +59,64 @@ describe('adaptCandlesForTradingView', () => {
     ], 'H1');
 
     expect(result.bars).toHaveLength(2);
+  });
+});
+
+describe('applyChartModeWindow', () => {
+  it('returns the latest N candles for latest mode', () => {
+    const result = applyChartModeWindow(makeCandles(350), { mode: 'latest', timeframe: 'H1' });
+
+    expect(result).toHaveLength(300);
+    expect(result[0].time).toBe(makeCandles(350)[50].time);
+    expect(result.at(-1)?.time).toBe(makeCandles(350)[349].time);
+  });
+
+  it('caps hierarchy mode at the range display window', () => {
+    const result = applyChartModeWindow(makeCandles(12), {
+      mode: 'hierarchy',
+      timeframe: 'H1',
+      hierarchyStart: '2024.11.01 03:00',
+      hierarchyEnd: '2024.11.01 06:00',
+    });
+
+    expect(result.map((c) => c.time)).toEqual([
+      '2024.11.01 03:00',
+      '2024.11.01 04:00',
+      '2024.11.01 05:00',
+      '2024.11.01 06:00',
+    ]);
+  });
+
+  it('caps replay mode at the replay cursor', () => {
+    const result = applyChartModeWindow(makeCandles(8), {
+      mode: 'replay',
+      timeframe: 'H1',
+      replayCutTime: '2024.11.01 04:00',
+    });
+
+    expect(result).toHaveLength(5);
+    expect(result.at(-1)?.time).toBe('2024.11.01 04:00');
+  });
+
+  it('removes future candles from the selection surface', () => {
+    const displayed = applyChartModeWindow(makeCandles(8), {
+      mode: 'replay',
+      timeframe: 'H1',
+      replayCutTime: '2024.11.01 04:00',
+    });
+
+    expect(displayed.some((c) => c.time === '2024.11.01 05:00')).toBe(false);
+  });
+
+  it('normal latest mode clears prior hierarchy and replay cutoffs', () => {
+    const result = applyChartModeWindow(makeCandles(6), {
+      mode: 'latest',
+      timeframe: 'H1',
+      hierarchyEnd: '2024.11.01 02:00',
+      replayCutTime: '2024.11.01 02:00',
+    });
+
+    expect(result).toHaveLength(6);
+    expect(result.at(-1)?.time).toBe('2024.11.01 05:00');
   });
 });

@@ -18,11 +18,12 @@ import {
   selectionMarkerFromSelectedCandle,
 } from './selectedCandleBridge';
 import { tradingViewDarkTheme } from './tradingViewTheme';
-import type { FxtmCandleRow, TradingViewFitRequest, TradingViewOverlaySet, TradingViewRangeLine, TradingViewSelectedCandle } from './types';
+import type { FxtmCandleRow, TradingViewChartMode, TradingViewFitRequest, TradingViewOverlaySet, TradingViewRangeLine, TradingViewSelectedCandle, TradingViewSelectionDebugEvent } from './types';
 
 type TradingViewChartProps = {
   candles: FxtmCandleRow[];
   timeframe: string;
+  chartMode?: TradingViewChartMode;
   revision?: number;
   overlays?: TradingViewOverlaySet;
   fitRequest?: TradingViewFitRequest | null;
@@ -32,6 +33,7 @@ type TradingViewChartProps = {
   selectionBridgeEnabled?: boolean;
   onCrosshairCandle?: (candle: TradingViewSelectedCandle | null) => void;
   onCandleClick?: (candle: TradingViewSelectedCandle) => void;
+  onSelectionDebug?: (event: TradingViewSelectionDebugEvent) => void;
   onStats?: (stats: { rendered: number; dropped: number }) => void;
 };
 
@@ -41,9 +43,54 @@ function lineStyleValue(style: TradingViewRangeLine['lineStyle']): LineStyle {
   return LineStyle.Solid;
 }
 
+function timeDebugKey(time: Time | null | undefined): string {
+  if (time == null) return '';
+  if (typeof time === 'number' || typeof time === 'string') return String(time);
+  return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
+}
+
+type SelectionResolve = {
+  selected: TradingViewSelectedCandle | null;
+  rawTvTime: Time | null;
+  normalizedTime: string;
+};
+
+type ActivationStart = {
+  x: number;
+  y: number;
+  timeMs: number;
+  pointerType: string;
+};
+
+function pointerSummary(event: MouseEvent | PointerEvent | TouchEvent, source: string): string {
+  if ('changedTouches' in event) {
+    const touch = event.changedTouches[0] || event.touches[0];
+    return `${source}:${event.type}:x=${Math.round(touch?.clientX ?? -1)}:y=${Math.round(touch?.clientY ?? -1)}`;
+  }
+  const pointerType = 'pointerType' in event ? `:${event.pointerType}` : '';
+  return `${source}:${event.type}${pointerType}:x=${Math.round(event.clientX)}:y=${Math.round(event.clientY)}`;
+}
+
+function clientXFromActivation(event: MouseEvent | PointerEvent | TouchEvent): number | null {
+  if ('changedTouches' in event) {
+    const touch = event.changedTouches[0] || event.touches[0];
+    return touch ? touch.clientX : null;
+  }
+  return event.clientX;
+}
+
+function clientPointFromActivation(event: MouseEvent | PointerEvent | TouchEvent): { x: number; y: number } | null {
+  if ('changedTouches' in event) {
+    const touch = event.changedTouches[0] || event.touches[0];
+    return touch ? { x: touch.clientX, y: touch.clientY } : null;
+  }
+  return { x: event.clientX, y: event.clientY };
+}
+
 export function TradingViewChart({
   candles,
   timeframe,
+  chartMode = 'latest',
   revision,
   overlays,
   fitRequest,
@@ -53,6 +100,7 @@ export function TradingViewChart({
   selectionBridgeEnabled = false,
   onCrosshairCandle,
   onCandleClick,
+  onSelectionDebug,
   onStats,
 }: TradingViewChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -62,8 +110,11 @@ export function TradingViewChart({
   const priceLinesRef = useRef<IPriceLine[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const adaptedRef = useRef<ReturnType<typeof adaptCandlesForTradingView>>({ bars: [], dropped: 0 });
+  const fitRequestRef = useRef<TradingViewFitRequest | null>(fitRequest || null);
   const lastAutoFitTimeframeRef = useRef<string | null>(null);
   const lastFitTokenRef = useRef<number | null>(null);
+  const activationStartRef = useRef<ActivationStart | null>(null);
+  const lastTouchSelectionMsRef = useRef(0);
   const selectionBridgeRef = useRef({
     candles,
     timeframe,
@@ -72,14 +123,17 @@ export function TradingViewChart({
     enabled: selectionBridgeEnabled,
     onCrosshairCandle,
     onCandleClick,
+    onSelectionDebug,
   });
   const [chartReady, setChartReady] = useState(false);
+  const [fitDebugStatus, setFitDebugStatus] = useState('none');
 
   const adapted = useMemo(
     () => adaptCandlesForTradingView(candles, timeframe),
     [candles, timeframe, revision],
   );
   adaptedRef.current = adapted;
+  fitRequestRef.current = fitRequest || null;
   selectionBridgeRef.current = {
     candles,
     timeframe,
@@ -88,6 +142,7 @@ export function TradingViewChart({
     enabled: selectionBridgeEnabled,
     onCrosshairCandle,
     onCandleClick,
+    onSelectionDebug,
   };
 
   const selectedFromTime = (tvTime: Time | null | undefined): TradingViewSelectedCandle | null => {
@@ -102,19 +157,21 @@ export function TradingViewChart({
     });
   };
 
-  const selectedFromClientX = (clientX: number): TradingViewSelectedCandle | null => {
+  const selectedFromClientX = (clientX: number): SelectionResolve => {
     const chart = chartRef.current;
     const container = containerRef.current;
-    if (!chart || !container) return null;
+    if (!chart || !container) return { selected: null, rawTvTime: null, normalizedTime: '' };
     const bounds = container.getBoundingClientRect();
     const x = clientX - bounds.left;
     const tvTime = chart.timeScale().coordinateToTime(x);
     const selected = selectedFromTime(tvTime);
-    if (selected) return selected;
+    if (selected) {
+      return { selected, rawTvTime: tvTime || null, normalizedTime: timeDebugKey(tvTime) };
+    }
 
     const logical = chart.timeScale().coordinateToLogical(x);
     const latest = selectionBridgeRef.current;
-    if (!latest.enabled) return null;
+    if (!latest.enabled) return { selected: null, rawTvTime: tvTime || null, normalizedTime: timeDebugKey(tvTime) };
     if (logical != null) {
       const rounded = Math.round(Number(logical));
       if (Math.abs(Number(logical) - rounded) <= 0.5) {
@@ -125,20 +182,102 @@ export function TradingViewChart({
           candles: latest.candles,
           barIndex: rounded,
         });
-        if (byLogical) return byLogical;
+        if (byLogical) {
+          return {
+            selected: byLogical,
+            rawTvTime: tvTime || null,
+            normalizedTime: timeDebugKey(byLogical.tvTime),
+          };
+        }
       }
     }
 
     const latestAdapted = adaptedRef.current;
-    if (!latestAdapted.bars.length || bounds.width <= 0) return null;
+    if (!latestAdapted.bars.length || bounds.width <= 0) {
+      return { selected: null, rawTvTime: tvTime || null, normalizedTime: timeDebugKey(tvTime) };
+    }
     const slot = Math.max(0, Math.min(latestAdapted.bars.length - 1, Math.round((x / bounds.width) * (latestAdapted.bars.length - 1))));
-    return buildTradingViewSelectedCandle({
+    const fallbackTime = latestAdapted.bars[slot].time;
+    const fallbackSelected = buildTradingViewSelectedCandle({
       symbol: latest.symbol,
       chartTimeframe: latest.timeframe,
       sourceTimeframe: latest.sourceTimeframe,
       candles: latest.candles,
-      tvTime: latestAdapted.bars[slot].time,
+      tvTime: fallbackTime,
     });
+    return {
+      selected: fallbackSelected,
+      rawTvTime: tvTime || null,
+      normalizedTime: timeDebugKey(fallbackTime),
+    };
+  };
+
+  const reportSelectionClick = (args: SelectionResolve) => {
+    selectionBridgeRef.current.onSelectionDebug?.({
+      clickReceived: true,
+      rawTvTime: timeDebugKey(args.rawTvTime),
+      normalizedClickTime: args.normalizedTime,
+      displayCandleCount: adaptedRef.current.bars.length,
+      matchedCandle: !!args.selected,
+      matchedCandleTime: args.selected?.time || '',
+    });
+  };
+
+  const reportPointerState = (event: MouseEvent | PointerEvent | TouchEvent, source: string, pointerOverChart = true) => {
+    const container = containerRef.current;
+    const layer = captureLayerRef.current;
+    selectionBridgeRef.current.onSelectionDebug?.({
+      pointerOverChart,
+      chartContainerPointerEvents: container ? getComputedStyle(container).pointerEvents : 'missing',
+      overlayPointerEvents: layer ? getComputedStyle(layer).pointerEvents : 'missing',
+      lastClickEventObject: pointerSummary(event, source),
+    });
+  };
+
+  const handleActivationEvent = (event: MouseEvent | PointerEvent | TouchEvent, source: string) => {
+    reportPointerState(event, source);
+    const clientX = clientXFromActivation(event);
+    const resolved = clientX == null
+      ? { selected: null, rawTvTime: null, normalizedTime: '' }
+      : selectedFromClientX(clientX);
+    reportSelectionClick(resolved);
+    if (resolved.selected) selectionBridgeRef.current.onCandleClick?.(resolved.selected);
+  };
+
+  const rememberActivationStart = (event: MouseEvent | PointerEvent | TouchEvent, source: string) => {
+    reportPointerState(event, source);
+    const point = clientPointFromActivation(event);
+    if (!point) return;
+    const pointerType = 'pointerType' in event ? String(event.pointerType || 'mouse') : ('changedTouches' in event ? 'touch' : 'mouse');
+    activationStartRef.current = {
+      x: point.x,
+      y: point.y,
+      timeMs: Date.now(),
+      pointerType,
+    };
+  };
+
+  const commitTapIfStationary = (event: MouseEvent | PointerEvent | TouchEvent, source: string) => {
+    reportPointerState(event, source);
+    const start = activationStartRef.current;
+    const point = clientPointFromActivation(event);
+    activationStartRef.current = null;
+    if (!start || !point) return;
+    const elapsed = Date.now() - start.timeMs;
+    const distance = Math.hypot(point.x - start.x, point.y - start.y);
+    if (distance > 8 || elapsed > 800) return;
+    if (start.pointerType === 'touch' && Date.now() - lastTouchSelectionMsRef.current < 350) return;
+    if (start.pointerType === 'touch') lastTouchSelectionMsRef.current = Date.now();
+    handleActivationEvent(event, source);
+  };
+
+  const hasPendingFitRequest = () => {
+    const request = fitRequestRef.current;
+    return !!(request?.token && lastFitTokenRef.current !== request.token);
+  };
+
+  const updateFitDebugStatus = (next: string) => {
+    setFitDebugStatus((prev) => (prev === next ? prev : next));
   };
 
   useEffect(() => {
@@ -164,27 +303,51 @@ export function TradingViewChart({
 
     const handleCrosshairMove = (param: MouseEventParams<Time>) => {
       const selected = selectedFromTime(param.time);
+      selectionBridgeRef.current.onSelectionDebug?.({
+        crosshairReceived: true,
+        rawTvTime: timeDebugKey(param.time),
+        normalizedClickTime: timeDebugKey(param.time),
+        displayCandleCount: adaptedRef.current.bars.length,
+      });
       selectionBridgeRef.current.onCrosshairCandle?.(selected);
     };
     const handleClick = (param: MouseEventParams<Time>) => {
       const selected = selectedFromTime(param.time);
+      reportSelectionClick({
+        selected,
+        rawTvTime: param.time || null,
+        normalizedTime: timeDebugKey(param.time),
+      });
       if (selected) selectionBridgeRef.current.onCandleClick?.(selected);
     };
     const handleSurfaceMouseMove = (event: MouseEvent) => {
-      const selected = selectedFromClientX(event.clientX);
-      selectionBridgeRef.current.onCrosshairCandle?.(selected);
+      const resolved = selectedFromClientX(event.clientX);
+      selectionBridgeRef.current.onCrosshairCandle?.(resolved.selected);
     };
-    const handleSurfaceClick = (event: MouseEvent) => {
-      const selected = selectedFromClientX(event.clientX);
-      if (selected) selectionBridgeRef.current.onCandleClick?.(selected);
+    const handleSurfaceClick = (event: MouseEvent) => handleActivationEvent(event, 'chart-container-click');
+    const handleSurfacePointerDown = (event: PointerEvent) => rememberActivationStart(event, 'chart-container-pointerdown');
+    const handleSurfacePointerUp = (event: PointerEvent) => {
+      if (event.pointerType === 'mouse') return;
+      commitTapIfStationary(event, 'chart-container-pointerup');
     };
+    const handleSurfaceTouchStart = (event: TouchEvent) => rememberActivationStart(event, 'chart-container-touchstart');
+    const handleSurfaceTouchEnd = (event: TouchEvent) => commitTapIfStationary(event, 'chart-container-touchend');
     chart.subscribeCrosshairMove(handleCrosshairMove);
     chart.subscribeClick(handleClick);
+    selectionBridgeRef.current.onSelectionDebug?.({
+      clickHandlerAttached: true,
+      chartContainerPointerEvents: getComputedStyle(container).pointerEvents,
+      overlayPointerEvents: captureLayerRef.current ? getComputedStyle(captureLayerRef.current).pointerEvents : 'missing',
+    });
     container.addEventListener('mousemove', handleSurfaceMouseMove, true);
     container.addEventListener('click', handleSurfaceClick, true);
+    container.addEventListener('pointerdown', handleSurfacePointerDown, true);
+    container.addEventListener('pointerup', handleSurfacePointerUp, true);
+    container.addEventListener('touchstart', handleSurfaceTouchStart, true);
+    container.addEventListener('touchend', handleSurfaceTouchEnd, true);
 
     const resizeObserver = new ResizeObserver(() => {
-      if (lastFitTokenRef.current == null) chart.timeScale().fitContent();
+      if (!fitRequestRef.current?.token && !hasPendingFitRequest()) chart.timeScale().fitContent();
     });
     resizeObserver.observe(container);
 
@@ -193,6 +356,10 @@ export function TradingViewChart({
       chart.unsubscribeClick(handleClick);
       container.removeEventListener('mousemove', handleSurfaceMouseMove, true);
       container.removeEventListener('click', handleSurfaceClick, true);
+      container.removeEventListener('pointerdown', handleSurfacePointerDown, true);
+      container.removeEventListener('pointerup', handleSurfacePointerUp, true);
+      container.removeEventListener('touchstart', handleSurfaceTouchStart, true);
+      container.removeEventListener('touchend', handleSurfaceTouchEnd, true);
       resizeObserver.disconnect();
       for (const line of priceLinesRef.current) series.removePriceLine(line);
       priceLinesRef.current = [];
@@ -208,12 +375,17 @@ export function TradingViewChart({
   useEffect(() => {
     if (!chartReady) return;
     seriesRef.current?.setData(adapted.bars);
-    if (adapted.bars.length && lastAutoFitTimeframeRef.current !== timeframe && lastFitTokenRef.current == null) {
+    const firstTime = adapted.bars[0]?.time;
+    const lastTime = adapted.bars.at(-1)?.time;
+    const autoFitKey = chartMode === 'latest'
+      ? `${chartMode}:${timeframe}:${timeDebugKey(firstTime)}:${timeDebugKey(lastTime)}`
+      : `${chartMode}:${timeframe}`;
+    if (adapted.bars.length && chartMode !== 'hierarchy' && lastAutoFitTimeframeRef.current !== autoFitKey && !hasPendingFitRequest()) {
       chartRef.current?.timeScale().fitContent();
-      lastAutoFitTimeframeRef.current = timeframe;
+      lastAutoFitTimeframeRef.current = autoFitKey;
     }
     onStats?.({ rendered: adapted.bars.length, dropped: adapted.dropped });
-  }, [adapted, chartReady, onStats, timeframe]);
+  }, [adapted, chartMode, chartReady, fitRequest, onStats, timeframe]);
 
   useEffect(() => {
     if (!chartReady || !seriesRef.current) return;
@@ -232,41 +404,86 @@ export function TradingViewChart({
       }));
     }
     const selectionMarker = selectionMarkerFromSelectedCandle(selectedCandle || null);
-    markersRef.current?.setMarkers(selectionMarker ? [...(overlays?.markers || []), selectionMarker] : (overlays?.markers || []));
+    const nextMarkers = selectionMarker ? [...(overlays?.markers || []), selectionMarker] : (overlays?.markers || []);
+    markersRef.current?.setMarkers(nextMarkers);
+    selectionBridgeRef.current.onSelectionDebug?.({
+      markerCount: nextMarkers.length,
+      selMarkerPresent: !!selectionMarker,
+    });
   }, [chartReady, overlays, selectedCandle]);
 
   useEffect(() => {
     if (!chartReady || !chartRef.current || !fitRequest) return;
     if (!fitRequest.token || lastFitTokenRef.current === fitRequest.token) return;
+    if (!adapted.bars.length) {
+      updateFitDebugStatus(`pending:${fitRequest.token}:no-bars`);
+      return;
+    }
     if (fitRequest.from && fitRequest.to) {
       chartRef.current.timeScale().setVisibleRange({ from: fitRequest.from, to: fitRequest.to });
       lastFitTokenRef.current = fitRequest.token;
+      updateFitDebugStatus(`applied:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
     }
-  }, [chartReady, fitRequest]);
+  }, [adapted.bars.length, chartReady, fitRequest]);
 
   useEffect(() => {
     const layer = captureLayerRef.current;
     if (!layer || !selectionBridgeEnabled) return;
     const handleMove = (event: MouseEvent) => {
-      const selected = selectedFromClientX(event.clientX);
-      selectionBridgeRef.current.onCrosshairCandle?.(selected);
+      reportPointerState(event, 'capture-layer-move');
+      const resolved = selectedFromClientX(event.clientX);
+      selectionBridgeRef.current.onCrosshairCandle?.(resolved.selected);
     };
-    const handleClick = (event: MouseEvent) => {
-      const selected = selectedFromClientX(event.clientX);
-      if (selected) selectionBridgeRef.current.onCandleClick?.(selected);
+    const handleClick = (event: MouseEvent) => handleActivationEvent(event, 'capture-layer-click');
+    const handlePointerDown = (event: PointerEvent) => rememberActivationStart(event, 'capture-layer-pointerdown');
+    const handlePointerUp = (event: PointerEvent) => {
+      if (event.pointerType === 'mouse') return;
+      commitTapIfStationary(event, 'capture-layer-pointerup');
     };
+    const handleTouchStart = (event: TouchEvent) => rememberActivationStart(event, 'capture-layer-touchstart');
+    const handleTouchEnd = (event: TouchEvent) => commitTapIfStationary(event, 'capture-layer-touchend');
+    const handleEnter = (event: MouseEvent | PointerEvent) => reportPointerState(event, 'capture-layer-enter', true);
+    const handleLeave = (event: MouseEvent | PointerEvent) => reportPointerState(event, 'capture-layer-leave', false);
     layer.addEventListener('mousemove', handleMove);
+    layer.addEventListener('pointermove', handleMove);
+    layer.addEventListener('mouseenter', handleEnter);
+    layer.addEventListener('pointerenter', handleEnter);
+    layer.addEventListener('mouseleave', handleLeave);
+    layer.addEventListener('pointerleave', handleLeave);
     layer.addEventListener('mousedown', handleClick);
+    layer.addEventListener('pointerdown', handlePointerDown);
+    layer.addEventListener('pointerup', handlePointerUp);
+    layer.addEventListener('touchstart', handleTouchStart);
+    layer.addEventListener('touchend', handleTouchEnd);
     layer.addEventListener('click', handleClick);
     return () => {
       layer.removeEventListener('mousemove', handleMove);
+      layer.removeEventListener('pointermove', handleMove);
+      layer.removeEventListener('mouseenter', handleEnter);
+      layer.removeEventListener('pointerenter', handleEnter);
+      layer.removeEventListener('mouseleave', handleLeave);
+      layer.removeEventListener('pointerleave', handleLeave);
       layer.removeEventListener('mousedown', handleClick);
+      layer.removeEventListener('pointerdown', handlePointerDown);
+      layer.removeEventListener('pointerup', handlePointerUp);
+      layer.removeEventListener('touchstart', handleTouchStart);
+      layer.removeEventListener('touchend', handleTouchEnd);
       layer.removeEventListener('click', handleClick);
     };
   }, [selectionBridgeEnabled, chartReady]);
 
   return (
-    <div className="tradingViewChartFrame" aria-label="TradingView Live View candle chart">
+    <div
+      className="tradingViewChartFrame"
+      aria-label="TradingView Live View candle chart"
+      data-chart-mode={chartMode}
+      data-fit-status={fitDebugStatus}
+      data-fit-token={fitRequest?.token || ''}
+      data-fit-from={timeDebugKey(fitRequest?.from)}
+      data-fit-to={timeDebugKey(fitRequest?.to)}
+      data-selected-marker={selectedCandle ? 'yellow-sel' : ''}
+      data-selected-marker-color={selectedCandle ? '#facc15' : ''}
+    >
       <div ref={containerRef} className="tradingViewChartCanvas" />
       {selectionBridgeEnabled && (
         <div

@@ -1,5 +1,5 @@
 import type { Time } from 'lightweight-charts';
-import { fxtmTimeToTradingViewTime } from './candleAdapter';
+import { fxtmTimeToTradingViewTime, timeSortKey } from './candleAdapter';
 import type { FxtmCandleRow, TradingViewBosMarker, TradingViewSelectedCandle } from './types';
 
 function tvTimeKey(time: Time | string | number | null | undefined): string {
@@ -76,20 +76,24 @@ export function buildTradingViewSelectedCandleFromBarIndex(args: {
 }): TradingViewSelectedCandle | null {
   const targetIndex = Math.round(Number(args.barIndex));
   if (!Number.isInteger(targetIndex) || targetIndex < 0) return null;
-  let adaptedIndex = -1;
+  const byTime = new Map<string, { candle: FxtmCandleRow; tvTime: Time }>();
   for (const candle of args.candles || []) {
     if (!candle?.time || !finiteOhlc(candle)) continue;
     const adaptedTime = fxtmTimeToTradingViewTime(candle.time, args.chartTimeframe);
     if (!adaptedTime) continue;
-    adaptedIndex += 1;
-    if (adaptedIndex !== targetIndex) continue;
+    byTime.set(tvTimeKey(adaptedTime), { candle, tvTime: adaptedTime });
+  }
+  const rendered = Array.from(byTime.values()).sort((a, b) => timeSortKey(a.tvTime) - timeSortKey(b.tvTime));
+  const match = rendered[targetIndex];
+  if (match) {
+    const candle = match.candle;
     return {
       source: 'tradingview',
       symbol: String(args.symbol || '').toUpperCase(),
       chartTimeframe: String(args.chartTimeframe || '').toUpperCase(),
       sourceTimeframe: args.sourceTimeframe ? String(args.sourceTimeframe).toUpperCase() : undefined,
       time: String(candle.time),
-      tvTime: tvTimePayload(adaptedTime),
+      tvTime: tvTimePayload(match.tvTime),
       open: Number(candle.open),
       high: Number(candle.high),
       low: Number(candle.low),
@@ -108,10 +112,10 @@ export function selectionMarkerFromSelectedCandle(selected: TradingViewSelectedC
   return {
     id: `tv-selected:${selected.chartTimeframe}:${selected.time}`,
     time,
-    position: 'belowBar',
+    position: 'inBar',
     shape: 'circle',
-    color: '#f8fafc',
+    color: '#facc15',
     text: 'SEL',
-    size: 1,
+    size: 2,
   };
 }

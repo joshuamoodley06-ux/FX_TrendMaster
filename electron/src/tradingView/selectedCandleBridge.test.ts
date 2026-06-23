@@ -65,6 +65,17 @@ describe('buildTradingViewSelectedCandleFromBarIndex', () => {
       barIndex: 10,
     })).toBeNull();
   });
+
+  it('uses rendered sorted order rather than raw input order', () => {
+    const selected = buildTradingViewSelectedCandleFromBarIndex({
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      candles: [candles[1], candles[0]],
+      barIndex: 0,
+    });
+
+    expect(selected?.time).toBe('2024.11.04 08:00');
+  });
 });
 
 describe('buildTradingViewSelectedCandle', () => {
@@ -103,8 +114,23 @@ describe('buildTradingViewSelectedCandle', () => {
 
     expect(marker).toMatchObject({
       shape: 'circle',
+      color: '#facc15',
       text: 'SEL',
-      position: 'belowBar',
+      position: 'inBar',
+      size: 2,
     });
+  });
+
+  it('does not resolve candles outside the displayed candle set', () => {
+    const displayedCandles = candles.slice(0, 1);
+
+    const selected = buildTradingViewSelectedCandle({
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      candles: displayedCandles,
+      tvTime: Date.UTC(2024, 10, 4, 9, 0, 0) / 1000,
+    });
+
+    expect(selected).toBeNull();
   });
 });

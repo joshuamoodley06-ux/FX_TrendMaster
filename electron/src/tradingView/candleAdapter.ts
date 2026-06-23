@@ -1,7 +1,15 @@
 import type { BusinessDay, Time, UTCTimestamp } from 'lightweight-charts';
-import type { FxtmCandleRow, TradingViewAdapterResult, TradingViewCandle } from './types';
+import type { FxtmCandleRow, TradingViewAdapterResult, TradingViewCandle, TradingViewChartWindow } from './types';
 
 const DAILY_TIMEFRAMES = new Set(['W1', 'D1']);
+const LATEST_WINDOW_BY_TIMEFRAME: Record<string, number> = {
+  MN1: 80,
+  W1: 120,
+  D1: 180,
+  H4: 240,
+  H1: 300,
+  M15: 400,
+};
 
 export function parseFxtmTime(raw: string): { timestampSeconds: number; businessDay: BusinessDay; key: string } | null {
   const match = String(raw || '').trim().match(/^(\d{4})[.-](\d{2})[.-](\d{2})(?:[ T](\d{2}):(\d{2}))?/);
@@ -46,6 +54,20 @@ function timeDedupeKey(time: Time): string {
   return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
 }
 
+function candleTimeMs(candle: FxtmCandleRow | null | undefined): number {
+  const parsed = parseFxtmTime(String(candle?.time || ''));
+  return parsed ? parsed.timestampSeconds * 1000 : Number.NaN;
+}
+
+function rawTimeMs(raw: string | null | undefined): number {
+  const parsed = parseFxtmTime(String(raw || ''));
+  return parsed ? parsed.timestampSeconds * 1000 : Number.NaN;
+}
+
+export function latestWindowSizeForTimeframe(timeframe: string): number {
+  return LATEST_WINDOW_BY_TIMEFRAME[String(timeframe || '').toUpperCase()] || 180;
+}
+
 export function fxtmTimeToTradingViewTime(raw: string | null | undefined, timeframe: string): Time | null {
   const parsed = parseFxtmTime(String(raw || ''));
   return parsed ? timeForTradingView(parsed, timeframe) : null;
@@ -77,4 +99,32 @@ export function adaptCandlesForTradingView(candles: FxtmCandleRow[], timeframe: 
 
   const bars = Array.from(byTime.values()).sort((a, b) => timeSortKey(a.time) - timeSortKey(b.time));
   return { bars, dropped };
+}
+
+export function applyChartModeWindow(candles: FxtmCandleRow[], window: TradingViewChartWindow): FxtmCandleRow[] {
+  const rows = (candles || [])
+    .filter((c) => !!c?.time && Number.isFinite(candleTimeMs(c)))
+    .sort((a, b) => candleTimeMs(a) - candleTimeMs(b));
+  if (!rows.length) return rows;
+
+  if (window.mode === 'replay') {
+    const cut = rawTimeMs(window.replayCutTime);
+    if (!Number.isFinite(cut)) return rows;
+    return rows.filter((c) => candleTimeMs(c) <= cut);
+  }
+
+  if (window.mode === 'hierarchy') {
+    const start = rawTimeMs(window.hierarchyStart);
+    const end = rawTimeMs(window.hierarchyEnd);
+    const bounded = rows.filter((c) => {
+      const ms = candleTimeMs(c);
+      if (Number.isFinite(start) && ms < start) return false;
+      if (Number.isFinite(end) && ms > end) return false;
+      return true;
+    });
+    return bounded.length ? bounded : rows.filter((c) => !Number.isFinite(end) || candleTimeMs(c) <= end);
+  }
+
+  const count = latestWindowSizeForTimeframe(window.timeframe);
+  return rows.slice(Math.max(0, rows.length - count));
 }

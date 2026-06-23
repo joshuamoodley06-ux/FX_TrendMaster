@@ -71,6 +71,26 @@ function selectedRangeIds(selectedRange: unknown | null | undefined): Set<string
   return id ? new Set([id]) : new Set<string>();
 }
 
+function selectedRangeFallback(selectedRange: unknown | null | undefined): SavedRangeOverlayInput | null {
+  const range: any = selectedRange;
+  const id = rangeIdOf(range);
+  if (!id) return null;
+  const high = finitePrice(range?.high ?? range?.range_high_price ?? range?.range_high);
+  const low = finitePrice(range?.low ?? range?.range_low_price ?? range?.range_low);
+  if (high === null && low === null) return null;
+  return {
+    rangeId: id,
+    structureLayer: range?.structureLayer ?? range?.structure_layer ?? range?.layer,
+    rangeScope: range?.rangeScope ?? range?.range_scope,
+    status: range?.status,
+    high: high ?? undefined,
+    low: low ?? undefined,
+    start: range?.start ?? range?.range_start_time ?? range?.range_high_time ?? null,
+    end: range?.end ?? range?.range_end_time ?? range?.range_low_time ?? null,
+    isActive: true,
+  };
+}
+
 function lineStyleFor(range: SavedRangeOverlayInput): TradingViewRangeLine['lineStyle'] {
   const status = String(range.status || '').toUpperCase();
   if (status === 'BROKEN' || status === 'ABANDONED' || status === 'INACTIVE' || status === 'REPLACED') return 'dashed';
@@ -188,6 +208,16 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
   for (const [index, overlay] of (input.parentRangeOverlays || []).entries()) {
     addParentLine(priceLines, overlay, index);
   }
+  const fallbackSelectedRange = selectedRangeFallback(input.selectedRange);
+  let selectedRangeFallbackUsed = false;
+  if (fallbackSelectedRange) {
+    const selectedId = rangeIdOf(fallbackSelectedRange);
+    const hasSelectedLine = priceLines.some((line) => String(line.rangeId || '') === selectedId);
+    if (!hasSelectedLine) {
+      selectedRangeFallbackUsed = true;
+      addRangeLines(priceLines, fallbackSelectedRange, selectedIds);
+    }
+  }
 
   const dedupedLines = priceLines.filter((line) => {
     const key = `${line.role}:${line.rangeId ?? ''}:${line.kind}:${line.price}`;
@@ -201,7 +231,16 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
     .filter((marker): marker is TradingViewBosMarker => !!marker)
     .sort((a, b) => timeSortKey(a.time) - timeSortKey(b.time));
 
-  return { priceLines: dedupedLines, markers };
+  return {
+    priceLines: dedupedLines,
+    markers,
+    debug: {
+      rangeOverlayCount: dedupedLines.filter((line) => line.role !== 'parent').length,
+      rhRlLineCount: dedupedLines.filter((line) => line.kind === 'RH' || line.kind === 'RL').length,
+      bosMarkerCount: markers.length,
+      selectedRangeFallbackUsed,
+    },
+  };
 }
 
 export function adaptFitRequestForTradingView(input: TradingViewFitAdapterInput): TradingViewFitRequest | null {

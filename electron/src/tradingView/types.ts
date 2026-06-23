@@ -18,6 +18,16 @@ export type TradingViewAdapterResult = {
   dropped: number;
 };
 
+export type TradingViewChartMode = 'latest' | 'hierarchy' | 'replay' | 'selection';
+
+export type TradingViewChartWindow = {
+  mode: TradingViewChartMode;
+  timeframe: string;
+  hierarchyStart?: string | null;
+  hierarchyEnd?: string | null;
+  replayCutTime?: string | null;
+};
+
 export type ChartRendererMode = 'd3' | 'tradingview';
 
 export type TradingViewOverlayMode = 'off' | 'readonly';
@@ -36,6 +46,23 @@ export type TradingViewSelectedCandle = {
   close: number;
   volume?: number;
   barIndex?: number;
+};
+
+export type TradingViewSelectionDebugEvent = {
+  clickHandlerAttached?: boolean;
+  crosshairReceived?: boolean;
+  pointerOverChart?: boolean;
+  chartContainerPointerEvents?: string;
+  overlayPointerEvents?: string;
+  lastClickEventObject?: string;
+  clickReceived?: boolean;
+  rawTvTime?: string;
+  normalizedClickTime?: string;
+  displayCandleCount?: number;
+  matchedCandle?: boolean;
+  matchedCandleTime?: string;
+  markerCount?: number;
+  selMarkerPresent?: boolean;
 };
 
 export type TradingViewRangeLine = {
@@ -57,6 +84,12 @@ export type TradingViewBosMarker = SeriesMarker<Time> & {
 export type TradingViewOverlaySet = {
   priceLines: TradingViewRangeLine[];
   markers: TradingViewBosMarker[];
+  debug?: {
+    rangeOverlayCount: number;
+    rhRlLineCount: number;
+    bosMarkerCount: number;
+    selectedRangeFallbackUsed: boolean;
+  };
 };
 
 export type TradingViewFitRequest = {

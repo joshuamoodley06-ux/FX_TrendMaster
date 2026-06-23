@@ -46,6 +46,25 @@ describe('adaptOverlaysForTradingView', () => {
     expect(result.priceLines.every((line) => line.role === 'parent')).toBe(true);
   });
 
+  it('falls back to selected saved range prices when overlay list is empty', () => {
+    const result = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      selectedRange: {
+        range_id: 'selected-only',
+        structure_layer: 'WEEKLY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        range_high_price: 2790.01,
+        range_low_price: 2602.55,
+      },
+      savedRangeOverlays: [],
+    });
+
+    expect(result.priceLines).toHaveLength(2);
+    expect(result.priceLines.every((line) => line.role === 'selected')).toBe(true);
+    expect(result.priceLines.map((line) => line.price).sort()).toEqual([2602.55, 2790.01]);
+  });
+
   it('converts BOS events into sorted TradingView markers', () => {
     const result = adaptOverlaysForTradingView({
       timeframe: 'H1',
@@ -96,5 +115,37 @@ describe('adaptFitRequestForTradingView', () => {
     expect(fit?.token).toBe(2);
     expect(typeof fit?.from).toBe('number');
     expect(typeof fit?.to).toBe('number');
+  });
+
+  it('uses business-day fit times for weekly and daily chart windows', () => {
+    const weekly = adaptFitRequestForTradingView({
+      token: 3,
+      intent: 'FIT_STRUCTURAL_RANGE',
+      timeframe: 'W1',
+      fitWindow: { start: '2024-11-04T00:00:00.000Z', end: '2024-12-02T00:00:00.000Z' },
+    });
+    const daily = adaptFitRequestForTradingView({
+      token: 4,
+      intent: 'FIT_STRUCTURAL_RANGE',
+      timeframe: 'D1',
+      fitWindow: { start: '2024.11.04 00:00', end: '2024.11.08 00:00' },
+    });
+
+    expect(weekly?.from).toEqual({ year: 2024, month: 11, day: 4 });
+    expect(weekly?.to).toEqual({ year: 2024, month: 12, day: 2 });
+    expect(daily?.from).toEqual({ year: 2024, month: 11, day: 4 });
+    expect(daily?.to).toEqual({ year: 2024, month: 11, day: 8 });
+  });
+
+  it('uses Unix-second fit times for intraday chart windows', () => {
+    const fit = adaptFitRequestForTradingView({
+      token: 5,
+      intent: 'FIT_STRUCTURAL_RANGE',
+      timeframe: 'M15',
+      fitWindow: { start: '2024.11.04 08:15', end: '2024.11.04 12:45' },
+    });
+
+    expect(fit?.from).toBe(Date.UTC(2024, 10, 4, 8, 15, 0) / 1000);
+    expect(fit?.to).toBe(Date.UTC(2024, 10, 4, 12, 45, 0) / 1000);
   });
 });

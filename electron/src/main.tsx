@@ -243,8 +243,9 @@ import {
   adaptFitRequestForTradingView,
   adaptOverlaysForTradingView,
 } from './tradingView/overlayAdapter';
+import { applyChartModeWindow } from './tradingView/candleAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
-import type { ChartRendererMode, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
+import type { ChartRendererMode, TradingViewChartMode, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
 import {
   buildLocalLibraryStatusLine,
   candlesChanged,
@@ -2509,13 +2510,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [topRibbonCollapsed, setTopRibbonCollapsed] = useLocalStorage<boolean>('fx_tm_top_ribbon_collapsed_v087_24', true);
   const [chartRendererRaw, setChartRendererRaw] = useLocalStorage<ChartRendererMode>(CHART_RENDERER_STORAGE_KEY, DEFAULT_CHART_RENDERER);
   const chartRenderer = normalizeChartRendererMode(chartRendererRaw);
-  const [tradingViewOverlayModeRaw] = useLocalStorage<TradingViewOverlayMode>(TRADINGVIEW_OVERLAYS_STORAGE_KEY, DEFAULT_TRADINGVIEW_OVERLAY_MODE);
+  const [tradingViewOverlayModeRaw, setTradingViewOverlayModeRaw] = useLocalStorage<TradingViewOverlayMode>(TRADINGVIEW_OVERLAYS_STORAGE_KEY, DEFAULT_TRADINGVIEW_OVERLAY_MODE);
   const tradingViewOverlayMode = normalizeTradingViewOverlayMode(tradingViewOverlayModeRaw);
-  const [tradingViewSelectedCandleModeRaw] = useLocalStorage<TradingViewSelectedCandleMode>(TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY, DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE);
+  const [tradingViewSelectedCandleModeRaw, setTradingViewSelectedCandleModeRaw] = useLocalStorage<TradingViewSelectedCandleMode>(TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY, DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE);
   const tradingViewSelectedCandleMode = normalizeTradingViewSelectedCandleMode(tradingViewSelectedCandleModeRaw);
   const [tradingViewSelectedCandle, setTradingViewSelectedCandle] = useState<TradingViewSelectedCandle | null>(null);
   const [tradingViewCrosshairCandle, setTradingViewCrosshairCandle] = useState<TradingViewSelectedCandle | null>(null);
   const [tradingViewSelectionWarning, setTradingViewSelectionWarning] = useState<string | null>(null);
+  const [tradingViewHierarchyFitCommand, setTradingViewHierarchyFitCommand] = useState<CameraCommand | null>(null);
+  const [tradingViewExplicitReplayMode, setTradingViewExplicitReplayMode] = useState(false);
+  const tradingViewHierarchyFitKeyRef = useRef('');
+  const tradingViewSuppressedHierarchyRangeIdRef = useRef('');
   const tradingViewSelectionBridgeActive = chartRenderer === 'tradingview' && tradingViewSelectedCandleMode === 'readonly';
   const [chartFullscreen, setChartFullscreen] = useState(false);
   const [navOverlayPanelOpen, setNavOverlayPanelOpen] = useState(false);
@@ -4648,8 +4653,32 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const getCandleFeedGuard = (): CandleFeedGuardResult =>
     evaluateCandleFeedGuard(buildActiveCandleFeedSnapshot(), loadedCandleContextRef.current);
 
+  const getTradingViewSelectionFeedGuard = (): CandleFeedGuardResult => {
+    const loaded = loadedCandleContextRef.current;
+    const active = buildActiveCandleFeedSnapshot();
+    const chartStructure = chartStructureForTimeframeStatic(timeframe);
+    const chartTf = String(timeframe).toUpperCase();
+    const tvLayer = (chartStructure.structure_layer || loaded?.structureLayer || active.structureLayer) as StructureLayerId;
+    const tvSourceTf = String(chartStructure.source_timeframe || loaded?.chartTimeframe || chartTf).toUpperCase();
+    const tvLoaded = loaded
+      ? {
+        ...loaded,
+        chartTimeframe: String(loaded.chartTimeframe || '').toUpperCase(),
+        sourceTimeframe: tvSourceTf,
+        structureLayer: tvLayer,
+      }
+      : null;
+    return evaluateCandleFeedGuard({
+      ...active,
+      chartTimeframe: chartTf,
+      sourceTimeframe: tvSourceTf,
+      structureLayer: tvLayer,
+      candleCount: candleCountRef.current,
+    }, tvLoaded);
+  };
+
   const handleTradingViewCandleClick = (candidate: TradingViewSelectedCandle) => {
-    const guard = evaluateCandleFeedGuard(buildActiveCandleFeedSnapshot(), loadedCandleContextRef.current);
+    const guard = getTradingViewSelectionFeedGuard();
     if (!guard.ready) {
       const warning = guard.message || 'TradingView selection blocked — candle feed not aligned.';
       setTradingViewSelectedCandle(null);
@@ -5899,6 +5928,47 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId)) || null;
   }, [savedStructuralRanges, activeStructuralRangeId]);
 
+  const tradingViewHierarchyFitRange = useMemo(() => {
+    if (selectedSavedRange) return selectedSavedRange;
+    if (!selectedParentRangeId) return null;
+    return safeArray<StructuralRange>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(selectedParentRangeId)) || null;
+  }, [savedStructuralRanges, selectedParentRangeId, selectedSavedRange]);
+
+  useEffect(() => {
+    if (chartRenderer !== 'tradingview' || !tradingViewHierarchyFitRange) return;
+    const rangeId = String((tradingViewHierarchyFitRange as any).range_id || (tradingViewHierarchyFitRange as any).id || '');
+    if (!rangeId) return;
+    if (tradingViewSuppressedHierarchyRangeIdRef.current === rangeId) return;
+    const targetTf = String(resolveRangeChartTimeframe(tradingViewHierarchyFitRange, timeframe)).toUpperCase();
+    const fitWindow = structuralRangeFitDomain(tradingViewHierarchyFitRange, [], targetTf);
+    if (!fitWindow?.start || !fitWindow?.end) return;
+    const targetTime = structuralContextTargetTime(tradingViewHierarchyFitRange) || fitWindow.start;
+    const fitKey = `${rangeId}:${targetTf}:${fitWindow.start}:${fitWindow.end}`;
+    if (tradingViewHierarchyFitKeyRef.current === fitKey) return;
+    tradingViewHierarchyFitKeyRef.current = fitKey;
+    setTradingViewHierarchyFitCommand((prev) => ({
+      intent: 'FIT_STRUCTURAL_RANGE',
+      token: (prev?.token || 0) + 1,
+      targetTime,
+      reason: 'tradingview-hierarchy-range-fit',
+      fitWindow,
+    }));
+    if (targetTf !== String(timeframe).toUpperCase()) {
+      skipBootstrapOnceRef.current = true;
+      activeTimeframeRef.current = targetTf;
+      setTimeframe(targetTf);
+      void loadCandles(targetTf, {
+        loadWindow: { start: fitWindow.start, end: fitWindow.end, label: 'TradingView hierarchy range fit' },
+        cacheFullHistory: false,
+        structuralNavigation: true,
+        timeframeSwitch: true,
+        reason: 'tradingview-hierarchy-range-fit',
+        navigationPath: 'tradingview-hierarchy-range-fit',
+        deferCamera: true,
+      });
+    }
+  }, [chartRenderer, timeframe, tradingViewHierarchyFitRange]);
+
   const effectiveStructuralAnchors = useMemo(
     () => resolveEffectiveStructuralAnchorTimes(
       rhAnchor,
@@ -6801,6 +6871,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const setStructuralPoint = async (kind:'RH'|'RL'|'BH'|'BL') => {
+    if (chartRenderer === 'tradingview') {
+      setMessage('TradingView mapping input disabled.');
+      setTradingViewSelectionWarning('TradingView mapping input disabled.');
+      return;
+    }
     if (structuralSaving) {
       setMessage('Wait for the current range save to finish.');
       return;
@@ -7941,6 +8016,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const applyExplorerRowSelection = (range: any, opts?: { routeInspector?: boolean }) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
+    tradingViewSuppressedHierarchyRangeIdRef.current = '';
     const rangeLayer = normalizeStructureLayer(range?.structure_layer || range?.layer);
     const neededParentLayer = expectedParentStructureLayer(structureLayer);
 
@@ -7976,6 +8052,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const jumpToStructuralRange = (range: any) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
+    tradingViewSuppressedHierarchyRangeIdRef.current = '';
     skipSavedReplayHydrateRef.current = true;
     const rangeLayer = normalizeStructureLayer(range?.structure_layer || range?.layer);
     const neededParentLayer = expectedParentStructureLayer(structureLayer);
@@ -7989,6 +8066,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     applyExplorerRowSelection(range, { routeInspector: false });
 
     if (isParentOnlyPick) {
+      if (chartRenderer === 'tradingview') {
+        void navigateStructuralChartContext({
+          targetTf: chartTf,
+          range,
+          reason: 'tradingview-explorer-parent-jump-fit',
+        }).then(() => {
+          if (startStr) setJumpDate(startStr.slice(0, 10));
+        });
+        return;
+      }
       const fitWindow = structuralRangeFitDomain(range, candles);
       pendingCameraIntentRef.current = {
         intent: 'FIT_STRUCTURAL_RANGE',
@@ -8405,15 +8492,31 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const toggleBarReplay = () => {
+    if (chartRenderer === 'tradingview' && !tradingViewExplicitReplayMode) {
+      setTradingViewExplicitReplayMode(true);
+      setCandleReplayMode(true);
+      setCandleReplayPlaying(false);
+      setToolMode('scrub');
+      setReplaySelectBarMode(true);
+      if (!candleReplayCursorTime && candles.length) {
+        const ctxTime = rhAnchor.time || rlAnchor.time || tradingViewSelectedCandle?.time || selectedCandle?.time || null;
+        if (ctxTime) setCandleReplayFrameByTime(ctxTime);
+        else setCandleReplayFrame(0);
+      }
+      setMessage('TradingView Bar Replay on — visible candles stop at the replay cursor.');
+      return;
+    }
     if (candleReplayMode) {
       setCandleReplayPlaying(false);
       setCandleReplayMode(false);
+      setTradingViewExplicitReplayMode(false);
       setReplaySelectBarMode(false);
       setReplayStartMenuOpen(false);
       setMessage('Bar Replay off.');
       return;
     }
     setCandleReplayMode(true);
+    setTradingViewExplicitReplayMode(chartRenderer === 'tradingview');
     setCandleReplayPlaying(false);
     setToolMode('scrub');
     setReplaySelectBarMode(true);
@@ -8448,6 +8551,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (candles.length) jumpCandleReplayLatest();
     setCandleReplayPlaying(false);
     setCandleReplayMode(false);
+    setTradingViewExplicitReplayMode(false);
     setReplaySelectBarMode(false);
     setReplayStartMenuOpen(false);
     setMessage('Replay ended — showing latest candles.');
@@ -8720,6 +8824,30 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const parentRangeIdNow = String(selectedParentRangeIdRef.current || '');
     cameraLog('chart tf switch requested', { from: sourceTf, to: tf, activeRangeId: activeRangeIdNow, parentRangeId: parentRangeIdNow, layer: structureLayer });
     setCameraViewOwnerWithLog('TIMEFRAME_SWITCH', 'switchTimeframePreserveCase', `timeframe-switch:${sourceTf}->${tf}`);
+    if (chartRenderer === 'tradingview') {
+      tradingViewSuppressedHierarchyRangeIdRef.current = String(activeStructuralRangeIdRef.current || selectedParentRangeIdRef.current || '');
+      tradingViewHierarchyFitKeyRef.current = '';
+      setTradingViewHierarchyFitCommand(null);
+      setTradingViewExplicitReplayMode(false);
+      setCandleReplayPlaying(false);
+      setCandleReplayMode(false);
+      setReplaySelectBarMode(false);
+      pendingCameraIntentRef.current = {
+        intent: 'PRESERVE_OR_NEAREST_TIME',
+        targetTime: tradingViewSelectedCandle?.time || tradingViewCrosshairCandle?.time || candleReplayCursorTime || replayCandle?.time || null,
+        reason: `tradingview-timeframe-switch:${sourceTf}->${tf}`,
+      };
+      skipBootstrapOnceRef.current = true;
+      activeTimeframeRef.current = tf;
+      setTimeframe(tf);
+      if (autoResume.isWelcome) autoResume.markSessionActive(symbol, tf);
+      return loadCandles(tf, {
+        cacheFullHistory: true,
+        timeframeSwitch: true,
+        reason: `tradingview-timeframe-switch:${sourceTf}->${tf}`,
+        navigationPath: 'tradingview-timeframe-switch',
+      }).then(() => undefined);
+    }
     const sourceKey = `${activeCaseDisplayId || 'global'}_${sourceTf}`;
     let targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
     const dom = visibleCameraDomainRef.current;
@@ -8910,15 +9038,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   useEffect(() => {
     if (blockMappingBootEffects()) return;
+    if (chartRenderer === 'tradingview') return;
     if (!showStructuralMappingRibbon) return;
     if (isChartTimeframeAllowedForLayer(timeframe, structureLayer)) return;
     switchTimeframePreserveCase(defaultChartTimeframeForStructureLayer(structureLayer));
-  }, [showStructuralMappingRibbon, structureLayer, timeframe, pendingMappingSession]);
+  }, [showStructuralMappingRibbon, structureLayer, timeframe, pendingMappingSession, chartRenderer]);
 
   const handleChartTfSwitch = (nextTf: string) => {
     const tf = String(nextTf || timeframe).toUpperCase();
     cameraLog('chart tf chip clicked', { tf, activeRangeId: activeStructuralRangeIdRef.current, parentRangeId: selectedParentRangeIdRef.current, layer: structureLayer });
-    if (showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf)) {
+    if (chartRenderer === 'd3' && showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf)) {
       setMessage(`Chart ${tf} is blocked while mapping ${structureLayer}. Use ${mappingAllowedChartTfs.join(' or ')} — or change scope first.`);
       return;
     }
@@ -9119,6 +9248,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (isTypingInEditableField(evt.target)) return;
       const action = resolveMapStudioKeyAction(evt.key);
       if (!action) return;
+      if (chartRenderer === 'tradingview' && ['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action)) {
+        evt.preventDefault();
+        const warning = 'TradingView mapping input disabled.';
+        setTradingViewSelectionWarning(warning);
+        setMessage(warning);
+        return;
+      }
       if (['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action) && !getCurrentMappingCaseRef().hasCase) return;
       if (['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action) && !getCandleFeedGuard().ready) {
         assertCandleFeedReady('Keyboard mark');
@@ -9144,6 +9280,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     chainDraftMode,
     timeframe,
     structureLayer,
+    chartRenderer,
   ]);
 
   const updateChartDrawings = (updater: ChartDrawing[] | ((prev: ChartDrawing[]) => ChartDrawing[])) => {
@@ -9594,16 +9731,50 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   ]);
 
   const tradingViewFitRequest = useMemo(() => {
-    if (chartRenderer !== 'tradingview' || tradingViewOverlayMode !== 'readonly') return null;
+    if (chartRenderer !== 'tradingview') return null;
+    const fitCommand = tradingViewHierarchyFitCommand || cameraCommand;
     return adaptFitRequestForTradingView({
-      token: cameraCommand.token,
-      intent: cameraCommand.intent,
-      reason: cameraCommand.reason,
-      fitWindow: cameraCommand.fitWindow,
-      targetTime: cameraCommand.targetTime,
+      token: fitCommand.token,
+      intent: fitCommand.intent,
+      reason: fitCommand.reason,
+      fitWindow: fitCommand.fitWindow,
+      targetTime: fitCommand.targetTime,
       timeframe,
     });
-  }, [chartRenderer, tradingViewOverlayMode, cameraCommand, timeframe]);
+  }, [chartRenderer, cameraCommand, timeframe, tradingViewHierarchyFitCommand]);
+
+  const tradingViewChartMode: TradingViewChartMode = tradingViewExplicitReplayMode && candleReplayMode && replayCandle
+    ? 'replay'
+    : tradingViewHierarchyFitCommand?.fitWindow
+      ? 'hierarchy'
+      : 'latest';
+
+  const tradingViewDisplayCandles = useMemo(() => applyChartModeWindow(candles, {
+    mode: tradingViewChartMode,
+    timeframe,
+    hierarchyStart: tradingViewHierarchyFitCommand?.fitWindow?.start || null,
+    hierarchyEnd: tradingViewHierarchyFitCommand?.fitWindow?.end || null,
+    replayCutTime: tradingViewExplicitReplayMode && candleReplayMode && replayCandle ? replayCandle.time : null,
+  }), [
+    candles,
+    candleReplayMode,
+    replayCandle?.time,
+    timeframe,
+    tradingViewChartMode,
+    tradingViewExplicitReplayMode,
+    tradingViewHierarchyFitCommand,
+  ]);
+
+  useEffect(() => {
+    setTradingViewSelectedCandle(null);
+    setTradingViewCrosshairCandle(null);
+  }, [
+    tradingViewChartMode,
+    tradingViewHierarchyFitCommand?.token,
+    candleReplayMode,
+    replayCandle?.time,
+    tradingViewExplicitReplayMode,
+  ]);
 
   const handleInspectorStructuralCommit = async () => {
     let ok = false;
@@ -9794,7 +9965,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     <div className={`mapStudioToolbar compactMapToolbar ${topRibbonCollapsed ? 'collapsedRibbon' : ''}`}>
       <button className="ribbonToggle" onClick={()=>setTopRibbonCollapsed(v=>!v)}>{topRibbonCollapsed ? 'Show ribbon' : 'Hide ribbon'}</button>
       <div className="tfTabs">{MAP_TIMEFRAMES.map(tf=>{
-        const locked = showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
+        const locked = chartRenderer === 'd3' && showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
         return <button key={tf} type="button" className={`${timeframe===tf?'active':''}${locked?' tfLocked':''}`} disabled={locked} title={locked ? `Blocked while mapping ${structureLayer}. Change scope or use ${mappingAllowedChartTfs.join('/')}.` : `Switch to ${tf}`} onClick={()=>handleChartTfSwitch(tf)}>{tf}</button>;
       })}</div>
       {!topRibbonCollapsed && <>
@@ -10404,7 +10575,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         </div>}
         {chartFullscreen && <div className="fullscreenTfDock" aria-label="Fullscreen timeframe controls">
           {(['MN1','W1','D1','H4','H1','M15'] as string[]).map(tf => {
-            const locked = showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
+            const locked = chartRenderer === 'd3' && showStructuralMappingRibbon && !mappingAllowedChartTfs.includes(tf);
             return <button key={tf} type="button" className={`${timeframe===tf?'active':''}${locked?' tfLocked':''}`} disabled={locked} title={locked ? `Blocked while mapping ${structureLayer}` : tf} onClick={()=>handleChartTfSwitch(tf)}>{tf}</button>;
           })}
           <select value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)}><option value="AUTO">Auto</option><option value="LOCKED">Lock</option><option value="CASE">Case</option><option value="REPLAY">Replay</option></select>
@@ -10428,7 +10599,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         <div className="chartMapCanvas chart-canvas">
         {chartRenderer === 'tradingview' ? (
           <LiveViewPanel
-            candles={candles}
+            candles={tradingViewDisplayCandles}
             symbol={symbol}
             timeframe={timeframe}
             sourceTimeframe={sourceTimeframe}
@@ -10438,12 +10609,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             overlayMode={tradingViewOverlayMode}
             overlays={tradingViewOverlays}
             fitRequest={tradingViewFitRequest}
+            chartMode={tradingViewChartMode}
             selectionMode={tradingViewSelectedCandleMode}
             selectedCandle={tradingViewSelectedCandle}
             crosshairCandle={tradingViewCrosshairCandle}
             selectionWarning={tradingViewSelectionWarning}
             onCrosshairCandle={setTradingViewCrosshairCandle}
             onCandleClick={handleTradingViewCandleClick}
+            onOverlayModeChange={setTradingViewOverlayModeRaw}
+            onSelectionModeChange={setTradingViewSelectedCandleModeRaw}
           />
         ) : (
         <D3CandleMap
