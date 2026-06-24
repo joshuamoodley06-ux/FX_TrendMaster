@@ -92,6 +92,44 @@ describe('adaptOverlaysForTradingView', () => {
 
     expect(result.markers).toHaveLength(0);
   });
+
+  it('emits draft RH/RL price lines from draft overlay and anchor fallbacks', () => {
+    const partial = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      draftRangeOverlay: {
+        high: 2410.5,
+        low: null,
+        structureLayer: 'DAILY',
+        visible: true,
+        start: '2024.11.04 09:00',
+        end: '2024.11.04 09:00',
+      },
+    });
+    expect(partial.priceLines).toHaveLength(1);
+    expect(partial.priceLines[0]).toMatchObject({
+      id: 'draft:RH',
+      kind: 'RH',
+      price: 2410.5,
+      lineStyle: 'dashed',
+      label: 'Draft DAILY RH',
+    });
+
+    const complete = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      draftRhAnchor: { price: '2410.50', time: '2024.11.04 09:00' },
+      draftRlAnchor: { price: '2388.25', time: '2024.11.04 08:00' },
+      draftRangeOverlay: {
+        high: 2410.5,
+        low: 2388.25,
+        structureLayer: 'DAILY',
+        visible: true,
+        start: '2024.11.04 09:00',
+        end: '2024.11.04 08:00',
+      },
+    });
+    expect(complete.priceLines.map((line) => line.id).sort()).toEqual(['draft:RH', 'draft:RL']);
+    expect(complete.priceLines.every((line) => line.lineStyle === 'solid')).toBe(true);
+  });
 });
 
 describe('adaptFitRequestForTradingView', () => {

@@ -102,6 +102,37 @@ export function buildLoadedCandleContext(args: {
   };
 }
 
+/** TV Map preserve keeps visible candles but may skip reload that normally stamps loaded context. */
+export function rehydrateLoadedCandleContextForVisibleFeed(args: {
+  loaded: LoadedCandleContext | null;
+  requestId: number;
+  symbol: string;
+  caseId: string;
+  chartTimeframe: string;
+  sourceTimeframe: string;
+  structureLayer: string;
+  candleCount: number;
+}): LoadedCandleContext | null {
+  const chartTf = String(args.chartTimeframe || '').toUpperCase();
+  if (args.candleCount <= 0 || !chartTf) return args.loaded;
+  if (
+    args.loaded
+    && args.loaded.chartTimeframe === chartTf
+    && args.loaded.candleCount > 0
+  ) {
+    return args.loaded;
+  }
+  return buildLoadedCandleContext({
+    requestId: args.requestId,
+    symbol: args.symbol,
+    caseId: args.caseId,
+    chartTimeframe: chartTf,
+    sourceTimeframe: args.sourceTimeframe,
+    structureLayer: args.structureLayer,
+    candleCount: args.candleCount,
+  });
+}
+
 export function isStaleCandleLoadResult(args: {
   startedRequestId: number;
   startedTf: string;

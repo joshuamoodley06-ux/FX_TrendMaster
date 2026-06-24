@@ -32,12 +32,29 @@ type EventOverlayInput = {
   price?: number;
 };
 
+type DraftAnchorInput = {
+  price?: string;
+  time?: string;
+};
+
+export type DraftRangeOverlayInput = {
+  high?: number | null;
+  low?: number | null;
+  structureLayer?: string;
+  visible?: boolean;
+  start?: string | null;
+  end?: string | null;
+};
+
 export type TradingViewOverlayAdapterInput = {
   timeframe: string;
   selectedRange?: unknown | null;
   savedRangeOverlays?: SavedRangeOverlayInput[];
   parentRangeOverlays?: ParentRangeOverlayInput[];
   visibleEvents?: EventOverlayInput[];
+  draftRangeOverlay?: DraftRangeOverlayInput | null;
+  draftRhAnchor?: DraftAnchorInput | null;
+  draftRlAnchor?: DraftAnchorInput | null;
 };
 
 export type TradingViewFitAdapterInput = {
@@ -153,6 +170,65 @@ function addRangeLines(
   }
 }
 
+function draftPrice(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  return finitePrice(value);
+}
+
+function resolveDraftRangeOverlay(input: TradingViewOverlayAdapterInput): DraftRangeOverlayInput | null {
+  const draft = input.draftRangeOverlay;
+  const high = draftPrice(draft?.high ?? input.draftRhAnchor?.price);
+  const low = draftPrice(draft?.low ?? input.draftRlAnchor?.price);
+  if (high === null && low === null) return null;
+  if (draft?.visible === false) return null;
+  return {
+    high,
+    low,
+    structureLayer: draft?.structureLayer,
+    visible: true,
+    start: draft?.start ?? input.draftRhAnchor?.time ?? input.draftRlAnchor?.time ?? null,
+    end: draft?.end ?? input.draftRlAnchor?.time ?? input.draftRhAnchor?.time ?? null,
+  };
+}
+
+function addDraftRangeLines(out: TradingViewRangeLine[], draft: DraftRangeOverlayInput | null) {
+  if (!draft?.visible) return;
+  const high = draftPrice(draft.high);
+  const low = draftPrice(draft.low);
+  if (high === null && low === null) return;
+  const layer = String(draft.structureLayer || '').toUpperCase();
+  const color = LAYER_COLORS[layer] || '#38bdf8';
+  const anchorsComplete = high !== null && low !== null;
+  const lineStyle: TradingViewRangeLine['lineStyle'] = anchorsComplete ? 'solid' : 'dashed';
+  const lineWidth = 2;
+  if (high !== null) {
+    out.push({
+      id: 'draft:RH',
+      rangeId: null,
+      kind: 'RH',
+      role: 'saved',
+      label: `Draft ${layer || 'Range'} RH`,
+      price: high,
+      color,
+      lineWidth,
+      lineStyle,
+    });
+  }
+  if (low !== null) {
+    out.push({
+      id: 'draft:RL',
+      rangeId: null,
+      kind: 'RL',
+      role: 'saved',
+      label: `Draft ${layer || 'Range'} RL`,
+      price: low,
+      color,
+      lineWidth,
+      lineStyle,
+    });
+  }
+}
+
 function addParentLine(out: TradingViewRangeLine[], overlay: ParentRangeOverlayInput, index: number) {
   const price = finitePrice(overlay.price);
   if (price === null) return;
@@ -208,6 +284,7 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
   for (const [index, overlay] of (input.parentRangeOverlays || []).entries()) {
     addParentLine(priceLines, overlay, index);
   }
+  addDraftRangeLines(priceLines, resolveDraftRangeOverlay(input));
   const fallbackSelectedRange = selectedRangeFallback(input.selectedRange);
   let selectedRangeFallbackUsed = false;
   if (fallbackSelectedRange) {
@@ -235,7 +312,7 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
     priceLines: dedupedLines,
     markers,
     debug: {
-      rangeOverlayCount: dedupedLines.filter((line) => line.role !== 'parent').length,
+      rangeOverlayCount: dedupedLines.filter((line) => line.role !== 'parent' && !String(line.id).startsWith('draft:')).length,
       rhRlLineCount: dedupedLines.filter((line) => line.kind === 'RH' || line.kind === 'RL').length,
       bosMarkerCount: markers.length,
       selectedRangeFallbackUsed,

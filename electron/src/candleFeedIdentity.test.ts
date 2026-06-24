@@ -4,6 +4,7 @@ import {
   childLayerAfterTransition,
   evaluateCandleFeedGuard,
   isStaleCandleLoadResult,
+  rehydrateLoadedCandleContextForVisibleFeed,
 } from './candleFeedIdentity';
 
 describe('candleFeedIdentity', () => {
@@ -92,5 +93,33 @@ describe('candleFeedIdentity', () => {
     expect(loaded?.sourceTimeframe).toBe('M15');
     expect(loaded?.chartTimeframe).toBe('M15');
     expect(loaded?.structureLayer).toBe('MICRO');
+  });
+
+  it('rehydrates loaded context when visible candles exist but loaded stamp was skipped', () => {
+    const rehydrated = rehydrateLoadedCandleContextForVisibleFeed({
+      loaded: null,
+      requestId: 9,
+      symbol: 'XAUUSD',
+      caseId: 'case-1',
+      chartTimeframe: 'H1',
+      sourceTimeframe: 'H1',
+      structureLayer: 'INTRADAY',
+      candleCount: 240,
+    });
+    expect(rehydrated?.chartTimeframe).toBe('H1');
+    expect(rehydrated?.candleCount).toBe(240);
+    const guard = evaluateCandleFeedGuard(
+      {
+        symbol: 'XAUUSD',
+        caseId: 'case-1',
+        chartTimeframe: 'H1',
+        sourceTimeframe: 'H1',
+        structureLayer: 'INTRADAY',
+        candleLoadInFlight: false,
+        candleCount: 240,
+      },
+      rehydrated,
+    );
+    expect(guard.ready).toBe(true);
   });
 });

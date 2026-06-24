@@ -153,6 +153,7 @@ import {
   shouldApplyParsedCandles,
   shouldBlockQuietFullHistoryReload,
   shouldClearCandlesOnLoadStart,
+  shouldPreserveTradingViewMappingCandleUniverse,
   shouldUseWindowedCandleLoad,
   structuralReplayChunkDays,
   trimStructuralCandlesToHorizon,
@@ -185,6 +186,7 @@ import {
   buildCandleFeedStatusLine,
   buildLoadedCandleContext,
   evaluateCandleFeedGuard,
+  rehydrateLoadedCandleContextForVisibleFeed,
   type ActiveMappingFeedSnapshot,
   type CandleFeedGuardResult,
   type LoadedCandleContext,
@@ -238,6 +240,7 @@ import {
   normalizeChartRendererMode,
   normalizeTradingViewOverlayMode,
   normalizeTradingViewSelectedCandleMode,
+  normalizeTradingViewMappingInputMode,
   TRADINGVIEW_MAPPING_INPUT_STORAGE_KEY,
   TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY,
   TRADINGVIEW_OVERLAYS_STORAGE_KEY,
@@ -248,7 +251,13 @@ import {
 } from './tradingView/overlayAdapter';
 import { applyChartModeWindow } from './tradingView/candleAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
-import { tradingViewSelectedCandleToCandle } from './tradingView/selectedCandleBridge';
+import {
+  admitTradingViewSelection,
+  clearTvMappingSelection,
+  commitTvMappingSelection,
+  resolveMappingInputCandle,
+  type MappingInputCandle,
+} from './tradingView/selectedCandleBridge';
 import type { ChartRendererMode, TradingViewChartMode, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
 import {
   buildLocalLibraryStatusLine,
@@ -2514,13 +2523,41 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [topRibbonCollapsed, setTopRibbonCollapsed] = useLocalStorage<boolean>('fx_tm_top_ribbon_collapsed_v087_24', true);
   const [chartRendererRaw, setChartRendererRaw] = useLocalStorage<ChartRendererMode>(CHART_RENDERER_STORAGE_KEY, DEFAULT_CHART_RENDERER);
   const chartRenderer = normalizeChartRendererMode(chartRendererRaw);
+  const chartRendererRef = useRef(chartRenderer);
+  useEffect(() => { chartRendererRef.current = chartRenderer; }, [chartRenderer]);
   const [tradingViewOverlayModeRaw, setTradingViewOverlayModeRaw] = useLocalStorage<TradingViewOverlayMode>(TRADINGVIEW_OVERLAYS_STORAGE_KEY, DEFAULT_TRADINGVIEW_OVERLAY_MODE);
   const tradingViewOverlayMode = normalizeTradingViewOverlayMode(tradingViewOverlayModeRaw);
   const [tradingViewSelectedCandleModeRaw, setTradingViewSelectedCandleModeRaw] = useLocalStorage<TradingViewSelectedCandleMode>(TRADINGVIEW_SELECTED_CANDLE_STORAGE_KEY, DEFAULT_TRADINGVIEW_SELECTED_CANDLE_MODE);
   const tradingViewSelectedCandleMode = normalizeTradingViewSelectedCandleMode(tradingViewSelectedCandleModeRaw);
-  const [tradingViewMappingInputRaw] = useLocalStorage<string>(TRADINGVIEW_MAPPING_INPUT_STORAGE_KEY, DEFAULT_TRADINGVIEW_MAPPING_INPUT);
+  const [tradingViewMappingInputRaw, setTradingViewMappingInputRaw] = useLocalStorage<string>(TRADINGVIEW_MAPPING_INPUT_STORAGE_KEY, DEFAULT_TRADINGVIEW_MAPPING_INPUT);
+  const tradingViewMappingInputMode = normalizeTradingViewMappingInputMode(tradingViewMappingInputRaw);
   const tradingViewMappingInputEnabled = isTradingViewMappingInputEnabled(tradingViewMappingInputRaw);
+  const tradingViewMappingInputEnabledRef = useRef(tradingViewMappingInputEnabled);
+  useEffect(() => { tradingViewMappingInputEnabledRef.current = tradingViewMappingInputEnabled; }, [tradingViewMappingInputEnabled]);
   const [tradingViewSelectedCandle, setTradingViewSelectedCandle] = useState<TradingViewSelectedCandle | null>(null);
+  const tradingViewSelectedCandleRef = useRef<TradingViewSelectedCandle | null>(null);
+  useEffect(() => { tradingViewSelectedCandleRef.current = tradingViewSelectedCandle; }, [tradingViewSelectedCandle]);
+  const admittedMappingInputCandleRef = useRef<MappingInputCandle | null>(null);
+  const [admittedMappingInputCandle, setAdmittedMappingInputCandle] = useState<MappingInputCandle | null>(null);
+  const applyTvMappingSelectionClear = () => {
+    const cleared = clearTvMappingSelection();
+    admittedMappingInputCandleRef.current = cleared.mappingInputCandle;
+    setAdmittedMappingInputCandle(cleared.mappingInputCandle);
+    setTradingViewSelectedCandle(cleared.tradingViewSelectedCandle);
+  };
+  const applyTvMappingSelectionCommit = (row: MappingInputCandle): boolean => {
+    const committed = commitTvMappingSelection({ row, sourceTimeframe: sourceTimeframeRef.current });
+    if (!committed) {
+      applyTvMappingSelectionClear();
+      return false;
+    }
+    admittedMappingInputCandleRef.current = committed.mappingInputCandle;
+    setAdmittedMappingInputCandle(committed.mappingInputCandle);
+    setTradingViewSelectedCandle(committed.tradingViewSelectedCandle);
+    return true;
+  };
+  const selectedCandleRef = useRef<Candle | null>(null);
+  useEffect(() => { selectedCandleRef.current = selectedCandle; }, [selectedCandle]);
   const [tradingViewCrosshairCandle, setTradingViewCrosshairCandle] = useState<TradingViewSelectedCandle | null>(null);
   const [tradingViewSelectionWarning, setTradingViewSelectionWarning] = useState<string | null>(null);
   const [tradingViewHierarchyFitCommand, setTradingViewHierarchyFitCommand] = useState<CameraCommand | null>(null);
@@ -2555,6 +2592,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [candleFeedLoading, setCandleFeedLoading] = useState(false);
   const candleFeedLoadInFlightRef = useRef(false);
   const candleFeedReloadKeyRef = useRef('');
+  const tradingViewDisplayCandlesRef = useRef<Candle[]>([]);
   const structureLayerRef = useRef<StructureLayer>('WEEKLY');
   const sourceTimeframeRef = useRef<string>('W1');
   const candleCountRef = useRef(0);
@@ -2745,6 +2783,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
   const chartDrawingsKey = cameraKey;
   const candleReplayCursorTime = replayCursorByKey[chartDrawingsKey] ?? null;
+  const candleReplayCursorTimeRef = useRef<string | null>(null);
+  const candleReplayIndexRef = useRef(0);
+  const candleReplayModeRef = useRef(false);
+  useEffect(() => { candleReplayCursorTimeRef.current = candleReplayCursorTime; }, [candleReplayCursorTime]);
+  useEffect(() => { candleReplayIndexRef.current = candleReplayIndex; }, [candleReplayIndex]);
+  useEffect(() => { candleReplayModeRef.current = candleReplayMode; }, [candleReplayMode]);
   const setCandleReplayCursorTime = (time: string | null) => {
     setReplayCursorByKey((prev) => {
       const next = { ...prev };
@@ -2787,10 +2831,29 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [rawMarkSaving, setRawMarkSaving] = useState(false);
   const [structureLayer, setStructureLayer] = useLocalStorage<StructureLayer>('fx_tm_structure_layer_phase3', 'WEEKLY');
   useEffect(() => {
-    setTradingViewSelectedCandle(null);
+    setSelectedCandle(null);
+    setSelectedCandlePoint(null);
     setTradingViewCrosshairCandle(null);
     setTradingViewSelectionWarning(null);
-  }, [symbol, timeframe, structureLayer, candleDataRevision, chartRenderer, tradingViewSelectedCandleMode]);
+    applyTvMappingSelectionClear();
+    setRhAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
+    setRlAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
+    setBhAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
+    setBlAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
+  }, [symbol, timeframe, structureLayer, chartRenderer, tradingViewSelectedCandleMode]);
+
+  useEffect(() => {
+    if (chartRenderer !== 'tradingview' || !tradingViewMappingInputEnabled) {
+      applyTvMappingSelectionClear();
+      return;
+    }
+    const admitted = admittedMappingInputCandleRef.current;
+    if (!admitted?.time) return;
+    const stillLoaded = candles.some((c) => String(c?.time || '') === String(admitted.time));
+    if (stillLoaded) return;
+    applyTvMappingSelectionClear();
+    setTradingViewSelectionWarning('Admitted candle left the loaded feed — click a visible bar again.');
+  }, [chartRenderer, tradingViewMappingInputEnabled, symbol, timeframe, candles]);
   const [mappingViewContext, setMappingViewContext] = useState<MappingViewContext>('child');
   const mappingViewContextSyncRef = useRef(false);
   const campaignParentChartTf = useMemo(
@@ -2906,6 +2969,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       reason: string;
     },
   ) => {
+    if (chartRendererRef.current === 'tradingview' && tradingViewMappingInputEnabledRef.current) {
+      return null;
+    }
     if (!candleRows.length) {
       setMessage(replayPlayForwardStatusMessage('no-candles'));
       return null;
@@ -3043,22 +3109,31 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return clamp(candleReplayIndex, 0, candles.length - 1);
   }, [candles, candleReplayMode, candleReplayCursorTime, candleReplayIndex]);
   const replayCandle = candles.length ? candles[clamp(effectiveReplayIndex, 0, candles.length - 1)] : null;
-  const mappingInputCandle = useMemo((): Candle | null => {
-    if (candleReplayMode && replayCandle) return replayCandle;
-    if (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled) {
-      return tradingViewSelectedCandleToCandle(tradingViewSelectedCandle, symbol, timeframe);
-    }
-    return selectedCandle || replayCandle;
-  }, [
-    candleReplayMode,
-    replayCandle,
+  const mappingInputCandle = useMemo((): Candle | null => (
+    resolveMappingInputCandle({
+      chartRenderer,
+      mappingInputEnabled: tradingViewMappingInputEnabled,
+      admittedMappingInputCandle,
+      selectedCandle,
+      replayCandle,
+    }) as Candle | null
+  ), [
     chartRenderer,
     tradingViewMappingInputEnabled,
-    tradingViewSelectedCandle,
+    admittedMappingInputCandle,
     selectedCandle,
-    symbol,
-    timeframe,
+    replayCandle,
   ]);
+  const tradingViewChartSelectedCandle = useMemo((): TradingViewSelectedCandle | null => {
+    if (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled) {
+      if (!admittedMappingInputCandle) return null;
+      return commitTvMappingSelection({
+        row: admittedMappingInputCandle,
+        sourceTimeframe,
+      })?.tradingViewSelectedCandle ?? null;
+    }
+    return tradingViewSelectedCandle;
+  }, [chartRenderer, tradingViewMappingInputEnabled, admittedMappingInputCandle, sourceTimeframe, tradingViewSelectedCandle]);
   const canStructuralReplayExtendHorizon = !!(
     (activeStructuralRangeId || selectedParentRangeId)
     && structuralDataLoadWindowRef.current?.end
@@ -4150,6 +4225,29 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   }) => {
     const targetTf = String(requestedTf || timeframe).toUpperCase();
     const quiet = !!opts?.quiet;
+    if (!quiet && tradingViewMappingPreserveLoad(targetTf, opts)) {
+      const chartTf = String(targetTf).toUpperCase();
+      const rehydrated = rehydrateLoadedCandleContextForVisibleFeed({
+        loaded: loadedCandleContextRef.current,
+        requestId: candleLoadSeqRef.current,
+        symbol: String(symbol),
+        caseId: String(activeCaseDisplayId || ''),
+        chartTimeframe: chartTf,
+        sourceTimeframe: sourceTimeframeRef.current,
+        structureLayer: structureLayerRef.current,
+        candleCount: candleCountRef.current,
+      });
+      if (rehydrated && rehydrated !== loadedCandleContextRef.current) {
+        loadedCandleContextRef.current = rehydrated;
+        setLoadedCandleContext(rehydrated);
+      }
+      cameraLog('tv mapping preserve — skipped structural candle reload', {
+        targetTf,
+        reason: opts?.reason,
+        navigationPath: opts?.navigationPath,
+      });
+      return;
+    }
     const activeRangeIdNow = String(activeStructuralRangeIdRef.current || '');
     const parentRangeIdNow = String(selectedParentRangeIdRef.current || '');
     if (quiet && candleLoadInFlightRef.current) return;
@@ -4396,6 +4494,38 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         deferredCameraRef.current = null;
         pendingCameraIntentRef.current = { intent: 'NONE' };
         if (!quiet) {
+          if (tradingViewMappingPreserveLoad(targetTf, opts)) {
+            const chartTf = String(targetTf).toUpperCase();
+            const rehydrated = rehydrateLoadedCandleContextForVisibleFeed({
+              loaded: loadedCandleContextRef.current,
+              requestId: candleLoadSeqRef.current,
+              symbol: String(symbol),
+              caseId: String(activeCaseDisplayId || ''),
+              chartTimeframe: chartTf,
+              sourceTimeframe: sourceTimeframeRef.current,
+              structureLayer: structureLayerRef.current,
+              candleCount: candleCountRef.current,
+            });
+            if (rehydrated && rehydrated !== loadedCandleContextRef.current) {
+              loadedCandleContextRef.current = rehydrated;
+              setLoadedCandleContext(rehydrated);
+            }
+            recordCandleLoadDiagnostic({
+              ...diagBase,
+              returnedCount: parsed.length,
+              accepted: false,
+              detail: 'tv-mapping-preserve-rejected-load',
+              cameraIntent: 'NONE',
+            });
+            cameraLog('tv mapping preserve — kept candles after rejected structural load', {
+              requestId,
+              targetTf,
+              parsed: parsed.length,
+              loadWindow,
+              detail,
+            });
+            return;
+          }
           setChartCandles([]);
           candleCountRef.current = 0;
           loadedCandleContextRef.current = null;
@@ -4491,7 +4621,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       const contextRange = contextRangeId
         ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(contextRangeId))
         : null;
-      const shouldRestoreReplay = !quiet && (preserveStructuralContext || opts?.structuralNavigation);
+      const shouldRestoreReplay = !quiet
+        && (preserveStructuralContext || opts?.structuralNavigation)
+        && !tradingViewMappingPreserveLoad(targetTf, opts);
       let replaySeedResult = null;
       if (shouldRestoreReplay) {
         replaySeedResult = applyStructuralReplayRestore(parsed, {
@@ -4662,6 +4794,61 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
   };
 
+  const tradingViewMappingPreserveLoad = (
+    requestedTf: string,
+    opts?: {
+      quiet?: boolean;
+      timeframeSwitch?: boolean;
+      structuralNavigation?: boolean;
+      reason?: string;
+      navigationPath?: string;
+    },
+  ) => {
+    const targetTf = String(requestedTf || timeframe).toUpperCase();
+    const activeTf = String(activeTimeframeRef.current).toUpperCase();
+    if (
+      chartRendererRef.current === 'tradingview'
+      && tradingViewMappingInputEnabledRef.current
+      && candleCountRef.current > 0
+      && !opts?.timeframeSwitch
+      && targetTf === activeTf
+      && (opts?.quiet || opts?.structuralNavigation || opts?.reason === 'feed-mismatch-reload')
+    ) {
+      return true;
+    }
+    return shouldPreserveTradingViewMappingCandleUniverse({
+      chartRenderer: chartRendererRef.current,
+      mappingInputEnabled: tradingViewMappingInputEnabledRef.current,
+      timeframeSwitch: opts?.timeframeSwitch,
+      targetTf,
+      activeChartTf: activeTf,
+      candleCount: candleCountRef.current,
+      structuralNavigation: opts?.structuralNavigation,
+      reason: opts?.reason,
+      navigationPath: opts?.navigationPath,
+    });
+  };
+
+  const resolveReplayCandleAtAction = (): Candle | null => {
+    const rows = candlesRef.current;
+    if (!rows.length) return null;
+    if (candleReplayModeRef.current && candleReplayCursorTimeRef.current) {
+      const idx = candleIndexAtOrBefore(rows, candleReplayCursorTimeRef.current);
+      return rows[clamp(idx, 0, rows.length - 1)] || null;
+    }
+    return rows[clamp(candleReplayIndexRef.current, 0, rows.length - 1)] || null;
+  };
+
+  const resolveMappingInputCandleAtAction = (): Candle | null => (
+    resolveMappingInputCandle({
+      chartRenderer: chartRendererRef.current,
+      mappingInputEnabled: tradingViewMappingInputEnabledRef.current,
+      admittedMappingInputCandle: admittedMappingInputCandleRef.current,
+      selectedCandle: selectedCandleRef.current,
+      replayCandle: resolveReplayCandleAtAction(),
+    }) as Candle | null
+  );
+
   const buildActiveCandleFeedSnapshot = (): ActiveMappingFeedSnapshot => ({
     symbol: String(symbol).toUpperCase(),
     caseId: String(activeCaseDisplayId || ''),
@@ -4671,6 +4858,25 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     candleLoadInFlight: candleFeedLoadInFlightRef.current || loading,
     candleCount: candleCountRef.current,
   });
+
+  const stampVisibleLoadedCandleContext = (chartTimeframe = timeframe): LoadedCandleContext | null => {
+    const chartTf = String(chartTimeframe).toUpperCase();
+    const rehydrated = rehydrateLoadedCandleContextForVisibleFeed({
+      loaded: loadedCandleContextRef.current,
+      requestId: candleLoadSeqRef.current,
+      symbol: String(symbol),
+      caseId: String(activeCaseDisplayId || ''),
+      chartTimeframe: chartTf,
+      sourceTimeframe: sourceTimeframeRef.current,
+      structureLayer: structureLayerRef.current,
+      candleCount: candleCountRef.current,
+    });
+    if (rehydrated && rehydrated !== loadedCandleContextRef.current) {
+      loadedCandleContextRef.current = rehydrated;
+      setLoadedCandleContext(rehydrated);
+    }
+    return rehydrated;
+  };
 
   const getCandleFeedGuard = (): CandleFeedGuardResult =>
     evaluateCandleFeedGuard(buildActiveCandleFeedSnapshot(), loadedCandleContextRef.current);
@@ -4700,22 +4906,55 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const handleTradingViewCandleClick = (candidate: TradingViewSelectedCandle) => {
-    const guard = getTradingViewSelectionFeedGuard();
-    if (!guard.ready) {
-      const warning = guard.message || 'TradingView selection blocked — candle feed not aligned.';
-      setTradingViewSelectedCandle(null);
-      setTradingViewSelectionWarning(warning);
-      setMessage(warning);
+    const admission = admitTradingViewSelection({
+      candidate,
+      displayedCandles: tradingViewDisplayCandlesRef.current,
+      symbol: String(symbol).toUpperCase(),
+      chartTimeframe: activeTimeframeRef.current,
+    });
+    if (!admission.admitted || !admission.mappingInputCandle) {
+      applyTvMappingSelectionClear();
+      setTradingViewSelectionWarning(admission.message);
+      setMessage(admission.message);
       return;
     }
-    setTradingViewSelectedCandle(candidate);
+    if (tradingViewMappingInputEnabled) {
+      if (!assertCandleFeedReady('TradingView selection')) return;
+    } else {
+      const guard = getTradingViewSelectionFeedGuard();
+      if (!guard.ready) {
+        const warning = guard.message || 'TradingView selection blocked — candle feed not aligned.';
+        applyTvMappingSelectionClear();
+        setTradingViewSelectionWarning(warning);
+        setMessage(warning);
+        return;
+      }
+    }
+    if (tradingViewMappingInputEnabled) {
+      if (!applyTvMappingSelectionCommit(admission.mappingInputCandle)) {
+        setTradingViewSelectionWarning('Selection blocked — invalid admitted candle row.');
+        setMessage('Selection blocked — invalid admitted candle row.');
+        return;
+      }
+    } else {
+      applyTvMappingSelectionClear();
+      setTradingViewSelectedCandle(candidate);
+    }
     setTradingViewSelectionWarning(null);
     setMessage(tradingViewMappingInputEnabled
-      ? `TradingView selected ${shortTime(candidate.time, candidate.chartTimeframe)} · C ${candidate.close.toFixed(2)} · H/L/↑/↓ ready.`
+      ? `TradingView selected ${shortTime(admission.mappingInputCandle.time, admission.mappingInputCandle.timeframe)} · C ${admission.mappingInputCandle.close.toFixed(2)} · H/L/↑/↓ ready.`
       : `TradingView selected ${shortTime(candidate.time, candidate.chartTimeframe)} · C ${candidate.close.toFixed(2)}. Read-only bridge; mapping keys remain D3-only.`);
   };
 
   const assertCandleFeedReady = (actionLabel = 'Marking'): boolean => {
+    if (
+      chartRendererRef.current === 'tradingview'
+      && tradingViewMappingInputEnabledRef.current
+      && candleCountRef.current > 0
+    ) {
+      stampVisibleLoadedCandleContext();
+      return true;
+    }
     const guard = getCandleFeedGuard();
     if (guard.ready) return true;
     setMessage(guard.message || `${actionLabel} blocked — candle feed not aligned.`);
@@ -4732,6 +4971,14 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         });
       }
     }
+    return false;
+  };
+
+  const assertAdmittedMappingInputCandle = (actionLabel = 'Marking'): boolean => {
+    if (chartRendererRef.current !== 'tradingview' || !tradingViewMappingInputEnabledRef.current) return true;
+    if (resolveMappingInputCandleAtAction()) return true;
+    setMessage(`${actionLabel} blocked — click a visible TradingView candle first.`);
+    setTradingViewSelectionWarning('No admitted TradingView candle for mapping.');
     return false;
   };
 
@@ -5960,6 +6207,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   useEffect(() => {
     if (chartRenderer !== 'tradingview' || !tradingViewHierarchyFitRange) return;
+    if (tradingViewMappingInputEnabled) return;
     const rangeId = String((tradingViewHierarchyFitRange as any).range_id || (tradingViewHierarchyFitRange as any).id || '');
     if (!rangeId) return;
     if (tradingViewSuppressedHierarchyRangeIdRef.current === rangeId) return;
@@ -5991,16 +6239,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         deferCamera: true,
       });
     }
-  }, [chartRenderer, timeframe, tradingViewHierarchyFitRange]);
+  }, [chartRenderer, timeframe, tradingViewHierarchyFitRange, tradingViewMappingInputEnabled]);
 
   const effectiveStructuralAnchors = useMemo(
-    () => resolveEffectiveStructuralAnchorTimes(
-      rhAnchor,
-      rlAnchor,
-      rangeWindowByTf[timeframe] || rangeWindow,
-      selectedCandle?.time || replayCandle?.time || null,
-    ),
-    [rhAnchor, rlAnchor, rangeWindowByTf, timeframe, rangeWindow, selectedCandle?.time, replayCandle?.time],
+    () => {
+      const tvAnchorTimesOnly = chartRenderer === 'tradingview' && tradingViewMappingInputEnabled;
+      return resolveEffectiveStructuralAnchorTimes(
+        rhAnchor,
+        rlAnchor,
+        tvAnchorTimesOnly ? null : (rangeWindowByTf[timeframe] || rangeWindow),
+        tvAnchorTimesOnly ? null : (selectedCandle?.time || replayCandle?.time || null),
+      );
+    },
+    [chartRenderer, tradingViewMappingInputEnabled, rhAnchor, rlAnchor, rangeWindowByTf, timeframe, rangeWindow, selectedCandle?.time, replayCandle?.time],
   );
 
   const childDraftSpan = useMemo(() => ({
@@ -6178,6 +6429,21 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     guidedCursorActive: !!guidedCursor?.active,
     childMappingSessionActive: !!childMappingSession,
   }), [activeCaseId, rawActiveCaseId, activeStructuralRangeId, selectedParentRangeId, guidedCursor?.active, childMappingSession]);
+
+  const mappingRhRlDraftBlockMessage = useMemo(() => {
+    if (parentLinkResolve.error) return parentLinkResolve.error;
+    return 'Select campaign or hierarchy context first.';
+  }, [parentLinkResolve.error]);
+
+  const orphanRangeDraftAllowed = useMemo(() => {
+    if (!getCurrentMappingCaseRef().hasCase) return false;
+    if (parentLinkResolve.error) return false;
+    if (isRootStructuralLayer(structureLayer, rangeScope)) return true;
+    if (parentLinkResolve.mode === 'none' || parentLinkResolve.mode === 'no_match') return true;
+    return false;
+  }, [structureLayer, rangeScope, parentLinkResolve.error, parentLinkResolve.mode, activeCaseId, rawActiveCaseId]);
+
+  const canSetRhRlStructuralDraft = mappingSkeletonContextReady || orphanRangeDraftAllowed;
 
   const rangeDraftSynced = useMemo(() => {
     if (!activeStructuralRangeId || structuralRangeDraftDirty) return false;
@@ -6909,14 +7175,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setMessage('Open a case first (Folder tab).');
       return;
     }
-    if ((kind === 'RH' || kind === 'RL') && !mappingSkeletonContextReady) {
-      setMessage('Select campaign or hierarchy context first.');
+    if ((kind === 'RH' || kind === 'RL') && !canSetRhRlStructuralDraft) {
+      setMessage(mappingRhRlDraftBlockMessage);
       return;
     }
     if (!assertCandleFeedReady(`${kind} mark`)) return;
+    if (!assertAdmittedMappingInputCandle(`${kind} mark`)) return;
     if (kind === 'BH') { await saveStructuralBos('UP', { quickButton:true }); return; }
     if (kind === 'BL') { await saveStructuralBos('DOWN', { quickButton:true }); return; }
-    const candle = mappingInputCandle;
+    const candle = resolveMappingInputCandleAtAction();
     if (!candle) {
       if (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled) {
         setMessage('Click a TradingView candle first · then H = RH · L = RL');
@@ -7061,11 +7328,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     let savedRangeId = '';
     try {
       const win = structuralWindow(rh, rl);
+      const tvSaveAnchorTimesOnly = chartRendererRef.current === 'tradingview' && tradingViewMappingInputEnabledRef.current;
       const anchorTimes = resolveEffectiveStructuralAnchorTimes(
         rh,
         rl,
-        rangeWindowByTf[timeframe] || rangeWindow,
-        selectedCandle?.time || replayCandle?.time || null,
+        tvSaveAnchorTimesOnly ? null : (rangeWindowByTf[timeframe] || rangeWindow),
+        tvSaveAnchorTimesOnly ? null : (selectedCandleRef.current?.time || resolveReplayCandleAtAction()?.time || null),
       );
       const dateFields = structuralRangeDateFields(anchorTimes.range_high_time, anchorTimes.range_low_time);
       const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
@@ -7347,7 +7615,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       return false;
     }
     if (!assertCandleFeedReady('BOS save')) return false;
-    const candle = mappingInputCandle;
+    if (!assertAdmittedMappingInputCandle('BOS save')) return false;
+    const candle = resolveMappingInputCandleAtAction();
     const quickAnchor = candle && options?.quickButton
       ? { price: Number(direction === 'UP' ? candle.high : candle.low).toFixed(2), time: candle.time, candle }
       : null;
@@ -7385,7 +7654,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     setStructuralSaving(true);
     try {
-      const candle = anchor.candle || mappingInputCandle;
+      const candle = anchor.candle || resolveMappingInputCandleAtAction();
       if (!candle) { throw new Error(`Select a candle, then click ${direction === 'UP' ? '↑ Break Up' : '↓ Break Down'}.`); }
       const sourceBreakRole = direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN';
       const legacyBreakRole = direction === 'UP' ? 'BH' : 'BL';
@@ -9288,10 +9557,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         return;
       }
       if (['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action) && !getCurrentMappingCaseRef().hasCase) return;
-      if (['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action) && !getCandleFeedGuard().ready) {
-        assertCandleFeedReady('Keyboard mark');
-        return;
-      }
+      if (['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action) && !assertCandleFeedReady('Keyboard mark')) return;
       evt.preventDefault();
       if (action === 'set-rh') void setStructuralPoint('RH');
       else if (action === 'set-rl') void setStructuralPoint('RL');
@@ -9314,6 +9580,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     structureLayer,
     chartRenderer,
     tradingViewMappingInputEnabled,
+    tradingViewSelectedCandle,
   ]);
 
   const updateChartDrawings = (updater: ChartDrawing[] | ((prev: ChartDrawing[]) => ChartDrawing[])) => {
@@ -9752,6 +10019,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       savedRangeOverlays: chartSavedRangeOverlays,
       parentRangeOverlays: activeParentRangeOverlay,
       visibleEvents,
+      draftRangeOverlay: chartDraftRangeOverlay,
+      draftRhAnchor: rhAnchor,
+      draftRlAnchor: rlAnchor,
     });
   }, [
     chartRenderer,
@@ -9761,10 +10031,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     chartSavedRangeOverlays,
     activeParentRangeOverlay,
     visibleEvents,
+    chartDraftRangeOverlay,
+    rhAnchor.price,
+    rhAnchor.time,
+    rlAnchor.price,
+    rlAnchor.time,
   ]);
 
   const tradingViewFitRequest = useMemo(() => {
     if (chartRenderer !== 'tradingview') return null;
+    if (tradingViewMappingInputEnabled) return null;
     const fitCommand = tradingViewHierarchyFitCommand || cameraCommand;
     return adaptFitRequestForTradingView({
       token: fitCommand.token,
@@ -9774,20 +10050,26 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       targetTime: fitCommand.targetTime,
       timeframe,
     });
-  }, [chartRenderer, cameraCommand, timeframe, tradingViewHierarchyFitCommand]);
+  }, [chartRenderer, cameraCommand, timeframe, tradingViewHierarchyFitCommand, tradingViewMappingInputEnabled]);
 
-  const tradingViewChartMode: TradingViewChartMode = tradingViewExplicitReplayMode && candleReplayMode && replayCandle
+  const tradingViewChartMode: TradingViewChartMode = candleReplayMode && replayCandle && (
+    tradingViewExplicitReplayMode || tradingViewMappingInputEnabled
+  )
     ? 'replay'
-    : tradingViewHierarchyFitCommand?.fitWindow
-      ? 'hierarchy'
-      : 'latest';
+    : tradingViewMappingInputEnabled
+      ? 'latest'
+      : tradingViewHierarchyFitCommand?.fitWindow
+        ? 'hierarchy'
+        : 'latest';
 
   const tradingViewDisplayCandles = useMemo(() => applyChartModeWindow(candles, {
     mode: tradingViewChartMode,
     timeframe,
     hierarchyStart: tradingViewHierarchyFitCommand?.fitWindow?.start || null,
     hierarchyEnd: tradingViewHierarchyFitCommand?.fitWindow?.end || null,
-    replayCutTime: tradingViewExplicitReplayMode && candleReplayMode && replayCandle ? replayCandle.time : null,
+    replayCutTime: candleReplayMode && replayCandle && (tradingViewExplicitReplayMode || tradingViewMappingInputEnabled)
+      ? replayCandle.time
+      : null,
   }), [
     candles,
     candleReplayMode,
@@ -9797,17 +10079,36 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     tradingViewExplicitReplayMode,
     tradingViewHierarchyFitCommand,
   ]);
+  tradingViewDisplayCandlesRef.current = tradingViewDisplayCandles;
 
   useEffect(() => {
+    if (chartRenderer !== 'tradingview' || tradingViewMappingInputEnabled) return;
+    setSelectedCandle(null);
+    setSelectedCandlePoint(null);
     setTradingViewSelectedCandle(null);
     setTradingViewCrosshairCandle(null);
+    setTradingViewSelectionWarning(null);
+    setRhAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
+    setRlAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
+    setBhAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
+    setBlAnchor((prev) => (prev.candle ? { ...prev, candle: null } : prev));
   }, [
+    chartRenderer,
+    tradingViewMappingInputEnabled,
     tradingViewChartMode,
     tradingViewHierarchyFitCommand?.token,
     candleReplayMode,
     replayCandle?.time,
     tradingViewExplicitReplayMode,
   ]);
+
+  useEffect(() => {
+    if (chartRenderer !== 'tradingview' || !tradingViewMappingInputEnabled) return;
+    if (!tradingViewHierarchyFitCommand?.token) return;
+    applyTvMappingSelectionClear();
+    setTradingViewCrosshairCandle(null);
+    setTradingViewSelectionWarning(null);
+  }, [chartRenderer, tradingViewMappingInputEnabled, tradingViewHierarchyFitCommand?.token]);
 
   const handleInspectorStructuralCommit = async () => {
     let ok = false;
@@ -9904,7 +10205,35 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (chainDraftMode && saveNextRangeEligible.eligible) void saveNextStructuralRange();
     else void saveStructuralRange();
   };
-  const candleFeedGuard = useMemo(() => getCandleFeedGuard(), [
+  const tvMappingVisibleFeedReady = chartRenderer === 'tradingview'
+    && tradingViewMappingInputEnabled
+    && candles.length > 0;
+  const candleFeedGuard = useMemo((): CandleFeedGuardResult => {
+    if (tvMappingVisibleFeedReady) {
+      const chartTf = String(timeframe).toUpperCase();
+      const rehydrated = rehydrateLoadedCandleContextForVisibleFeed({
+        loaded: loadedCandleContext,
+        requestId: candleLoadSeqRef.current,
+        symbol: String(symbol),
+        caseId: String(activeCaseDisplayId || ''),
+        chartTimeframe: chartTf,
+        sourceTimeframe: String(sourceTimeframe).toUpperCase(),
+        structureLayer: String(structureLayer),
+        candleCount: candles.length,
+      });
+      return evaluateCandleFeedGuard({
+        symbol: String(symbol).toUpperCase(),
+        caseId: String(activeCaseDisplayId || ''),
+        chartTimeframe: chartTf,
+        sourceTimeframe: String(sourceTimeframe).toUpperCase(),
+        structureLayer: structureLayer as StructureLayerId,
+        candleLoadInFlight: candleFeedLoading || loading,
+        candleCount: candles.length,
+      }, rehydrated);
+    }
+    return getCandleFeedGuard();
+  }, [
+    tvMappingVisibleFeedReady,
     symbol,
     activeCaseDisplayId,
     timeframe,
@@ -9915,15 +10244,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     loadedCandleContext,
     candles.length,
   ]);
+  const tvMappingSelectionReady = chartRenderer !== 'tradingview'
+    || !tradingViewMappingInputEnabled
+    || !!(admittedMappingInputCandle || tradingViewChartSelectedCandle);
   const structuralQuickAnchorDisabled = structuralSaving || quickEventSaving || candleFeedLoading || !candleFeedGuard.ready
     || (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled)
-    || !mappingInputCandle;
+    || (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled ? !tvMappingSelectionReady : !mappingInputCandle);
   const structuralQuickAnchorHint = candleFeedLoading
     ? 'Loading candle feed…'
     : chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled
       ? 'TradingView mapping input disabled.'
     : !candleFeedGuard.ready
       ? (candleFeedGuard.message || 'Candle feed mismatch — marking blocked')
+      : chartRenderer === 'tradingview' && tradingViewMappingInputEnabled && !tvMappingSelectionReady
+        ? 'Click a TradingView candle first'
+      : !canSetRhRlStructuralDraft && (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled ? tvMappingSelectionReady : !!mappingInputCandle)
+        ? mappingRhRlDraftBlockMessage
       : !mappingInputCandle
         ? (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled
           ? 'Click a TradingView candle first'
@@ -9969,7 +10305,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   );
 
   const tradingViewHudCandle = tradingViewSelectionBridgeActive
-    ? (tradingViewCrosshairCandle || tradingViewSelectedCandle)
+    ? (tradingViewCrosshairCandle || tradingViewChartSelectedCandle)
     : null;
   const chartHudCandleTime = tradingViewSelectionBridgeActive
     ? (tradingViewHudCandle?.time || null)
@@ -10650,13 +10986,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             fitRequest={tradingViewFitRequest}
             chartMode={tradingViewChartMode}
             selectionMode={tradingViewSelectedCandleMode}
-            selectedCandle={tradingViewSelectedCandle}
+            selectedCandle={tradingViewChartSelectedCandle}
             crosshairCandle={tradingViewCrosshairCandle}
             selectionWarning={tradingViewSelectionWarning}
             onCrosshairCandle={setTradingViewCrosshairCandle}
             onCandleClick={handleTradingViewCandleClick}
             onOverlayModeChange={setTradingViewOverlayModeRaw}
             onSelectionModeChange={setTradingViewSelectedCandleModeRaw}
+            mappingInputMode={tradingViewMappingInputMode}
+            onMappingInputModeChange={setTradingViewMappingInputRaw}
           />
         ) : (
         <D3CandleMap

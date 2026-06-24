@@ -3,6 +3,7 @@ import {
   DEFAULT_TRADINGVIEW_DEBUG_MODE,
   normalizeTradingViewDebugMode,
   TRADINGVIEW_DEBUG_STORAGE_KEY,
+  type TradingViewMappingInputMode,
 } from '../chartRendererConfig';
 import { TradingViewChart } from './TradingViewChart';
 import type {
@@ -53,6 +54,8 @@ type LiveViewPanelProps = {
   onCandleClick?: (candle: TradingViewSelectedCandle) => void;
   onOverlayModeChange?: (mode: TradingViewOverlayMode) => void;
   onSelectionModeChange?: (mode: TradingViewSelectedCandleMode) => void;
+  mappingInputMode?: TradingViewMappingInputMode;
+  onMappingInputModeChange?: (mode: TradingViewMappingInputMode) => void;
 };
 
 export function LiveViewPanel({
@@ -75,6 +78,8 @@ export function LiveViewPanel({
   onCandleClick,
   onOverlayModeChange,
   onSelectionModeChange,
+  mappingInputMode = 'off',
+  onMappingInputModeChange,
 }: LiveViewPanelProps) {
   const [debugMode] = useState(() => {
     if (typeof window === 'undefined') return DEFAULT_TRADINGVIEW_DEBUG_MODE;
@@ -110,6 +115,9 @@ export function LiveViewPanel({
   };
   const cycleSelectionMode = () => {
     onSelectionModeChange?.(selectionMode === 'readonly' ? 'off' : 'readonly');
+  };
+  const cycleMappingInputMode = () => {
+    onMappingInputModeChange?.(mappingInputMode === 'on' ? 'off' : 'on');
   };
   const selectionBridgeArmed = selectionMode === 'readonly';
 
@@ -148,6 +156,14 @@ export function LiveViewPanel({
           title="Toggle TradingView readonly candle selection"
         >
           Selection: {selectionMode === 'readonly' ? 'Readonly' : 'Off'}
+        </button>
+        <button
+          type="button"
+          className={`tradingViewStatusChip ${mappingInputMode === 'on' ? 'active' : ''}`}
+          onClick={cycleMappingInputMode}
+          title="Toggle TradingView H/L/↑/↓ mapping input bridge"
+        >
+          TV Map: {mappingInputMode === 'on' ? 'On' : 'Off'}
         </button>
         <span>Selected candle: {selectedCandle?.time || 'none'}</span>
         <span>SEL marker: {selMarkerPresent ? 'yes' : 'no'}</span>

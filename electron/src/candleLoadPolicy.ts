@@ -434,6 +434,35 @@ export function shouldApplyParsedCandles(args: {
   return { apply: true };
 }
 
+/** TV Map On: structural/BOS side effects must not reload or clear the visible candle universe. */
+export function shouldPreserveTradingViewMappingCandleUniverse(args: {
+  chartRenderer: string;
+  mappingInputEnabled: boolean;
+  timeframeSwitch?: boolean;
+  targetTf: string;
+  activeChartTf: string;
+  candleCount: number;
+  structuralNavigation?: boolean;
+  reason?: string;
+  navigationPath?: string;
+}): boolean {
+  if (args.chartRenderer !== 'tradingview' || !args.mappingInputEnabled) return false;
+  if (args.timeframeSwitch) return false;
+  if (args.candleCount <= 0) return false;
+  const targetTf = String(args.targetTf || '').toUpperCase();
+  const activeTf = String(args.activeChartTf || '').toUpperCase();
+  if (!targetTf || targetTf !== activeTf) return false;
+  const reason = String(args.reason || '');
+  const path = String(args.navigationPath || '');
+  return !!(
+    args.structuralNavigation
+    || reason === 'feed-mismatch-reload'
+    || reason === 'tradingview-hierarchy-range-fit'
+    || path === 'tradingview-hierarchy-range-fit'
+    || path.startsWith('navigateStructural:')
+  );
+}
+
 export function shouldBlockQuietFullHistoryReload(args: {
   quiet: boolean;
   forceFullHistory?: boolean;

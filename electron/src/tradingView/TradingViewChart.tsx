@@ -14,8 +14,9 @@ import {
 import { adaptCandlesForTradingView } from './candleAdapter';
 import {
   buildTradingViewSelectedCandle,
-  buildTradingViewSelectedCandleFromBarIndex,
+  resolveTradingViewSelectionAtX,
   selectionMarkerFromSelectedCandle,
+  type TradingViewSelectionResolve,
 } from './selectedCandleBridge';
 import { tradingViewDarkTheme } from './tradingViewTheme';
 import type { FxtmCandleRow, TradingViewChartMode, TradingViewFitRequest, TradingViewOverlaySet, TradingViewRangeLine, TradingViewSelectedCandle, TradingViewSelectionDebugEvent } from './types';
@@ -48,12 +49,6 @@ function timeDebugKey(time: Time | null | undefined): string {
   if (typeof time === 'number' || typeof time === 'string') return String(time);
   return `${time.year}-${String(time.month).padStart(2, '0')}-${String(time.day).padStart(2, '0')}`;
 }
-
-type SelectionResolve = {
-  selected: TradingViewSelectedCandle | null;
-  rawTvTime: Time | null;
-  normalizedTime: string;
-};
 
 type ActivationStart = {
   x: number;
@@ -157,62 +152,32 @@ export function TradingViewChart({
     });
   };
 
-  const selectedFromClientX = (clientX: number): SelectionResolve => {
+  const selectedFromClientX = (clientX: number): TradingViewSelectionResolve => {
     const chart = chartRef.current;
     const container = containerRef.current;
-    if (!chart || !container) return { selected: null, rawTvTime: null, normalizedTime: '' };
-    const bounds = container.getBoundingClientRect();
-    const x = clientX - bounds.left;
-    const tvTime = chart.timeScale().coordinateToTime(x);
-    const selected = selectedFromTime(tvTime);
-    if (selected) {
-      return { selected, rawTvTime: tvTime || null, normalizedTime: timeDebugKey(tvTime) };
-    }
-
-    const logical = chart.timeScale().coordinateToLogical(x);
     const latest = selectionBridgeRef.current;
-    if (!latest.enabled) return { selected: null, rawTvTime: tvTime || null, normalizedTime: timeDebugKey(tvTime) };
-    if (logical != null) {
-      const rounded = Math.round(Number(logical));
-      if (Math.abs(Number(logical) - rounded) <= 0.5) {
-        const byLogical = buildTradingViewSelectedCandleFromBarIndex({
-          symbol: latest.symbol,
-          chartTimeframe: latest.timeframe,
-          sourceTimeframe: latest.sourceTimeframe,
-          candles: latest.candles,
-          barIndex: rounded,
-        });
-        if (byLogical) {
-          return {
-            selected: byLogical,
-            rawTvTime: tvTime || null,
-            normalizedTime: timeDebugKey(byLogical.tvTime),
-          };
-        }
-      }
+    if (!chart || !container || !latest.enabled) {
+      return { selected: null, rawTvTime: null, normalizedTime: '' };
     }
-
-    const latestAdapted = adaptedRef.current;
-    if (!latestAdapted.bars.length || bounds.width <= 0) {
-      return { selected: null, rawTvTime: tvTime || null, normalizedTime: timeDebugKey(tvTime) };
-    }
-    const slot = Math.max(0, Math.min(latestAdapted.bars.length - 1, Math.round((x / bounds.width) * (latestAdapted.bars.length - 1))));
-    const fallbackTime = latestAdapted.bars[slot].time;
-    const fallbackSelected = buildTradingViewSelectedCandle({
+    const x = clientX - container.getBoundingClientRect().left;
+    const timeScale = chart.timeScale();
+    return resolveTradingViewSelectionAtX({
+      x,
       symbol: latest.symbol,
       chartTimeframe: latest.timeframe,
       sourceTimeframe: latest.sourceTimeframe,
       candles: latest.candles,
-      tvTime: fallbackTime,
+      displayedBarCount: adaptedRef.current.bars.length,
+      timeScale: {
+        coordinateToTime: (probeX) => timeScale.coordinateToTime(probeX),
+        coordinateToLogical: (probeX) => timeScale.coordinateToLogical(probeX),
+        timeToCoordinate: (time) => timeScale.timeToCoordinate(time),
+        logicalToCoordinate: (logical) => timeScale.logicalToCoordinate(logical),
+      },
     });
-    return {
-      selected: fallbackSelected,
-      rawTvTime: tvTime || null,
-      normalizedTime: timeDebugKey(fallbackTime),
-    };
   };
 
-  const reportSelectionClick = (args: SelectionResolve) => {
+  const reportSelectionClick = (args: TradingViewSelectionResolve) => {
     selectionBridgeRef.current.onSelectionDebug?.({
       clickReceived: true,
       rawTvTime: timeDebugKey(args.rawTvTime),

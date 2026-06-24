@@ -10,6 +10,7 @@ import {
   shouldApplyParsedCandles,
   shouldBlockQuietFullHistoryReload,
   shouldClearCandlesOnLoadStart,
+  shouldPreserveTradingViewMappingCandleUniverse,
   shouldUseWindowedCandleLoad,
   structuralDataLoadPadding,
   trimStructuralCandlesToHorizon,
@@ -175,6 +176,36 @@ describe('candleLoadPolicy', () => {
     expect(out).not.toBeNull();
     expect(out!.start).toBeTruthy();
     expect(out!.end >= '2025-06-03').toBe(true);
+  });
+
+  it('shouldPreserveTradingViewMappingCandleUniverse blocks structural reload on TV Map On', () => {
+    const base = {
+      chartRenderer: 'tradingview',
+      mappingInputEnabled: true,
+      targetTf: 'H1',
+      activeChartTf: 'H1',
+      candleCount: 240,
+    };
+    expect(shouldPreserveTradingViewMappingCandleUniverse({
+      ...base,
+      structuralNavigation: true,
+      reason: 'feed-mismatch-reload',
+    })).toBe(true);
+    expect(shouldPreserveTradingViewMappingCandleUniverse({
+      ...base,
+      timeframeSwitch: true,
+      structuralNavigation: true,
+    })).toBe(false);
+    expect(shouldPreserveTradingViewMappingCandleUniverse({
+      ...base,
+      mappingInputEnabled: false,
+      structuralNavigation: true,
+    })).toBe(false);
+    expect(shouldPreserveTradingViewMappingCandleUniverse({
+      ...base,
+      candleCount: 0,
+      structuralNavigation: true,
+    })).toBe(false);
   });
 
   it('shouldClearCandlesOnLoadStart clears on explicit timeframe switch', () => {

@@ -2,6 +2,19 @@ import type { Time } from 'lightweight-charts';
 import { fxtmTimeToTradingViewTime, timeSortKey } from './candleAdapter';
 import type { FxtmCandleRow, TradingViewBosMarker, TradingViewSelectedCandle } from './types';
 
+export type TradingViewTimeScaleProbe = {
+  coordinateToTime: (x: number) => Time | null;
+  coordinateToLogical: (x: number) => number | null;
+  timeToCoordinate: (time: Time) => number | null;
+  logicalToCoordinate: (logical: number) => number | null;
+};
+
+export type TradingViewSelectionResolve = {
+  selected: TradingViewSelectedCandle | null;
+  rawTvTime: Time | null;
+  normalizedTime: string;
+};
+
 function tvTimeKey(time: Time | string | number | null | undefined): string {
   if (time == null) return '';
   if (typeof time === 'number') return String(time);
@@ -67,6 +80,86 @@ export function buildTradingViewSelectedCandle(args: {
   };
 }
 
+function barSlotHalfWidth(
+  timeScale: TradingViewTimeScaleProbe,
+  barIndex: number,
+  barCount: number,
+): number | null {
+  const center = timeScale.logicalToCoordinate(barIndex);
+  if (center == null) return null;
+  const prev = barIndex > 0 ? timeScale.logicalToCoordinate(barIndex - 1) : null;
+  const next = barIndex < barCount - 1 ? timeScale.logicalToCoordinate(barIndex + 1) : null;
+  if (prev != null && next != null) return Math.min(Math.abs(center - prev), Math.abs(next - center)) / 2;
+  if (next != null) return Math.abs(next - center) / 2;
+  if (prev != null) return Math.abs(center - prev) / 2;
+  return 4;
+}
+
+export function findDisplayedBarIndexUnderPointer(
+  x: number,
+  displayedBarCount: number,
+  timeScale: TradingViewTimeScaleProbe,
+): number | null {
+  if (displayedBarCount <= 0) return null;
+  const logical = timeScale.coordinateToLogical(x);
+  if (logical == null || !Number.isFinite(logical)) return null;
+  const barIndex = Math.round(logical);
+  if (barIndex < 0 || barIndex >= displayedBarCount) return null;
+  const center = timeScale.logicalToCoordinate(barIndex);
+  if (center == null) return null;
+  const halfWidth = barSlotHalfWidth(timeScale, barIndex, displayedBarCount);
+  if (halfWidth == null) return null;
+  if (Math.abs(x - center) > halfWidth) return null;
+  return barIndex;
+}
+
+export function resolveTradingViewSelectionAtX(args: {
+  x: number;
+  symbol: string;
+  chartTimeframe: string;
+  sourceTimeframe?: string;
+  candles: FxtmCandleRow[];
+  displayedBarCount: number;
+  timeScale: TradingViewTimeScaleProbe;
+}): TradingViewSelectionResolve {
+  const rawTvTime = args.timeScale.coordinateToTime(args.x);
+  const normalizedFromRaw = tvTimeKey(rawTvTime);
+  const barIndex = findDisplayedBarIndexUnderPointer(args.x, args.displayedBarCount, args.timeScale);
+  if (barIndex == null) {
+    return { selected: null, rawTvTime, normalizedTime: normalizedFromRaw };
+  }
+
+  const selected = buildTradingViewSelectedCandleFromBarIndex({
+    symbol: args.symbol,
+    chartTimeframe: args.chartTimeframe,
+    sourceTimeframe: args.sourceTimeframe,
+    candles: args.candles,
+    barIndex,
+  });
+  if (!selected) {
+    return { selected: null, rawTvTime, normalizedTime: normalizedFromRaw };
+  }
+
+  if (rawTvTime) {
+    const byTime = buildTradingViewSelectedCandle({
+      symbol: args.symbol,
+      chartTimeframe: args.chartTimeframe,
+      sourceTimeframe: args.sourceTimeframe,
+      candles: args.candles,
+      tvTime: rawTvTime,
+    });
+    if (byTime && byTime.time !== selected.time) {
+      return { selected: null, rawTvTime, normalizedTime: normalizedFromRaw };
+    }
+  }
+
+  return {
+    selected,
+    rawTvTime,
+    normalizedTime: tvTimeKey(selected.tvTime),
+  };
+}
+
 export function buildTradingViewSelectedCandleFromBarIndex(args: {
   symbol: string;
   chartTimeframe: string;
@@ -115,6 +208,123 @@ export type MappingInputCandle = {
   close: number;
   volume?: number;
 };
+
+export function tradingViewSelectedMatchesDisplayedCandles(
+  selected: TradingViewSelectedCandle | null | undefined,
+  displayedCandles: FxtmCandleRow[],
+): boolean {
+  if (!selected?.time) return false;
+  const targetTime = String(selected.time);
+  return (displayedCandles || []).some((c) => String(c?.time || '') === targetTime);
+}
+
+export type TradingViewSelectionAdmissionResult = {
+  admitted: boolean;
+  message: string;
+  mappingInputCandle: MappingInputCandle | null;
+};
+
+function mappingInputCandleFromDisplayRow(
+  row: FxtmCandleRow,
+  symbol: string,
+  chartTimeframe: string,
+): MappingInputCandle | null {
+  if (!row?.time || !finiteOhlc(row)) return null;
+  return {
+    symbol: String(symbol || row.symbol || '').toUpperCase(),
+    timeframe: String(chartTimeframe || row.timeframe || '').toUpperCase(),
+    time: String(row.time),
+    open: Number(row.open),
+    high: Number(row.high),
+    low: Number(row.low),
+    close: Number(row.close),
+    volume: row.volume === undefined ? undefined : Number(row.volume),
+  };
+}
+
+export type TvMappingSelectionState = {
+  mappingInputCandle: MappingInputCandle | null;
+  tradingViewSelectedCandle: TradingViewSelectedCandle | null;
+};
+
+/** Derive SEL visual payload from the admitted canonical row — never from a separate click candidate. */
+export function mappingInputCandleToTradingViewSelectedCandle(
+  row: MappingInputCandle,
+  sourceTimeframe?: string,
+): TradingViewSelectedCandle | null {
+  if (!row?.time || !finiteOhlc(row)) return null;
+  const adaptedTime = fxtmTimeToTradingViewTime(row.time, row.timeframe);
+  if (!adaptedTime) return null;
+  return {
+    source: 'tradingview',
+    symbol: String(row.symbol || '').toUpperCase(),
+    chartTimeframe: String(row.timeframe || '').toUpperCase(),
+    sourceTimeframe: sourceTimeframe ? String(sourceTimeframe).toUpperCase() : undefined,
+    time: String(row.time),
+    tvTime: tvTimePayload(adaptedTime),
+    open: Number(row.open),
+    high: Number(row.high),
+    low: Number(row.low),
+    close: Number(row.close),
+    volume: row.volume === undefined ? undefined : Number(row.volume),
+  };
+}
+
+/** Sync Architect commit — one admitted row drives mapping input + SEL visual together. */
+export function commitTvMappingSelection(args: {
+  row: MappingInputCandle;
+  sourceTimeframe?: string;
+}): TvMappingSelectionState | null {
+  const tradingViewSelectedCandle = mappingInputCandleToTradingViewSelectedCandle(args.row, args.sourceTimeframe);
+  if (!tradingViewSelectedCandle) return null;
+  return { mappingInputCandle: args.row, tradingViewSelectedCandle };
+}
+
+/** Paired clear — visual + admitted row must invalidate together. */
+export function clearTvMappingSelection(): TvMappingSelectionState {
+  return { mappingInputCandle: null, tradingViewSelectedCandle: null };
+}
+
+/** Sync Architect admission — exact displayed row only; returns canonical MappingInputCandle from that row. */
+export function admitTradingViewSelection(args: {
+  candidate: TradingViewSelectedCandle | null | undefined;
+  displayedCandles: FxtmCandleRow[];
+  symbol: string;
+  chartTimeframe: string;
+}): TradingViewSelectionAdmissionResult {
+  if (!args.candidate?.time) {
+    return { admitted: false, message: 'Click a visible TradingView candle first.', mappingInputCandle: null };
+  }
+  const targetTime = String(args.candidate.time);
+  const matchedRow = (args.displayedCandles || []).find((c) => String(c?.time || '') === targetTime);
+  if (!matchedRow) {
+    return { admitted: false, message: 'Selection blocked — click a visible candle on the chart.', mappingInputCandle: null };
+  }
+  const mappingInputCandle = mappingInputCandleFromDisplayRow(
+    matchedRow,
+    args.symbol,
+    args.chartTimeframe,
+  );
+  if (!mappingInputCandle) {
+    return { admitted: false, message: 'Selection blocked — invalid displayed candle row.', mappingInputCandle: null };
+  }
+  return { admitted: true, message: '', mappingInputCandle };
+}
+
+/** TV Map On uses click-admitted canonical row; D3 path unchanged. */
+export function resolveMappingInputCandle(args: {
+  chartRenderer: string;
+  mappingInputEnabled: boolean;
+  admittedMappingInputCandle: MappingInputCandle | null | undefined;
+  selectedCandle: FxtmCandleRow | null | undefined;
+  replayCandle: FxtmCandleRow | null | undefined;
+}): MappingInputCandle | null {
+  if (args.chartRenderer === 'tradingview' && args.mappingInputEnabled) {
+    return args.admittedMappingInputCandle || null;
+  }
+  if (args.selectedCandle) return args.selectedCandle as MappingInputCandle;
+  return (args.replayCandle as MappingInputCandle | null) || null;
+}
 
 export function tradingViewSelectedCandleToCandle(
   selected: TradingViewSelectedCandle | null | undefined,
