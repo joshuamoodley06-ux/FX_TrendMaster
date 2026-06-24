@@ -10,6 +10,7 @@ import {
   resolveFxtmCandleFromTvTime,
   resolveMappingInputCandle,
   resolveTradingViewSelectionAtX,
+  resolveVisualTradingViewSelectedCandle,
   selectionMarkerFromSelectedCandle,
   tradingViewSelectedCandleToCandle,
   tradingViewSelectedMatchesDisplayedCandles,
@@ -418,6 +419,72 @@ describe('admitTradingViewSelection', () => {
       message: 'Selection blocked — click a visible candle on the chart.',
       mappingInputCandle: null,
     });
+  });
+});
+
+describe('resolveVisualTradingViewSelectedCandle', () => {
+  const admitted = buildTradingViewSelectedCandle({
+    symbol: 'XAUUSD',
+    chartTimeframe: 'H1',
+    candles,
+    tvTime: Date.UTC(2024, 10, 4, 8, 0, 0) / 1000,
+  })!;
+
+  it('uses replay candle for SEL visual during arrow-only replay stepping', () => {
+    const visual = resolveVisualTradingViewSelectedCandle({
+      mappingInputEnabled: true,
+      candleReplayMode: true,
+      replayCandle: candles[1],
+      displayedCandles: candles,
+      admittedSelectedCandle: admitted,
+      fallbackSelectedCandle: null,
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+    });
+    expect(visual?.time).toBe('2024.11.04 09:00');
+    expect(visual?.time).not.toBe(admitted.time);
+  });
+
+  it('uses replay candle visual during explicit Bar Replay', () => {
+    const visual = resolveVisualTradingViewSelectedCandle({
+      mappingInputEnabled: true,
+      candleReplayMode: true,
+      replayCandle: candles[1],
+      displayedCandles: candles.slice(0, 2),
+      admittedSelectedCandle: admitted,
+      fallbackSelectedCandle: null,
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+    });
+    expect(visual?.time).toBe('2024.11.04 09:00');
+  });
+
+  it('keeps admitted SEL when not in replay mode', () => {
+    const visual = resolveVisualTradingViewSelectedCandle({
+      mappingInputEnabled: true,
+      candleReplayMode: false,
+      replayCandle: candles[1],
+      displayedCandles: candles,
+      admittedSelectedCandle: admitted,
+      fallbackSelectedCandle: null,
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+    });
+    expect(visual).toEqual(admitted);
+  });
+
+  it('falls back to admitted when replay candle is outside displayed slice', () => {
+    const visual = resolveVisualTradingViewSelectedCandle({
+      mappingInputEnabled: true,
+      candleReplayMode: true,
+      replayCandle: candles[1],
+      displayedCandles: candles.slice(0, 1),
+      admittedSelectedCandle: admitted,
+      fallbackSelectedCandle: null,
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+    });
+    expect(visual).toEqual(admitted);
   });
 });
 

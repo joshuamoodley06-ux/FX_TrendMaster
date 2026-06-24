@@ -256,6 +256,7 @@ import {
   clearTvMappingSelection,
   commitTvMappingSelection,
   resolveMappingInputCandle,
+  resolveVisualTradingViewSelectedCandle,
   type MappingInputCandle,
 } from './tradingView/selectedCandleBridge';
 import type { ChartRendererMode, TradingViewChartMode, TradingViewFitRequest, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
@@ -3128,16 +3129,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     selectedCandle,
     replayCandle,
   ]);
-  const tradingViewChartSelectedCandle = useMemo((): TradingViewSelectedCandle | null => {
-    if (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled) {
-      if (!admittedMappingInputCandle) return null;
-      return commitTvMappingSelection({
-        row: admittedMappingInputCandle,
-        sourceTimeframe,
-      })?.tradingViewSelectedCandle ?? null;
-    }
-    return tradingViewSelectedCandle;
-  }, [chartRenderer, tradingViewMappingInputEnabled, admittedMappingInputCandle, sourceTimeframe, tradingViewSelectedCandle]);
+  const tradingViewAdmittedSelectedCandle = useMemo((): TradingViewSelectedCandle | null => {
+    if (chartRenderer !== 'tradingview' || !tradingViewMappingInputEnabled || !admittedMappingInputCandle) return null;
+    return commitTvMappingSelection({
+      row: admittedMappingInputCandle,
+      sourceTimeframe,
+    })?.tradingViewSelectedCandle ?? null;
+  }, [chartRenderer, tradingViewMappingInputEnabled, admittedMappingInputCandle, sourceTimeframe]);
   const canStructuralReplayExtendHorizon = !!(
     (activeStructuralRangeId || selectedParentRangeId)
     && structuralDataLoadWindowRef.current?.end
@@ -8220,17 +8218,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const requestTradingViewReplayStepFit = (cursorTime: string | null | undefined) => {
     if (chartRendererRef.current !== 'tradingview') return;
     if (!tradingViewMappingInputEnabledRef.current) return;
-    if (tradingViewExplicitReplayModeRef.current) return;
     if (!cursorTime) return;
     const rows = candlesRef.current;
     if (!rows.length) return;
+    const tf = activeTimeframeRef.current;
+    const displayRows = applyChartModeWindow(rows, {
+      mode: 'replay',
+      timeframe: tf,
+      replayCutTime: cursorTime,
+    });
     tradingViewReplayFitTokenRef.current += 1;
     const fit = adaptReplayStepFitForTradingView(
-      rows,
+      displayRows.length ? displayRows : rows,
       cursorTime,
-      activeTimeframeRef.current,
+      tf,
       tradingViewReplayFitTokenRef.current,
-      readablePadBarsForTimeframe(activeTimeframeRef.current),
+      readablePadBarsForTimeframe(tf),
     );
     setTradingViewReplayStepFitRequest(fit);
   };
@@ -10079,7 +10082,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     });
   }, [chartRenderer, cameraCommand, timeframe, tradingViewHierarchyFitCommand, tradingViewMappingInputEnabled, tradingViewReplayStepFitRequest]);
 
-  const tradingViewChartMode: TradingViewChartMode = candleReplayMode && replayCandle && tradingViewExplicitReplayMode
+  const tradingViewChartMode: TradingViewChartMode = candleReplayMode && replayCandle
     ? 'replay'
     : tradingViewMappingInputEnabled
       ? 'latest'
@@ -10092,19 +10095,41 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     timeframe,
     hierarchyStart: tradingViewHierarchyFitCommand?.fitWindow?.start || null,
     hierarchyEnd: tradingViewHierarchyFitCommand?.fitWindow?.end || null,
-    replayCutTime: candleReplayMode && replayCandle && tradingViewExplicitReplayMode
-      ? replayCandle.time
-      : null,
+    replayCutTime: candleReplayMode && replayCandle ? replayCandle.time : null,
   }), [
     candles,
     candleReplayMode,
     replayCandle?.time,
     timeframe,
     tradingViewChartMode,
-    tradingViewExplicitReplayMode,
     tradingViewHierarchyFitCommand,
   ]);
   tradingViewDisplayCandlesRef.current = tradingViewDisplayCandles;
+
+  const tradingViewChartSelectedCandle = useMemo((): TradingViewSelectedCandle | null => (
+    resolveVisualTradingViewSelectedCandle({
+      mappingInputEnabled: chartRenderer === 'tradingview' && tradingViewMappingInputEnabled,
+      candleReplayMode,
+      replayCandle,
+      displayedCandles: tradingViewDisplayCandles,
+      admittedSelectedCandle: tradingViewAdmittedSelectedCandle,
+      fallbackSelectedCandle: tradingViewSelectedCandle,
+      symbol,
+      chartTimeframe: timeframe,
+      sourceTimeframe,
+    })
+  ), [
+    chartRenderer,
+    tradingViewMappingInputEnabled,
+    candleReplayMode,
+    replayCandle,
+    tradingViewDisplayCandles,
+    tradingViewAdmittedSelectedCandle,
+    tradingViewSelectedCandle,
+    symbol,
+    timeframe,
+    sourceTimeframe,
+  ]);
 
   useEffect(() => {
     if (chartRenderer !== 'tradingview' || tradingViewMappingInputEnabled) return;

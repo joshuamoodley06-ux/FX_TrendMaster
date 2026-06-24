@@ -154,6 +154,7 @@ export function adaptReplayStepFitForTradingView(
 }
 
 export function applyChartModeWindow(candles: FxtmCandleRow[], window: TradingViewChartWindow): FxtmCandleRow[] {
+  // Display slice only — never mutates the loaded candles[] universe in main state.
   const rows = (candles || [])
     .filter((c) => !!c?.time && Number.isFinite(candleTimeMs(c)))
     .sort((a, b) => candleTimeMs(a) - candleTimeMs(b));

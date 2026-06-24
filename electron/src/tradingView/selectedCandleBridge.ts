@@ -311,6 +311,37 @@ export function admitTradingViewSelection(args: {
   return { admitted: true, message: '', mappingInputCandle };
 }
 
+/** Replay-step SEL visual — tracks cursor on display slice; admitted row unchanged for H/L/BOS. */
+export function resolveVisualTradingViewSelectedCandle(args: {
+  mappingInputEnabled: boolean;
+  candleReplayMode: boolean;
+  replayCandle: FxtmCandleRow | null | undefined;
+  displayedCandles: FxtmCandleRow[];
+  admittedSelectedCandle: TradingViewSelectedCandle | null;
+  fallbackSelectedCandle: TradingViewSelectedCandle | null;
+  symbol: string;
+  chartTimeframe: string;
+  sourceTimeframe?: string;
+}): TradingViewSelectedCandle | null {
+  if (args.mappingInputEnabled && args.candleReplayMode && args.replayCandle?.time) {
+    const targetTime = String(args.replayCandle.time);
+    const inDisplay = (args.displayedCandles || []).some((c) => String(c?.time || '') === targetTime);
+    if (inDisplay) {
+      const adaptedTime = fxtmTimeToTradingViewTime(args.replayCandle.time, args.chartTimeframe);
+      const fromReplay = buildTradingViewSelectedCandle({
+        symbol: args.symbol,
+        chartTimeframe: args.chartTimeframe,
+        sourceTimeframe: args.sourceTimeframe,
+        candles: args.displayedCandles,
+        tvTime: adaptedTime,
+      });
+      if (fromReplay) return fromReplay;
+    }
+  }
+  if (args.mappingInputEnabled) return args.admittedSelectedCandle;
+  return args.fallbackSelectedCandle;
+}
+
 /** TV Map On uses click-admitted canonical row; D3 path unchanged. */
 export function resolveMappingInputCandle(args: {
   chartRenderer: string;

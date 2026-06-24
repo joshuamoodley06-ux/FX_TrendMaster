@@ -125,7 +125,7 @@ describe('applyChartModeWindow', () => {
     expect(result.at(-1)?.time).toBe('2024.11.01 05:00');
   });
 
-  it('latest mode ignores replayCutTime so TV Map stepping keeps full universe', () => {
+  it('latest mode ignores replayCutTime when not in replay mode', () => {
     const result = applyChartModeWindow(makeCandles(8), {
       mode: 'latest',
       timeframe: 'H1',
@@ -134,6 +134,19 @@ describe('applyChartModeWindow', () => {
 
     expect(result).toHaveLength(8);
     expect(result.some((c) => c.time === '2024.11.01 07:00')).toBe(true);
+  });
+
+  it('replay mode cuts display slice without requiring explicit Bar Replay flag', () => {
+    const full = makeCandles(8);
+    const result = applyChartModeWindow(full, {
+      mode: 'replay',
+      timeframe: 'H1',
+      replayCutTime: '2024.11.01 04:00',
+    });
+
+    expect(result.length).toBeLessThan(full.length);
+    expect(result.some((c) => c.time === '2024.11.01 07:00')).toBe(false);
+    expect(full).toHaveLength(8);
   });
 });
 
@@ -155,5 +168,18 @@ describe('adaptReplayStepFitForTradingView', () => {
     expect(typeof fit?.from).toBe('number');
     expect(typeof fit?.to).toBe('number');
     expect(Number(fit?.from)).toBeLessThan(Number(fit?.to));
+  });
+
+  it('fits within replay display slice so to does not extend past cursor', () => {
+    const full = makeCandles(12);
+    const sliced = applyChartModeWindow(full, {
+      mode: 'replay',
+      timeframe: 'H1',
+      replayCutTime: '2024.11.01 06:00',
+    });
+    const fit = adaptReplayStepFitForTradingView(sliced, '2024.11.01 06:00', 'H1', 8, 4);
+
+    expect(fit?.to).toBeDefined();
+    expect(Number(fit?.to)).toBeLessThanOrEqual(Number(fit?.from) + 86400 * 7);
   });
 });
