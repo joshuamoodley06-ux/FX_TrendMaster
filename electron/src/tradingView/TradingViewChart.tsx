@@ -107,6 +107,7 @@ export function TradingViewChart({
   const adaptedRef = useRef<ReturnType<typeof adaptCandlesForTradingView>>({ bars: [], dropped: 0 });
   const fitRequestRef = useRef<TradingViewFitRequest | null>(fitRequest || null);
   const lastAutoFitTimeframeRef = useRef<string | null>(null);
+  const lastRenderedBarCountRef = useRef(0);
   const lastFitTokenRef = useRef<number | null>(null);
   const activationStartRef = useRef<ActivationStart | null>(null);
   const lastTouchSelectionMsRef = useRef(0);
@@ -340,12 +341,23 @@ export function TradingViewChart({
   useEffect(() => {
     if (!chartReady) return;
     seriesRef.current?.setData(adapted.bars);
+    const prevBarCount = lastRenderedBarCountRef.current;
+    const barCountShrunk = prevBarCount > 0 && adapted.bars.length > 0 && adapted.bars.length < prevBarCount;
+    lastRenderedBarCountRef.current = adapted.bars.length;
     const firstTime = adapted.bars[0]?.time;
     const lastTime = adapted.bars.at(-1)?.time;
     const autoFitKey = chartMode === 'latest'
       ? `${chartMode}:${timeframe}:${timeDebugKey(firstTime)}:${timeDebugKey(lastTime)}`
       : `${chartMode}:${timeframe}`;
-    if (adapted.bars.length && chartMode !== 'hierarchy' && lastAutoFitTimeframeRef.current !== autoFitKey && !hasPendingFitRequest()) {
+    const autoFitKeyChanged = lastAutoFitTimeframeRef.current !== autoFitKey;
+    const skipReplayShrinkFit = chartMode === 'replay' && barCountShrunk && !autoFitKeyChanged;
+    if (
+      adapted.bars.length
+      && chartMode !== 'hierarchy'
+      && autoFitKeyChanged
+      && !hasPendingFitRequest()
+      && !skipReplayShrinkFit
+    ) {
       chartRef.current?.timeScale().fitContent();
       lastAutoFitTimeframeRef.current = autoFitKey;
     }

@@ -249,7 +249,7 @@ import {
   adaptFitRequestForTradingView,
   adaptOverlaysForTradingView,
 } from './tradingView/overlayAdapter';
-import { applyChartModeWindow } from './tradingView/candleAdapter';
+import { applyChartModeWindow, adaptReplayStepFitForTradingView } from './tradingView/candleAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
 import {
   admitTradingViewSelection,
@@ -258,7 +258,7 @@ import {
   resolveMappingInputCandle,
   type MappingInputCandle,
 } from './tradingView/selectedCandleBridge';
-import type { ChartRendererMode, TradingViewChartMode, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
+import type { ChartRendererMode, TradingViewChartMode, TradingViewFitRequest, TradingViewOverlayMode, TradingViewSelectedCandle, TradingViewSelectedCandleMode } from './tradingView/types';
 import {
   buildLocalLibraryStatusLine,
   candlesChanged,
@@ -2562,6 +2562,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [tradingViewSelectionWarning, setTradingViewSelectionWarning] = useState<string | null>(null);
   const [tradingViewHierarchyFitCommand, setTradingViewHierarchyFitCommand] = useState<CameraCommand | null>(null);
   const [tradingViewExplicitReplayMode, setTradingViewExplicitReplayMode] = useState(false);
+  const [tradingViewReplayStepFitRequest, setTradingViewReplayStepFitRequest] = useState<TradingViewFitRequest | null>(null);
+  const tradingViewReplayFitTokenRef = useRef(0);
+  const tradingViewExplicitReplayModeRef = useRef(false);
+  useEffect(() => { tradingViewExplicitReplayModeRef.current = tradingViewExplicitReplayMode; }, [tradingViewExplicitReplayMode]);
   const tradingViewHierarchyFitKeyRef = useRef('');
   const tradingViewSuppressedHierarchyRangeIdRef = useRef('');
   const tradingViewSelectionBridgeActive = chartRenderer === 'tradingview' && tradingViewSelectedCandleMode === 'readonly';
@@ -8213,6 +8217,24 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
   };
 
+  const requestTradingViewReplayStepFit = (cursorTime: string | null | undefined) => {
+    if (chartRendererRef.current !== 'tradingview') return;
+    if (!tradingViewMappingInputEnabledRef.current) return;
+    if (tradingViewExplicitReplayModeRef.current) return;
+    if (!cursorTime) return;
+    const rows = candlesRef.current;
+    if (!rows.length) return;
+    tradingViewReplayFitTokenRef.current += 1;
+    const fit = adaptReplayStepFitForTradingView(
+      rows,
+      cursorTime,
+      activeTimeframeRef.current,
+      tradingViewReplayFitTokenRef.current,
+      readablePadBarsForTimeframe(activeTimeframeRef.current),
+    );
+    setTradingViewReplayStepFitRequest(fit);
+  };
+
   const stepReplayBackOne = (): boolean => {
     const rows = candlesRef.current;
     if (!rows.length) return false;
@@ -8232,6 +8254,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setSelectedCandlePoint({ price: Number(c.close.toFixed(2)) });
     setPendingMarkerRoles([]);
     setMessage(`Replay ${prevIdx + 1}/${rows.length} · ${shortTime(c.time, timeframe)}`);
+    requestTradingViewReplayStepFit(c.time);
     return true;
   };
 
@@ -8253,6 +8276,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setReplaySelectBarMode(false);
       setReplayStartMenuOpen(false);
       setMessage(`Candle replay ${nextIdx + 1}/${rows.length} · ${shortTime(c.time, timeframe)} · H ${c.high.toFixed(2)} L ${c.low.toFixed(2)}`);
+      requestTradingViewReplayStepFit(c.time);
       return true;
     }
     const hasStructural = !!(activeStructuralRangeIdRef.current || selectedParentRangeIdRef.current);
@@ -8276,6 +8300,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setSelectedCandlePoint({ price: Number(c.close.toFixed(2)) });
     }
     setMessage(`Replay extended · ${nextIdx + 1}/${result.merged.length} · ${shortTime(c?.time || '', timeframe)}`);
+    if (c?.time) requestTradingViewReplayStepFit(c.time);
     return true;
   };
 
@@ -8294,6 +8319,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     // Those controls intentionally reset/recenter the map, which made every replay step zoom out.
     // Replay cursor is data state; chart camera is user state. Keep them decoupled.
     setMessage(`Candle replay ${safe + 1}/${candles.length} · ${shortTime(c.time, timeframe)} · H ${c.high.toFixed(2)} L ${c.low.toFixed(2)}`);
+    requestTradingViewReplayStepFit(c.time);
   };
 
   // v087.22b: chart scrub passes a candle timestamp, not an index.
@@ -9129,6 +9155,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       tradingViewSuppressedHierarchyRangeIdRef.current = String(activeStructuralRangeIdRef.current || selectedParentRangeIdRef.current || '');
       tradingViewHierarchyFitKeyRef.current = '';
       setTradingViewHierarchyFitCommand(null);
+      setTradingViewReplayStepFitRequest(null);
       setTradingViewExplicitReplayMode(false);
       setCandleReplayPlaying(false);
       setCandleReplayMode(false);
@@ -10040,7 +10067,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const tradingViewFitRequest = useMemo(() => {
     if (chartRenderer !== 'tradingview') return null;
-    if (tradingViewMappingInputEnabled) return null;
+    if (tradingViewMappingInputEnabled) return tradingViewReplayStepFitRequest;
     const fitCommand = tradingViewHierarchyFitCommand || cameraCommand;
     return adaptFitRequestForTradingView({
       token: fitCommand.token,
@@ -10050,11 +10077,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       targetTime: fitCommand.targetTime,
       timeframe,
     });
-  }, [chartRenderer, cameraCommand, timeframe, tradingViewHierarchyFitCommand, tradingViewMappingInputEnabled]);
+  }, [chartRenderer, cameraCommand, timeframe, tradingViewHierarchyFitCommand, tradingViewMappingInputEnabled, tradingViewReplayStepFitRequest]);
 
-  const tradingViewChartMode: TradingViewChartMode = candleReplayMode && replayCandle && (
-    tradingViewExplicitReplayMode || tradingViewMappingInputEnabled
-  )
+  const tradingViewChartMode: TradingViewChartMode = candleReplayMode && replayCandle && tradingViewExplicitReplayMode
     ? 'replay'
     : tradingViewMappingInputEnabled
       ? 'latest'
@@ -10067,7 +10092,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     timeframe,
     hierarchyStart: tradingViewHierarchyFitCommand?.fitWindow?.start || null,
     hierarchyEnd: tradingViewHierarchyFitCommand?.fitWindow?.end || null,
-    replayCutTime: candleReplayMode && replayCandle && (tradingViewExplicitReplayMode || tradingViewMappingInputEnabled)
+    replayCutTime: candleReplayMode && replayCandle && tradingViewExplicitReplayMode
       ? replayCandle.time
       : null,
   }), [

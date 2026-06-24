@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { adaptCandlesForTradingView, applyChartModeWindow } from './candleAdapter';
+import {
+  adaptCandlesForTradingView,
+  adaptReplayStepFitForTradingView,
+  applyChartModeWindow,
+  buildPaddedReplayFitWindow,
+} from './candleAdapter';
 
 const makeCandles = (count: number, startHour = 0) => Array.from({ length: count }, (_, index) => ({
   time: `2024.11.${String(1 + Math.floor((startHour + index) / 24)).padStart(2, '0')} ${String((startHour + index) % 24).padStart(2, '0')}:00`,
@@ -118,5 +123,37 @@ describe('applyChartModeWindow', () => {
 
     expect(result).toHaveLength(6);
     expect(result.at(-1)?.time).toBe('2024.11.01 05:00');
+  });
+
+  it('latest mode ignores replayCutTime so TV Map stepping keeps full universe', () => {
+    const result = applyChartModeWindow(makeCandles(8), {
+      mode: 'latest',
+      timeframe: 'H1',
+      replayCutTime: '2024.11.01 04:00',
+    });
+
+    expect(result).toHaveLength(8);
+    expect(result.some((c) => c.time === '2024.11.01 07:00')).toBe(true);
+  });
+});
+
+describe('buildPaddedReplayFitWindow', () => {
+  it('pads before cursor and ends near cursor', () => {
+    const candles = makeCandles(20);
+    const fit = buildPaddedReplayFitWindow(candles, '2024.11.01 10:00', 4);
+
+    expect(fit?.start).toBe('2024.11.01 02:00');
+    expect(fit?.end).toBe('2024.11.01 12:00');
+  });
+});
+
+describe('adaptReplayStepFitForTradingView', () => {
+  it('returns a fit request with padded from/to around cursor', () => {
+    const fit = adaptReplayStepFitForTradingView(makeCandles(12), '2024.11.01 06:00', 'H1', 7, 4);
+
+    expect(fit?.token).toBe(7);
+    expect(typeof fit?.from).toBe('number');
+    expect(typeof fit?.to).toBe('number');
+    expect(Number(fit?.from)).toBeLessThan(Number(fit?.to));
   });
 });

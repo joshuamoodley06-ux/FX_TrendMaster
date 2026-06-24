@@ -1,5 +1,5 @@
 import type { BusinessDay, Time, UTCTimestamp } from 'lightweight-charts';
-import type { FxtmCandleRow, TradingViewAdapterResult, TradingViewCandle, TradingViewChartWindow } from './types';
+import type { FxtmCandleRow, TradingViewAdapterResult, TradingViewCandle, TradingViewChartWindow, TradingViewFitRequest } from './types';
 
 const DAILY_TIMEFRAMES = new Set(['W1', 'D1']);
 const LATEST_WINDOW_BY_TIMEFRAME: Record<string, number> = {
@@ -99,6 +99,58 @@ export function adaptCandlesForTradingView(candles: FxtmCandleRow[], timeframe: 
 
   const bars = Array.from(byTime.values()).sort((a, b) => timeSortKey(a.time) - timeSortKey(b.time));
   return { bars, dropped };
+}
+
+export type PaddedReplayFitWindow = {
+  start: string;
+  end: string;
+};
+
+function candleIndexAtOrBefore(rows: FxtmCandleRow[], rawTime: string): number {
+  const cut = rawTimeMs(rawTime);
+  if (!Number.isFinite(cut) || !rows.length) return 0;
+  let best = 0;
+  for (let i = 0; i < rows.length; i += 1) {
+    const ms = candleTimeMs(rows[i]);
+    if (!Number.isFinite(ms) || ms > cut) break;
+    best = i;
+  }
+  return best;
+}
+
+/** Padded visible time window centered/ending near replay cursor (full candle rows). */
+export function buildPaddedReplayFitWindow(
+  candles: FxtmCandleRow[],
+  cursorTime: string,
+  padBars: number,
+): PaddedReplayFitWindow | null {
+  const rows = (candles || [])
+    .filter((c) => !!c?.time && Number.isFinite(candleTimeMs(c)))
+    .sort((a, b) => candleTimeMs(a) - candleTimeMs(b));
+  if (!rows.length || !cursorTime) return null;
+  const idx = candleIndexAtOrBefore(rows, cursorTime);
+  const pad = Math.max(8, padBars);
+  const forwardPad = Math.max(2, Math.round(pad * 0.2));
+  const i0 = Math.max(0, idx - pad);
+  const i1 = Math.min(rows.length - 1, idx + forwardPad);
+  return { start: String(rows[i0].time), end: String(rows[i1].time) };
+}
+
+export function adaptReplayStepFitForTradingView(
+  candles: FxtmCandleRow[],
+  cursorTime: string,
+  timeframe: string,
+  token: number,
+  padBars: number,
+): TradingViewFitRequest | null {
+  if (!Number.isFinite(token) || token <= 0) return null;
+  const window = buildPaddedReplayFitWindow(candles, cursorTime, padBars);
+  if (!window) return null;
+  const from = fxtmTimeToTradingViewTime(window.start, timeframe);
+  const to = fxtmTimeToTradingViewTime(window.end, timeframe);
+  const target = fxtmTimeToTradingViewTime(cursorTime, timeframe);
+  if (!from || !to) return null;
+  return { token, from, to, target: target || undefined };
 }
 
 export function applyChartModeWindow(candles: FxtmCandleRow[], window: TradingViewChartWindow): FxtmCandleRow[] {
