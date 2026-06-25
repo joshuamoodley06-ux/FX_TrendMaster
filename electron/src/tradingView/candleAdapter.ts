@@ -136,6 +136,65 @@ export function buildPaddedReplayFitWindow(
   return { start: String(rows[i0].time), end: String(rows[i1].time) };
 }
 
+export type VisibleLogicalRange = {
+  from: number;
+  to: number;
+};
+
+export type ReplayAnchorLogicalDecision =
+  | { action: 'skip' }
+  | { action: 'initial' }
+  | { action: 'pan'; range: VisibleLogicalRange };
+
+/** Preserve zoom span; pan only when replay cursor exits the visible logical window. */
+export function computeReplayAnchorLogicalRange(args: {
+  cursorLogical: number;
+  visible: VisibleLogicalRange | null | undefined;
+  barCount: number;
+  edgeMargin?: number;
+}): ReplayAnchorLogicalDecision {
+  const edgeMargin = Math.max(0, args.edgeMargin ?? 2);
+  const barCount = Math.max(0, Math.floor(args.barCount));
+  const cursorLogical = Number(args.cursorLogical);
+  if (!barCount || !Number.isFinite(cursorLogical) || cursorLogical < 0 || cursorLogical >= barCount) {
+    return { action: 'initial' };
+  }
+
+  const visible = args.visible;
+  if (!visible || !Number.isFinite(visible.from) || !Number.isFinite(visible.to) || visible.to <= visible.from) {
+    return { action: 'initial' };
+  }
+
+  if (cursorLogical >= visible.from + edgeMargin && cursorLogical <= visible.to - edgeMargin) {
+    return { action: 'skip' };
+  }
+
+  const span = visible.to - visible.from;
+  let newFrom = visible.from;
+  let newTo = visible.to;
+
+  if (cursorLogical < visible.from + edgeMargin) {
+    newFrom = cursorLogical - edgeMargin;
+    newTo = newFrom + span;
+  } else {
+    newTo = cursorLogical + edgeMargin;
+    newFrom = newTo - span;
+  }
+
+  const maxLogical = barCount - 1;
+  newFrom = Math.max(0, newFrom);
+  newTo = Math.min(maxLogical, newTo);
+  if (newTo <= newFrom) {
+    newTo = Math.min(maxLogical, newFrom + Math.max(1, span));
+  }
+  if (newTo - newFrom < span) {
+    if (newFrom <= 0) newTo = Math.min(maxLogical, span);
+    else if (newTo >= maxLogical) newFrom = Math.max(0, maxLogical - span);
+  }
+
+  return { action: 'pan', range: { from: newFrom, to: newTo } };
+}
+
 export function adaptReplayStepFitForTradingView(
   candles: FxtmCandleRow[],
   cursorTime: string,

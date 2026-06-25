@@ -11,7 +11,10 @@ import {
   type MouseEventParams,
   type Time,
 } from 'lightweight-charts';
-import { adaptCandlesForTradingView } from './candleAdapter';
+import {
+  adaptCandlesForTradingView,
+  computeReplayAnchorLogicalRange,
+} from './candleAdapter';
 import {
   buildTradingViewSelectedCandle,
   resolveTradingViewSelectionAtX,
@@ -106,6 +109,7 @@ export function TradingViewChart({
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const adaptedRef = useRef<ReturnType<typeof adaptCandlesForTradingView>>({ bars: [], dropped: 0 });
   const fitRequestRef = useRef<TradingViewFitRequest | null>(fitRequest || null);
+  const chartModeRef = useRef<TradingViewChartMode>(chartMode);
   const lastAutoFitTimeframeRef = useRef<string | null>(null);
   const lastRenderedBarCountRef = useRef(0);
   const lastFitTokenRef = useRef<number | null>(null);
@@ -130,6 +134,7 @@ export function TradingViewChart({
   );
   adaptedRef.current = adapted;
   fitRequestRef.current = fitRequest || null;
+  chartModeRef.current = chartMode;
   selectionBridgeRef.current = {
     candles,
     timeframe,
@@ -246,6 +251,57 @@ export function TradingViewChart({
     setFitDebugStatus((prev) => (prev === next ? prev : next));
   };
 
+  const shouldAutoFitContent = () => chartModeRef.current !== 'replay';
+
+  const logicalIndexForTime = (time: Time): number | null => {
+    const targetKey = timeDebugKey(time);
+    const index = adaptedRef.current.bars.findIndex((bar) => timeDebugKey(bar.time) === targetKey);
+    return index >= 0 ? index : null;
+  };
+
+  const isReplayTargetVisible = (target: Time, edgePx = 48): boolean => {
+    const chart = chartRef.current;
+    const container = containerRef.current;
+    if (!chart || !container) return false;
+    const coord = chart.timeScale().timeToCoordinate(target);
+    if (coord == null) return false;
+    const width = container.getBoundingClientRect().width;
+    return coord >= edgePx && coord <= width - edgePx;
+  };
+
+  const applyReplayAnchorFit = (request: TradingViewFitRequest): string => {
+    const chart = chartRef.current;
+    if (!chart) return `pending:${request.token}:no-chart`;
+
+    const timeScale = chart.timeScale();
+    const target = request.target;
+    if (target && isReplayTargetVisible(target)) {
+      return `skipped:${request.token}:cursor-visible`;
+    }
+
+    const bars = adaptedRef.current.bars;
+    const cursorLogical = target ? logicalIndexForTime(target) : null;
+    const decision = computeReplayAnchorLogicalRange({
+      cursorLogical: cursorLogical ?? NaN,
+      visible: timeScale.getVisibleLogicalRange(),
+      barCount: bars.length,
+    });
+
+    if (decision.action === 'skip') {
+      return `skipped:${request.token}:cursor-visible`;
+    }
+    if (decision.action === 'initial') {
+      if (request.from && request.to) {
+        timeScale.setVisibleRange({ from: request.from, to: request.to });
+        return `initial:${request.token}:${timeDebugKey(request.from)}:${timeDebugKey(request.to)}`;
+      }
+      return `skipped:${request.token}:no-range`;
+    }
+
+    timeScale.setVisibleLogicalRange(decision.range);
+    return `panned:${request.token}:${decision.range.from.toFixed(2)}:${decision.range.to.toFixed(2)}`;
+  };
+
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -313,6 +369,7 @@ export function TradingViewChart({
     container.addEventListener('touchend', handleSurfaceTouchEnd, true);
 
     const resizeObserver = new ResizeObserver(() => {
+      if (!shouldAutoFitContent()) return;
       if (!fitRequestRef.current?.token && !hasPendingFitRequest()) chart.timeScale().fitContent();
     });
     resizeObserver.observe(container);
@@ -354,6 +411,7 @@ export function TradingViewChart({
     if (
       adapted.bars.length
       && chartMode !== 'hierarchy'
+      && chartMode !== 'replay'
       && autoFitKeyChanged
       && !hasPendingFitRequest()
       && !skipReplayShrinkFit
@@ -396,12 +454,20 @@ export function TradingViewChart({
       updateFitDebugStatus(`pending:${fitRequest.token}:no-bars`);
       return;
     }
+
+    if (chartMode === 'replay') {
+      const status = applyReplayAnchorFit(fitRequest);
+      lastFitTokenRef.current = fitRequest.token;
+      updateFitDebugStatus(status);
+      return;
+    }
+
     if (fitRequest.from && fitRequest.to) {
       chartRef.current.timeScale().setVisibleRange({ from: fitRequest.from, to: fitRequest.to });
       lastFitTokenRef.current = fitRequest.token;
       updateFitDebugStatus(`applied:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
     }
-  }, [adapted.bars.length, chartReady, fitRequest]);
+  }, [adapted.bars.length, chartMode, chartReady, fitRequest]);
 
   useEffect(() => {
     const layer = captureLayerRef.current;

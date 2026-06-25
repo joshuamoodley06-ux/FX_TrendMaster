@@ -8840,6 +8840,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setCandleReplayPlaying(false);
       setCandleReplayMode(false);
       setTradingViewExplicitReplayMode(false);
+      setTradingViewReplayStepFitRequest(null);
       setReplaySelectBarMode(false);
       setReplayStartMenuOpen(false);
       setMessage('Bar Replay off.');
@@ -8882,6 +8883,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setCandleReplayPlaying(false);
     setCandleReplayMode(false);
     setTradingViewExplicitReplayMode(false);
+    setTradingViewReplayStepFitRequest(null);
     setReplaySelectBarMode(false);
     setReplayStartMenuOpen(false);
     setMessage('Replay ended — showing latest candles.');

@@ -4,6 +4,7 @@ import {
   adaptReplayStepFitForTradingView,
   applyChartModeWindow,
   buildPaddedReplayFitWindow,
+  computeReplayAnchorLogicalRange,
 } from './candleAdapter';
 
 const makeCandles = (count: number, startHour = 0) => Array.from({ length: count }, (_, index) => ({
@@ -157,6 +158,37 @@ describe('buildPaddedReplayFitWindow', () => {
 
     expect(fit?.start).toBe('2024.11.01 02:00');
     expect(fit?.end).toBe('2024.11.01 12:00');
+  });
+});
+
+describe('computeReplayAnchorLogicalRange', () => {
+  it('skips when cursor remains inside the visible logical window', () => {
+    expect(computeReplayAnchorLogicalRange({
+      cursorLogical: 25,
+      visible: { from: 20, to: 40 },
+      barCount: 50,
+    })).toEqual({ action: 'skip' });
+  });
+
+  it('pans right while preserving span when cursor exits the right edge', () => {
+    const result = computeReplayAnchorLogicalRange({
+      cursorLogical: 45,
+      visible: { from: 20, to: 40 },
+      barCount: 50,
+    });
+    expect(result.action).toBe('pan');
+    if (result.action === 'pan') {
+      expect(result.range.to - result.range.from).toBeCloseTo(20, 0);
+      expect(result.range.to).toBeGreaterThanOrEqual(45);
+    }
+  });
+
+  it('requests initial fit when no visible range exists yet', () => {
+    expect(computeReplayAnchorLogicalRange({
+      cursorLogical: 10,
+      visible: null,
+      barCount: 50,
+    })).toEqual({ action: 'initial' });
   });
 });
 
