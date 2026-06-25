@@ -251,6 +251,7 @@ import {
 } from './tradingView/overlayAdapter';
 import { applyChartModeWindow, fxtmTimeToTradingViewTime } from './tradingView/candleAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
+import { EventBrowserPanel } from './eventBrowserPanel';
 import {
   admitTradingViewSelection,
   clearTvMappingSelection,
@@ -3075,6 +3076,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [hierarchyShowChildren, setHierarchyShowChildren] = useLocalStorage<boolean>('fx_tm_hierarchy_show_children_v1', false);
   const [hierarchyShowAll, setHierarchyShowAll] = useLocalStorage<boolean>('fx_tm_hierarchy_show_all_v1', false);
   const [hierarchyCollapsedIds, setHierarchyCollapsedIds] = useState<string[]>([]);
+  const [eventBrowserOpen, setEventBrowserOpen] = useState(false);
+  const chartMapStageRef = useRef<HTMLDivElement>(null);
   const [rangeLineHiddenByCase, setRangeLineHiddenByCase] = useLocalStorage<Record<string, string[]>>('fx_tm_range_line_hidden_v1', {});
   const [chartMappingFocusMode, setChartMappingFocusMode] = useLocalStorage<boolean>('fx_tm_chart_mapping_focus_v1', false);
   const [chartFocusShowAllRanges, setChartFocusShowAllRanges] = useLocalStorage<boolean>('fx_tm_chart_focus_show_all_v1', false);
@@ -6914,6 +6917,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     [explorerTreeRanges],
   );
 
+  const eventBrowserFormatRowLabel = useCallback((range: any, directChildCount: number, childCountLabel?: string | null) => {
+    const lines = formatExplorerRowLines(range, directChildCount, childCountLabel);
+    return [lines.line1, lines.line2, lines.spanNote].filter(Boolean).join(' · ');
+  }, []);
+
+  const eventBrowserRowHighlight = useCallback((range: any) => {
+    const id = String(range?.range_id || range?.id || '');
+    const layer = normalizeStructureLayer(range?.structure_layer || range?.layer) || 'WEEKLY';
+    const isActive = id === String(activeStructuralRangeId);
+    const isParentContext = id === String(selectedParentRangeId) && (
+      (rangeScope === 'MINOR' && normalizeStructureLayer(range?.structure_layer || range?.layer) === structureLayer && isRangeMajor(range))
+      || (rangeScope === 'MAJOR' && expectedParentStructureLayer(structureLayer) === layer)
+    );
+    return { isActive, isParentContext };
+  }, [activeStructuralRangeId, selectedParentRangeId, rangeScope, structureLayer]);
+
   useEffect(() => {
     if (explorerMappingMode !== 'htf') return;
     setHierarchyPathOnly(true);
@@ -10398,6 +10417,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         <button type="button" className={chartRenderer==='d3'?'active':''} onClick={()=>setChartRendererRaw('d3')}>D3 Map</button>
         <button type="button" className={chartRenderer==='tradingview'?'active':''} onClick={()=>setChartRendererRaw('tradingview')}>Live View</button>
       </div>
+      <button
+        type="button"
+        className={`eventBrowserPanelToggle eventBrowserPanelToolbarToggle${eventBrowserOpen ? ' open' : ''}`}
+        onClick={() => setEventBrowserOpen((open) => !open)}
+        aria-pressed={eventBrowserOpen}
+        title="Event Browser"
+      >
+        Events
+      </button>
       <select className="cameraModeSelect" value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)} title="Camera mode"><option value="AUTO">Auto cam</option><option value="LOCKED">Locked cam</option><option value="CASE">Case cam</option><option value="REPLAY">Replay cam</option></select>
       <div className="scaleNudges"><button onClick={()=>bumpCandleWidth(-0.15)}>W−</button><span>{Number(candleWidthScale).toFixed(2)}x</span><button onClick={()=>bumpCandleWidth(0.15)}>W+</button><button onClick={()=>bumpPriceZoom(-0.15)}>H−</button><span>{Number(priceZoomScale).toFixed(2)}x</span><button onClick={()=>bumpPriceZoom(0.15)}>H+</button><button onClick={resetCameraScale}>Reset</button></div>
       <div className="scaleNudges fitNudges"><button onClick={fitRangeView}>Fit Range</button><button onClick={fitReplayView}>Fit Replay</button><button onClick={fitCaseView}>Fit Case</button><button onClick={fitAllView}>Fit All</button><button onClick={lockCurrentView}>Lock View</button></div>
@@ -10456,7 +10484,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         symbol={symbol}
         timeframe={timeframe}
         contextHint={inspectorContextHint}
-        renderTab={(tab) => {
+        renderTab={function inspectorRenderTab(tab) {
           if (tab === 'dashboard') {
             return (
               <div className="rightTabPanel dashboardTabPanel">
@@ -10582,8 +10610,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           {toolsPanelSection === 'dashboard' && (
             <div className="dashboardTabPanel"><InspectorOverviewDashboard variant="inspector" /></div>
           )}
-          {toolsPanelSection === 'narrative' && renderTab('narrative')}
-          {toolsPanelSection === 'trade' && renderTab('trade')}
+          {toolsPanelSection === 'narrative' && inspectorRenderTab('narrative')}
+          {toolsPanelSection === 'trade' && inspectorRenderTab('trade')}
           {toolsPanelSection === 'admin' && tab === 'tools' && (
             <div className="toolsAdminPane">
               <p className="mutedSmall">Case metadata and danger zone — not part of primary skeleton mapping.</p>
@@ -10966,6 +10994,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
               onUnlockGlobalView={handleUnlockGlobalView}
             />
           )}
+          <div className="chartTitleRowEventBrowserDock">
+            <button
+              type="button"
+              className={`eventBrowserPanelToggle${eventBrowserOpen ? ' open' : ''}`}
+              onClick={() => setEventBrowserOpen((open) => !open)}
+              aria-pressed={eventBrowserOpen}
+              title="Event Browser"
+            >
+              Events
+            </button>
+          </div>
         </div>
         {replayMode && currentPlaybackFrame && <div className={`replayFrameBanner ${String(currentPlaybackFrame.lookahead_result || '').toLowerCase()}`}>
           <div><b>Replay Frame {playbackIndex + 1}/{playbackFrames.length}</b><span>{currentPlaybackFrame.frame_timestamp}</span></div>
@@ -11000,7 +11039,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           })}
           <select value={cameraMode} onChange={e=>setCameraMode(e.target.value as any)}><option value="AUTO">Auto</option><option value="LOCKED">Lock</option><option value="CASE">Case</option><option value="REPLAY">Replay</option></select>
         </div>}
-        <div className="chartMapStage chartPilotLayer chart-parent-wrapper">
+        <div ref={chartMapStageRef} className="chartMapStage chartPilotLayer chart-parent-wrapper">
         {autoResume.isWelcome && !candles.length && (
           <div className="mapStudioWelcome" aria-live="polite">
             <h3>Welcome to Map Studio</h3>
@@ -11014,6 +11053,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           <b>{shortTime(chartHudCandleTime, timeframe)}</b>
           {chartHudPrice != null && Number.isFinite(Number(chartHudPrice)) && <span>{Number(chartHudPrice).toFixed(2)}</span>}
         </div>}
+        {eventBrowserOpen && (
+          <EventBrowserPanel
+            forest={caseHierarchyForest}
+            resolveRowHighlight={eventBrowserRowHighlight}
+            onRowClick={jumpToStructuralRange}
+            onClose={() => setEventBrowserOpen(false)}
+            formatRowLabel={eventBrowserFormatRowLabel}
+            emptyMessage={savedStructuralRanges.length ? 'No ranges match this filter.' : 'No saved structural ranges for this case yet.'}
+            boundsRef={chartMapStageRef}
+          />
+        )}
         {!chartFullscreen && chartRenderer === 'd3' && <div className="chartGestureHint" aria-hidden="true">Sel: one click picks a candle · Pan: drag chart · Scroll to zoom · Double-click resets price view</div>}
         {!chartFullscreen && chartRenderer === 'd3' && chartDrawToolbarEl}
         <div className="chartMapCanvas chart-canvas">

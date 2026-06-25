@@ -5766,8 +5766,184 @@ body.mapStudioPilot .chartPilotLayer > .parentRangeMiniBar{
 body.mapStudioPilot .chartPilotLayer > .chartDrawToolbar,
 body.mapStudioPilot .chartPilotLayer > .structuralMappingDock,
 body.mapStudioPilot .chartPilotLayer > .mapStudioWelcome,
-body.mapStudioPilot .chartPilotLayer > .fullscreenTfDock{
+body.mapStudioPilot .chartPilotLayer > .fullscreenTfDock,
+body.mapStudioPilot .chartPilotLayer > .eventBrowserPanel{
   pointer-events:auto !important;
+}
+
+.chartTitleRowEventBrowserDock{
+  display:flex;
+  align-items:center;
+  margin-left:auto;
+  flex:0 0 auto;
+  z-index:2;
+}
+.d3ChartCard .chartTitleRowMap.compactChartTitle .chartTitleRowEventBrowserDock{
+  margin-left:auto;
+}
+.eventBrowserPanelToolbarToggle{
+  flex:0 0 auto;
+}
+.mapStudioToolbar .eventBrowserPanelToggle{
+  min-width:64px;
+}
+.eventBrowserPanelToggle{
+  height:30px;
+  padding:0 12px;
+  border:1px solid rgba(0,255,208,.32);
+  border-radius:10px;
+  background:rgba(2,6,23,.92);
+  color:#e2e8f0;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+  cursor:pointer;
+  box-shadow:0 4px 14px rgba(0,0,0,.28);
+}
+.eventBrowserPanelToggle:hover{
+  border-color:rgba(0,255,208,.55);
+  color:#f8fafc;
+}
+.eventBrowserPanelToggle.open{
+  border-color:rgba(250,204,21,.55);
+  background:rgba(250,204,21,.14);
+  color:#fde68a;
+}
+.eventBrowserPanel{
+  position:absolute;
+  top:12px;
+  right:12px;
+  z-index:24;
+  width:min(360px,calc(100% - 24px));
+  max-height:min(420px,calc(100% - 24px));
+  display:flex;
+  flex-direction:column;
+  border:1px solid rgba(0,255,208,.24);
+  border-radius:14px;
+  background:rgba(2,8,18,.94);
+  backdrop-filter:blur(8px);
+  box-shadow:0 16px 42px rgba(0,0,0,.42);
+  overflow:hidden;
+  pointer-events:auto;
+}
+.eventBrowserPanelHeader{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  padding:0 10px 0 0;
+  border-bottom:1px solid rgba(148,163,184,.16);
+}
+.eventBrowserPanelDragHandle{
+  flex:1 1 auto;
+  display:flex;
+  align-items:center;
+  min-width:0;
+  padding:8px 10px;
+  cursor:grab;
+  touch-action:none;
+  user-select:none;
+}
+.eventBrowserPanelDragHandle:active{
+  cursor:grabbing;
+}
+.eventBrowserPanelPositioned{
+  right:auto;
+}
+.eventBrowserPanelTitle{
+  color:#7dd3fc;
+  font-size:11px;
+  font-weight:800;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+}
+.eventBrowserPanelCloseBtn{
+  width:24px;
+  height:24px;
+  border:0;
+  border-radius:8px;
+  background:transparent;
+  color:#94a3b8;
+  font-size:18px;
+  line-height:1;
+  cursor:pointer;
+}
+.eventBrowserPanelCloseBtn:hover{color:#e2e8f0}
+.eventBrowserPanelBody{
+  overflow:auto;
+  padding:6px 0 8px;
+}
+.eventBrowserPanelEmpty,
+.eventBrowserPanelSectionLabel{
+  padding:6px 12px;
+  color:#94a3b8;
+  font-size:11px;
+}
+.eventBrowserPanelSectionLabel{
+  color:#64748b;
+  font-weight:800;
+  letter-spacing:.04em;
+  text-transform:uppercase;
+}
+.eventBrowserPanelRow{
+  display:flex;
+  align-items:center;
+  gap:4px;
+  min-width:0;
+  padding:0 8px 0 calc(8px + (var(--event-browser-depth, 0) * 12px));
+}
+.eventBrowserPanelRow.active .eventBrowserPanelRowBtn{
+  border-color:rgba(96,165,250,.85);
+  background:rgba(30,58,138,.38);
+  color:#dbeafe;
+  box-shadow:0 0 0 1px rgba(96,165,250,.35);
+}
+.eventBrowserPanelRow.parentContext .eventBrowserPanelRowBtn{
+  border-color:rgba(250,204,21,.45);
+  background:rgba(250,204,21,.08);
+  color:#fde68a;
+  box-shadow:inset 3px 0 0 rgba(250,204,21,.65);
+}
+.eventBrowserPanelRow.active.parentContext .eventBrowserPanelRowBtn{
+  border-color:rgba(96,165,250,.85);
+  background:rgba(30,58,138,.38);
+  color:#dbeafe;
+  box-shadow:0 0 0 1px rgba(96,165,250,.35), inset 3px 0 0 rgba(250,204,21,.65);
+}
+.eventBrowserPanelExpandBtn,
+.eventBrowserPanelExpandSpacer{
+  flex:0 0 18px;
+  width:18px;
+  height:18px;
+}
+.eventBrowserPanelExpandBtn{
+  border:1px solid rgba(148,163,184,.22);
+  border-radius:4px;
+  background:rgba(15,23,42,.72);
+  color:#cbd5e1;
+  font-size:12px;
+  line-height:1;
+  cursor:pointer;
+}
+.eventBrowserPanelRowBtn{
+  flex:1 1 auto;
+  min-width:0;
+  border:1px solid transparent;
+  border-radius:8px;
+  background:transparent;
+  color:#dbeafe;
+  font-size:11px;
+  font-weight:600;
+  text-align:left;
+  padding:4px 6px;
+  cursor:pointer;
+}
+.eventBrowserPanelRowLabel{
+  display:block;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
 }
 
 /* ── Left inspector dock final lock (grid only — chart column 3, inspector column 2) ── */
