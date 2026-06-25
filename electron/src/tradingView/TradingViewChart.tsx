@@ -16,6 +16,10 @@ import {
   computeReplayAnchorLogicalRange,
 } from './candleAdapter';
 import {
+  shouldBlockTradingViewFitContent,
+  targetVisibleBarsForTimeframe,
+} from '../chartViewportPolicy';
+import {
   buildTradingViewSelectedCandle,
   resolveTradingViewSelectionAtX,
   selectionMarkerFromSelectedCandle,
@@ -251,7 +255,7 @@ export function TradingViewChart({
     setFitDebugStatus((prev) => (prev === next ? prev : next));
   };
 
-  const shouldAutoFitContent = () => chartModeRef.current !== 'replay';
+  const shouldAutoFitContent = () => !shouldBlockTradingViewFitContent(chartModeRef.current);
 
   const logicalIndexForTime = (time: Time): number | null => {
     const targetKey = timeDebugKey(time);
@@ -267,6 +271,21 @@ export function TradingViewChart({
     if (coord == null) return false;
     const width = container.getBoundingClientRect().width;
     return coord >= edgePx && coord <= width - edgePx;
+  };
+
+  const applyInitialReplayLogicalFit = (target: Time, token: number): string | null => {
+    const chart = chartRef.current;
+    if (!chart) return null;
+    const bars = adaptedRef.current.bars;
+    const cursorLogical = logicalIndexForTime(target);
+    if (cursorLogical == null || !bars.length) return null;
+    const span = Math.max(20, targetVisibleBarsForTimeframe(timeframe));
+    const backPad = Math.round(span * 0.82);
+    const forwardPad = Math.max(2, Math.round(span * 0.08));
+    const newFrom = Math.max(0, cursorLogical - backPad);
+    const newTo = Math.min(bars.length - 1, cursorLogical + forwardPad);
+    chart.timeScale().setVisibleLogicalRange({ from: newFrom, to: Math.max(newFrom + 1, newTo) });
+    return `initial-logical:${token}:${newFrom.toFixed(2)}:${newTo.toFixed(2)}`;
   };
 
   const applyReplayAnchorFit = (request: TradingViewFitRequest): string => {
@@ -294,6 +313,10 @@ export function TradingViewChart({
       if (request.from && request.to) {
         timeScale.setVisibleRange({ from: request.from, to: request.to });
         return `initial:${request.token}:${timeDebugKey(request.from)}:${timeDebugKey(request.to)}`;
+      }
+      if (target) {
+        const initialLogical = applyInitialReplayLogicalFit(target, request.token);
+        if (initialLogical) return initialLogical;
       }
       return `skipped:${request.token}:no-range`;
     }
@@ -410,8 +433,7 @@ export function TradingViewChart({
     const skipReplayShrinkFit = chartMode === 'replay' && barCountShrunk && !autoFitKeyChanged;
     if (
       adapted.bars.length
-      && chartMode !== 'hierarchy'
-      && chartMode !== 'replay'
+      && !shouldBlockTradingViewFitContent(chartMode)
       && autoFitKeyChanged
       && !hasPendingFitRequest()
       && !skipReplayShrinkFit
@@ -452,6 +474,15 @@ export function TradingViewChart({
     if (!fitRequest.token || lastFitTokenRef.current === fitRequest.token) return;
     if (!adapted.bars.length) {
       updateFitDebugStatus(`pending:${fitRequest.token}:no-bars`);
+      return;
+    }
+
+    if (chartMode === 'hierarchy') {
+      if (fitRequest.from && fitRequest.to) {
+        chartRef.current.timeScale().setVisibleRange({ from: fitRequest.from, to: fitRequest.to });
+        lastFitTokenRef.current = fitRequest.token;
+        updateFitDebugStatus(`hierarchy:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
+      }
       return;
     }
 

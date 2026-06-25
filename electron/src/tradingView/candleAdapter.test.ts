@@ -77,20 +77,18 @@ describe('applyChartModeWindow', () => {
     expect(result.at(-1)?.time).toBe(makeCandles(350)[349].time);
   });
 
-  it('caps hierarchy mode at the range display window', () => {
-    const result = applyChartModeWindow(makeCandles(12), {
+  it('keeps full loaded history in hierarchy mode (camera fit only)', () => {
+    const full = makeCandles(12);
+    const result = applyChartModeWindow(full, {
       mode: 'hierarchy',
       timeframe: 'H1',
       hierarchyStart: '2024.11.01 03:00',
       hierarchyEnd: '2024.11.01 06:00',
     });
 
-    expect(result.map((c) => c.time)).toEqual([
-      '2024.11.01 03:00',
-      '2024.11.01 04:00',
-      '2024.11.01 05:00',
-      '2024.11.01 06:00',
-    ]);
+    expect(result).toHaveLength(full.length);
+    expect(result[0].time).toBe(full[0].time);
+    expect(result.at(-1)?.time).toBe(full.at(-1)?.time);
   });
 
   it('caps replay mode at the replay cursor', () => {

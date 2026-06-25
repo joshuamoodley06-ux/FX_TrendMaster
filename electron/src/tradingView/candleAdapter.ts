@@ -226,15 +226,8 @@ export function applyChartModeWindow(candles: FxtmCandleRow[], window: TradingVi
   }
 
   if (window.mode === 'hierarchy') {
-    const start = rawTimeMs(window.hierarchyStart);
-    const end = rawTimeMs(window.hierarchyEnd);
-    const bounded = rows.filter((c) => {
-      const ms = candleTimeMs(c);
-      if (Number.isFinite(start) && ms < start) return false;
-      if (Number.isFinite(end) && ms > end) return false;
-      return true;
-    });
-    return bounded.length ? bounded : rows.filter((c) => !Number.isFinite(end) || candleTimeMs(c) <= end);
+    // Phase 1: hierarchy camera fits via token only — never crop loaded history in display slice.
+    return rows;
   }
 
   const count = latestWindowSizeForTimeframe(window.timeframe);

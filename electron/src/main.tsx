@@ -249,7 +249,7 @@ import {
   adaptFitRequestForTradingView,
   adaptOverlaysForTradingView,
 } from './tradingView/overlayAdapter';
-import { applyChartModeWindow, adaptReplayStepFitForTradingView } from './tradingView/candleAdapter';
+import { applyChartModeWindow, fxtmTimeToTradingViewTime } from './tradingView/candleAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
 import {
   admitTradingViewSelection,
@@ -8222,20 +8222,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const rows = candlesRef.current;
     if (!rows.length) return;
     const tf = activeTimeframeRef.current;
-    const displayRows = applyChartModeWindow(rows, {
-      mode: 'replay',
-      timeframe: tf,
-      replayCutTime: cursorTime,
-    });
+    const target = fxtmTimeToTradingViewTime(cursorTime, tf);
+    if (!target) return;
     tradingViewReplayFitTokenRef.current += 1;
-    const fit = adaptReplayStepFitForTradingView(
-      displayRows.length ? displayRows : rows,
-      cursorTime,
-      tf,
-      tradingViewReplayFitTokenRef.current,
-      readablePadBarsForTimeframe(tf),
-    );
-    setTradingViewReplayStepFitRequest(fit);
+    setTradingViewReplayStepFitRequest({
+      token: tradingViewReplayFitTokenRef.current,
+      target,
+    });
   };
 
   const stepReplayBackOne = (): boolean => {

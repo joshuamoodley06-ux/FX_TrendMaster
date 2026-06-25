@@ -49,6 +49,12 @@ export function shouldBlockAutomaticCameraRefit(owner: CameraViewOwner | null | 
   return STABLE_CAMERA_OWNERS.has(owner);
 }
 
+/** Phase 1: replay/hierarchy must never auto-fitContent — camera moves only via explicit fit tokens. */
+export function shouldBlockTradingViewFitContent(chartMode: string | null | undefined): boolean {
+  const mode = String(chartMode || '').toLowerCase();
+  return mode === 'replay' || mode === 'hierarchy';
+}
+
 export function inferViewOwnerFromCameraReason(
   reason?: string | null,
   intent?: string | null,

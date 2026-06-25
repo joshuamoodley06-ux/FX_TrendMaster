@@ -4,6 +4,7 @@ import {
   inferViewOwnerFromCameraReason,
   isExplicitCameraNavigationReason,
   shouldBlockAutomaticCameraRefit,
+  shouldBlockTradingViewFitContent,
   targetVisibleBarsForTimeframe,
 } from './chartViewportPolicy';
 
@@ -34,6 +35,12 @@ describe('chartViewportPolicy', () => {
     expect(isExplicitCameraNavigationReason('fit-all')).toBe(true);
     expect(isExplicitCameraNavigationReason('quiet-refresh')).toBe(false);
     expect(isExplicitCameraNavigationReason('confirmed-candle-load')).toBe(false);
+  });
+
+  it('blocks fitContent for replay and hierarchy chart modes', () => {
+    expect(shouldBlockTradingViewFitContent('replay')).toBe(true);
+    expect(shouldBlockTradingViewFitContent('hierarchy')).toBe(true);
+    expect(shouldBlockTradingViewFitContent('latest')).toBe(false);
   });
 
   it('derives candle body width from bar spacing', () => {
