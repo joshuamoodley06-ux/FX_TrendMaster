@@ -93,6 +93,43 @@ describe('adaptOverlaysForTradingView', () => {
     expect(result.markers).toHaveLength(0);
   });
 
+  it('suppresses all RH/RL guide lines when suppressRangeGuideLines is set', () => {
+    const result = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      suppressRangeGuideLines: true,
+      selectedRange: {
+        range_id: 'selected-only',
+        structure_layer: 'WEEKLY',
+        range_high_price: 2790.01,
+        range_low_price: 2602.55,
+      },
+      savedRangeOverlays: [{
+        rangeId: 'r1',
+        structureLayer: 'DAILY',
+        high: 2420.25,
+        low: 2388.5,
+        isActive: true,
+      }],
+      parentRangeOverlays: [
+        { rangeId: 'p1', structureLayer: 'WEEKLY', kind: 'high', price: 2500, label: 'Weekly RH' },
+      ],
+      draftRangeOverlay: {
+        high: 2410.5,
+        low: 2388.25,
+        structureLayer: 'DAILY',
+        visible: true,
+      },
+      visibleEvents: [
+        { id: 'b1', event_type: 'BOS_UP', time: '2024.11.04 08:00', price: 2420 },
+      ],
+    });
+
+    expect(result.priceLines).toHaveLength(0);
+    expect(result.debug.rhRlLineCount).toBe(0);
+    expect(result.debug.selectedRangeFallbackUsed).toBe(false);
+    expect(result.markers).toHaveLength(1);
+  });
+
   it('emits draft RH/RL price lines from draft overlay and anchor fallbacks', () => {
     const partial = adaptOverlaysForTradingView({
       timeframe: 'H1',

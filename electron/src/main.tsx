@@ -3090,6 +3090,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [eventBrowserOpen, setEventBrowserOpen] = useState(false);
   const chartMapStageRef = useRef<HTMLDivElement>(null);
   const [rangeLineHiddenByCase, setRangeLineHiddenByCase] = useLocalStorage<Record<string, string[]>>('fx_tm_range_line_hidden_v1', {});
+  const [allRangeGuideLinesHiddenByCase, setAllRangeGuideLinesHiddenByCase] = useLocalStorage<Record<string, boolean>>('fx_tm_all_range_guide_lines_hidden_v1', {});
+  const caseLineHiddenKey = activeCaseDisplayId || 'global';
+  const allRangeGuideLinesHidden = !!allRangeGuideLinesHiddenByCase[caseLineHiddenKey];
   const [chartMappingFocusMode, setChartMappingFocusMode] = useLocalStorage<boolean>('fx_tm_chart_mapping_focus_v1', false);
   const [chartFocusShowAllRanges, setChartFocusShowAllRanges] = useLocalStorage<boolean>('fx_tm_chart_focus_show_all_v1', false);
   const prevStructureLayerForFocusRef = useRef<StructureLayer | null>(null);
@@ -3453,6 +3456,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   };
 
   const activeParentRangeOverlay = useMemo<ParentRangeOverlayLine[]>(() => {
+    if (allRangeGuideLinesHidden) return [];
     const parentLayer = expectedParentStructureLayer(structureLayer);
     if (!parentLayer) return [];
     const parentRange = latestSavedRangeForLayer(
@@ -3497,7 +3501,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (Number.isFinite(hi)) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'high', price:Number(hi), label:`${parentLayer} RH`, direction, start, end, rangeId: parentRange ? (parentRange.range_id || parentRange.id) : null });
     if (Number.isFinite(lo)) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'low', price:Number(lo), label:`${parentLayer} RL`, direction, start, end, rangeId: parentRange ? (parentRange.range_id || parentRange.id) : null });
     return out;
-  }, [structureLayer, selectedParentRangeId, savedStructuralRanges, structuralAnchorsByLayer, timeframe, rangeByTf, rangeWindowByTf, seedAnchors.case_high, seedAnchors.case_low, seedAnchors.weekly_high, seedAnchors.weekly_low, eventsByTf]);
+  }, [allRangeGuideLinesHidden, structureLayer, selectedParentRangeId, savedStructuralRanges, structuralAnchorsByLayer, timeframe, rangeByTf, rangeWindowByTf, seedAnchors.case_high, seedAnchors.case_low, seedAnchors.weekly_high, seedAnchors.weekly_low, eventsByTf]);
 
   const jumpToParentRangeStart = () => {
     const parentTf = parentTimeframeFor(timeframe);
@@ -3739,8 +3743,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const hasRange = Number.isFinite(low) && Number.isFinite(high) && high > low;
 
   const chartSavedRangeOverlays = useMemo<SavedRangeChartLine[]>(() => {
+    if (allRangeGuideLinesHidden) return [];
     const allRanges = safeArray<any>(savedStructuralRanges);
-    const hiddenIds = new Set(rangeLineHiddenByCase[activeCaseDisplayId || 'global'] || []);
+    const hiddenIds = new Set(rangeLineHiddenByCase[caseLineHiddenKey] || []);
     const overlays: SavedRangeChartLine[] = [];
     const selectedId = String(activeStructuralRangeId || '');
     const parentId = String(selectedParentRangeId || '');
@@ -3780,6 +3785,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       activeMappingLayer: structureLayer,
     });
   }, [
+    allRangeGuideLinesHidden,
     savedStructuralRanges,
     activeStructuralRangeId,
     selectedParentRangeId,
@@ -3794,6 +3800,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   ]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
+    if (allRangeGuideLinesHidden) return null;
     const draftHigh = parseNum(rhAnchor.price);
     const draftLow = parseNum(rlAnchor.price);
     const hasHigh = Number.isFinite(draftHigh);
@@ -3816,7 +3823,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       start: rhAnchor.time || rlAnchor.time || null,
       end: rlAnchor.time || rhAnchor.time || null,
     };
-  }, [rhAnchor.price, rlAnchor.time, rlAnchor.price, rhAnchor.time, structureLayer, activeStructuralRangeId, savedStructuralRanges, structuralRangeDraftDirty]);
+  }, [allRangeGuideLinesHidden, rhAnchor.price, rlAnchor.time, rlAnchor.price, rhAnchor.time, structureLayer, activeStructuralRangeId, savedStructuralRanges, structuralRangeDraftDirty]);
 
   const linkedTradeRangeLabel = useMemo(() => {
     if (!activeStructuralRangeId) return 'No range selected — pick a range in Structural Map to link context';
@@ -8612,27 +8619,32 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
   };
 
-  const caseLineHiddenKey = activeCaseDisplayId || 'global';
   const hiddenRangeLineIdSet = useMemo(
     () => new Set(rangeLineHiddenByCase[caseLineHiddenKey] || []),
     [rangeLineHiddenByCase, caseLineHiddenKey],
   );
-  const isRangeLineVisible = (rangeId: string) => !hiddenRangeLineIdSet.has(String(rangeId));
+  const isRangeLineVisible = (rangeId: string) => !allRangeGuideLinesHidden && !hiddenRangeLineIdSet.has(String(rangeId));
   const toggleRangeLineVisibility = (rangeId: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     const id = String(rangeId);
     setRangeLineHiddenByCase((prev) => {
       const current = new Set(prev[caseLineHiddenKey] || []);
-      if (current.has(id)) current.delete(id);
-      else current.add(id);
+      if (current.has(id)) {
+        current.delete(id);
+        setAllRangeGuideLinesHiddenByCase((gate) => ({ ...gate, [caseLineHiddenKey]: false }));
+      } else {
+        current.add(id);
+      }
       return { ...prev, [caseLineHiddenKey]: Array.from(current) };
     });
   };
   const showAllRangeLines = () => {
+    setAllRangeGuideLinesHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: false }));
     setRangeLineHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: [] }));
   };
   const hideAllRangeLines = () => {
     const ids = savedStructuralRanges.map((r:any) => String(r.range_id || r.id)).filter(Boolean);
+    setAllRangeGuideLinesHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: true }));
     setRangeLineHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: ids }));
   };
 
@@ -10074,6 +10086,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       draftRangeOverlay: chartDraftRangeOverlay,
       draftRhAnchor: rhAnchor,
       draftRlAnchor: rlAnchor,
+      suppressRangeGuideLines: allRangeGuideLinesHidden,
     });
   }, [
     chartRenderer,
@@ -10084,6 +10097,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     activeParentRangeOverlay,
     visibleEvents,
     chartDraftRangeOverlay,
+    allRangeGuideLinesHidden,
     rhAnchor.price,
     rhAnchor.time,
     rlAnchor.price,

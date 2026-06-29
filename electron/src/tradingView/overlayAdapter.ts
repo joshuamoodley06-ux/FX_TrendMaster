@@ -55,6 +55,7 @@ export type TradingViewOverlayAdapterInput = {
   draftRangeOverlay?: DraftRangeOverlayInput | null;
   draftRhAnchor?: DraftAnchorInput | null;
   draftRlAnchor?: DraftAnchorInput | null;
+  suppressRangeGuideLines?: boolean;
 };
 
 export type TradingViewFitAdapterInput = {
@@ -274,6 +275,24 @@ function adaptBosMarker(event: EventOverlayInput, timeframe: string, index: numb
 }
 
 export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInput): TradingViewOverlaySet {
+  const markers = (input.visibleEvents || [])
+    .map((event, index) => adaptBosMarker(event, input.timeframe, index))
+    .filter((marker): marker is TradingViewBosMarker => !!marker)
+    .sort((a, b) => timeSortKey(a.time) - timeSortKey(b.time));
+
+  if (input.suppressRangeGuideLines) {
+    return {
+      priceLines: [],
+      markers,
+      debug: {
+        rangeOverlayCount: 0,
+        rhRlLineCount: 0,
+        bosMarkerCount: markers.length,
+        selectedRangeFallbackUsed: false,
+      },
+    };
+  }
+
   const selectedIds = selectedRangeIds(input.selectedRange);
   const priceLines: TradingViewRangeLine[] = [];
   const lineIds = new Set<string>();
@@ -302,11 +321,6 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
     lineIds.add(key);
     return true;
   });
-
-  const markers = (input.visibleEvents || [])
-    .map((event, index) => adaptBosMarker(event, input.timeframe, index))
-    .filter((marker): marker is TradingViewBosMarker => !!marker)
-    .sort((a, b) => timeSortKey(a.time) - timeSortKey(b.time));
 
   return {
     priceLines: dedupedLines,
