@@ -766,6 +766,17 @@ function formatExplorerRowLines(
     spanNote: rangeCrossYearSpanNote(range),
   };
 }
+function formatExplorerCompactRowLabel(
+  range: any,
+  directChildCount: number,
+  childCountLabel?: string | null,
+): { label: string; title: string } {
+  const lines = formatExplorerRowLines(range, directChildCount, childCountLabel);
+  return {
+    label: [lines.line1, lines.line2].filter(Boolean).join(' · '),
+    title: [lines.line1, lines.line2, lines.spanNote].filter(Boolean).join('\n'),
+  };
+}
 function filterRangesForExplorerYear(ranges: any[], yearFilter: string): any[] {
   if (!yearFilter || yearFilter === 'all') return safeArray(ranges);
   const year = Number(yearFilter);
@@ -8625,6 +8636,21 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setRangeLineHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: ids }));
   };
 
+  const renderExplorerActiveActions = (range: any) => (
+    <details
+      className="explorerTreeActionMenu"
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      <summary className="explorerTreeActionMenuBtn" aria-label="Row actions">⋯</summary>
+      <div className="explorerTreeActionMenuPanel" role="menu">
+        <button type="button" role="menuitem" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
+        <button type="button" role="menuitem" onClick={() => void relinkStructuralRange(range)}>Relink</button>
+        <button type="button" role="menuitem" className="dangerTiny" onClick={() => void archiveStructuralRange(range)}>Archive</button>
+      </div>
+    </details>
+  );
+
   const renderExplorerTreeNodes = (nodes: CaseHierarchyTreeNode[]): React.ReactNode => nodes.flatMap((node) => {
     const range = node.range;
     const id = String(range?.range_id || range?.id || '');
@@ -8636,7 +8662,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       (rangeScope === 'MINOR' && normalizeStructureLayer(range?.structure_layer || range?.layer) === structureLayer && isRangeMajor(range))
       || (rangeScope === 'MAJOR' && expectedParentStructureLayer(structureLayer) === layer)
     );
-    const lines = formatExplorerRowLines(range, node.children.length, node.childCountLabel);
+    const lines = formatExplorerCompactRowLabel(range, node.children.length, node.childCountLabel);
     const hasChildren = node.children.length > 0;
     const collapsed = hierarchyCollapsedIds.includes(id);
     const lineVisible = isRangeLineVisible(id);
@@ -8664,19 +8690,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           {lineVisible ? 'Lines' : 'Hide'}
         </button>
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
-        <button type="button" className="explorerTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
-          <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.line1}</span>
-          <span className="explorerTreeLine2">{lines.line2}</span>
-          {lines.spanNote && <span className="explorerSpanNote">{lines.spanNote}</span>}
+        <button type="button" className="explorerTreeRowMain" title={lines.title} onClick={() => jumpToStructuralRange(range)}>
+          <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.label}</span>
         </button>
-        {isActive && (
-          <div className="explorerTreeActions">
-            <button type="button" title="Jump" onClick={() => jumpToStructuralRange(range)}>Jump</button>
-            <button type="button" title="Edit" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
-            <button type="button" title="Relink" onClick={() => void relinkStructuralRange(range)}>Relink</button>
-            <button type="button" className="dangerTiny" title="Archive" onClick={() => void archiveStructuralRange(range)}>Archive</button>
-          </div>
-        )}
+        {isActive && renderExplorerActiveActions(range)}
       </div>,
       ...(collapsed ? [] : renderExplorerTreeNodes(node.children)),
     ];
@@ -8687,7 +8704,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const layer = normalizeStructureLayer(range.structure_layer || range.layer) || 'WEEKLY';
     const layerKey = layer.toLowerCase();
     const isActive = id === String(activeStructuralRangeId);
-    const lines = formatExplorerRowLines(range, 0);
+    const lines = formatExplorerCompactRowLabel(range, 0);
     const lineVisible = isRangeLineVisible(id);
     return (
       <div key={`orphan-${id}`} className={`explorerTreeRow orphan ${isActive ? 'active' : ''}`}>
@@ -8701,19 +8718,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           {lineVisible ? 'Lines' : 'Hide'}
         </button>
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
-        <button type="button" className="explorerTreeRowMain" onClick={() => jumpToStructuralRange(range)}>
-          <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.line1}</span>
-          <span className="explorerTreeLine2">{lines.line2}</span>
-          {lines.spanNote && <span className="explorerSpanNote">{lines.spanNote}</span>}
+        <button type="button" className="explorerTreeRowMain" title={lines.title} onClick={() => jumpToStructuralRange(range)}>
+          <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.label}</span>
         </button>
-        {isActive && (
-          <div className="explorerTreeActions">
-            <button type="button" onClick={() => jumpToStructuralRange(range)}>Jump</button>
-            <button type="button" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
-            <button type="button" onClick={() => void relinkStructuralRange(range)}>Relink</button>
-            <button type="button" className="dangerTiny" onClick={() => void archiveStructuralRange(range)}>Archive</button>
-          </div>
-        )}
+        {isActive && renderExplorerActiveActions(range)}
       </div>
     );
   });
