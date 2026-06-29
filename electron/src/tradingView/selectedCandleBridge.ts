@@ -1,5 +1,5 @@
 import type { Time } from 'lightweight-charts';
-import { fxtmTimeToTradingViewTime, timeSortKey } from './candleAdapter';
+import { fxtmTimeToTradingViewTime, isReplaySelectableCandle, timeSortKey } from './candleAdapter';
 import type { FxtmCandleRow, TradingViewBosMarker, TradingViewSelectedCandle } from './types';
 
 export type TradingViewTimeScaleProbe = {
@@ -140,19 +140,6 @@ export function resolveTradingViewSelectionAtX(args: {
     return { selected: null, rawTvTime, normalizedTime: normalizedFromRaw };
   }
 
-  if (rawTvTime) {
-    const byTime = buildTradingViewSelectedCandle({
-      symbol: args.symbol,
-      chartTimeframe: args.chartTimeframe,
-      sourceTimeframe: args.sourceTimeframe,
-      candles: args.candles,
-      tvTime: rawTvTime,
-    });
-    if (byTime && byTime.time !== selected.time) {
-      return { selected: null, rawTvTime, normalizedTime: normalizedFromRaw };
-    }
-  }
-
   return {
     selected,
     rawTvTime,
@@ -291,11 +278,16 @@ export function admitTradingViewSelection(args: {
   displayedCandles: FxtmCandleRow[];
   symbol: string;
   chartTimeframe: string;
+  candleReplayMode?: boolean;
+  replayCutTime?: string | null;
 }): TradingViewSelectionAdmissionResult {
   if (!args.candidate?.time) {
     return { admitted: false, message: 'Click a visible TradingView candle first.', mappingInputCandle: null };
   }
   const targetTime = String(args.candidate.time);
+  if (!isReplaySelectableCandle(targetTime, args.replayCutTime, !!args.candleReplayMode)) {
+    return { admitted: false, message: 'Selection blocked — that candle is after the replay cursor.', mappingInputCandle: null };
+  }
   const matchedRow = (args.displayedCandles || []).find((c) => String(c?.time || '') === targetTime);
   if (!matchedRow) {
     return { admitted: false, message: 'Selection blocked — click a visible candle on the chart.', mappingInputCandle: null };
@@ -311,7 +303,7 @@ export function admitTradingViewSelection(args: {
   return { admitted: true, message: '', mappingInputCandle };
 }
 
-/** Replay-step SEL visual — tracks cursor on display slice; admitted row unchanged for H/L/BOS. */
+/** Replay SEL visual — click-admitted bar wins; replay cursor is fallback only. */
 export function resolveVisualTradingViewSelectedCandle(args: {
   mappingInputEnabled: boolean;
   candleReplayMode: boolean;
@@ -323,6 +315,11 @@ export function resolveVisualTradingViewSelectedCandle(args: {
   chartTimeframe: string;
   sourceTimeframe?: string;
 }): TradingViewSelectedCandle | null {
+  const replayCutTime = args.replayCandle?.time ?? null;
+  if (args.mappingInputEnabled && args.admittedSelectedCandle?.time
+    && isReplaySelectableCandle(args.admittedSelectedCandle.time, replayCutTime, args.candleReplayMode)) {
+    return args.admittedSelectedCandle;
+  }
   if (args.mappingInputEnabled && args.candleReplayMode && args.replayCandle?.time) {
     const targetTime = String(args.replayCandle.time);
     const inDisplay = (args.displayedCandles || []).some((c) => String(c?.time || '') === targetTime);
@@ -342,18 +339,31 @@ export function resolveVisualTradingViewSelectedCandle(args: {
   return args.fallbackSelectedCandle;
 }
 
-/** TV Map On uses click-admitted canonical row; D3 path unchanged. */
+/** TV Map On uses click-admitted canonical row; D3 prefers explicit selection before replay cursor fallback. */
 export function resolveMappingInputCandle(args: {
   chartRenderer: string;
   mappingInputEnabled: boolean;
   admittedMappingInputCandle: MappingInputCandle | null | undefined;
   selectedCandle: FxtmCandleRow | null | undefined;
   replayCandle: FxtmCandleRow | null | undefined;
+  candleReplayMode?: boolean;
 }): MappingInputCandle | null {
+  const replayCutTime = args.replayCandle?.time ?? null;
+  const replayMode = !!args.candleReplayMode;
   if (args.chartRenderer === 'tradingview' && args.mappingInputEnabled) {
-    return args.admittedMappingInputCandle || null;
+    if (args.admittedMappingInputCandle?.time
+      && isReplaySelectableCandle(args.admittedMappingInputCandle.time, replayCutTime, replayMode)) {
+      return args.admittedMappingInputCandle;
+    }
+    return null;
   }
-  if (args.selectedCandle) return args.selectedCandle as MappingInputCandle;
+  if (args.selectedCandle?.time
+    && isReplaySelectableCandle(args.selectedCandle.time, replayCutTime, replayMode)) {
+    return args.selectedCandle as MappingInputCandle;
+  }
+  if (replayMode && args.replayCandle) {
+    return args.replayCandle as MappingInputCandle;
+  }
   return (args.replayCandle as MappingInputCandle | null) || null;
 }
 

@@ -64,6 +64,21 @@ function rawTimeMs(raw: string | null | undefined): number {
   return parsed ? parsed.timestampSeconds * 1000 : Number.NaN;
 }
 
+/** Replay mapping may select any loaded bar at or before the replay cursor; future bars are not selectable. */
+export function isReplaySelectableCandle(
+  candleTime: string | null | undefined,
+  replayCutTime: string | null | undefined,
+  replayMode: boolean,
+): boolean {
+  if (!replayMode) return !!candleTime;
+  if (!candleTime) return false;
+  if (!replayCutTime) return true;
+  const cut = rawTimeMs(replayCutTime);
+  const t = rawTimeMs(candleTime);
+  if (!Number.isFinite(cut) || !Number.isFinite(t)) return false;
+  return t <= cut;
+}
+
 export function latestWindowSizeForTimeframe(timeframe: string): number {
   return LATEST_WINDOW_BY_TIMEFRAME[String(timeframe || '').toUpperCase()] || 180;
 }

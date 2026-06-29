@@ -95,7 +95,7 @@ describe('resolveTradingViewSelectionAtX', () => {
     expect(resolved.normalizedTime).toBe(String(tvTimes[1]));
   });
 
-  it('blocks selection when coordinateToTime disagrees with the bar under the pointer', () => {
+  it('prefers bar under pointer when coordinateToTime disagrees', () => {
     const tvTimes = [
       Date.UTC(2024, 10, 4, 8, 0, 0) / 1000,
       Date.UTC(2024, 10, 4, 9, 0, 0) / 1000,
@@ -114,7 +114,7 @@ describe('resolveTradingViewSelectionAtX', () => {
       timeScale,
     });
 
-    expect(resolved.selected).toBeNull();
+    expect(resolved.selected?.time).toBe('2024.11.04 09:00');
     expect(resolved.rawTvTime).toBe(tvTimes[0]);
   });
 
@@ -371,6 +371,30 @@ describe('resolveMappingInputCandle', () => {
     });
     expect(candle?.time).toBe('2024.11.04 08:00');
   });
+
+  it('prefers explicit D3 selection over replay cursor in replay mode', () => {
+    const candle = resolveMappingInputCandle({
+      chartRenderer: 'd3',
+      mappingInputEnabled: false,
+      admittedMappingInputCandle: null,
+      selectedCandle: candles[0],
+      replayCandle: candles[1],
+      candleReplayMode: true,
+    });
+    expect(candle?.time).toBe('2024.11.04 08:00');
+  });
+
+  it('falls back to replay cursor in replay mode when nothing selected', () => {
+    const candle = resolveMappingInputCandle({
+      chartRenderer: 'd3',
+      mappingInputEnabled: false,
+      admittedMappingInputCandle: null,
+      selectedCandle: null,
+      replayCandle: candles[1],
+      candleReplayMode: true,
+    });
+    expect(candle?.time).toBe('2024.11.04 09:00');
+  });
 });
 
 describe('admitTradingViewSelection', () => {
@@ -420,6 +444,44 @@ describe('admitTradingViewSelection', () => {
       mappingInputCandle: null,
     });
   });
+
+  it('rejects candles after the replay cursor', () => {
+    const candidate = buildTradingViewSelectedCandle({
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      candles,
+      tvTime: Date.UTC(2024, 10, 4, 9, 0, 0) / 1000,
+    })!;
+    expect(admitTradingViewSelection({
+      candidate,
+      displayedCandles: candles,
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      candleReplayMode: true,
+      replayCutTime: '2024.11.04 08:00',
+    })).toEqual({
+      admitted: false,
+      message: 'Selection blocked — that candle is after the replay cursor.',
+      mappingInputCandle: null,
+    });
+  });
+
+  it('admits historical candles at or before the replay cursor', () => {
+    const candidate = buildTradingViewSelectedCandle({
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      candles,
+      tvTime: Date.UTC(2024, 10, 4, 8, 0, 0) / 1000,
+    })!;
+    expect(admitTradingViewSelection({
+      candidate,
+      displayedCandles: candles.slice(0, 2),
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+      candleReplayMode: true,
+      replayCutTime: '2024.11.04 09:00',
+    }).admitted).toBe(true);
+  });
 });
 
 describe('resolveVisualTradingViewSelectedCandle', () => {
@@ -430,7 +492,21 @@ describe('resolveVisualTradingViewSelectedCandle', () => {
     tvTime: Date.UTC(2024, 10, 4, 8, 0, 0) / 1000,
   })!;
 
-  it('uses replay candle for SEL visual during arrow-only replay stepping', () => {
+  it('uses replay candle for SEL visual when no admitted click in replay mode', () => {
+    const visual = resolveVisualTradingViewSelectedCandle({
+      mappingInputEnabled: true,
+      candleReplayMode: true,
+      replayCandle: candles[1],
+      displayedCandles: candles,
+      admittedSelectedCandle: null,
+      fallbackSelectedCandle: null,
+      symbol: 'XAUUSD',
+      chartTimeframe: 'H1',
+    });
+    expect(visual?.time).toBe('2024.11.04 09:00');
+  });
+
+  it('prefers admitted click over replay cursor in replay mode', () => {
     const visual = resolveVisualTradingViewSelectedCandle({
       mappingInputEnabled: true,
       candleReplayMode: true,
@@ -441,17 +517,17 @@ describe('resolveVisualTradingViewSelectedCandle', () => {
       symbol: 'XAUUSD',
       chartTimeframe: 'H1',
     });
-    expect(visual?.time).toBe('2024.11.04 09:00');
-    expect(visual?.time).not.toBe(admitted.time);
+    expect(visual).toEqual(admitted);
+    expect(visual?.time).toBe('2024.11.04 08:00');
   });
 
-  it('uses replay candle visual during explicit Bar Replay', () => {
+  it('uses replay candle visual during explicit Bar Replay when nothing admitted', () => {
     const visual = resolveVisualTradingViewSelectedCandle({
       mappingInputEnabled: true,
       candleReplayMode: true,
       replayCandle: candles[1],
       displayedCandles: candles.slice(0, 2),
-      admittedSelectedCandle: admitted,
+      admittedSelectedCandle: null,
       fallbackSelectedCandle: null,
       symbol: 'XAUUSD',
       chartTimeframe: 'H1',

@@ -5,6 +5,7 @@ import {
   applyChartModeWindow,
   buildPaddedReplayFitWindow,
   computeReplayAnchorLogicalRange,
+  isReplaySelectableCandle,
 } from './candleAdapter';
 
 const makeCandles = (count: number, startHour = 0) => Array.from({ length: count }, (_, index) => ({
@@ -211,5 +212,20 @@ describe('adaptReplayStepFitForTradingView', () => {
 
     expect(fit?.to).toBeDefined();
     expect(Number(fit?.to)).toBeLessThanOrEqual(Number(fit?.from) + 86400 * 7);
+  });
+});
+
+describe('isReplaySelectableCandle', () => {
+  it('allows any candle when replay mode is off', () => {
+    expect(isReplaySelectableCandle('2024.11.04 09:00', '2024.11.04 08:00', false)).toBe(true);
+  });
+
+  it('allows historical bars at or before replay cursor', () => {
+    expect(isReplaySelectableCandle('2024.11.04 08:00', '2024.11.04 09:00', true)).toBe(true);
+    expect(isReplaySelectableCandle('2024.11.04 09:00', '2024.11.04 09:00', true)).toBe(true);
+  });
+
+  it('blocks future bars after replay cursor', () => {
+    expect(isReplaySelectableCandle('2024.11.04 10:00', '2024.11.04 09:00', true)).toBe(false);
   });
 });

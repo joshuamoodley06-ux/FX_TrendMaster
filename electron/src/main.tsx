@@ -249,7 +249,7 @@ import {
   adaptFitRequestForTradingView,
   adaptOverlaysForTradingView,
 } from './tradingView/overlayAdapter';
-import { applyChartModeWindow, fxtmTimeToTradingViewTime } from './tradingView/candleAdapter';
+import { applyChartModeWindow, fxtmTimeToTradingViewTime, isReplaySelectableCandle } from './tradingView/candleAdapter';
 import { LiveViewPanel } from './tradingView/LiveViewPanel';
 import { EventBrowserPanel } from './eventBrowserPanel';
 import {
@@ -3138,6 +3138,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       admittedMappingInputCandle,
       selectedCandle,
       replayCandle,
+      candleReplayMode,
     }) as Candle | null
   ), [
     chartRenderer,
@@ -3145,6 +3146,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     admittedMappingInputCandle,
     selectedCandle,
     replayCandle,
+    candleReplayMode,
   ]);
   const tradingViewAdmittedSelectedCandle = useMemo((): TradingViewSelectedCandle | null => {
     if (chartRenderer !== 'tradingview' || !tradingViewMappingInputEnabled || !admittedMappingInputCandle) return null;
@@ -4310,50 +4312,50 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const preserveStructuralContext = !!(
       opts?.structuralNavigation
       || capturedPending?.contextRangeId
-      || opts?.loadWindow
+      || (!opts?.cacheFullHistory && opts?.loadWindow)
       || (!opts?.timeframeSwitch && (activeRangeIdNow || parentRangeIdNow))
     );
     const liveTail = !candleReplayMode && !preserveStructuralContext;
-    const loadWindow = opts?.loadWindow ?? (opts?.timeframeSwitch
-      ? (resolveTimeframeSwitchDataLoadWindow({
-        targetTf,
-        contextRange: (() => {
-          const ctx = resolveCandleWindowTargetRange(
-            targetTf,
-            savedStructuralRanges,
-            activeRangeIdNow,
-            parentRangeIdNow,
-          ) || resolveMappingContextRange(savedStructuralRanges, parentRangeIdNow, activeRangeIdNow);
-          if (!ctx) return null;
-          const span = rangeWindowFieldsFromSavedRange(ctx);
-          return {
-            start: span.start || span.end,
-            end: span.end || span.start,
-            structure_layer: ctx?.structure_layer,
-            layer: ctx?.layer,
-          };
-        })(),
-        caseWindow: rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
-      }) ?? resolveCandleLoadWindow(
-        targetTf,
-        savedStructuralRanges,
-        parentRangeIdNow,
-        activeRangeIdNow,
-        rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
-        { liveTail, preferredWindow: null },
-      ))
-      : resolveCandleLoadWindow(
-        targetTf,
-        savedStructuralRanges,
-        parentRangeIdNow,
-        activeRangeIdNow,
-        rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
-        { liveTail, preferredWindow },
-      ));
-    const forceWindowed = !!(loadWindow && (preserveStructuralContext || opts?.structuralNavigation));
-    const useWindowedLoad = forceWindowed || shouldUseWindowedCandleLoad(loadWindow, {
-      forceFullHistory: preserveStructuralContext ? false : opts?.cacheFullHistory,
-    });
+    const wantsFullHistory = !!opts?.cacheFullHistory;
+    const loadWindow = wantsFullHistory
+      ? null
+      : (opts?.loadWindow ?? (opts?.timeframeSwitch
+        ? (resolveTimeframeSwitchDataLoadWindow({
+          targetTf,
+          contextRange: (() => {
+            const ctx = resolveCandleWindowTargetRange(
+              targetTf,
+              savedStructuralRanges,
+              activeRangeIdNow,
+              parentRangeIdNow,
+            ) || resolveMappingContextRange(savedStructuralRanges, parentRangeIdNow, activeRangeIdNow);
+            if (!ctx) return null;
+            const span = rangeWindowFieldsFromSavedRange(ctx);
+            return {
+              start: span.start || span.end,
+              end: span.end || span.start,
+              structure_layer: ctx?.structure_layer,
+              layer: ctx?.layer,
+            };
+          })(),
+          caseWindow: rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+        }) ?? resolveCandleLoadWindow(
+          targetTf,
+          savedStructuralRanges,
+          parentRangeIdNow,
+          activeRangeIdNow,
+          rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+          { liveTail, preferredWindow: null },
+        ))
+        : resolveCandleLoadWindow(
+          targetTf,
+          savedStructuralRanges,
+          parentRangeIdNow,
+          activeRangeIdNow,
+          rangeWindowByTf[targetTf] || rangeWindowByTf.D1 || rangeWindowByTf.W1 || rangeWindow,
+          { liveTail, preferredWindow },
+        )));
+    const useWindowedLoad = !wantsFullHistory && shouldUseWindowedCandleLoad(loadWindow);
     const candleLoadMayMoveCamera = !!(
       opts?.timeframeSwitch
       || opts?.structuralNavigation
@@ -4869,6 +4871,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       admittedMappingInputCandle: admittedMappingInputCandleRef.current,
       selectedCandle: selectedCandleRef.current,
       replayCandle: resolveReplayCandleAtAction(),
+      candleReplayMode: candleReplayModeRef.current,
     }) as Candle | null
   );
 
@@ -4934,6 +4937,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       displayedCandles: tradingViewDisplayCandlesRef.current,
       symbol: String(symbol).toUpperCase(),
       chartTimeframe: activeTimeframeRef.current,
+      candleReplayMode: candleReplayModeRef.current,
+      replayCutTime: candleReplayCursorTimeRef.current,
     });
     if (!admission.admitted || !admission.mappingInputCandle) {
       applyTvMappingSelectionClear();
@@ -4959,6 +4964,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         setMessage('Selection blocked — invalid admitted candle row.');
         return;
       }
+      const row = admission.mappingInputCandle!;
+      setSelectedCandle({
+        time: row.time,
+        open: row.open,
+        high: row.high,
+        low: row.low,
+        close: row.close,
+        symbol: row.symbol,
+        timeframe: row.timeframe,
+      } as Candle);
+      setSelectedCandlePoint({ price: Number(row.close.toFixed(2)) });
     } else {
       applyTvMappingSelectionClear();
       setTradingViewSelectedCandle(candidate);
@@ -5887,6 +5903,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     jumpToStructuralRange(parentRange);
     await loadCandles(childChartTf, {
+      cacheFullHistory: true,
       reason: 'guided-child-mapping',
       structuralNavigation: true,
       deferCamera: true,
@@ -6253,9 +6270,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       activeTimeframeRef.current = targetTf;
       setTimeframe(targetTf);
       void loadCandles(targetTf, {
-        loadWindow: { start: fitWindow.start, end: fitWindow.end, label: 'TradingView hierarchy range fit' },
-        cacheFullHistory: false,
-        structuralNavigation: true,
+        cacheFullHistory: true,
         timeframeSwitch: true,
         reason: 'tradingview-hierarchy-range-fit',
         navigationPath: 'tradingview-hierarchy-range-fit',
@@ -8239,14 +8254,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       });
       if (!incoming.length) return null;
       const merged = mergeCandleSeriesByTime(candlesRef.current, incoming);
-      const maxBars = maxBarsForStructuralWindow(targetTf);
-      const trimmed = merged.length > maxBars
-        ? trimStructuralCandlesToHorizon(merged, maxBars, structuralVisualContextRef.current, targetTf)
-        : merged;
       structuralDataLoadWindowRef.current = nextWindow;
-      setChartCandles(trimmed);
-      candleCountRef.current = trimmed.length;
-      return { merged: trimmed, added: incoming.length };
+      setChartCandles(merged);
+      candleCountRef.current = merged.length;
+      return { merged, added: incoming.length };
     } finally {
       structuralReplayExtendInFlightRef.current = false;
     }
@@ -9170,9 +9181,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setCameraViewOwnerWithLog('TIMEFRAME_SWITCH', 'navigateStructuralChartContext', args.reason);
     activeTimeframeRef.current = plan.chartTf;
     setTimeframe(plan.chartTf);
+    if (plan.loadWindow) {
+      structuralDataLoadWindowRef.current = plan.loadWindow;
+    }
     return loadCandles(plan.chartTf, {
-      loadWindow: plan.loadWindow,
-      cacheFullHistory: false,
+      cacheFullHistory: true,
       structuralNavigation: true,
       timeframeSwitch: true,
       reason: args.reason,
@@ -9247,18 +9260,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       }).then(() => undefined);
     }
 
-    let explicitLoadWindow: { start: string; end: string; label?: string } | null = null;
-
-    let intent: CameraIntent = cameraMode === 'LOCKED'
-      ? 'RESTORE_LOCKED'
-      : cameraMode === 'CASE'
-        ? 'CASE'
-        : cameraMode === 'REPLAY'
-          ? 'REPLAY'
-          : 'PRESERVE_OR_NEAREST_TIME';
     let fitWindow: StructuralFitWindow | null = null;
     let priceDomain: { low: number; high: number } | null = null;
     let contextRangeId: string | null = null;
+    let intent: CameraIntent = cameraMode === 'LOCKED' ? 'LOCKED' : 'PRESERVE_OR_NEAREST_TIME';
 
     if (cameraMode !== 'LOCKED') {
       if (drillingDown && inheritedTime) {
@@ -9305,7 +9310,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       }
     }
 
-    cameraLog('timeframe switch start', { from: sourceTf, to: tf, intent, targetTime, priceDomain, contextRangeId, drillingDown, inheritedTime, explicitLoadWindow });
+    cameraLog('timeframe switch start', { from: sourceTf, to: tf, intent, targetTime, priceDomain, contextRangeId, drillingDown, inheritedTime });
     pendingCameraIntentRef.current = {
       intent,
       targetTime,
@@ -9318,22 +9323,6 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       const span = rangeWindowFieldsFromSavedRange(contextRange);
       if (span.start || span.end) {
         setRangeWindowByTf(prev => ({ ...prev, [tf]: { start: span.start || span.end, end: span.end || span.start } }));
-        explicitLoadWindow = resolveTimeframeSwitchDataLoadWindow({
-          targetTf: tf,
-          contextRange: {
-            start: span.start || span.end,
-            end: span.end || span.start,
-            structure_layer: contextRange?.structure_layer,
-            layer: contextRange?.layer,
-          },
-        });
-      }
-    }
-    if (!explicitLoadWindow) {
-      const w = activeCaseRecord ? savedCaseWindow(activeCaseRecord) : { start: rangeWindow.start || seedAnchors.range_start_date || '', end: rangeWindow.end || seedAnchors.range_end_date || '' };
-      if (w.start || w.end) {
-        setRangeWindowByTf(prev => ({ ...prev, [tf]: { ...(prev[tf] || {}), start: w.start || prev[tf]?.start || '', end: w.end || prev[tf]?.end || '' } }));
-        explicitLoadWindow = resolveTimeframeSwitchDataLoadWindow({ targetTf: tf, caseWindow: w });
       }
     }
     skipBootstrapOnceRef.current = true;
@@ -9341,8 +9330,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setTimeframe(tf);
     if (autoResume.isWelcome) autoResume.markSessionActive(symbol, tf);
     return loadCandles(tf, {
-      loadWindow: explicitLoadWindow,
-      cacheFullHistory: !explicitLoadWindow,
+      cacheFullHistory: true,
       timeframeSwitch: true,
       reason: `timeframe-switch:${sourceTf}->${tf}`,
       navigationPath: 'switchTimeframePreserveCase',
@@ -10332,7 +10320,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   ]);
   const tvMappingSelectionReady = chartRenderer !== 'tradingview'
     || !tradingViewMappingInputEnabled
-    || !!(admittedMappingInputCandle || tradingViewChartSelectedCandle);
+    || !!admittedMappingInputCandle;
   const structuralQuickAnchorDisabled = structuralSaving || quickEventSaving || candleFeedLoading || !candleFeedGuard.ready
     || (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled)
     || (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled ? !tvMappingSelectionReady : !mappingInputCandle);
@@ -11163,6 +11151,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           onUpdateEvent={updateEvent}
           onFinishEventDrag={finishEventDrag}
           onCandleSelect={(payload)=>{
+            if (candleReplayMode && replayCandle?.time
+              && !isReplaySelectableCandle(payload.candle.time, replayCandle.time, true)) {
+              return;
+            }
             setSelectedCandle(payload.candle);
             setPendingMarkerRoles([]);
             setSelectedCandlePoint({ price: Number(payload.price.toFixed(2)), clientX: payload.clientX, clientY: payload.clientY });
@@ -12559,6 +12551,10 @@ Date: ${shortTime(d.time,p.timeframe)}`);
         }
       }
       if (latestProps.current.toolMode === 'select' && snap?.candle && latestProps.current.onCandleSelect) {
+        const cut = latestProps.current.replayCutTime;
+        if (cut && !isReplaySelectableCandle(snap.candle.time, cut, true)) {
+          return;
+        }
         latestProps.current.onCandleSelect({
           candle: snap.candle,
           price,
