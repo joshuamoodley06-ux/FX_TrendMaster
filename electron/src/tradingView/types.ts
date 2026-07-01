@@ -18,7 +18,7 @@ export type TradingViewAdapterResult = {
   dropped: number;
 };
 
-export type TradingViewChartMode = 'latest' | 'hierarchy' | 'replay' | 'selection';
+export type TradingViewChartMode = 'latest' | 'full' | 'hierarchy' | 'replay' | 'selection';
 
 export type TradingViewChartWindow = {
   mode: TradingViewChartMode;

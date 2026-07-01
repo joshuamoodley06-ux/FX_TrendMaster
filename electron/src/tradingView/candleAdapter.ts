@@ -83,6 +83,12 @@ export function latestWindowSizeForTimeframe(timeframe: string): number {
   return LATEST_WINDOW_BY_TIMEFRAME[String(timeframe || '').toUpperCase()] || 180;
 }
 
+/** W1/D1/MN1 live view uses tail slice; lower TFs use full loaded history for display. */
+export function usesTradingViewTailSliceForTimeframe(timeframe: string): boolean {
+  const t = String(timeframe || '').toUpperCase();
+  return t === 'W1' || t === 'D1' || t === 'MN1';
+}
+
 export function fxtmTimeToTradingViewTime(raw: string | null | undefined, timeframe: string): Time | null {
   const parsed = parseFxtmTime(String(raw || ''));
   return parsed ? timeForTradingView(parsed, timeframe) : null;
@@ -237,11 +243,15 @@ export function applyChartModeWindow(candles: FxtmCandleRow[], window: TradingVi
   if (window.mode === 'replay') {
     const cut = rawTimeMs(window.replayCutTime);
     if (!Number.isFinite(cut)) return rows;
+    // Future-only cut — never trim left-side history.
     return rows.filter((c) => candleTimeMs(c) <= cut);
   }
 
-  if (window.mode === 'hierarchy') {
-    // Phase 1: hierarchy camera fits via token only — never crop loaded history in display slice.
+  if (window.mode === 'hierarchy' || window.mode === 'full') {
+    return rows;
+  }
+
+  if (!usesTradingViewTailSliceForTimeframe(window.timeframe)) {
     return rows;
   }
 

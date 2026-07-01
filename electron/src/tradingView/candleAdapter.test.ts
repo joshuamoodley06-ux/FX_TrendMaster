@@ -70,12 +70,27 @@ describe('adaptCandlesForTradingView', () => {
 });
 
 describe('applyChartModeWindow', () => {
-  it('returns the latest N candles for latest mode', () => {
-    const result = applyChartModeWindow(makeCandles(350), { mode: 'latest', timeframe: 'H1' });
+  it('returns the latest N candles for W1/D1 latest mode', () => {
+    const result = applyChartModeWindow(makeCandles(350), { mode: 'latest', timeframe: 'D1' });
 
-    expect(result).toHaveLength(300);
-    expect(result[0].time).toBe(makeCandles(350)[50].time);
+    expect(result).toHaveLength(180);
+    expect(result[0].time).toBe(makeCandles(350)[170].time);
     expect(result.at(-1)?.time).toBe(makeCandles(350)[349].time);
+  });
+
+  it('returns full loaded history for lower-timeframe latest display mode', () => {
+    const full = makeCandles(350);
+    const result = applyChartModeWindow(full, { mode: 'latest', timeframe: 'H4' });
+
+    expect(result).toHaveLength(full.length);
+    expect(result[0].time).toBe(full[0].time);
+  });
+
+  it('returns full loaded history in explicit full mode', () => {
+    const full = makeCandles(120);
+    const result = applyChartModeWindow(full, { mode: 'full', timeframe: 'H1' });
+
+    expect(result).toHaveLength(full.length);
   });
 
   it('keeps full loaded history in hierarchy mode (camera fit only)', () => {

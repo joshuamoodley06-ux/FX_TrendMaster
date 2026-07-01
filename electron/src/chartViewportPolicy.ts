@@ -55,6 +55,97 @@ export function shouldBlockTradingViewFitContent(chartMode: string | null | unde
   return mode === 'replay' || mode === 'hierarchy';
 }
 
+export type TradingViewFitAppliedDetail = {
+  token: number;
+  kind: 'hierarchy' | 'replay' | 'routine-memory' | 'range' | 'target';
+};
+
+export type TradingViewCameraBridge = {
+  owner: CameraViewOwner;
+  pendingFitReason: string | null;
+  pendingCameraIntentActive: boolean;
+  onFitApplied: ((detail: TradingViewFitAppliedDetail) => void) | null;
+  onVisibleRangeChange: ((domain: { start: string; end: string; visibleBars: number }) => void) | null;
+  onUserPanZoom: (() => void) | null;
+};
+
+/** Main ↔ TradingView camera ownership bridge (LiveViewPanel stays a thin shell). */
+export const tradingViewCameraBridge: { current: TradingViewCameraBridge } = {
+  current: {
+    owner: 'AUTO',
+    pendingFitReason: null,
+    pendingCameraIntentActive: false,
+    onFitApplied: null,
+    onVisibleRangeChange: null,
+    onUserPanZoom: null,
+  },
+};
+
+export type RoutineFitLockState = {
+  active: boolean;
+  timeframe: string | null;
+  untilMs: number;
+};
+
+/** Blocks post-routine-fit fitContent / display re-slice until TTL or user pan. */
+export const routineFitLockBridge: { current: RoutineFitLockState } = {
+  current: { active: false, timeframe: null, untilMs: 0 },
+};
+
+export function activateRoutineFitLock(timeframe: string, ttlMs = 20000): void {
+  routineFitLockBridge.current = {
+    active: true,
+    timeframe: String(timeframe || '').toUpperCase(),
+    untilMs: Date.now() + Math.max(5000, ttlMs),
+  };
+}
+
+export function clearRoutineFitLock(): void {
+  routineFitLockBridge.current.active = false;
+  routineFitLockBridge.current.timeframe = null;
+  routineFitLockBridge.current.untilMs = 0;
+}
+
+export function isRoutineFitLockActive(timeframe?: string | null): boolean {
+  const lock = routineFitLockBridge.current;
+  if (!lock.active) return false;
+  if (Date.now() > lock.untilMs) {
+    clearRoutineFitLock();
+    return false;
+  }
+  const tf = String(timeframe || '').toUpperCase();
+  if (tf && lock.timeframe && lock.timeframe !== tf) return false;
+  return true;
+}
+
+/** Block TradingView fitContent during stable owners, pending fits, and routine TF memory. */
+export function shouldBlockTradingViewAutoFit(args: {
+  owner?: CameraViewOwner | null;
+  chartMode?: string | null;
+  pendingFitReason?: string | null;
+  hasPendingFitToken?: boolean;
+  pendingCameraIntentActive?: boolean;
+}): boolean {
+  if (shouldBlockTradingViewFitContent(args.chartMode)) return true;
+  if (args.hasPendingFitToken) return true;
+  if (args.pendingCameraIntentActive) return true;
+  if (isRoutineFitLockActive()) return true;
+  const owner = args.owner || 'AUTO';
+  if (owner !== 'AUTO') return true;
+  const reason = String(args.pendingFitReason || '').toLowerCase();
+  if (isRoutineTfMemoryReason(reason)) return true;
+  if (reason.includes('timeframe-switch')) return true;
+  return false;
+}
+
+export function isReplayCameraOwner(owner?: CameraViewOwner | null): boolean {
+  return owner === 'FIT_REPLAY';
+}
+
+export function isStructuralFitCameraOwner(owner?: CameraViewOwner | null): boolean {
+  return owner === 'FIT_RANGE' || owner === 'FIT_CASE' || owner === 'FIT_ALL';
+}
+
 export function inferViewOwnerFromCameraReason(
   reason?: string | null,
   intent?: string | null,
@@ -66,6 +157,7 @@ export function inferViewOwnerFromCameraReason(
   if (r.includes('fit-range') || (i === 'FIT_STRUCTURAL_RANGE' && r.includes('fit-range'))) return 'FIT_RANGE';
   if (r.includes('fit-replay') || (i === 'FIT_STRUCTURAL_RANGE' && r.includes('fit-replay'))) return 'FIT_REPLAY';
   if (r.includes('fit-case') || i === 'CASE') return 'FIT_CASE';
+  if (r.includes('routine-tf-memory')) return 'TIMEFRAME_SWITCH';
   if (r.includes('timeframe-switch') || r.includes('tf-switch')) return 'TIMEFRAME_SWITCH';
   if (r.includes('continue-campaign') || r.includes('campaign')) return 'CAMPAIGN_CONTINUE';
   if (r.includes('session-restore') || r.includes('auto-resume') || r.includes('open-saved-case') || r.includes('open-raw-case')) {
@@ -78,27 +170,46 @@ export function inferViewOwnerFromCameraReason(
   return 'AUTO';
 }
 
+/** Routine TF chip switch — restore saved viewport memory, not structural range fit. */
+export function isRoutineTfMemoryReason(reason?: string | null): boolean {
+  return String(reason || '').toLowerCase().includes('routine-tf-memory');
+}
+
+/** Explicit hierarchy / Event Browser / audit navigation — structural fit allowed. */
+export function isStructuralNavigationReason(reason?: string | null): boolean {
+  const r = String(reason || '').toLowerCase();
+  if (!r) return false;
+  if (isRoutineTfMemoryReason(r)) return false;
+  return (
+    r.includes('explorer-jump')
+    || r.includes('explorer-parent')
+    || r.includes('navigatestructural')
+    || r.includes('tradingview-hierarchy-range-fit')
+    || r.includes('audit-jump')
+    || r.includes('timeframe-switch-structural')
+  );
+}
+
 /** Reasons allowed to move camera while a stable owner is active. */
 export function isExplicitCameraNavigationReason(reason?: string | null): boolean {
   const r = String(reason || '').toLowerCase();
   if (!r) return false;
+  if (isRoutineTfMemoryReason(r)) return true;
   return (
     r.includes('fit-all')
     || r.includes('fit-range')
     || r.includes('fit-replay')
     || r.includes('fit-case')
     || r.includes('lock-view')
-    || r.includes('timeframe-switch')
+    || isStructuralNavigationReason(r)
     || r.includes('continue-campaign')
     || r.includes('campaign-continue')
-    || r.includes('explorer-jump')
-    || r.includes('audit-jump')
     || r.includes('drill-down')
     || r.includes('open-saved-case')
     || r.includes('open-raw-case')
     || r.includes('manual-w')
     || r.includes('manual-h')
-    || r.includes('jump')
+    || (r.includes('jump') && !r.includes('routine-tf-memory'))
     || r.includes('fullscreen-layout-ready')
   );
 }

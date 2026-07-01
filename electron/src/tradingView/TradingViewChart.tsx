@@ -16,9 +16,15 @@ import {
   computeReplayAnchorLogicalRange,
 } from './candleAdapter';
 import {
+  isRoutineTfMemoryReason,
+  shouldBlockTradingViewAutoFit,
   shouldBlockTradingViewFitContent,
   targetVisibleBarsForTimeframe,
+  tradingViewCameraBridge,
+  type CameraViewOwner,
+  type TradingViewFitAppliedDetail,
 } from '../chartViewportPolicy';
+import { minimumRoutineVisibleBarsForTimeframe } from '../chartMemory';
 import {
   buildTradingViewSelectedCandle,
   resolveTradingViewSelectionAtX,
@@ -43,6 +49,11 @@ type TradingViewChartProps = {
   onCandleClick?: (candle: TradingViewSelectedCandle) => void;
   onSelectionDebug?: (event: TradingViewSelectionDebugEvent) => void;
   onStats?: (stats: { rendered: number; dropped: number }) => void;
+  cameraViewOwner?: CameraViewOwner;
+  pendingFitReason?: string | null;
+  onFitApplied?: (detail: TradingViewFitAppliedDetail) => void;
+  onVisibleRangeChange?: (domain: { start: string; end: string; visibleBars: number }) => void;
+  onUserPanZoom?: () => void;
 };
 
 function lineStyleValue(style: TradingViewRangeLine['lineStyle']): LineStyle {
@@ -104,6 +115,11 @@ export function TradingViewChart({
   onCandleClick,
   onSelectionDebug,
   onStats,
+  cameraViewOwner,
+  pendingFitReason,
+  onFitApplied,
+  onVisibleRangeChange,
+  onUserPanZoom,
 }: TradingViewChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const captureLayerRef = useRef<HTMLDivElement | null>(null);
@@ -117,6 +133,8 @@ export function TradingViewChart({
   const lastAutoFitTimeframeRef = useRef<string | null>(null);
   const lastRenderedBarCountRef = useRef(0);
   const lastFitTokenRef = useRef<number | null>(null);
+  const programmaticFitRef = useRef(false);
+  const visibleRangeWritebackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activationStartRef = useRef<ActivationStart | null>(null);
   const lastTouchSelectionMsRef = useRef(0);
   const selectionBridgeRef = useRef({
@@ -255,7 +273,88 @@ export function TradingViewChart({
     setFitDebugStatus((prev) => (prev === next ? prev : next));
   };
 
-  const shouldAutoFitContent = () => !shouldBlockTradingViewFitContent(chartModeRef.current);
+  const resolveCameraBridge = () => {
+    const bridge = tradingViewCameraBridge.current;
+    return {
+      owner: cameraViewOwner ?? bridge.owner,
+      pendingFitReason: pendingFitReason ?? bridge.pendingFitReason,
+      pendingCameraIntentActive: bridge.pendingCameraIntentActive,
+      onFitApplied: onFitApplied ?? bridge.onFitApplied,
+      onVisibleRangeChange: onVisibleRangeChange ?? bridge.onVisibleRangeChange,
+      onUserPanZoom: onUserPanZoom ?? bridge.onUserPanZoom,
+    };
+  };
+
+  const shouldAutoFitContent = () => {
+    const bridge = resolveCameraBridge();
+    return !shouldBlockTradingViewAutoFit({
+      owner: bridge.owner,
+      chartMode: chartModeRef.current,
+      pendingFitReason: bridge.pendingFitReason,
+      hasPendingFitToken: hasPendingFitRequest(),
+      pendingCameraIntentActive: bridge.pendingCameraIntentActive,
+    });
+  };
+
+  const barTimeToIso = (time: Time | null | undefined): string | null => {
+    if (time == null) return null;
+    if (typeof time === 'number') return new Date(time * 1000).toISOString();
+    if (typeof time === 'string') return new Date(`${time}T00:00:00.000Z`).toISOString();
+    return new Date(Date.UTC(time.year, time.month - 1, time.day)).toISOString();
+  };
+
+  const consumeAutoFitKey = () => {
+    const bars = adaptedRef.current.bars;
+    if (!bars.length) return;
+    const mode = chartModeRef.current;
+    const firstTime = bars[0]?.time;
+    const lastTime = bars.at(-1)?.time;
+    const autoFitKey = mode === 'latest'
+      ? `${mode}:${timeframe}:${timeDebugKey(firstTime)}:${timeDebugKey(lastTime)}`
+      : `${mode}:${timeframe}`;
+    lastAutoFitTimeframeRef.current = autoFitKey;
+  };
+
+  const emitVisibleRangeWriteback = () => {
+    const chart = chartRef.current;
+    if (!chart || programmaticFitRef.current) return;
+    const bridge = resolveCameraBridge();
+    if (bridge.owner === 'FIT_RANGE' || bridge.owner === 'FIT_REPLAY' || bridge.owner === 'TIMEFRAME_SWITCH') return;
+    if (bridge.pendingCameraIntentActive) return;
+    const logical = chart.timeScale().getVisibleLogicalRange();
+    const bars = adaptedRef.current.bars;
+    if (!logical || !bars.length) return;
+    const i0 = Math.max(0, Math.min(bars.length - 1, Math.floor(logical.from)));
+    const i1 = Math.max(0, Math.min(bars.length - 1, Math.ceil(logical.to)));
+    const start = barTimeToIso(bars[i0]?.time);
+    const end = barTimeToIso(bars[i1]?.time);
+    if (!start || !end) return;
+    const visibleBars = Math.max(1, Math.abs(i1 - i0) + 1);
+    bridge.onVisibleRangeChange?.({ start, end, visibleBars });
+  };
+
+  const scheduleVisibleRangeWriteback = () => {
+    if (visibleRangeWritebackTimerRef.current) clearTimeout(visibleRangeWritebackTimerRef.current);
+    visibleRangeWritebackTimerRef.current = setTimeout(() => {
+      visibleRangeWritebackTimerRef.current = null;
+      emitVisibleRangeWriteback();
+    }, 350);
+  };
+
+  const notifyFitApplied = (detail: TradingViewFitAppliedDetail) => {
+    const bridge = resolveCameraBridge();
+    bridge.onFitApplied?.(detail);
+    scheduleVisibleRangeWriteback();
+  };
+
+  const runProgrammaticFit = (apply: () => void) => {
+    programmaticFitRef.current = true;
+    apply();
+    window.requestAnimationFrame(() => {
+      programmaticFitRef.current = false;
+      scheduleVisibleRangeWriteback();
+    });
+  };
 
   const logicalIndexForTime = (time: Time): number | null => {
     const targetKey = timeDebugKey(time);
@@ -310,10 +409,6 @@ export function TradingViewChart({
       return `skipped:${request.token}:cursor-visible`;
     }
     if (decision.action === 'initial') {
-      if (request.from && request.to) {
-        timeScale.setVisibleRange({ from: request.from, to: request.to });
-        return `initial:${request.token}:${timeDebugKey(request.from)}:${timeDebugKey(request.to)}`;
-      }
       if (target) {
         const initialLogical = applyInitialReplayLogicalFit(target, request.token);
         if (initialLogical) return initialLogical;
@@ -391,9 +486,21 @@ export function TradingViewChart({
     container.addEventListener('touchstart', handleSurfaceTouchStart, true);
     container.addEventListener('touchend', handleSurfaceTouchEnd, true);
 
+    const handleVisibleLogicalRangeChange = () => {
+      if (programmaticFitRef.current) return;
+      const bridge = resolveCameraBridge();
+      if (bridge.owner === 'FIT_RANGE' || bridge.owner === 'FIT_REPLAY' || bridge.owner === 'TIMEFRAME_SWITCH') return;
+      if (bridge.pendingCameraIntentActive) return;
+      bridge.onUserPanZoom?.();
+      scheduleVisibleRangeWriteback();
+    };
+    chart.timeScale().subscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
+
     const resizeObserver = new ResizeObserver(() => {
       if (!shouldAutoFitContent()) return;
-      if (!fitRequestRef.current?.token && !hasPendingFitRequest()) chart.timeScale().fitContent();
+      if (!fitRequestRef.current?.token && !hasPendingFitRequest()) {
+        runProgrammaticFit(() => chart.timeScale().fitContent());
+      }
     });
     resizeObserver.observe(container);
 
@@ -406,6 +513,8 @@ export function TradingViewChart({
       container.removeEventListener('pointerup', handleSurfacePointerUp, true);
       container.removeEventListener('touchstart', handleSurfaceTouchStart, true);
       container.removeEventListener('touchend', handleSurfaceTouchEnd, true);
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(handleVisibleLogicalRangeChange);
+      if (visibleRangeWritebackTimerRef.current) clearTimeout(visibleRangeWritebackTimerRef.current);
       resizeObserver.disconnect();
       for (const line of priceLinesRef.current) series.removePriceLine(line);
       priceLinesRef.current = [];
@@ -433,12 +542,12 @@ export function TradingViewChart({
     const skipReplayShrinkFit = chartMode === 'replay' && barCountShrunk && !autoFitKeyChanged;
     if (
       adapted.bars.length
-      && !shouldBlockTradingViewFitContent(chartMode)
+      && shouldAutoFitContent()
       && autoFitKeyChanged
       && !hasPendingFitRequest()
       && !skipReplayShrinkFit
     ) {
-      chartRef.current?.timeScale().fitContent();
+      runProgrammaticFit(() => chartRef.current?.timeScale().fitContent());
       lastAutoFitTimeframeRef.current = autoFitKey;
     }
     onStats?.({ rendered: adapted.bars.length, dropped: adapted.dropped });
@@ -477,28 +586,73 @@ export function TradingViewChart({
       return;
     }
 
+    const pendingReason = pendingFitReason ?? tradingViewCameraBridge.current.pendingFitReason;
+
     if (chartMode === 'hierarchy') {
       if (fitRequest.from && fitRequest.to) {
-        chartRef.current.timeScale().setVisibleRange({ from: fitRequest.from, to: fitRequest.to });
+        runProgrammaticFit(() => {
+          chartRef.current!.timeScale().setVisibleRange({ from: fitRequest.from!, to: fitRequest.to! });
+        });
         lastFitTokenRef.current = fitRequest.token;
         updateFitDebugStatus(`hierarchy:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
+        notifyFitApplied({ token: fitRequest.token, kind: 'hierarchy' });
       }
       return;
     }
 
     if (chartMode === 'replay') {
+      programmaticFitRef.current = true;
       const status = applyReplayAnchorFit(fitRequest);
+      window.requestAnimationFrame(() => {
+        programmaticFitRef.current = false;
+        scheduleVisibleRangeWriteback();
+      });
       lastFitTokenRef.current = fitRequest.token;
       updateFitDebugStatus(status);
+      notifyFitApplied({ token: fitRequest.token, kind: 'replay' });
       return;
     }
 
+    const bridge = resolveCameraBridge();
+    const routineMemory = isRoutineTfMemoryReason(bridge.pendingFitReason)
+      || isRoutineTfMemoryReason(pendingFitReason);
+
     if (fitRequest.from && fitRequest.to) {
-      chartRef.current.timeScale().setVisibleRange({ from: fitRequest.from, to: fitRequest.to });
+      runProgrammaticFit(() => {
+        chartRef.current!.timeScale().setVisibleRange({ from: fitRequest.from!, to: fitRequest.to! });
+      });
       lastFitTokenRef.current = fitRequest.token;
       updateFitDebugStatus(`applied:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
+      if (routineMemory) consumeAutoFitKey();
+      notifyFitApplied({
+        token: fitRequest.token,
+        kind: routineMemory ? 'routine-memory' : 'range',
+      });
+      return;
     }
-  }, [adapted.bars.length, chartMode, chartReady, fitRequest]);
+
+    if (fitRequest.target) {
+      runProgrammaticFit(() => {
+        const coord = chartRef.current!.timeScale().timeToCoordinate(fitRequest.target!);
+        if (coord != null) {
+          const logical = chartRef.current!.timeScale().coordinateToLogical(coord);
+          if (logical != null) {
+            const span = routineMemory
+              ? Math.max(20, minimumRoutineVisibleBarsForTimeframe(timeframe))
+              : Math.max(20, targetVisibleBarsForTimeframe(timeframe));
+            chartRef.current!.timeScale().setVisibleLogicalRange({
+              from: Math.max(0, logical - span * 0.82),
+              to: logical + span * 0.08,
+            });
+          }
+        }
+      });
+      lastFitTokenRef.current = fitRequest.token;
+      updateFitDebugStatus(`target:${fitRequest.token}:${timeDebugKey(fitRequest.target)}`);
+      if (routineMemory) consumeAutoFitKey();
+      notifyFitApplied({ token: fitRequest.token, kind: routineMemory ? 'routine-memory' : 'target' });
+    }
+  }, [adapted.bars.length, chartMode, chartReady, fitRequest, pendingFitReason, timeframe]);
 
   useEffect(() => {
     const layer = captureLayerRef.current;
