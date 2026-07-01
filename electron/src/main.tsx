@@ -174,32 +174,41 @@ import {
   buildTradingViewMemoryFitRequest,
   chartMemoryKey,
   globalReplayCursorKey,
+  isCrossTfH1Entry,
   legacyChartMemoryKey,
   memoryFitWindowFromChartMemory,
   minimumRoutineVisibleBarsForTimeframe,
+  parseRoutineTfMemoryReason,
+  purgePoisonedH1MemoryKeys,
   readChartMemoryFromStore,
   resolveNearestCandle,
   resolveRoutineTfSwitchCameraPlan,
   routineTfMemoryReason,
   sanitizeRoutineMemoryCameraAfterLoad,
   shouldPersistChartMemory,
+  shouldPersistH1ChartMemory,
   snapshotMemoryFromVisibleDomain,
   type MemoryFitWindow,
+  type RoutineAnchorSource,
 } from './chartMemory';
 import {
   activateRoutineFitLock,
+  activatePostRoutineSettle,
   autoCandleBodyWidthPx,
   CHART_FUTURE_PAD_RATIO,
   CHART_LATEST_ANCHOR_RATIO,
+  clearPostRoutineSettle,
   clearRoutineFitLock,
   type CameraViewOwner,
   inferViewOwnerFromCameraReason,
   isExplicitCameraNavigationReason,
+  isPostRoutineSettleActive,
   isRoutineTfMemoryReason,
   isStructuralNavigationReason,
   logCameraUpdate,
   readablePadBarsForTimeframe,
   shouldBlockAutomaticCameraRefit,
+  shouldBlockFullscreenLayoutRefit,
   shouldBlockTradingViewAutoFit,
   targetVisibleBarsForTimeframe,
   tradingViewCameraBridge,
@@ -2649,8 +2658,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [deferredCameraToken, setDeferredCameraToken] = useState(0);
   const [candleLoadDiagnostics, setCandleLoadDiagnostics] = useState<CandleLoadDiagnostics | null>(null);
   useEffect(() => { candleCountRef.current = candles.length; }, [candles.length]);
-  const pendingCameraIntentRef = useRef<{intent:CameraIntent; targetTime?:string|null; reason?:string; fitWindow?: StructuralFitWindow | null; priceDomain?: { low: number; high: number } | null; contextRangeId?: string | null}>({ intent:'LATEST', reason:'initial-load' });
+  const pendingCameraIntentRef = useRef<{intent:CameraIntent; targetTime?:string|null; reason?:string; fitWindow?: StructuralFitWindow | null; priceDomain?: { low: number; high: number } | null; contextRangeId?: string | null; anchorSource?: RoutineAnchorSource | null}>({ intent:'LATEST', reason:'initial-load' });
   const pendingCameraIntentAwaitingTvFitRef = useRef(false);
+  const routineSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fullHistoryChartTfsRef = useRef<Set<string>>(new Set());
   const visibleCameraDomainRef = useRef<VisibleCameraDomain|null>(null);
   const cameraKeyRef = useRef('');
@@ -2688,9 +2698,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   useEffect(()=>{
     if (!chartFullscreen) return;
     if (cameraMode === 'LOCKED') return;
+    const pendingReason = pendingCameraIntentRef.current.intent !== 'NONE'
+      ? pendingCameraIntentRef.current.reason
+      : cameraCommand.reason;
+    if (shouldBlockFullscreenLayoutRefit({
+      owner: cameraViewOwnerRef.current,
+      pendingCameraIntentActive: pendingCameraIntentRef.current.intent !== 'NONE'
+        || pendingCameraIntentAwaitingTvFitRef.current,
+      hasPendingFitToken: pendingCameraIntentAwaitingTvFitRef.current,
+      pendingFitReason: pendingReason,
+    })) return;
     if (shouldBlockAutomaticCameraRefit(cameraViewOwnerRef.current)) return;
     const intent:CameraIntent = cameraMode === 'CASE' ? 'CASE' : cameraMode === 'REPLAY' ? 'REPLAY' : 'PRESERVE_OR_NEAREST_TIME';
-    const targetTime = selectedCandle?.time || candleReplayCursorTime || replayCandle?.time || null;
+    const targetTime = selectedCandle?.time || (candleReplayMode ? (candleReplayCursorTime || replayCandle?.time || null) : null);
     const t = window.setTimeout(()=>applyCameraCommand(intent, targetTime, 'fullscreen-layout-ready'), 120);
     return () => window.clearTimeout(t);
   }, [chartFullscreen]);
@@ -2850,6 +2870,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const handleTradingViewVisibleRangeChange = useCallback((dom: { start: string; end: string; visibleBars: number }) => {
     if (cameraViewOwnerRef.current === 'TIMEFRAME_SWITCH') return;
     if (pendingCameraIntentAwaitingTvFitRef.current) return;
+    if (isPostRoutineSettleActive()) return;
     visibleCameraDomainRef.current = {
       start: dom.start,
       end: dom.end,
@@ -2858,25 +2879,36 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const next = Number(dom.visibleBars || 0);
     setVisibleBarCount((prev) => (prev === next ? prev : next));
     if (cameraMode === 'LOCKED') return;
-    if (!shouldPersistChartMemory(dom, activeTimeframeRef.current)) return;
+    const activeTf = String(activeTimeframeRef.current || timeframe).toUpperCase();
+    if (activeTf === 'H1') {
+      if (!shouldPersistH1ChartMemory(dom, candlesRef.current)) return;
+    } else if (!shouldPersistChartMemory(dom, activeTf)) {
+      return;
+    }
     const key = cameraKeyRef.current;
     const legacy = legacyChartMemoryKey(activeCaseDisplayIdRef.current || 'global', activeTimeframeRef.current);
     setCameraDomainByCaseTf((prev) => ({
       ...prev,
-      [key]: { start: dom.start, end: dom.end },
-      [legacy]: { start: dom.start, end: dom.end },
+      [key]: { start: dom.start, end: dom.end, visibleBars: dom.visibleBars },
+      [legacy]: { start: dom.start, end: dom.end, visibleBars: dom.visibleBars },
     }));
-  }, [cameraMode]);
+  }, [cameraMode, timeframe]);
   const handleTradingViewFitApplied = useCallback((detail: TradingViewFitAppliedDetail) => {
     const awaitingTvFit = pendingCameraIntentAwaitingTvFitRef.current;
     if (detail.kind !== 'routine-memory' && !awaitingTvFit) return;
     pendingCameraIntentRef.current = { intent: 'NONE' };
     pendingCameraIntentAwaitingTvFitRef.current = false;
     if (detail.kind === 'routine-memory') {
-      activateRoutineFitLock(String(activeTimeframeRef.current || timeframe));
-      setCameraViewOwnerWithLog('AUTO', 'TradingViewChart.onFitApplied', 'routine-tf-memory-applied');
+      activatePostRoutineSettle(500);
+      if (routineSettleTimerRef.current) window.clearTimeout(routineSettleTimerRef.current);
+      routineSettleTimerRef.current = window.setTimeout(() => {
+        routineSettleTimerRef.current = null;
+        activateRoutineFitLock(String(activeTimeframeRef.current || timeframe));
+        setCameraViewOwnerWithLog('AUTO', 'TradingViewChart.routineSettle', 'routine-tf-memory-settled');
+      }, 520);
+      return;
     }
-  }, []);
+  }, [timeframe]);
   const restoreLiveMemoryCameraAfterReplay = useCallback(() => {
     if (chartRendererRef.current !== 'tradingview') return;
     const caseId = String(activeCaseDisplayIdRef.current || 'global');
@@ -2928,9 +2960,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       : (isRoutineTfMemoryReason(cameraCommand.reason) ? cameraCommand.reason : null);
     tradingViewCameraBridge.current.pendingCameraIntentActive = pendingCameraIntentRef.current.intent !== 'NONE'
       || pendingCameraIntentAwaitingTvFitRef.current;
+    tradingViewCameraBridge.current.routineAnchorSource = pendingCameraIntentRef.current.anchorSource
+      || (isRoutineTfMemoryReason(cameraCommand.reason) ? tradingViewCameraBridge.current.routineAnchorSource : null);
     tradingViewCameraBridge.current.onFitApplied = handleTradingViewFitApplied;
     tradingViewCameraBridge.current.onVisibleRangeChange = handleTradingViewVisibleRangeChange;
     tradingViewCameraBridge.current.onUserPanZoom = () => {
+      if (routineSettleTimerRef.current) {
+        window.clearTimeout(routineSettleTimerRef.current);
+        routineSettleTimerRef.current = null;
+      }
+      clearPostRoutineSettle();
       clearRoutineFitLock();
       setCameraViewOwnerWithLog('USER_PAN_ZOOM', 'TradingViewChart.userPan', 'user-pan-zoom');
     };
@@ -4913,11 +4952,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           targetTime: resolvedTargetTime,
           fitWindow: resolvedFitWindow as MemoryFitWindow | null,
           priceDomain: resolvedPriceDomain,
+          anchorSource: pendingIntent.anchorSource || null,
         }, parsed, targetTf);
         cameraIntent = sanitized.intent as CameraIntent;
         resolvedTargetTime = sanitized.targetTime;
         resolvedFitWindow = sanitized.fitWindow;
         resolvedPriceDomain = sanitized.priceDomain;
+        if (sanitized.anchorSource) {
+          tradingViewCameraBridge.current.routineAnchorSource = sanitized.anchorSource;
+          pendingCameraIntentRef.current = {
+            ...pendingCameraIntentRef.current,
+            anchorSource: sanitized.anchorSource,
+          };
+        }
       }
       const cameraPayload = {
         intent: cameraIntent,
@@ -9445,13 +9492,34 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       || null;
     skipSelectionClearForTfSwitchRef.current = true;
 
-    const savedDestMemory = readChartMemoryFromStore(
-      cameraDomainByCaseTf,
-      caseId,
-      symbol,
-      tf,
-      cameraPriceDomainByCaseTf,
-    );
+    const crossTfH1 = isCrossTfH1Entry(sourceTf, tf);
+    if (crossTfH1) {
+      const purge = purgePoisonedH1MemoryKeys(cameraDomainByCaseTf, caseId, symbol);
+      if (purge) {
+        setCameraDomainByCaseTf((prev) => {
+          const next = { ...prev };
+          delete next[purge.key];
+          delete next[purge.legacy];
+          return next;
+        });
+        setCameraPriceDomainByCaseTf((prev) => {
+          const next = { ...prev };
+          delete next[purge.key];
+          delete next[purge.legacy];
+          return next;
+        });
+      }
+    }
+
+    const savedDestMemory = crossTfH1
+      ? null
+      : readChartMemoryFromStore(
+        cameraDomainByCaseTf,
+        caseId,
+        symbol,
+        tf,
+        cameraPriceDomainByCaseTf,
+      );
     const sourceViewport = validDomTime && sourceDomPersistable
       ? sourceDomSnap
       : readChartMemoryFromStore(cameraDomainByCaseTf, caseId, symbol, sourceTf, cameraPriceDomainByCaseTf);
@@ -9465,7 +9533,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       destTf: tf,
       savedDestMemory,
       sourceViewport,
-      globalReplayTime: candleReplayCursorTime,
+      globalReplayTime: candleReplayMode ? candleReplayCursorTime : null,
       selectedCandleTime: selectedTimeForRestore,
       savedDestPrice,
       explicitReplayMode: candleReplayMode,
@@ -9474,12 +9542,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
     activateRoutineFitLock(tf);
 
+    tradingViewCameraBridge.current.routineAnchorSource = plan.anchorSource || null;
+
     pendingCameraIntentRef.current = {
       intent: plan.intent,
       targetTime: plan.targetTime,
       reason: plan.reason,
       fitWindow: plan.fitWindow,
       priceDomain: plan.priceDomain,
+      anchorSource: plan.anchorSource || null,
     };
 
     if (chartRenderer === 'tradingview') {
@@ -10271,7 +10342,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         timeframe,
       });
     }
-    if ((candleReplayMode || tradingViewMappingInputEnabled) && tradingViewReplayStepFitRequest) {
+    if (candleReplayMode && tradingViewReplayStepFitRequest) {
       return tradingViewReplayStepFitRequest;
     }
     const fitCommand = cameraCommand;
@@ -10286,12 +10357,28 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       });
     }
     if (isRoutineTfMemoryReason(fitCommand.reason)) {
-      return buildTradingViewMemoryFitRequest({
+      const parsed = parseRoutineTfMemoryReason(fitCommand.reason);
+      const requireFitRange = parsed
+        ? isCrossTfH1Entry(parsed.sourceTf, parsed.destTf)
+        : String(timeframe).toUpperCase() === 'H1';
+      const memoryReq = buildTradingViewMemoryFitRequest({
         token: fitCommand.token,
         timeframe,
         fitWindow: fitCommand.fitWindow,
         targetTime: fitCommand.targetTime,
+        requireFitRange,
       });
+      if (memoryReq) return memoryReq;
+      if (requireFitRange && fitCommand.targetTime) {
+        return buildTradingViewMemoryFitRequest({
+          token: fitCommand.token,
+          timeframe,
+          fitWindow: fitCommand.fitWindow,
+          targetTime: fitCommand.targetTime,
+          requireFitRange: false,
+        });
+      }
+      return null;
     }
     return adaptFitRequestForTradingView({
       token: fitCommand.token,

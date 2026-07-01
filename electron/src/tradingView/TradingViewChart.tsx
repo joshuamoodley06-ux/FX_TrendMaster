@@ -14,9 +14,11 @@ import {
 import {
   adaptCandlesForTradingView,
   computeReplayAnchorLogicalRange,
+  fxtmTimeToTradingViewTime,
 } from './candleAdapter';
 import {
   isRoutineTfMemoryReason,
+  isPostRoutineSettleActive,
   shouldBlockTradingViewAutoFit,
   shouldBlockTradingViewFitContent,
   targetVisibleBarsForTimeframe,
@@ -24,7 +26,13 @@ import {
   type CameraViewOwner,
   type TradingViewFitAppliedDetail,
 } from '../chartViewportPolicy';
-import { minimumRoutineVisibleBarsForTimeframe } from '../chartMemory';
+import {
+  buildRoutineMemoryFitWindow,
+  isCrossTfH1Entry,
+  isH1RoutineDest,
+  minimumRoutineVisibleBarsForTimeframe,
+  parseRoutineTfMemoryReason,
+} from '../chartMemory';
 import {
   buildTradingViewSelectedCandle,
   resolveTradingViewSelectionAtX,
@@ -149,6 +157,15 @@ export function TradingViewChart({
   });
   const [chartReady, setChartReady] = useState(false);
   const [fitDebugStatus, setFitDebugStatus] = useState('none');
+  const [fitTelemetry, setFitTelemetry] = useState({
+    anchorSource: '',
+    fitFrom: '',
+    fitTo: '',
+    coordNull: 'no',
+    noBars: 'no',
+    pendingNoOp: 'no',
+    renderedBars: 0,
+  });
 
   const adapted = useMemo(
     () => adaptCandlesForTradingView(candles, timeframe),
@@ -321,6 +338,7 @@ export function TradingViewChart({
     const bridge = resolveCameraBridge();
     if (bridge.owner === 'FIT_RANGE' || bridge.owner === 'FIT_REPLAY' || bridge.owner === 'TIMEFRAME_SWITCH') return;
     if (bridge.pendingCameraIntentActive) return;
+    if (isPostRoutineSettleActive()) return;
     const logical = chart.timeScale().getVisibleLogicalRange();
     const bars = adaptedRef.current.bars;
     if (!logical || !bars.length) return;
@@ -491,6 +509,7 @@ export function TradingViewChart({
       const bridge = resolveCameraBridge();
       if (bridge.owner === 'FIT_RANGE' || bridge.owner === 'FIT_REPLAY' || bridge.owner === 'TIMEFRAME_SWITCH') return;
       if (bridge.pendingCameraIntentActive) return;
+      if (isPostRoutineSettleActive()) return;
       bridge.onUserPanZoom?.();
       scheduleVisibleRangeWriteback();
     };
@@ -529,6 +548,16 @@ export function TradingViewChart({
 
   useEffect(() => {
     if (!chartReady) return;
+    const bridge = resolveCameraBridge();
+    if (!adapted.bars.length) {
+      const holdEmptySetData = bridge.owner === 'TIMEFRAME_SWITCH'
+        || bridge.pendingCameraIntentActive
+        || isRoutineTfMemoryReason(bridge.pendingFitReason);
+      if (holdEmptySetData) {
+        onStats?.({ rendered: 0, dropped: adapted.dropped });
+        return;
+      }
+    }
     seriesRef.current?.setData(adapted.bars);
     const prevBarCount = lastRenderedBarCountRef.current;
     const barCountShrunk = prevBarCount > 0 && adapted.bars.length > 0 && adapted.bars.length < prevBarCount;
@@ -581,7 +610,19 @@ export function TradingViewChart({
   useEffect(() => {
     if (!chartReady || !chartRef.current || !fitRequest) return;
     if (!fitRequest.token || lastFitTokenRef.current === fitRequest.token) return;
+    const bridge = resolveCameraBridge();
+    const anchorSource = bridge.routineAnchorSource || '';
+    const renderedBars = adapted.bars.length;
+    const syncTelemetry = (patch: Partial<typeof fitTelemetry>) => {
+      setFitTelemetry((prev) => ({
+        ...prev,
+        anchorSource,
+        renderedBars,
+        ...patch,
+      }));
+    };
     if (!adapted.bars.length) {
+      syncTelemetry({ noBars: 'yes', pendingNoOp: 'yes', fitFrom: '', fitTo: '' });
       updateFitDebugStatus(`pending:${fitRequest.token}:no-bars`);
       return;
     }
@@ -613,46 +654,92 @@ export function TradingViewChart({
       return;
     }
 
-    const bridge = resolveCameraBridge();
     const routineMemory = isRoutineTfMemoryReason(bridge.pendingFitReason)
-      || isRoutineTfMemoryReason(pendingFitReason);
+      || isRoutineTfMemoryReason(pendingReason);
+    const parsedReason = parseRoutineTfMemoryReason(pendingReason);
+    const crossTfH1 = parsedReason
+      ? isCrossTfH1Entry(parsedReason.sourceTf, parsedReason.destTf)
+      : isH1RoutineDest(timeframe);
 
-    if (fitRequest.from && fitRequest.to) {
+    const applyRoutineFitRange = (from: Time, to: Time, statusPrefix: string) => {
       runProgrammaticFit(() => {
-        chartRef.current!.timeScale().setVisibleRange({ from: fitRequest.from!, to: fitRequest.to! });
+        chartRef.current!.timeScale().setVisibleRange({ from, to });
       });
       lastFitTokenRef.current = fitRequest.token;
-      updateFitDebugStatus(`applied:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
+      syncTelemetry({
+        fitFrom: timeDebugKey(from),
+        fitTo: timeDebugKey(to),
+        coordNull: 'no',
+        noBars: 'no',
+        pendingNoOp: 'no',
+      });
+      updateFitDebugStatus(`${statusPrefix}:${fitRequest.token}:${timeDebugKey(from)}:${timeDebugKey(to)}`);
       if (routineMemory) consumeAutoFitKey();
       notifyFitApplied({
         token: fitRequest.token,
         kind: routineMemory ? 'routine-memory' : 'range',
       });
+    };
+
+    if (fitRequest.from && fitRequest.to) {
+      applyRoutineFitRange(fitRequest.from, fitRequest.to, 'applied');
+      return;
+    }
+
+    if (routineMemory && crossTfH1) {
+      let centerTime: string | null = null;
+      if (fitRequest.target) {
+        const matched = candles.find((row) => fxtmTimeToTradingViewTime(row.time, timeframe) === fitRequest.target);
+        centerTime = matched?.time || null;
+      }
+      if (!centerTime && candles.length) {
+        centerTime = candles[Math.floor(candles.length / 2)]?.time || null;
+      }
+      const rebuilt = buildRoutineMemoryFitWindow(candles, centerTime, timeframe);
+      if (rebuilt) {
+        const from = fxtmTimeToTradingViewTime(rebuilt.start, timeframe);
+        const to = fxtmTimeToTradingViewTime(rebuilt.end, timeframe);
+        if (from && to) {
+          applyRoutineFitRange(from, to, 'h1-rebuilt');
+          return;
+        }
+      }
+      syncTelemetry({ pendingNoOp: 'yes', coordNull: 'yes', fitFrom: '', fitTo: '' });
+      updateFitDebugStatus(`pending:${fitRequest.token}:h1-rebuild-failed`);
       return;
     }
 
     if (fitRequest.target) {
+      const coord = chartRef.current!.timeScale().timeToCoordinate(fitRequest.target);
+      if (coord == null) {
+        syncTelemetry({ coordNull: 'yes', pendingNoOp: 'yes', fitFrom: '', fitTo: '' });
+        updateFitDebugStatus(`pending:${fitRequest.token}:coordNull`);
+        return;
+      }
       runProgrammaticFit(() => {
-        const coord = chartRef.current!.timeScale().timeToCoordinate(fitRequest.target!);
-        if (coord != null) {
-          const logical = chartRef.current!.timeScale().coordinateToLogical(coord);
-          if (logical != null) {
-            const span = routineMemory
-              ? Math.max(20, minimumRoutineVisibleBarsForTimeframe(timeframe))
-              : Math.max(20, targetVisibleBarsForTimeframe(timeframe));
-            chartRef.current!.timeScale().setVisibleLogicalRange({
-              from: Math.max(0, logical - span * 0.82),
-              to: logical + span * 0.08,
-            });
-          }
+        const logical = chartRef.current!.timeScale().coordinateToLogical(coord);
+        if (logical != null) {
+          const span = routineMemory
+            ? Math.max(20, minimumRoutineVisibleBarsForTimeframe(timeframe))
+            : Math.max(20, targetVisibleBarsForTimeframe(timeframe));
+          chartRef.current!.timeScale().setVisibleLogicalRange({
+            from: Math.max(0, logical - span * 0.82),
+            to: logical + span * 0.08,
+          });
         }
+      });
+      syncTelemetry({
+        fitFrom: timeDebugKey(fitRequest.target),
+        fitTo: timeDebugKey(fitRequest.target),
+        coordNull: 'no',
+        pendingNoOp: 'no',
       });
       lastFitTokenRef.current = fitRequest.token;
       updateFitDebugStatus(`target:${fitRequest.token}:${timeDebugKey(fitRequest.target)}`);
       if (routineMemory) consumeAutoFitKey();
       notifyFitApplied({ token: fitRequest.token, kind: routineMemory ? 'routine-memory' : 'target' });
     }
-  }, [adapted.bars.length, chartMode, chartReady, fitRequest, pendingFitReason, timeframe]);
+  }, [adapted.bars.length, candles, chartMode, chartReady, fitRequest, pendingFitReason, timeframe]);
 
   useEffect(() => {
     const layer = captureLayerRef.current;
@@ -707,8 +794,13 @@ export function TradingViewChart({
       data-chart-mode={chartMode}
       data-fit-status={fitDebugStatus}
       data-fit-token={fitRequest?.token || ''}
-      data-fit-from={timeDebugKey(fitRequest?.from)}
-      data-fit-to={timeDebugKey(fitRequest?.to)}
+      data-fit-from={fitTelemetry.fitFrom || timeDebugKey(fitRequest?.from)}
+      data-fit-to={fitTelemetry.fitTo || timeDebugKey(fitRequest?.to)}
+      data-anchor-source={fitTelemetry.anchorSource || tradingViewCameraBridge.current.routineAnchorSource || ''}
+      data-coord-null={fitTelemetry.coordNull}
+      data-no-bars={fitTelemetry.noBars}
+      data-pending-no-op={fitTelemetry.pendingNoOp}
+      data-rendered-bars={fitTelemetry.renderedBars || adapted.bars.length}
       data-selected-marker={selectedCandle ? 'yellow-sel' : ''}
       data-selected-marker-color={selectedCandle ? '#facc15' : ''}
     >

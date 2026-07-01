@@ -35,7 +35,19 @@ export type RoutineTfCameraPlan = {
   targetTime: string | null;
   fitWindow: MemoryFitWindow | null;
   priceDomain: { low: number; high: number } | null;
+  anchorSource?: RoutineAnchorSource;
 };
+
+export type RoutineAnchorSource =
+  | 'sourceViewport'
+  | 'savedH1SameTf'
+  | 'savedDest'
+  | 'locked'
+  | 'replay'
+  | 'selectedCandle'
+  | 'globalReplay'
+  | 'nearest'
+  | 'latest';
 
 export function chartMemoryKey(caseId: string, symbol: string, timeframe: string): string {
   return `${String(caseId || 'global')}|${String(symbol || '').toUpperCase()}|${String(timeframe || '').toUpperCase()}`;
@@ -318,6 +330,57 @@ export function isDegenerateH1MemorySpan(
   return spanMs < 3600000 * 2;
 }
 
+export function isPoisonedH1Memory(
+  memory: ChartTimeframeMemory | null | undefined,
+): boolean {
+  if (!memory?.start || !memory?.end) return true;
+  if (sanitizeChartMemoryOnRead(memory, 'H1') === null) return true;
+  if (isDegenerateH1MemorySpan(memory)) return true;
+  const reported = Number(memory.visibleBars || 0);
+  if (reported > 0 && reported < minimumRoutineVisibleBarsForTimeframe('H1')) return true;
+  return false;
+}
+
+export function parseRoutineTfMemoryReason(reason?: string | null): { sourceTf: string; destTf: string } | null {
+  const match = String(reason || '').match(/routine-tf-memory:([A-Z0-9]+)->([A-Z0-9]+)/i);
+  if (!match) return null;
+  return { sourceTf: match[1].toUpperCase(), destTf: match[2].toUpperCase() };
+}
+
+export function isCrossTfH1Entry(sourceTf: string, destTf: string): boolean {
+  const src = String(sourceTf || '').toUpperCase();
+  const dst = String(destTf || '').toUpperCase();
+  return dst === 'H1' && src !== 'H1';
+}
+
+export function shouldPersistH1ChartMemory<T extends { time: string }>(
+  dom: VisibleDomainSnapshot,
+  candles: T[],
+): boolean {
+  if (!shouldPersistChartMemory(dom, 'H1')) return false;
+  if (isDegenerateH1MemorySpan(dom)) return false;
+  if (!memoryOverlapsCandles(candles, dom)) return false;
+  return true;
+}
+
+export function purgePoisonedH1MemoryKeys(
+  store: Record<string, { start: string; end: string } | ChartTimeframeMemory>,
+  caseId: string,
+  symbol: string,
+): { key: string; legacy: string } | null {
+  const key = chartMemoryKey(caseId, symbol, 'H1');
+  const legacy = legacyChartMemoryKey(caseId, 'H1');
+  const row = store[key] || store[legacy];
+  if (!row) return null;
+  const sanitized = sanitizeChartMemoryOnRead({
+    start: row.start,
+    end: row.end,
+    visibleBars: (row as ChartTimeframeMemory).visibleBars,
+  }, 'H1');
+  if (sanitized && !isPoisonedH1Memory(sanitized)) return null;
+  return { key, legacy };
+}
+
 export function isMemoryAnchorPlausibleForCandles<T extends { time: string }>(
   candles: T[],
   targetTime: string | null | undefined,
@@ -404,6 +467,15 @@ export function sanitizeRoutineMemoryCameraAfterLoad<T extends { time: string; h
     fitWindow = buildRoutineMemoryFitWindow(candles, targetTime || fitWindow.start, destTf);
   }
 
+  const parsedReason = parseRoutineTfMemoryReason(plan.reason);
+  const crossTfH1 = parsedReason ? isCrossTfH1Entry(parsedReason.sourceTf, parsedReason.destTf) : false;
+  if (isH1RoutineDest(destTf) && crossTfH1 && targetTime && !fitWindow) {
+    fitWindow = buildRoutineMemoryFitWindow(candles, targetTime, destTf);
+  }
+  if (isH1RoutineDest(destTf) && crossTfH1 && fitWindow && countBarsInCandleWindow(candles, fitWindow.start, fitWindow.end) < minBars) {
+    fitWindow = buildRoutineMemoryFitWindow(candles, targetTime || fitWindow.start, destTf);
+  }
+
   if (fitWindow) {
     intent = intent === 'RESTORE_LOCKED' ? 'RESTORE_LOCKED' : 'PRESERVE_OR_NEAREST_TIME';
   } else if (targetTime) {
@@ -421,6 +493,7 @@ export function sanitizeRoutineMemoryCameraAfterLoad<T extends { time: string; h
     targetTime,
     fitWindow,
     priceDomain,
+    anchorSource: plan.anchorSource,
   };
 }
 
@@ -457,6 +530,7 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
       targetTime: args.savedDestMemory?.start || (explicitReplay ? args.globalReplayTime : null) || args.selectedCandleTime || null,
       fitWindow,
       priceDomain,
+      anchorSource: 'locked',
     };
   }
 
@@ -467,12 +541,17 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
       targetTime: args.globalReplayTime,
       fitWindow: null,
       priceDomain: null,
+      anchorSource: 'replay',
     };
   }
 
   const sameTf = String(args.sourceTf).toUpperCase() === String(args.destTf).toUpperCase();
   const savedFit = memoryFitWindowFromChartMemory(args.savedDestMemory, priceDomain);
-  if (isH1RoutineDest(args.destTf) && args.savedDestMemory?.start && args.savedDestMemory?.end) {
+  const sourceCenter = args.sourceViewport?.start && args.sourceViewport?.end
+    ? viewportCenterIso(args.sourceViewport.start, args.sourceViewport.end)
+    : null;
+
+  if (isH1RoutineDest(args.destTf) && sameTf && args.savedDestMemory?.start && args.savedDestMemory?.end) {
     const center = viewportCenterIso(args.savedDestMemory.start, args.savedDestMemory.end)
       || args.savedDestMemory.start
       || null;
@@ -481,17 +560,56 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
         intent: 'PRESERVE_OR_NEAREST_TIME',
         reason,
         targetTime: center,
-        fitWindow: sameTf ? savedFit : null,
+        fitWindow: savedFit,
         priceDomain,
+        anchorSource: 'savedH1SameTf',
       };
     }
-    if (center) {
+  }
+
+  if (isCrossTfH1Entry(args.sourceTf, args.destTf)) {
+    if (sourceCenter) {
+      return {
+        intent: 'PRESERVE_OR_NEAREST_TIME',
+        reason,
+        targetTime: sourceCenter,
+        fitWindow: null,
+        priceDomain: null,
+        anchorSource: 'sourceViewport',
+      };
+    }
+    return {
+      intent: 'LATEST',
+      reason,
+      targetTime: null,
+      fitWindow: null,
+      priceDomain: null,
+      anchorSource: 'latest',
+    };
+  }
+
+  if (isLowerIntradayRoutineDest(args.destTf) && !sameTf) {
+    if (sourceCenter) {
+      return {
+        intent: 'PRESERVE_OR_NEAREST_TIME',
+        reason,
+        targetTime: sourceCenter,
+        fitWindow: null,
+        priceDomain: null,
+        anchorSource: 'sourceViewport',
+      };
+    }
+    if (savedFit && !(isH1RoutineDest(args.destTf) && isDegenerateH1MemorySpan(savedFit))) {
+      const center = viewportCenterIso(args.savedDestMemory!.start, args.savedDestMemory!.end)
+        || args.savedDestMemory?.start
+        || null;
       return {
         intent: 'PRESERVE_OR_NEAREST_TIME',
         reason,
         targetTime: center,
         fitWindow: null,
-        priceDomain: null,
+        priceDomain,
+        anchorSource: 'savedDest',
       };
     }
   }
@@ -503,6 +621,7 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
       targetTime: args.selectedCandleTime,
       fitWindow: null,
       priceDomain: null,
+      anchorSource: 'selectedCandle',
     };
   }
 
@@ -516,12 +635,10 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
       targetTime: center,
       fitWindow: sameTf ? savedFit : null,
       priceDomain,
+      anchorSource: 'savedDest',
     };
   }
 
-  const sourceCenter = args.sourceViewport?.start && args.sourceViewport?.end
-    ? viewportCenterIso(args.sourceViewport.start, args.sourceViewport.end)
-    : null;
   if (sourceCenter) {
     return {
       intent: 'PRESERVE_OR_NEAREST_TIME',
@@ -529,26 +646,18 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
       targetTime: sourceCenter,
       fitWindow: null,
       priceDomain: null,
+      anchorSource: 'sourceViewport',
     };
   }
 
-  if (!explicitReplay && args.globalReplayTime) {
+  if (!explicitReplay && args.globalReplayTime && !isLowerIntradayRoutineDest(args.destTf)) {
     return {
       intent: 'PRESERVE_OR_NEAREST_TIME',
       reason,
       targetTime: args.globalReplayTime,
       fitWindow: null,
       priceDomain: null,
-    };
-  }
-
-  if (args.selectedCandleTime && isLowerIntradayRoutineDest(args.destTf)) {
-    return {
-      intent: 'PRESERVE_OR_NEAREST_TIME',
-      reason,
-      targetTime: args.selectedCandleTime,
-      fitWindow: null,
-      priceDomain: null,
+      anchorSource: 'globalReplay',
     };
   }
 
@@ -558,6 +667,7 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
     targetTime: null,
     fitWindow: null,
     priceDomain: null,
+    anchorSource: 'latest',
   };
 }
 
@@ -571,6 +681,7 @@ export function buildTradingViewMemoryFitRequest(args: {
   timeframe: string;
   fitWindow?: { start?: string; end?: string } | null;
   targetTime?: string | null;
+  requireFitRange?: boolean;
 }): TradingViewFitRequest | null {
   const token = Number(args.token || 0);
   if (!Number.isFinite(token) || token <= 0) return null;
@@ -585,6 +696,7 @@ export function buildTradingViewMemoryFitRequest(args: {
   if (from && to && spanOk && fromMs !== toMs) {
     return { token, from, to, target: target || undefined };
   }
+  if (args.requireFitRange) return null;
   if (target) return { token, target };
   return null;
 }

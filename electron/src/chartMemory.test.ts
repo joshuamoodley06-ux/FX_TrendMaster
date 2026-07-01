@@ -145,7 +145,28 @@ describe('chartMemory', () => {
     expect(shouldPersistChartMemory({ start: '2024-01-01T00:00:00.000Z', end: '2024-06-01T00:00:00.000Z', visibleBars: 120 }, 'D1')).toBe(true);
   });
 
-  it('uses global replay as camera anchor only when explicit replay is off', () => {
+  it('anchors lower intraday routine switch from source viewport center', () => {
+    const plan = resolveRoutineTfSwitchCameraPlan({
+      cameraMode: 'CASE',
+      sourceTf: 'W1',
+      destTf: 'H4',
+      savedDestMemory: {
+        start: '2025-01-01T00:00:00.000Z',
+        end: '2025-02-01T00:00:00.000Z',
+      },
+      sourceViewport: snapshotMemoryFromVisibleDomain({
+        start: '2024-01-01T00:00:00.000Z',
+        end: '2024-03-01T00:00:00.000Z',
+      }),
+      globalReplayTime: '2025-06-01T00:00:00.000Z',
+      selectedCandleTime: null,
+      replayMode: false,
+    });
+    expect(plan.fitWindow).toBeNull();
+    expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-04-01T00:00:00.000Z')!);
+  });
+
+  it('does not use global replay for routine H4 without explicit replay', () => {
     const plan = resolveRoutineTfSwitchCameraPlan({
       cameraMode: 'CASE',
       sourceTf: 'D1',
@@ -156,8 +177,8 @@ describe('chartMemory', () => {
       selectedCandleTime: null,
       explicitReplayMode: false,
     });
-    expect(plan.targetTime).toBe('2024-05-01T00:00:00.000Z');
-    expect(plan.fitWindow).toBeNull();
+    expect(plan.intent).toBe('LATEST');
+    expect(plan.targetTime).toBeNull();
   });
 
   it('purges degenerate memory on read', () => {
@@ -200,10 +221,51 @@ describe('chartMemory', () => {
     expect(memoryOverlapsCandles(candles, { start: '2024-02-01T00:00:00.000Z', end: '2024-02-15T00:00:00.000Z' })).toBe(true);
   });
 
-  it('prefers saved H1 memory over cross-TF selected candle', () => {
+  it('prefers source viewport over poisoned H1 memory on cross-TF entry', () => {
     const plan = resolveRoutineTfSwitchCameraPlan({
       cameraMode: 'CASE',
       sourceTf: 'D1',
+      destTf: 'H1',
+      savedDestMemory: {
+        start: '2025-06-01T08:00:00.000Z',
+        end: '2025-06-01T10:00:00.000Z',
+        visibleBars: 2,
+      },
+      sourceViewport: snapshotMemoryFromVisibleDomain({
+        start: '2024-02-01T00:00:00.000Z',
+        end: '2024-02-15T00:00:00.000Z',
+      }),
+      globalReplayTime: '2025-06-01T00:00:00.000Z',
+      selectedCandleTime: '2025-06-01T00:00:00.000Z',
+      replayMode: false,
+    });
+    expect(plan.anchorSource).toBe('sourceViewport');
+    expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-03-01T00:00:00.000Z')!);
+  });
+
+  it('restores valid saved H1 span on H1 to H1 switch', () => {
+    const plan = resolveRoutineTfSwitchCameraPlan({
+      cameraMode: 'CASE',
+      sourceTf: 'H1',
+      destTf: 'H1',
+      savedDestMemory: {
+        start: '2024-03-01T08:00:00.000Z',
+        end: '2024-03-05T20:00:00.000Z',
+        visibleBars: 90,
+      },
+      sourceViewport: null,
+      globalReplayTime: null,
+      selectedCandleTime: null,
+      replayMode: false,
+    });
+    expect(plan.anchorSource).toBe('savedH1SameTf');
+    expect(plan.fitWindow?.start).toBe('2024-03-01T08:00:00.000Z');
+  });
+
+  it('prefers saved H1 memory over cross-TF selected candle on H1 to H1', () => {
+    const plan = resolveRoutineTfSwitchCameraPlan({
+      cameraMode: 'CASE',
+      sourceTf: 'H1',
       destTf: 'H1',
       savedDestMemory: {
         start: '2024-03-01T08:00:00.000Z',
@@ -215,9 +277,8 @@ describe('chartMemory', () => {
       replayMode: false,
     });
     expect(plan.targetTime).toBeTruthy();
-    expect(plan.fitWindow).toBeNull();
-    expect(plan.targetTime).not.toBe('2024-06-01T00:00:00.000Z');
-    expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-04-01T00:00:00.000Z')!);
+    expect(plan.fitWindow?.start).toBe('2024-03-01T08:00:00.000Z');
+    expect(plan.anchorSource).toBe('savedH1SameTf');
   });
 
   it('rejects degenerate H1 memory spans and expands on sanitize', () => {

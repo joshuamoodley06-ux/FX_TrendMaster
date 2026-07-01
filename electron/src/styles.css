@@ -4648,19 +4648,80 @@ button.tradingViewStatusChip{
 }
 .mapStudioShell.chartFullscreenActive .chartMapCanvas{
   min-height:0 !important;
+  display:flex !important;
+  flex-direction:column !important;
+  flex:1 1 auto !important;
+  height:100% !important;
 }
 .mapStudioShell.chartFullscreenActive .chartMapCanvas .d3CandleSvg{
   min-height:0 !important;
 }
+/* Phase 1A: TV fullscreen — flex chain + native LW bottom time scale inset */
 .mapStudioShell.chartFullscreenActive .tradingViewLivePanel{
-  padding-top:58px;
+  --tv-time-scale-inset:36px;
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  height:100% !important;
+  padding-top:0 !important;
+  border:none !important;
+  border-radius:0 !important;
+  overflow:hidden !important;
+}
+.mapStudioShell.chartFullscreenActive .tradingViewLiveHeader,
+.mapStudioShell.chartFullscreenActive .tradingViewSelectionStrip,
+.mapStudioShell.chartFullscreenActive .tradingViewSelectionDebug,
+.mapStudioShell.chartFullscreenActive .tradingViewLiveNotice.readonlyOverlaySummary{
+  display:none !important;
 }
 .mapStudioShell.chartFullscreenActive .tradingViewVisibleStatus{
-  top:58px;
-  margin:0 8px 6px;
-  border:1px solid rgba(250,204,21,.3);
-  border-radius:12px;
-  box-shadow:0 8px 26px rgba(0,0,0,.28);
+  position:absolute !important;
+  top:72px !important;
+  left:8px !important;
+  right:auto !important;
+  z-index:10002 !important;
+  flex:0 0 auto !important;
+  margin:0 !important;
+  padding:4px 6px !important;
+  gap:4px !important;
+  min-height:0 !important;
+  border:1px solid rgba(250,204,21,.28) !important;
+  border-radius:10px !important;
+  box-shadow:0 4px 14px rgba(0,0,0,.28) !important;
+  background:rgba(2,6,23,.82) !important;
+  backdrop-filter:blur(6px) !important;
+}
+.mapStudioShell.chartFullscreenActive .tradingViewVisibleStatus > span{
+  display:none !important;
+}
+.mapStudioShell.chartFullscreenActive .tradingViewStatusChip{
+  min-height:22px !important;
+  padding:2px 7px !important;
+  font-size:10px !important;
+}
+.mapStudioShell.chartFullscreenActive .tradingViewLiveNotice:not(.readonlyOverlaySummary){
+  position:absolute !important;
+  top:44px !important;
+  left:8px !important;
+  right:8px !important;
+  z-index:10002 !important;
+  flex:0 0 auto !important;
+  margin:0 !important;
+  padding:4px 8px !important;
+  font-size:11px !important;
+  border-radius:8px !important;
+}
+.mapStudioShell.chartFullscreenActive .tradingViewChartFrame{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  display:flex !important;
+  flex-direction:column !important;
+  box-sizing:border-box !important;
+  padding-bottom:var(--tv-time-scale-inset) !important;
+}
+.mapStudioShell.chartFullscreenActive .tradingViewChartCanvas{
+  flex:1 1 auto !important;
+  min-height:0 !important;
+  height:auto !important;
 }
 .mapStudioShell.chartFullscreenActive .chartCrosshairHud{
   top:12px !important;

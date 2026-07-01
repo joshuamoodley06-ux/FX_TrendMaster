@@ -64,6 +64,7 @@ export type TradingViewCameraBridge = {
   owner: CameraViewOwner;
   pendingFitReason: string | null;
   pendingCameraIntentActive: boolean;
+  routineAnchorSource: string | null;
   onFitApplied: ((detail: TradingViewFitAppliedDetail) => void) | null;
   onVisibleRangeChange: ((domain: { start: string; end: string; visibleBars: number }) => void) | null;
   onUserPanZoom: (() => void) | null;
@@ -75,6 +76,7 @@ export const tradingViewCameraBridge: { current: TradingViewCameraBridge } = {
     owner: 'AUTO',
     pendingFitReason: null,
     pendingCameraIntentActive: false,
+    routineAnchorSource: null,
     onFitApplied: null,
     onVisibleRangeChange: null,
     onUserPanZoom: null,
@@ -118,6 +120,38 @@ export function isRoutineFitLockActive(timeframe?: string | null): boolean {
   return true;
 }
 
+export type PostRoutineSettleState = {
+  active: boolean;
+  untilMs: number;
+};
+
+/** Blocks layout/resize AUTO until ~500ms after routine memory fit settles. */
+export const postRoutineSettleBridge: { current: PostRoutineSettleState } = {
+  current: { active: false, untilMs: 0 },
+};
+
+export function activatePostRoutineSettle(ttlMs = 500): void {
+  postRoutineSettleBridge.current = {
+    active: true,
+    untilMs: Date.now() + Math.max(200, ttlMs),
+  };
+}
+
+export function clearPostRoutineSettle(): void {
+  postRoutineSettleBridge.current.active = false;
+  postRoutineSettleBridge.current.untilMs = 0;
+}
+
+export function isPostRoutineSettleActive(): boolean {
+  const state = postRoutineSettleBridge.current;
+  if (!state.active) return false;
+  if (Date.now() > state.untilMs) {
+    clearPostRoutineSettle();
+    return false;
+  }
+  return true;
+}
+
 /** Block TradingView fitContent during stable owners, pending fits, and routine TF memory. */
 export function shouldBlockTradingViewAutoFit(args: {
   owner?: CameraViewOwner | null;
@@ -125,13 +159,33 @@ export function shouldBlockTradingViewAutoFit(args: {
   pendingFitReason?: string | null;
   hasPendingFitToken?: boolean;
   pendingCameraIntentActive?: boolean;
+  postRoutineSettle?: boolean;
 }): boolean {
   if (shouldBlockTradingViewFitContent(args.chartMode)) return true;
   if (args.hasPendingFitToken) return true;
   if (args.pendingCameraIntentActive) return true;
+  if (args.postRoutineSettle ?? isPostRoutineSettleActive()) return true;
   if (isRoutineFitLockActive()) return true;
   const owner = args.owner || 'AUTO';
   if (owner !== 'AUTO') return true;
+  const reason = String(args.pendingFitReason || '').toLowerCase();
+  if (isRoutineTfMemoryReason(reason)) return true;
+  if (reason.includes('timeframe-switch')) return true;
+  return false;
+}
+
+/** Block fullscreen layout refit while routine TF switch / pending fit / settle is active. */
+export function shouldBlockFullscreenLayoutRefit(args: {
+  owner?: CameraViewOwner | null;
+  pendingCameraIntentActive?: boolean;
+  hasPendingFitToken?: boolean;
+  pendingFitReason?: string | null;
+}): boolean {
+  if (shouldBlockAutomaticCameraRefit(args.owner)) return true;
+  if (args.pendingCameraIntentActive) return true;
+  if (args.hasPendingFitToken) return true;
+  if (isRoutineFitLockActive()) return true;
+  if (isPostRoutineSettleActive()) return true;
   const reason = String(args.pendingFitReason || '').toLowerCase();
   if (isRoutineTfMemoryReason(reason)) return true;
   if (reason.includes('timeframe-switch')) return true;
@@ -210,7 +264,6 @@ export function isExplicitCameraNavigationReason(reason?: string | null): boolea
     || r.includes('manual-w')
     || r.includes('manual-h')
     || (r.includes('jump') && !r.includes('routine-tf-memory'))
-    || r.includes('fullscreen-layout-ready')
   );
 }
 

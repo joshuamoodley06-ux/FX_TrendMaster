@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
+  activatePostRoutineSettle,
   activateRoutineFitLock,
   autoCandleBodyWidthPx,
+  clearPostRoutineSettle,
   clearRoutineFitLock,
   inferViewOwnerFromCameraReason,
   isExplicitCameraNavigationReason,
+  isPostRoutineSettleActive,
   isRoutineFitLockActive,
   isRoutineTfMemoryReason,
   isStructuralNavigationReason,
   shouldBlockAutomaticCameraRefit,
+  shouldBlockFullscreenLayoutRefit,
   shouldBlockTradingViewAutoFit,
   shouldBlockTradingViewFitContent,
   targetVisibleBarsForTimeframe,
@@ -43,6 +47,7 @@ describe('chartViewportPolicy', () => {
     expect(isExplicitCameraNavigationReason('explorer-jump-fit')).toBe(true);
     expect(isExplicitCameraNavigationReason('quiet-refresh')).toBe(false);
     expect(isExplicitCameraNavigationReason('confirmed-candle-load')).toBe(false);
+    expect(isExplicitCameraNavigationReason('fullscreen-layout-ready')).toBe(false);
   });
 
   it('splits routine TF memory from structural navigation', () => {
@@ -88,6 +93,31 @@ describe('chartViewportPolicy', () => {
       owner: 'AUTO',
       chartMode: 'latest',
     })).toBe(false);
+  });
+
+  it('blocks TradingView auto fit during post-routine settle', () => {
+    clearRoutineFitLock();
+    clearPostRoutineSettle();
+    activatePostRoutineSettle(60000);
+    expect(isPostRoutineSettleActive()).toBe(true);
+    expect(shouldBlockTradingViewAutoFit({
+      owner: 'AUTO',
+      chartMode: 'full',
+    })).toBe(true);
+    clearPostRoutineSettle();
+  });
+
+  it('blocks fullscreen layout refit during routine TF switch', () => {
+    clearRoutineFitLock();
+    clearPostRoutineSettle();
+    expect(shouldBlockFullscreenLayoutRefit({
+      owner: 'TIMEFRAME_SWITCH',
+      pendingFitReason: 'routine-tf-memory:W1->H4',
+    })).toBe(true);
+    expect(shouldBlockFullscreenLayoutRefit({
+      owner: 'AUTO',
+      pendingCameraIntentActive: true,
+    })).toBe(true);
   });
 
   it('derives candle body width from bar spacing', () => {
