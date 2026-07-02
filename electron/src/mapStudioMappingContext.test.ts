@@ -833,6 +833,19 @@ describe('mapStudioMappingContext', () => {
       })).toBe(true);
     });
 
+    it('BROKEN saved Intraday rows still count as saved identity', () => {
+      expect(evaluateRangeDraftSynced({
+        structuralRangeDraftDirty: false,
+        activeRangeId: '435',
+        structureLayer: 'INTRADAY',
+        savedRow: { ...savedIntraday435, status: 'BROKEN' },
+        rhPrice: 2410,
+        rlPrice: 2405,
+        priceMatches,
+        isBrokenStatus: isBroken,
+      })).toBe(true);
+    });
+
     it('switching saved Intradays does not trigger Confirm/Discard', () => {
       expect(evaluateStructuralNavigationGuard({
         hasUnsavedDraft: false,
@@ -858,8 +871,23 @@ describe('mapStudioMappingContext', () => {
       })).toBe('navigate-only');
       expect(evaluateDraftNavConfirmAction({
         rangeDraftSynced: false,
+        anchorsMatchActiveSavedRow: true,
+      })).toBe('navigate-only');
+      expect(evaluateDraftNavConfirmAction({
+        rangeDraftSynced: false,
         anchorsMatchActiveSavedRow: false,
       })).toBe('save-required');
+    });
+
+    it('clean anchors matching active saved row are not treated as unsaved draft', () => {
+      expect(hasUnsavedStructuralDraft({
+        rhSet: true,
+        rlSet: true,
+        structuralRangeDraftDirty: false,
+        rangeDraftSynced: false,
+        activeRangeId: '435',
+        anchorsMatchActiveSavedRow: true,
+      })).toBe(false);
     });
 
     it('dirty RH/RL draft still prompts save/discard', () => {
