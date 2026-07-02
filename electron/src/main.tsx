@@ -121,6 +121,8 @@ import {
   buildSkeletonMappingStatusLine,
   evaluateChildMappingParentBlockReason,
   evaluateChildStructuralRangeConfirm,
+  evaluateDraftNavConfirmAction,
+  evaluateRangeDraftSynced,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
@@ -128,6 +130,8 @@ import {
   hasMappingSkeletonContext,
   hasUnsavedStructuralDraft,
   isChartTimeframeAllowedForStructureLayer,
+  layersForDeletedRangeIds,
+  purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
   shouldRetainChildMappingLock,
   shouldSuppressAutoParentRewrite,
@@ -3174,6 +3178,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [draftNavGuard, setDraftNavGuard] = useState<{
     targetRange: any;
     completeNavigation: () => void;
+    mode: 'prompt-save' | 'prompt-discard-only';
   } | null>(null);
   const bosPromptHandledKeysRef = useRef<Set<string>>(new Set());
   const [guidedCursor, setGuidedCursor] = useState<GuidedMappingCursor | null>(null);
@@ -6927,20 +6932,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const structuralCommitBlockReason = scopeTimeframeBlockReason || childMappingParentBlockReason;
 
-  const rangeDraftSynced = useMemo(() => {
-    if (structuralRangeDraftDirty) return false;
-    const row = selectedSavedRange;
-    if (!row || !activeStructuralRangeId) return false;
-    const rowLayer = normalizeStructureLayer(row.structure_layer || row.layer);
-    if (rowLayer !== structureLayer) return false;
-    if (isStructuralRangeBrokenStatusValue(row.status)) return false;
-    const hi = parseNum(row.range_high_price ?? row.range_high);
-    const lo = parseNum(row.range_low_price ?? row.range_low);
-    const drh = parseNum(rhAnchor.price);
-    const drl = parseNum(rlAnchor.price);
-    return Number.isFinite(hi) && Number.isFinite(lo) && Number.isFinite(drh) && Number.isFinite(drl)
-      && Math.abs(hi - drh) < 0.005 && Math.abs(lo - drl) < 0.005;
-  }, [activeStructuralRangeId, selectedSavedRange, rhAnchor.price, rlAnchor.price, structuralRangeDraftDirty, structureLayer]);
+  const rangeDraftSynced = useMemo(() => evaluateRangeDraftSynced({
+    structuralRangeDraftDirty,
+    activeRangeId: String(activeStructuralRangeId || ''),
+    structureLayer,
+    savedRow: selectedSavedRange,
+    rhPrice: parseNum(rhAnchor.price),
+    rlPrice: parseNum(rlAnchor.price),
+    priceMatches: structuralPricesMatch,
+    isBrokenStatus: isStructuralRangeBrokenStatusValue,
+  }), [activeStructuralRangeId, selectedSavedRange, rhAnchor.price, rlAnchor.price, structuralRangeDraftDirty, structureLayer]);
 
   const saveNextRangeEligible = useMemo(() => {
     if (!activeStructuralRangeId) {
@@ -7280,7 +7281,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     } else {
       setChainDraftMode(false);
       setBosNextRangePrompt(null);
-      hydrateStructuralAnchorsFromRange(range, { force: true, markDraft: false });
+      reconcileMappingRangeState(range, { keepChainDraftMode: false });
     }
     setRangeLineHiddenByCase(prev => {
       const key = activeCaseDisplayId || 'global';
@@ -9161,21 +9162,41 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         rhSet: hasStructuralAnchorPrice(rhAnchor),
         rlSet: hasStructuralAnchorPrice(rlAnchor),
         structuralRangeDraftDirty,
+        rangeDraftSynced,
+        activeRangeId: String(activeStructuralRangeId || ''),
       }),
       targetRangeId: targetId,
       activeRangeId: String(activeStructuralRangeId || ''),
       targetIsParentOnly,
+      structuralRangeDraftDirty,
+      confirmSaveEligible: confirmChildRange.eligible,
     });
     if (decision === 'parent_context_only' || decision === 'proceed') {
       completeNavigation();
       return;
     }
-    setDraftNavGuard({ targetRange: range, completeNavigation });
-    setMessage('Confirm or discard current draft before opening another range');
+    setDraftNavGuard({ targetRange: range, completeNavigation, mode: decision });
+    setMessage(decision === 'prompt-save'
+      ? 'Confirm or discard current draft before opening another range'
+      : 'Discard stale draft anchors before opening another range');
   };
 
   const handleDraftNavConfirm = async () => {
     if (!draftNavGuard) return;
+    if (draftNavGuard.mode === 'prompt-discard-only') {
+      handleDraftNavDiscard();
+      return;
+    }
+    const confirmAction = evaluateDraftNavConfirmAction({
+      rangeDraftSynced,
+      anchorsMatchActiveSavedRow: rangeDraftSynced,
+    });
+    if (confirmAction === 'navigate-only') {
+      const action = draftNavGuard.completeNavigation;
+      setDraftNavGuard(null);
+      action();
+      return;
+    }
     let ok = false;
     if (confirmChildRange.eligible && confirmChildRange.useSaveNextPath) ok = await saveNextStructuralRange();
     else ok = await saveStructuralRange();
@@ -9482,18 +9503,37 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         );
       }
       const purgeLocalRanges = (rows: StructuralRange[]) => withoutStructuralRangeIds(rows, deletedIds);
+      const deletedLayers = layersForDeletedRangeIds(savedStructuralRanges, deletedIds);
       setSavedStructuralRanges((prev) => purgeLocalRanges(prev));
       setStructuralRanges((prev) => purgeLocalRanges(prev));
+      setStructuralAnchorsByLayer((prev) => purgeStructuralAnchorsByLayer(prev, deletedLayers));
+      setDraftNavGuard((prev) => {
+        if (!prev) return null;
+        const targetId = String(prev.targetRange?.range_id || prev.targetRange?.id || '');
+        if (deletedIds.has(targetId)) return null;
+        return prev;
+      });
       const deletedActive = deletedIds.has(String(activeStructuralRangeId));
       const deletedParent = deletedIds.has(String(selectedParentRangeId));
       const deletedLock = deletedIds.has(String(lockedChildMappingParentId));
+      const activeLayer = normalizeStructureLayer(
+        findSavedRangeRowById(String(activeStructuralRangeId || ''))?.structure_layer
+          || findSavedRangeRowById(String(activeStructuralRangeId || ''))?.layer
+          || structureLayer,
+      );
+      const shouldClearLiveDraft = deletedActive
+        || deletedLayers.includes(String(structureLayer).toUpperCase())
+        || deletedLayers.includes(String(activeLayer).toUpperCase());
+      if (shouldClearLiveDraft) {
+        clearStructuralRangeDraft();
+      }
       if (deletedActive) {
         activeStructuralRangeIdRef.current = '';
         setActiveStructuralRangeId('');
-        clearStructuralRangeDraft();
       } else if (deletedParent || deletedLock) {
         if (String(activeStructuralRangeId) && deletedIds.has(String(activeStructuralRangeId))) {
-          clearStructuralRangeDraft();
+          activeStructuralRangeIdRef.current = '';
+          setActiveStructuralRangeId('');
         }
       }
       if (deletedParent) {
@@ -9518,6 +9558,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         stillContainsSelected: refreshedRows.some((r:any) => String(r.range_id || r.id) === id),
       });
       try { await refreshStructuralMapEventsForChart(); } catch {}
+      try { await refreshStructuralRanges(); } catch {}
       const auditData = await refreshHierarchyAudit().catch(() => null);
       console.warn('[hard-delete] refreshHierarchyAudit', { ok: !!auditData });
       const count = deletedIds.size;
@@ -10926,6 +10967,18 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
     const stored = nextAnchorsByLayer[layer];
     if (stored?.rh?.price || stored?.rl?.price) {
+      const rh = parseNum(stored.rh?.price);
+      const rl = parseNum(stored.rl?.price);
+      const matchedSaved = layerRows.find((r:any) => {
+        if (isStructuralRangeBrokenStatusValue(r.status)) return false;
+        const hi = parseNum(r.range_high_price ?? r.range_high);
+        const lo = parseNum(r.range_low_price ?? r.range_low);
+        return structuralPricesMatch(hi, rh) && structuralPricesMatch(lo, rl);
+      });
+      if (matchedSaved) {
+        reconcileMappingRangeState(matchedSaved, { keepChainDraftMode: chainDraftMode });
+        return;
+      }
       setRhAnchor(stored.rh || { price:'', time:'', candle:null });
       setRlAnchor(stored.rl || { price:'', time:'', candle:null });
       setRangeHigh(stored.rh?.price || '');
@@ -12368,12 +12421,20 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <div className="mappingSessionModalBackdrop" role="presentation">
         <div className="mappingSessionModal" role="dialog" aria-labelledby="draft-nav-guard-title">
           <h3 id="draft-nav-guard-title">Unsaved Range Draft</h3>
-          <p className="mappingSessionModalSummary">Confirm or discard current draft before opening another range</p>
+          <p className="mappingSessionModalSummary">
+            {draftNavGuard.mode === 'prompt-save'
+              ? 'Confirm or discard current draft before opening another range'
+              : 'Discard stale draft anchors before opening another range'}
+          </p>
           <div className="mappingSessionModalActions">
-            <button type="button" className="primary" onClick={() => void handleDraftNavConfirm()} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!structuralCommitBlockReason}>
-              {structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : structureLayerRangeConfirmLabel(structureLayer))}
+            {draftNavGuard.mode === 'prompt-save' && (
+              <button type="button" className="primary" onClick={() => void handleDraftNavConfirm()} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!structuralCommitBlockReason || rangeDraftSynced}>
+                {structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : structureLayerRangeConfirmLabel(structureLayer))}
+              </button>
+            )}
+            <button type="button" onClick={handleDraftNavDiscard}>
+              {draftNavGuard.mode === 'prompt-save' ? 'Discard Draft & Open Selected Range' : 'Discard & Open Selected Range'}
             </button>
-            <button type="button" onClick={handleDraftNavDiscard}>Discard Draft &amp; Open Selected Range</button>
             <button type="button" className="secondary" onClick={() => setDraftNavGuard(null)}>Cancel</button>
           </div>
         </div>

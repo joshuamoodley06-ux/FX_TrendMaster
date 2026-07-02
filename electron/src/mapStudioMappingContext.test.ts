@@ -4,6 +4,8 @@ import {
   buildSkeletonMappingStatusLine,
   evaluateChildMappingParentBlockReason,
   evaluateChildStructuralRangeConfirm,
+  evaluateDraftNavConfirmAction,
+  evaluateRangeDraftSynced,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
@@ -11,7 +13,9 @@ import {
   hasMappingSkeletonContext,
   hasUnsavedStructuralDraft,
   isChartTimeframeAllowedForStructureLayer,
+  layersForDeletedRangeIds,
   parentContainsChildByLifecycle,
+  purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
   shouldRetainChildMappingLock,
   shouldSuppressAutoParentRewrite,
@@ -19,6 +23,9 @@ import {
   structureLayerRangeConfirmLabel,
   structureLayerRangeConfirmNextLabel,
 } from './mapStudioMappingContext';
+
+const priceMatches = (a: number, b: number) => Math.abs(a - b) < 0.005;
+const isBroken = (status: string | null | undefined) => String(status || '').toUpperCase() === 'BROKEN';
 
 describe('mapStudioMappingContext', () => {
   it('requires case plus hierarchy/campaign context', () => {
@@ -353,6 +360,8 @@ describe('mapStudioMappingContext', () => {
         targetRangeId: '399',
         activeRangeId: '435',
         targetIsParentOnly: false,
+        structuralRangeDraftDirty: false,
+        confirmSaveEligible: false,
       })).toBe('proceed');
 
       expect(evaluateStructuralNavigationGuard({
@@ -360,6 +369,8 @@ describe('mapStudioMappingContext', () => {
         targetRangeId: '435',
         activeRangeId: '435',
         targetIsParentOnly: false,
+        structuralRangeDraftDirty: false,
+        confirmSaveEligible: false,
       })).toBe('proceed');
 
       expect(evaluateStructuralNavigationGuard({
@@ -367,13 +378,26 @@ describe('mapStudioMappingContext', () => {
         targetRangeId: '399',
         activeRangeId: '435',
         targetIsParentOnly: false,
-      })).toBe('prompt');
+        structuralRangeDraftDirty: true,
+        confirmSaveEligible: false,
+      })).toBe('prompt-save');
+
+      expect(evaluateStructuralNavigationGuard({
+        hasUnsavedDraft: true,
+        targetRangeId: '399',
+        activeRangeId: '435',
+        targetIsParentOnly: false,
+        structuralRangeDraftDirty: false,
+        confirmSaveEligible: false,
+      })).toBe('prompt-discard-only');
 
       expect(evaluateStructuralNavigationGuard({
         hasUnsavedDraft: true,
         targetRangeId: '433',
         activeRangeId: '435',
         targetIsParentOnly: true,
+        structuralRangeDraftDirty: true,
+        confirmSaveEligible: false,
       })).toBe('parent_context_only');
     });
 
@@ -382,18 +406,32 @@ describe('mapStudioMappingContext', () => {
         rhSet: true,
         rlSet: true,
         structuralRangeDraftDirty: false,
+        rangeDraftSynced: true,
+        activeRangeId: '435',
+      })).toBe(false);
+
+      expect(hasUnsavedStructuralDraft({
+        rhSet: true,
+        rlSet: true,
+        structuralRangeDraftDirty: false,
+        rangeDraftSynced: false,
+        activeRangeId: '',
       })).toBe(true);
 
       expect(hasUnsavedStructuralDraft({
         rhSet: false,
         rlSet: false,
         structuralRangeDraftDirty: true,
+        rangeDraftSynced: false,
+        activeRangeId: '',
       })).toBe(true);
 
       expect(hasUnsavedStructuralDraft({
         rhSet: false,
         rlSet: false,
         structuralRangeDraftDirty: false,
+        rangeDraftSynced: false,
+        activeRangeId: '',
       })).toBe(false);
 
       expect(buildDiscardStructuralDraftPlan({
@@ -742,6 +780,129 @@ describe('mapStudioMappingContext', () => {
         Date.parse('2026-02-24T08:00:00.000Z'),
         Date.parse('2026-02-24T12:00:00.000Z'),
       ])).toBe(false);
+    });
+  });
+
+  describe('draft identity guard', () => {
+    const savedIntraday435 = {
+      range_id: '435',
+      structure_layer: 'INTRADAY',
+      range_high_price: 2410,
+      range_low_price: 2405,
+      status: 'ACTIVE',
+    };
+    const savedIntraday399 = {
+      range_id: '399',
+      structure_layer: 'INTRADAY',
+      range_high_price: 2408,
+      range_low_price: 2402,
+      status: 'ACTIVE',
+    };
+
+    it('RH+RL without dirty and synced to saved range is not unsaved', () => {
+      const synced = evaluateRangeDraftSynced({
+        structuralRangeDraftDirty: false,
+        activeRangeId: '435',
+        structureLayer: 'INTRADAY',
+        savedRow: savedIntraday435,
+        rhPrice: 2410,
+        rlPrice: 2405,
+        priceMatches,
+        isBrokenStatus: isBroken,
+      });
+      expect(synced).toBe(true);
+      expect(hasUnsavedStructuralDraft({
+        rhSet: true,
+        rlSet: true,
+        structuralRangeDraftDirty: false,
+        rangeDraftSynced: synced,
+        activeRangeId: '435',
+      })).toBe(false);
+    });
+
+    it('saved Intraday selection does not create dirty draft when synced', () => {
+      expect(evaluateRangeDraftSynced({
+        structuralRangeDraftDirty: false,
+        activeRangeId: '399',
+        structureLayer: 'INTRADAY',
+        savedRow: savedIntraday399,
+        rhPrice: 2408,
+        rlPrice: 2402,
+        priceMatches,
+        isBrokenStatus: isBroken,
+      })).toBe(true);
+    });
+
+    it('switching saved Intradays does not trigger Confirm/Discard', () => {
+      expect(evaluateStructuralNavigationGuard({
+        hasUnsavedDraft: false,
+        targetRangeId: '399',
+        activeRangeId: '435',
+        targetIsParentOnly: false,
+        structuralRangeDraftDirty: false,
+        confirmSaveEligible: false,
+      })).toBe('proceed');
+    });
+
+    it('synced RH/RL anchors navigate-only on confirm', () => {
+      expect(evaluateDraftNavConfirmAction({
+        rangeDraftSynced: true,
+        anchorsMatchActiveSavedRow: true,
+      })).toBe('navigate-only');
+    });
+
+    it('handleDraftNavConfirm path does not save synced saved range', () => {
+      expect(evaluateDraftNavConfirmAction({
+        rangeDraftSynced: true,
+        anchorsMatchActiveSavedRow: false,
+      })).toBe('navigate-only');
+      expect(evaluateDraftNavConfirmAction({
+        rangeDraftSynced: false,
+        anchorsMatchActiveSavedRow: false,
+      })).toBe('save-required');
+    });
+
+    it('dirty RH/RL draft still prompts save/discard', () => {
+      expect(hasUnsavedStructuralDraft({
+        rhSet: true,
+        rlSet: true,
+        structuralRangeDraftDirty: true,
+        rangeDraftSynced: false,
+        activeRangeId: '',
+      })).toBe(true);
+      expect(evaluateStructuralNavigationGuard({
+        hasUnsavedDraft: true,
+        targetRangeId: '399',
+        activeRangeId: '435',
+        targetIsParentOnly: false,
+        structuralRangeDraftDirty: true,
+        confirmSaveEligible: true,
+      })).toBe('prompt-save');
+    });
+
+    it('discard clears draft only via discard plan', () => {
+      expect(buildDiscardStructuralDraftPlan({
+        structureLayer: 'INTRADAY',
+        chainDraftMode: false,
+        chainDraftBelongsToDraftLayer: false,
+      })).toEqual({
+        clearRhRl: true,
+        clearLayerCacheKey: 'INTRADAY',
+        clearDraftDirty: true,
+        clearChainDraftMode: false,
+      });
+    });
+
+    it('deleted_range_ids purge local anchors and layers', () => {
+      const savedRanges = [savedIntraday435, savedIntraday399];
+      const deletedIds = new Set(['435']);
+      expect(layersForDeletedRangeIds(savedRanges, deletedIds)).toEqual(['INTRADAY']);
+      expect(purgeStructuralAnchorsByLayer({
+        INTRADAY: { rh: { price: '2410' }, rl: { price: '2405' } },
+        DAILY: { rh: { price: '1' }, rl: { price: '2' } },
+      }, ['INTRADAY'])).toEqual({
+        DAILY: { rh: { price: '1' }, rl: { price: '2' } },
+      });
     });
   });
 });

@@ -89,8 +89,59 @@ export function hasUnsavedStructuralDraft(args: {
   rhSet: boolean;
   rlSet: boolean;
   structuralRangeDraftDirty: boolean;
+  rangeDraftSynced: boolean;
+  activeRangeId: string;
 }): boolean {
-  return !!(args.structuralRangeDraftDirty || (args.rhSet && args.rlSet));
+  if (args.structuralRangeDraftDirty) return true;
+  if (!args.rhSet || !args.rlSet) return false;
+  if (args.rangeDraftSynced && args.activeRangeId) return false;
+  return true;
+}
+
+export function evaluateRangeDraftSynced(args: {
+  structuralRangeDraftDirty: boolean;
+  activeRangeId: string;
+  structureLayer: string;
+  savedRow: {
+    structure_layer?: string;
+    layer?: string;
+    status?: string | null;
+    range_high_price?: string | number | null;
+    range_high?: string | number | null;
+    range_low_price?: string | number | null;
+    range_low?: string | number | null;
+  } | null;
+  rhPrice: number | null;
+  rlPrice: number | null;
+  priceMatches: (a: number, b: number) => boolean;
+  isBrokenStatus: (status: string | null | undefined) => boolean;
+}): boolean {
+  if (args.structuralRangeDraftDirty) return false;
+  if (!args.savedRow || !args.activeRangeId) return false;
+  const rowLayer = String(args.savedRow.structure_layer || args.savedRow.layer || '').toUpperCase();
+  if (rowLayer !== String(args.structureLayer || '').toUpperCase()) return false;
+  if (args.isBrokenStatus(args.savedRow.status)) return false;
+  const hi = Number(args.savedRow.range_high_price ?? args.savedRow.range_high);
+  const lo = Number(args.savedRow.range_low_price ?? args.savedRow.range_low);
+  return args.priceMatches(hi, args.rhPrice!) && args.priceMatches(lo, args.rlPrice!);
+}
+
+export function anchorsMatchSavedRangeRow(args: {
+  savedRow: {
+    range_high_price?: string | number | null;
+    range_high?: string | number | null;
+    range_low_price?: string | number | null;
+    range_low?: string | number | null;
+  } | null;
+  rhPrice: number | null;
+  rlPrice: number | null;
+  priceMatches: (a: number, b: number) => boolean;
+}): boolean {
+  if (!args.savedRow) return false;
+  if (!Number.isFinite(args.rhPrice) || !Number.isFinite(args.rlPrice)) return false;
+  const hi = Number(args.savedRow.range_high_price ?? args.savedRow.range_high);
+  const lo = Number(args.savedRow.range_low_price ?? args.savedRow.range_low);
+  return args.priceMatches(hi, args.rhPrice!) && args.priceMatches(lo, args.rlPrice!);
 }
 
 export type DiscardStructuralDraftPlan = {
@@ -113,18 +164,61 @@ export function buildDiscardStructuralDraftPlan(args: {
   };
 }
 
-export type StructuralNavigationGuardDecision = 'proceed' | 'prompt' | 'parent_context_only';
+export type StructuralNavigationGuardDecision =
+  | 'proceed'
+  | 'prompt-save'
+  | 'prompt-discard-only'
+  | 'parent_context_only';
 
 export function evaluateStructuralNavigationGuard(args: {
   hasUnsavedDraft: boolean;
   targetRangeId: string;
   activeRangeId: string;
   targetIsParentOnly: boolean;
+  structuralRangeDraftDirty: boolean;
+  confirmSaveEligible: boolean;
 }): StructuralNavigationGuardDecision {
   if (args.targetIsParentOnly) return 'parent_context_only';
   if (!args.hasUnsavedDraft) return 'proceed';
   if (args.targetRangeId && args.activeRangeId && args.targetRangeId === args.activeRangeId) return 'proceed';
-  return 'prompt';
+  if (args.structuralRangeDraftDirty || args.confirmSaveEligible) return 'prompt-save';
+  return 'prompt-discard-only';
+}
+
+export type DraftNavConfirmAction = 'navigate-only' | 'save-required';
+
+export function evaluateDraftNavConfirmAction(args: {
+  rangeDraftSynced: boolean;
+  anchorsMatchActiveSavedRow: boolean;
+}): DraftNavConfirmAction {
+  if (args.rangeDraftSynced || args.anchorsMatchActiveSavedRow) return 'navigate-only';
+  return 'save-required';
+}
+
+export function layersForDeletedRangeIds(
+  savedRanges: Array<{ range_id?: string | number; id?: string | number; structure_layer?: string; layer?: string }>,
+  deletedIds: Set<string>,
+): string[] {
+  const layers = new Set<string>();
+  for (const row of savedRanges) {
+    const id = String(row.range_id || row.id || '');
+    if (!id || !deletedIds.has(id)) continue;
+    const layer = String(row.structure_layer || row.layer || '').toUpperCase();
+    if (layer) layers.add(layer);
+  }
+  return Array.from(layers);
+}
+
+export function purgeStructuralAnchorsByLayer<T extends Record<string, unknown>>(
+  anchors: T,
+  layersToClear: string[],
+): T {
+  if (!layersToClear.length) return anchors;
+  const next = { ...anchors } as T;
+  for (const layer of layersToClear) {
+    delete (next as Record<string, unknown>)[layer];
+  }
+  return next;
 }
 
 export function findMatchingSavedChildRange(args: {
