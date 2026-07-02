@@ -73,6 +73,32 @@ describe('mappingCampaignManager', () => {
     expect(result.gap).toBeNull();
   });
 
+  it('getNextMappingTask does not create automatic Micro tasks for Intraday parents', () => {
+    const ranges = [
+      { range_id: 1, structure_layer: 'WEEKLY', range_scope: 'MAJOR', status: 'ACTIVE', ...weekSpan },
+      {
+        range_id: 10,
+        structure_layer: 'DAILY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        parent_range_id: 1,
+        ...fullDailySpan,
+      },
+      {
+        range_id: 44,
+        structure_layer: 'INTRADAY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        parent_range_id: 10,
+        range_start_time: '2025-01-01T00:00:00.000Z',
+        range_end_time: '2025-03-01T00:00:00.000Z',
+      },
+    ];
+    const result = getNextMappingTask(ranges);
+    expect(result.task).toBe('CAMPAIGN_COMPLETE');
+    expect(result.gap).toBeNull();
+  });
+
   it('prioritizes MAP_WEEKLY before MAP_DAILY when macro gaps exist', () => {
     const ranges = [
       { range_id: 100, structure_layer: 'MACRO', range_scope: 'MAJOR', status: 'ACTIVE' },

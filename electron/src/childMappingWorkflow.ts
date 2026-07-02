@@ -1,4 +1,4 @@
-/** Auto-hierarchy child mapping — Weekly → Daily → Intraday → Micro (UI workflow only). */
+/** Auto-hierarchy child mapping — Weekly → Daily → Intraday (UI workflow only). */
 
 import type { MappingGap } from './mappingWorkflow';
 import {
@@ -35,7 +35,6 @@ const CHILD_LAYER_BY_PARENT: Record<string, string> = {
   MACRO: 'WEEKLY',
   WEEKLY: 'DAILY',
   DAILY: 'INTRADAY',
-  INTRADAY: 'MICRO',
 };
 
 const CHILD_SOURCE_TF: Record<string, string> = {

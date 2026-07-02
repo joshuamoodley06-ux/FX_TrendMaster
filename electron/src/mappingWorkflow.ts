@@ -27,7 +27,6 @@ const HTF_GAP_PAIRS: ReadonlyArray<[string, string]> = [
 
 const LTF_GAP_PAIRS: ReadonlyArray<[string, string]> = [
   ['DAILY', 'INTRADAY'],
-  ['INTRADAY', 'MICRO'],
 ];
 
 export function buildMasterCaseName(symbol: string, startYear = 2019, endYear = 2026): string {
