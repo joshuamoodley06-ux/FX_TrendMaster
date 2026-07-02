@@ -394,6 +394,102 @@ export function isMemoryAnchorPlausibleForCandles<T extends { time: string }>(
   return targetMs >= first - padMs && targetMs <= last + padMs;
 }
 
+function routineSavedDestPriceDomain(args: {
+  savedDestPrice?: { low: number; high: number } | null;
+  savedDestMemory?: ChartTimeframeMemory | null;
+}): { low: number; high: number } | null {
+  if (args.savedDestPrice
+    && Number.isFinite(args.savedDestPrice.low)
+    && Number.isFinite(args.savedDestPrice.high)
+    && args.savedDestPrice.high > args.savedDestPrice.low) {
+    return args.savedDestPrice;
+  }
+  if (args.savedDestMemory?.priceLow != null
+    && args.savedDestMemory?.priceHigh != null
+    && args.savedDestMemory.priceHigh > args.savedDestMemory.priceLow) {
+    return { low: args.savedDestMemory.priceLow, high: args.savedDestMemory.priceHigh };
+  }
+  return null;
+}
+
+export type RoutineAnchorPick = {
+  targetTime: string | null;
+  anchorSource: RoutineAnchorSource;
+  fitWindow: MemoryFitWindow | null;
+  priceDomain: { low: number; high: number } | null;
+  useLatestFallback: boolean;
+};
+
+/** Universal routine TF switch anchor priority (structural jumps excluded). */
+export function pickRoutineAnchorTime(args: {
+  destTf: string;
+  globalReplayTime: string | null;
+  selectedCandleTime: string | null;
+  sourceViewport: ChartTimeframeMemory | null;
+  savedDestMemory: ChartTimeframeMemory | null;
+  savedDestPrice?: { low: number; high: number } | null;
+  sameTf?: boolean;
+}): RoutineAnchorPick {
+  const sameTf = args.sameTf === true;
+  const priceDomain = routineSavedDestPriceDomain(args);
+  const savedMemory = sanitizeChartMemoryOnRead(args.savedDestMemory, args.destTf);
+  const savedFit = memoryFitWindowFromChartMemory(savedMemory, priceDomain);
+
+  if (args.globalReplayTime) {
+    return {
+      targetTime: args.globalReplayTime,
+      anchorSource: 'globalReplay',
+      fitWindow: null,
+      priceDomain: null,
+      useLatestFallback: false,
+    };
+  }
+
+  if (args.selectedCandleTime) {
+    return {
+      targetTime: args.selectedCandleTime,
+      anchorSource: 'selectedCandle',
+      fitWindow: null,
+      priceDomain: null,
+      useLatestFallback: false,
+    };
+  }
+
+  if (args.sourceViewport?.start && args.sourceViewport?.end) {
+    const center = viewportCenterIso(args.sourceViewport.start, args.sourceViewport.end);
+    if (center) {
+      return {
+        targetTime: center,
+        anchorSource: 'sourceViewport',
+        fitWindow: null,
+        priceDomain: null,
+        useLatestFallback: false,
+      };
+    }
+  }
+
+  if (savedFit && savedMemory) {
+    const center = viewportCenterIso(savedMemory.start, savedMemory.end)
+      || savedMemory.start
+      || null;
+    return {
+      targetTime: center,
+      anchorSource: 'savedDest',
+      fitWindow: sameTf ? savedFit : null,
+      priceDomain,
+      useLatestFallback: false,
+    };
+  }
+
+  return {
+    targetTime: null,
+    anchorSource: 'latest',
+    fitWindow: null,
+    priceDomain: null,
+    useLatestFallback: true,
+  };
+}
+
 /** After destination candles load — drop invalid memory anchors; never leave camera without a valid target. */
 export function sanitizeRoutineMemoryCameraAfterLoad<T extends { time: string; high?: number; low?: number }>(
   plan: RoutineTfCameraPlan,
@@ -411,14 +507,29 @@ export function sanitizeRoutineMemoryCameraAfterLoad<T extends { time: string; h
     };
   }
   const latestTime = String(candles[candles.length - 1].time);
+  const intendedAnchor = plan.targetTime;
+  const hadHistoricalAnchor = !!(intendedAnchor && plan.anchorSource && plan.anchorSource !== 'latest');
   let intent = plan.intent;
   let targetTime = plan.targetTime;
   let fitWindow = plan.fitWindow;
   let priceDomain = plan.priceDomain;
+  let anchorSource = plan.anchorSource;
 
   if (targetTime) {
     if (isMemoryAnchorPlausibleForCandles(candles, targetTime)) {
-      targetTime = resolveNearestCandleTime(candles, targetTime);
+      const nearest = resolveNearestCandleTime(candles, targetTime);
+      if (nearest && nearest !== targetTime) {
+        anchorSource = 'nearest';
+      }
+      targetTime = nearest;
+    } else if (hadHistoricalAnchor) {
+      const nearest = resolveNearestCandleTime(candles, intendedAnchor);
+      if (nearest) {
+        targetTime = nearest;
+        anchorSource = 'nearest';
+      } else {
+        targetTime = null;
+      }
     } else {
       targetTime = null;
     }
@@ -467,13 +578,13 @@ export function sanitizeRoutineMemoryCameraAfterLoad<T extends { time: string; h
     fitWindow = buildRoutineMemoryFitWindow(candles, targetTime || fitWindow.start, destTf);
   }
 
-  const parsedReason = parseRoutineTfMemoryReason(plan.reason);
-  const crossTfH1 = parsedReason ? isCrossTfH1Entry(parsedReason.sourceTf, parsedReason.destTf) : false;
-  if (isH1RoutineDest(destTf) && crossTfH1 && targetTime && !fitWindow) {
-    fitWindow = buildRoutineMemoryFitWindow(candles, targetTime, destTf);
-  }
-  if (isH1RoutineDest(destTf) && crossTfH1 && fitWindow && countBarsInCandleWindow(candles, fitWindow.start, fitWindow.end) < minBars) {
-    fitWindow = buildRoutineMemoryFitWindow(candles, targetTime || fitWindow.start, destTf);
+  if (!fitWindow && !targetTime && hadHistoricalAnchor && intendedAnchor) {
+    const nearest = resolveNearestCandleTime(candles, intendedAnchor);
+    if (nearest) {
+      targetTime = nearest;
+      anchorSource = 'nearest';
+      fitWindow = buildRoutineMemoryFitWindow(candles, nearest, destTf);
+    }
   }
 
   if (fitWindow) {
@@ -485,6 +596,7 @@ export function sanitizeRoutineMemoryCameraAfterLoad<T extends { time: string; h
     targetTime = latestTime;
     fitWindow = buildRoutineMemoryFitWindow(candles, latestTime, destTf);
     priceDomain = null;
+    anchorSource = 'latest';
   }
 
   return {
@@ -493,7 +605,7 @@ export function sanitizeRoutineMemoryCameraAfterLoad<T extends { time: string; h
     targetTime,
     fitWindow,
     priceDomain,
-    anchorSource: plan.anchorSource,
+    anchorSource,
   };
 }
 
@@ -511,73 +623,44 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
   explicitReplayMode?: boolean;
 }): RoutineTfCameraPlan {
   const reason = routineTfMemoryReason(args.sourceTf, args.destTf);
-  const explicitReplay = !!(args.explicitReplayMode ?? args.replayMode);
-  const priceDomain = args.savedDestPrice
-    && Number.isFinite(args.savedDestPrice.low)
-    && Number.isFinite(args.savedDestPrice.high)
-    && args.savedDestPrice.high > args.savedDestPrice.low
-    ? args.savedDestPrice
-    : (args.savedDestMemory?.priceLow != null && args.savedDestMemory?.priceHigh != null
-      && args.savedDestMemory.priceHigh > args.savedDestMemory.priceLow
-      ? { low: args.savedDestMemory.priceLow, high: args.savedDestMemory.priceHigh }
-      : null);
+  const priceDomain = routineSavedDestPriceDomain(args);
+  const sameTf = String(args.sourceTf).toUpperCase() === String(args.destTf).toUpperCase();
 
   if (args.cameraMode === 'LOCKED') {
-    const fitWindow = memoryFitWindowFromChartMemory(args.savedDestMemory, priceDomain);
+    const fitWindow = memoryFitWindowFromChartMemory(
+      sanitizeChartMemoryOnRead(args.savedDestMemory, args.destTf),
+      priceDomain,
+    );
+    const lockedPick = pickRoutineAnchorTime({
+      destTf: args.destTf,
+      globalReplayTime: args.globalReplayTime,
+      selectedCandleTime: args.selectedCandleTime,
+      sourceViewport: args.sourceViewport,
+      savedDestMemory: args.savedDestMemory,
+      savedDestPrice: args.savedDestPrice,
+      sameTf,
+    });
     return {
       intent: 'RESTORE_LOCKED',
       reason,
-      targetTime: args.savedDestMemory?.start || (explicitReplay ? args.globalReplayTime : null) || args.selectedCandleTime || null,
+      targetTime: lockedPick.targetTime || args.savedDestMemory?.start || null,
       fitWindow,
       priceDomain,
       anchorSource: 'locked',
     };
   }
 
-  if (explicitReplay && args.globalReplayTime) {
-    return {
-      intent: 'PRESERVE_OR_NEAREST_TIME',
-      reason,
-      targetTime: args.globalReplayTime,
-      fitWindow: null,
-      priceDomain: null,
-      anchorSource: 'replay',
-    };
-  }
+  const pick = pickRoutineAnchorTime({
+    destTf: args.destTf,
+    globalReplayTime: args.globalReplayTime,
+    selectedCandleTime: args.selectedCandleTime,
+    sourceViewport: args.sourceViewport,
+    savedDestMemory: args.savedDestMemory,
+    savedDestPrice: args.savedDestPrice,
+    sameTf,
+  });
 
-  const sameTf = String(args.sourceTf).toUpperCase() === String(args.destTf).toUpperCase();
-  const savedFit = memoryFitWindowFromChartMemory(args.savedDestMemory, priceDomain);
-  const sourceCenter = args.sourceViewport?.start && args.sourceViewport?.end
-    ? viewportCenterIso(args.sourceViewport.start, args.sourceViewport.end)
-    : null;
-
-  if (isH1RoutineDest(args.destTf) && sameTf && args.savedDestMemory?.start && args.savedDestMemory?.end) {
-    const center = viewportCenterIso(args.savedDestMemory.start, args.savedDestMemory.end)
-      || args.savedDestMemory.start
-      || null;
-    if (center && savedFit && !isDegenerateH1MemorySpan(savedFit)) {
-      return {
-        intent: 'PRESERVE_OR_NEAREST_TIME',
-        reason,
-        targetTime: center,
-        fitWindow: savedFit,
-        priceDomain,
-        anchorSource: 'savedH1SameTf',
-      };
-    }
-  }
-
-  if (isCrossTfH1Entry(args.sourceTf, args.destTf)) {
-    if (sourceCenter) {
-      return {
-        intent: 'PRESERVE_OR_NEAREST_TIME',
-        reason,
-        targetTime: sourceCenter,
-        fitWindow: null,
-        priceDomain: null,
-        anchorSource: 'sourceViewport',
-      };
-    }
+  if (pick.useLatestFallback) {
     return {
       intent: 'LATEST',
       reason,
@@ -588,86 +671,13 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
     };
   }
 
-  if (isLowerIntradayRoutineDest(args.destTf) && !sameTf) {
-    if (sourceCenter) {
-      return {
-        intent: 'PRESERVE_OR_NEAREST_TIME',
-        reason,
-        targetTime: sourceCenter,
-        fitWindow: null,
-        priceDomain: null,
-        anchorSource: 'sourceViewport',
-      };
-    }
-    if (savedFit && !(isH1RoutineDest(args.destTf) && isDegenerateH1MemorySpan(savedFit))) {
-      const center = viewportCenterIso(args.savedDestMemory!.start, args.savedDestMemory!.end)
-        || args.savedDestMemory?.start
-        || null;
-      return {
-        intent: 'PRESERVE_OR_NEAREST_TIME',
-        reason,
-        targetTime: center,
-        fitWindow: null,
-        priceDomain,
-        anchorSource: 'savedDest',
-      };
-    }
-  }
-
-  if (args.selectedCandleTime && !isLowerIntradayRoutineDest(args.destTf)) {
-    return {
-      intent: 'PRESERVE_OR_NEAREST_TIME',
-      reason,
-      targetTime: args.selectedCandleTime,
-      fitWindow: null,
-      priceDomain: null,
-      anchorSource: 'selectedCandle',
-    };
-  }
-
-  if (savedFit) {
-    const center = viewportCenterIso(args.savedDestMemory!.start, args.savedDestMemory!.end)
-      || args.savedDestMemory?.start
-      || null;
-    return {
-      intent: 'PRESERVE_OR_NEAREST_TIME',
-      reason,
-      targetTime: center,
-      fitWindow: sameTf ? savedFit : null,
-      priceDomain,
-      anchorSource: 'savedDest',
-    };
-  }
-
-  if (sourceCenter) {
-    return {
-      intent: 'PRESERVE_OR_NEAREST_TIME',
-      reason,
-      targetTime: sourceCenter,
-      fitWindow: null,
-      priceDomain: null,
-      anchorSource: 'sourceViewport',
-    };
-  }
-
-  if (!explicitReplay && args.globalReplayTime && !isLowerIntradayRoutineDest(args.destTf)) {
-    return {
-      intent: 'PRESERVE_OR_NEAREST_TIME',
-      reason,
-      targetTime: args.globalReplayTime,
-      fitWindow: null,
-      priceDomain: null,
-      anchorSource: 'globalReplay',
-    };
-  }
-
   return {
-    intent: 'LATEST',
+    intent: 'PRESERVE_OR_NEAREST_TIME',
     reason,
-    targetTime: null,
-    fitWindow: null,
-    priceDomain: null,
-    anchorSource: 'latest',
+    targetTime: pick.targetTime,
+    fitWindow: pick.fitWindow,
+    priceDomain: pick.priceDomain,
+    anchorSource: pick.anchorSource,
   };
 }
 

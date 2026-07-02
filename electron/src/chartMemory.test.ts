@@ -10,6 +10,7 @@ import {
   memoryOverlapsCandles,
   minimumRoutineVisibleBarsForTimeframe,
   parseChartTimeMs,
+  pickRoutineAnchorTime,
   readChartMemoryFromStore,
   resolveNearestCandleTime,
   resolveRoutineTfSwitchCameraPlan,
@@ -19,20 +20,20 @@ import {
   snapshotMemoryFromVisibleDomain,
 } from './chartMemory';
 
-function makeDailyCandles(count: number, startYear = 2024): { time: string }[] {
-  const rows: { time: string }[] = [];
+function makeDailyCandles(count: number, startYear = 2024): { time: string; high?: number; low?: number }[] {
+  const rows: { time: string; high?: number; low?: number }[] = [];
   for (let i = 0; i < count; i += 1) {
     const d = new Date(Date.UTC(startYear, 0, 1 + i));
     const y = d.getUTCFullYear();
     const m = String(d.getUTCMonth() + 1).padStart(2, '0');
     const day = String(d.getUTCDate()).padStart(2, '0');
-    rows.push({ time: `${y}.${m}.${day} 00:00` });
+    rows.push({ time: `${y}.${m}.${day} 00:00`, high: 100 + i, low: 90 + i });
   }
   return rows;
 }
 
-function makeHourlyCandles(count: number, startYear = 2024): { time: string }[] {
-  const rows: { time: string }[] = [];
+function makeHourlyCandles(count: number, startYear = 2024): { time: string; high?: number; low?: number }[] {
+  const rows: { time: string; high?: number; low?: number }[] = [];
   const start = Date.UTC(startYear, 0, 1, 0, 0, 0);
   for (let i = 0; i < count; i += 1) {
     const d = new Date(start + i * 3600000);
@@ -40,10 +41,36 @@ function makeHourlyCandles(count: number, startYear = 2024): { time: string }[] 
     const m = String(d.getUTCMonth() + 1).padStart(2, '0');
     const day = String(d.getUTCDate()).padStart(2, '0');
     const h = String(d.getUTCHours()).padStart(2, '0');
-    rows.push({ time: `${y}.${m}.${day} ${h}:00` });
+    rows.push({ time: `${y}.${m}.${day} ${h}:00`, high: 100 + i, low: 90 + i });
   }
   return rows;
 }
+
+function makeM15Candles(count: number, startYear = 2024): { time: string; high?: number; low?: number }[] {
+  const rows: { time: string; high?: number; low?: number }[] = [];
+  const start = Date.UTC(startYear, 0, 1, 0, 0, 0);
+  for (let i = 0; i < count; i += 1) {
+    const d = new Date(start + i * 900000);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    const h = String(d.getUTCHours()).padStart(2, '0');
+    const min = String(d.getUTCMinutes()).padStart(2, '0');
+    rows.push({ time: `${y}.${m}.${day} ${h}:${min}`, high: 100 + i, low: 90 + i });
+  }
+  return rows;
+}
+
+const historicalSourceViewport = snapshotMemoryFromVisibleDomain({
+  start: '2024-01-01T00:00:00.000Z',
+  end: '2024-03-01T00:00:00.000Z',
+});
+
+const staleNearLatestDest = {
+  start: '2025-06-01T00:00:00.000Z',
+  end: '2025-06-15T00:00:00.000Z',
+  visibleBars: 120,
+};
 
 describe('chartMemory', () => {
   it('builds case|symbol|timeframe keys', () => {
@@ -58,76 +85,162 @@ describe('chartMemory', () => {
     expect(mem?.start).toBe('2024-01-01T00:00:00.000Z');
   });
 
-  it('prefers global replay over saved destination memory for routine switch', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'W1',
-      destTf: 'D1',
-      savedDestMemory: {
-        start: '2024-03-01T00:00:00.000Z',
-        end: '2024-04-01T00:00:00.000Z',
-      },
-      sourceViewport: null,
-      globalReplayTime: '2024-05-01T00:00:00.000Z',
-      selectedCandleTime: '2024-02-01T00:00:00.000Z',
-      replayMode: true,
-      explicitReplayMode: true,
+  describe('pickRoutineAnchorTime priority', () => {
+    it('replay beats selected, source, saved, and latest', () => {
+      const pick = pickRoutineAnchorTime({
+        destTf: 'M15',
+        globalReplayTime: '2024-05-01T00:00:00.000Z',
+        selectedCandleTime: '2024-02-01T00:00:00.000Z',
+        sourceViewport: historicalSourceViewport,
+        savedDestMemory: staleNearLatestDest,
+      });
+      expect(pick.anchorSource).toBe('globalReplay');
+      expect(pick.targetTime).toBe('2024-05-01T00:00:00.000Z');
     });
-    expect(plan.reason).toBe(routineTfMemoryReason('W1', 'D1'));
-    expect(plan.targetTime).toBe('2024-05-01T00:00:00.000Z');
-    expect(plan.fitWindow).toBeNull();
+
+    it('selected beats source, saved, and latest', () => {
+      const pick = pickRoutineAnchorTime({
+        destTf: 'M15',
+        globalReplayTime: null,
+        selectedCandleTime: '2024-02-01T00:00:00.000Z',
+        sourceViewport: historicalSourceViewport,
+        savedDestMemory: staleNearLatestDest,
+      });
+      expect(pick.anchorSource).toBe('selectedCandle');
+      expect(pick.targetTime).toBe('2024-02-01T00:00:00.000Z');
+    });
+
+    it('source viewport beats saved destination and latest', () => {
+      const pick = pickRoutineAnchorTime({
+        destTf: 'M15',
+        globalReplayTime: null,
+        selectedCandleTime: null,
+        sourceViewport: historicalSourceViewport,
+        savedDestMemory: staleNearLatestDest,
+      });
+      expect(pick.anchorSource).toBe('sourceViewport');
+      expect(parseChartTimeMs(String(pick.targetTime))!).toBeLessThan(parseChartTimeMs('2024-04-01T00:00:00.000Z')!);
+    });
+
+    it('saved destination used only when no replay, selected, or source exists', () => {
+      const pick = pickRoutineAnchorTime({
+        destTf: 'D1',
+        globalReplayTime: null,
+        selectedCandleTime: null,
+        sourceViewport: null,
+        savedDestMemory: {
+          start: '2024-03-01T00:00:00.000Z',
+          end: '2024-04-01T00:00:00.000Z',
+        },
+      });
+      expect(pick.anchorSource).toBe('savedDest');
+      expect(pick.targetTime).toBeTruthy();
+    });
+
+    it('latest is the final fallback only', () => {
+      const pick = pickRoutineAnchorTime({
+        destTf: 'H4',
+        globalReplayTime: null,
+        selectedCandleTime: null,
+        sourceViewport: null,
+        savedDestMemory: null,
+      });
+      expect(pick.anchorSource).toBe('latest');
+      expect(pick.useLatestFallback).toBe(true);
+      expect(pick.targetTime).toBeNull();
+    });
+
+    it('stale saved destination near latest cannot override historical source', () => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf: 'H4',
+        destTf: 'M15',
+        savedDestMemory: staleNearLatestDest,
+        sourceViewport: historicalSourceViewport,
+        globalReplayTime: null,
+        selectedCandleTime: null,
+      });
+      expect(plan.anchorSource).toBe('sourceViewport');
+      expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-04-01T00:00:00.000Z')!);
+    });
   });
 
-  it('uses saved destination center only on cross-timeframe switch', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'W1',
-      destTf: 'D1',
-      savedDestMemory: {
-        start: '2024-03-01T00:00:00.000Z',
-        end: '2024-04-01T00:00:00.000Z',
-      },
-      sourceViewport: null,
-      globalReplayTime: '2024-05-01T00:00:00.000Z',
-      selectedCandleTime: null,
-      replayMode: false,
-    });
-    expect(plan.fitWindow).toBeNull();
-    expect(plan.targetTime).toBeTruthy();
-  });
+  describe('resolveRoutineTfSwitchCameraPlan matrix', () => {
+    const matrix: Array<{ sourceTf: string; destTf: string }> = [
+      { sourceTf: 'W1', destTf: 'D1' },
+      { sourceTf: 'D1', destTf: 'H4' },
+      { sourceTf: 'H4', destTf: 'H1' },
+      { sourceTf: 'H4', destTf: 'M15' },
+      { sourceTf: 'H1', destTf: 'M15' },
+      { sourceTf: 'M15', destTf: 'H1' },
+      { sourceTf: 'M15', destTf: 'D1' },
+      { sourceTf: 'D1', destTf: 'W1' },
+    ];
 
-  it('keeps saved span on same-timeframe switch', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'D1',
-      destTf: 'D1',
-      savedDestMemory: {
-        start: '2024-03-01T00:00:00.000Z',
-        end: '2024-04-01T00:00:00.000Z',
-      },
-      sourceViewport: null,
-      globalReplayTime: null,
-      selectedCandleTime: null,
+    it.each(matrix)('preserves historical source viewport on $sourceTf→$destTf', ({ sourceTf, destTf }) => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf,
+        destTf,
+        savedDestMemory: staleNearLatestDest,
+        sourceViewport: historicalSourceViewport,
+        globalReplayTime: null,
+        selectedCandleTime: null,
+      });
+      expect(plan.reason).toBe(routineTfMemoryReason(sourceTf, destTf));
+      expect(plan.anchorSource).toBe('sourceViewport');
+      expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-04-01T00:00:00.000Z')!);
     });
-    expect(plan.fitWindow?.start).toBe('2024-03-01T00:00:00.000Z');
-  });
 
-  it('maps source viewport center when no higher-priority anchor exists', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'W1',
-      destTf: 'D1',
-      savedDestMemory: null,
-      sourceViewport: snapshotMemoryFromVisibleDomain({
-        start: '2024-01-01T00:00:00.000Z',
-        end: '2024-03-01T00:00:00.000Z',
-      }),
-      globalReplayTime: null,
-      selectedCandleTime: null,
+    it('uses stored global replay even when explicit replay mode is off', () => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf: 'D1',
+        destTf: 'H4',
+        savedDestMemory: staleNearLatestDest,
+        sourceViewport: historicalSourceViewport,
+        globalReplayTime: '2024-02-15T00:00:00.000Z',
+        selectedCandleTime: null,
+        explicitReplayMode: false,
+      });
+      expect(plan.anchorSource).toBe('globalReplay');
+      expect(plan.targetTime).toBe('2024-02-15T00:00:00.000Z');
     });
-    expect(plan.intent).toBe('PRESERVE_OR_NEAREST_TIME');
-    expect(plan.targetTime).toBeTruthy();
-    expect(plan.fitWindow).toBeNull();
+
+    it('keeps saved span on same-timeframe switch when no higher anchor exists', () => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf: 'D1',
+        destTf: 'D1',
+        savedDestMemory: {
+          start: '2024-03-01T00:00:00.000Z',
+          end: '2024-04-01T00:00:00.000Z',
+        },
+        sourceViewport: null,
+        globalReplayTime: null,
+        selectedCandleTime: null,
+      });
+      expect(plan.fitWindow?.start).toBe('2024-03-01T00:00:00.000Z');
+      expect(plan.anchorSource).toBe('savedDest');
+    });
+
+    it('prefers selected candle over saved destination on H1 to H1', () => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf: 'H1',
+        destTf: 'H1',
+        savedDestMemory: {
+          start: '2024-03-01T08:00:00.000Z',
+          end: '2024-03-05T20:00:00.000Z',
+          visibleBars: 90,
+        },
+        sourceViewport: null,
+        globalReplayTime: null,
+        selectedCandleTime: '2024-06-01T00:00:00.000Z',
+      });
+      expect(plan.anchorSource).toBe('selectedCandle');
+      expect(plan.targetTime).toBe('2024-06-01T00:00:00.000Z');
+    });
   });
 
   it('resolves nearest candle time on destination feed', () => {
@@ -143,42 +256,6 @@ describe('chartMemory', () => {
     expect(shouldPersistChartMemory({ start: 'a', end: 'b', visibleBars: 4 }, 'D1')).toBe(false);
     expect(shouldPersistChartMemory({ start: '2024-01-01T00:00:00.000Z', end: '2024-01-01T00:00:00.000Z', visibleBars: 120 }, 'D1')).toBe(false);
     expect(shouldPersistChartMemory({ start: '2024-01-01T00:00:00.000Z', end: '2024-06-01T00:00:00.000Z', visibleBars: 120 }, 'D1')).toBe(true);
-  });
-
-  it('anchors lower intraday routine switch from source viewport center', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'W1',
-      destTf: 'H4',
-      savedDestMemory: {
-        start: '2025-01-01T00:00:00.000Z',
-        end: '2025-02-01T00:00:00.000Z',
-      },
-      sourceViewport: snapshotMemoryFromVisibleDomain({
-        start: '2024-01-01T00:00:00.000Z',
-        end: '2024-03-01T00:00:00.000Z',
-      }),
-      globalReplayTime: '2025-06-01T00:00:00.000Z',
-      selectedCandleTime: null,
-      replayMode: false,
-    });
-    expect(plan.fitWindow).toBeNull();
-    expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-04-01T00:00:00.000Z')!);
-  });
-
-  it('does not use global replay for routine H4 without explicit replay', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'D1',
-      destTf: 'H4',
-      savedDestMemory: null,
-      sourceViewport: null,
-      globalReplayTime: '2024-05-01T00:00:00.000Z',
-      selectedCandleTime: null,
-      explicitReplayMode: false,
-    });
-    expect(plan.intent).toBe('LATEST');
-    expect(plan.targetTime).toBeNull();
   });
 
   it('purges degenerate memory on read', () => {
@@ -198,6 +275,7 @@ describe('chartMemory', () => {
       targetTime: tinyStart,
       fitWindow: { start: tinyStart, end: tinyEnd, low: 0, high: 0, padRatio: 0 },
       priceDomain: null,
+      anchorSource: 'sourceViewport',
     }, candles, 'D1');
     const bars = countBarsInCandleWindow(candles, sanitized.fitWindow!.start, sanitized.fitWindow!.end);
     expect(bars).toBeGreaterThanOrEqual(minimumRoutineVisibleBarsForTimeframe('D1'));
@@ -221,64 +299,36 @@ describe('chartMemory', () => {
     expect(memoryOverlapsCandles(candles, { start: '2024-02-01T00:00:00.000Z', end: '2024-02-15T00:00:00.000Z' })).toBe(true);
   });
 
-  it('prefers source viewport over poisoned H1 memory on cross-TF entry', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'D1',
-      destTf: 'H1',
-      savedDestMemory: {
-        start: '2025-06-01T08:00:00.000Z',
-        end: '2025-06-01T10:00:00.000Z',
-        visibleBars: 2,
-      },
-      sourceViewport: snapshotMemoryFromVisibleDomain({
-        start: '2024-02-01T00:00:00.000Z',
-        end: '2024-02-15T00:00:00.000Z',
-      }),
-      globalReplayTime: '2025-06-01T00:00:00.000Z',
-      selectedCandleTime: '2025-06-01T00:00:00.000Z',
-      replayMode: false,
-    });
-    expect(plan.anchorSource).toBe('sourceViewport');
-    expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-03-01T00:00:00.000Z')!);
+  it('lands on nearest candle when target anchor is implausible but historical anchor existed', () => {
+    const candles = makeHourlyCandles(400);
+    const historicalTarget = '2025-06-01T12:00:00.000Z';
+    const sanitized = sanitizeRoutineMemoryCameraAfterLoad({
+      intent: 'PRESERVE_OR_NEAREST_TIME',
+      reason: routineTfMemoryReason('H4', 'H1'),
+      targetTime: historicalTarget,
+      fitWindow: null,
+      priceDomain: null,
+      anchorSource: 'sourceViewport',
+    }, candles, 'H1');
+    expect(sanitized.anchorSource).toBe('nearest');
+    expect(sanitized.targetTime).toBeTruthy();
+    expect(sanitized.intent).toBe('PRESERVE_OR_NEAREST_TIME');
+    expect(sanitized.targetTime).not.toBe(historicalTarget);
   });
 
-  it('restores valid saved H1 span on H1 to H1 switch', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'H1',
-      destTf: 'H1',
-      savedDestMemory: {
-        start: '2024-03-01T08:00:00.000Z',
-        end: '2024-03-05T20:00:00.000Z',
-        visibleBars: 90,
-      },
-      sourceViewport: null,
-      globalReplayTime: null,
-      selectedCandleTime: null,
-      replayMode: false,
-    });
-    expect(plan.anchorSource).toBe('savedH1SameTf');
-    expect(plan.fitWindow?.start).toBe('2024-03-01T08:00:00.000Z');
-  });
-
-  it('prefers saved H1 memory over cross-TF selected candle on H1 to H1', () => {
-    const plan = resolveRoutineTfSwitchCameraPlan({
-      cameraMode: 'CASE',
-      sourceTf: 'H1',
-      destTf: 'H1',
-      savedDestMemory: {
-        start: '2024-03-01T08:00:00.000Z',
-        end: '2024-03-05T20:00:00.000Z',
-      },
-      sourceViewport: null,
-      globalReplayTime: null,
-      selectedCandleTime: '2024-06-01T00:00:00.000Z',
-      replayMode: false,
-    });
-    expect(plan.targetTime).toBeTruthy();
-    expect(plan.fitWindow?.start).toBe('2024-03-01T08:00:00.000Z');
-    expect(plan.anchorSource).toBe('savedH1SameTf');
+  it('falls back to latest only when no historical anchor exists', () => {
+    const candles = makeM15Candles(500);
+    const sanitized = sanitizeRoutineMemoryCameraAfterLoad({
+      intent: 'LATEST',
+      reason: routineTfMemoryReason('H4', 'M15'),
+      targetTime: null,
+      fitWindow: null,
+      priceDomain: null,
+      anchorSource: 'latest',
+    }, candles, 'M15');
+    expect(sanitized.intent).toBe('LATEST');
+    expect(sanitized.anchorSource).toBe('latest');
+    expect(sanitized.targetTime).toBe(candles[candles.length - 1].time);
   });
 
   it('rejects degenerate H1 memory spans and expands on sanitize', () => {
@@ -297,6 +347,7 @@ describe('chartMemory', () => {
         padRatio: 0,
       },
       priceDomain: null,
+      anchorSource: 'sourceViewport',
     }, candles, 'H1');
     expect(countBarsInCandleWindow(candles, sanitized.fitWindow!.start, sanitized.fitWindow!.end))
       .toBeGreaterThanOrEqual(minimumRoutineVisibleBarsForTimeframe('H1'));
