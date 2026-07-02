@@ -781,6 +781,54 @@ describe('mapStudioMappingContext', () => {
         Date.parse('2026-02-24T12:00:00.000Z'),
       ])).toBe(false);
     });
+
+    it('allows child anchors on the inactive day for ended Daily parents with midnight boundary', () => {
+      const endedDaily = {
+        ...daily434,
+        status: 'BROKEN',
+        inactive_from_time: '2026-03-03T00:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(endedDaily, [
+        Date.parse('2026-03-03T14:00:00.000Z'),
+      ])).toBe(true);
+    });
+
+    it('rejects child anchors after the inactive day for ended Daily parents', () => {
+      const endedDaily = {
+        ...daily434,
+        status: 'BROKEN',
+        inactive_from_time: '2026-03-03T00:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(endedDaily, [
+        Date.parse('2026-03-04T00:00:00.000Z'),
+      ])).toBe(false);
+    });
+
+    it('preserves explicit intraday cutoff for ended Daily parents', () => {
+      const endedDaily = {
+        ...daily434,
+        status: 'BROKEN',
+        inactive_from_time: '2026-03-03T10:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(endedDaily, [
+        Date.parse('2026-03-03T14:00:00.000Z'),
+      ])).toBe(false);
+    });
+
+    it('does not expand midnight lifecycle end for non-Daily parents', () => {
+      const endedIntraday = {
+        range_id: '439',
+        structure_layer: 'INTRADAY',
+        range_scope: 'MAJOR',
+        status: 'BROKEN',
+        active_from_time: '2026-03-02T00:00:00.000Z',
+        range_start_time: '2026-03-02T00:00:00.000Z',
+        inactive_from_time: '2026-03-03T00:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(endedIntraday, [
+        Date.parse('2026-03-03T14:00:00.000Z'),
+      ])).toBe(false);
+    });
   });
 
   describe('draft identity guard', () => {

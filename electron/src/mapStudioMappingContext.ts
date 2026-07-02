@@ -591,10 +591,30 @@ export function parentLifecycleStartMs(parent: StructuralParentRangeRow): number
   return values.length ? Math.min(...values) : null;
 }
 
+function isDateOnlyOrMidnightBoundary(value: unknown): boolean {
+  if (value === null || value === undefined || value === '') return false;
+  const raw = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return true;
+  const ms = parseStructuralTimeMs(value);
+  if (ms === null) return false;
+  const d = new Date(ms);
+  return d.getUTCHours() === 0
+    && d.getUTCMinutes() === 0
+    && d.getUTCSeconds() === 0
+    && d.getUTCMilliseconds() === 0;
+}
+
 export function parentLifecycleEndMs(parent: StructuralParentRangeRow): number | null {
   const status = String(parent?.status || 'ACTIVE').toUpperCase();
   if (!['BROKEN', 'ABANDONED', 'ARCHIVED'].includes(status)) return null;
-  return parseStructuralTimeMs(parent?.inactive_from_time);
+  const endMs = parseStructuralTimeMs(parent?.inactive_from_time);
+  if (endMs === null) return null;
+  const parentLayer = normalizeStructureLayerId(parent?.structure_layer || parent?.layer);
+  if (parentLayer === 'DAILY' && isDateOnlyOrMidnightBoundary(parent?.inactive_from_time)) {
+    const day = new Date(endMs);
+    return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1) - 1;
+  }
+  return endMs;
 }
 
 export function parentContainsChildByLifecycle(
