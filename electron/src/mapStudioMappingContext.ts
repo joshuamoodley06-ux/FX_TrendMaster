@@ -705,6 +705,10 @@ export function evaluateChildMappingParentBlockReason(args: {
   return null;
 }
 
+export function allowsBoundaryCorrectionForParentBlock(reason: string | null | undefined): boolean {
+  return !!reason && reason.includes('move RH/RL');
+}
+
 export function evaluateStructuralBosBlockReason(args: {
   hasCase: boolean;
   structureLayer: string;

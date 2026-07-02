@@ -120,6 +120,7 @@ import {
   anchorsMatchSavedRangeRow,
   buildDiscardStructuralDraftPlan,
   buildSkeletonMappingStatusLine,
+  allowsBoundaryCorrectionForParentBlock,
   evaluateChildMappingParentBlockReason,
   evaluateChildStructuralRangeConfirm,
   evaluateDraftNavConfirmAction,
@@ -6936,7 +6937,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const canSetRhRlStructuralDraft = mappingSkeletonContextReady || orphanRangeDraftAllowed;
 
+  const childMappingParentBoundaryCorrectionAllowed = allowsBoundaryCorrectionForParentBlock(childMappingParentBlockReason);
   const structuralCommitBlockReason = scopeTimeframeBlockReason || childMappingParentBlockReason;
+  const structuralAnchorEditBlockReason = scopeTimeframeBlockReason
+    || (childMappingParentBoundaryCorrectionAllowed ? null : childMappingParentBlockReason);
 
   const rangeDraftSynced = useMemo(() => evaluateRangeDraftSynced({
     structuralRangeDraftDirty,
@@ -7836,6 +7840,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const mappingCase = getCurrentMappingCaseRef();
     if (!mappingCase.hasCase) {
       setMessage('Open a case first (Folder tab).');
+      return;
+    }
+    if ((kind === 'RH' || kind === 'RL') && structuralAnchorEditBlockReason) {
+      setMessage(structuralAnchorEditBlockReason);
       return;
     }
     if ((kind === 'RH' || kind === 'RL') && !canSetRhRlStructuralDraft) {
@@ -11014,6 +11022,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         reconcileMappingRangeState(matchedSaved, { keepChainDraftMode: chainDraftMode });
         return;
       }
+      const nextParentLayerForStoredDraft = expectedParentStructureLayer(layer);
+      if (nextParentLayerForStoredDraft && selectedParentRangeId && !activeStructuralRangeId) {
+        setRhAnchor({ price:'', time:'', candle:null });
+        setRlAnchor({ price:'', time:'', candle:null });
+        setRangeHigh('');
+        setRangeLow('');
+        setStructuralRangeDraftDirty(false);
+        return;
+      }
       setRhAnchor(stored.rh || { price:'', time:'', candle:null });
       setRlAnchor(stored.rl || { price:'', time:'', candle:null });
       setRangeHigh(stored.rh?.price || '');
@@ -11476,11 +11493,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     || !tradingViewMappingInputEnabled
     || !!admittedMappingInputCandle;
   const structuralQuickAnchorDisabled = structuralSaving || quickEventSaving || candleFeedLoading || !candleFeedGuard.ready
-    || !!structuralCommitBlockReason
+    || !!structuralAnchorEditBlockReason
     || (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled)
     || (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled ? !tvMappingSelectionReady : !mappingInputCandle);
-  const structuralQuickAnchorHint = structuralCommitBlockReason
-    ? structuralCommitBlockReason
+  const structuralBosQuickDisabled = structuralQuickAnchorDisabled || !!childMappingParentBlockReason;
+  const structuralQuickAnchorHint = structuralAnchorEditBlockReason
+    ? structuralAnchorEditBlockReason
     : candleFeedLoading
     ? 'Loading candle feed…'
     : chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled
@@ -11504,8 +11522,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     <div className="quickAnchorBar quickAnchorBarCompact skeletonMapBar" aria-label="Skeleton mapping — H/L/↑/↓ or buttons">
       <button type="button" className={`structuralQuickBtn chipBtn ${rhAnchor.price ? 'active' : ''}`} disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RH')} title="H · Range High"><span>RH</span></button>
       <button type="button" className={`structuralQuickBtn chipBtn ${rlAnchor.price ? 'active' : ''}`} disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RL')} title="L · Range Low"><span>RL</span></button>
-      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BH')} title="↑ · BOS Up"><span>↑</span></button>
-      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BL')} title="↓ · BOS Down"><span>↓</span></button>
+      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BH')} title="↑ · BOS Up"><span>↑</span></button>
+      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BL')} title="↓ · BOS Down"><span>↓</span></button>
       <button type="button" className="quickSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="U · Undo">Undo</button>
       {(structuralRangeDraftDirty || structuralBosDraftDirty || structuralSaving) && (
         <span className="quickDraftStatus dirty" title={structuralSaving ? 'Syncing…' : 'Draft'}>{structuralSaving ? 'sync…' : 'draft'}</span>
@@ -11535,8 +11553,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     <div className="structuralMarkToolbar" aria-label="Structural mapping toolbar">
       <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RH')} title="Range High">RH</button>
       <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RL')} title="Range Low">RL</button>
-      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
-      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
       <span className="structuralMarkDivider" />
       <button type="button" className={`structuralMarkBtn primary ${confirmChildRange.eligible || chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason} title={saveBlockReason || (confirmChildRange.eligible ? confirmChildRange.label : chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : compactQuickSaveLabel)}</button>
       <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!structuralCommitBlockReason} title={scopeTimeframeBlockReason || saveNextRangeEligible.reason || 'Save next range'}>Next</button>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  allowsBoundaryCorrectionForParentBlock,
   buildDiscardStructuralDraftPlan,
   buildSkeletonMappingStatusLine,
   evaluateChildMappingParentBlockReason,
@@ -699,6 +700,7 @@ describe('mapStudioMappingContext', () => {
       });
       expect(reason).toContain('Intraday window is not inside Daily #437');
       expect(reason).toContain('Select the correct Daily or move RH/RL');
+      expect(allowsBoundaryCorrectionForParentBlock(reason)).toBe(true);
     });
 
     it('allows child window inside locked Daily parent', () => {
@@ -745,6 +747,7 @@ describe('mapStudioMappingContext', () => {
         allowOrphanOverride: false,
       });
       expect(parentBlock).toContain('does not match locked Daily #434');
+      expect(allowsBoundaryCorrectionForParentBlock(parentBlock)).toBe(false);
       expect(evaluateStructuralBosBlockReason({
         hasCase: true,
         structureLayer: 'INTRADAY',
