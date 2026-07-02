@@ -1,7 +1,75 @@
 import { describe, expect, it } from 'vitest';
-import { adaptFitRequestForTradingView, adaptOverlaysForTradingView } from './overlayAdapter';
+import { adaptFitRequestForTradingView, adaptOverlaysForTradingView, TRADINGVIEW_LAYER_COLORS } from './overlayAdapter';
+
+const LAYER_COLORS = TRADINGVIEW_LAYER_COLORS;
+const LAYERS = ['MACRO', 'WEEKLY', 'DAILY', 'INTRADAY', 'MICRO'] as const;
+const ROLES = [
+  { name: 'selected', isActive: true },
+  { name: 'saved', isActive: false },
+  { name: 'parent', isParentContext: true },
+] as const;
 
 describe('adaptOverlaysForTradingView', () => {
+  it.each(LAYERS.flatMap((layer) => ROLES.map((role) => ({ layer, role }))))(
+    'uses layer hue for $layer $role.name lines',
+    ({ layer, role }) => {
+      const result = adaptOverlaysForTradingView({
+        timeframe: 'H1',
+        savedRangeOverlays: [{
+          rangeId: `r-${layer}-${role.name}`,
+          structureLayer: layer,
+          rangeScope: 'MAJOR',
+          status: 'ACTIVE',
+          high: 2500,
+          low: 2400,
+          isActive: 'isActive' in role ? role.isActive : false,
+          isParentContext: 'isParentContext' in role ? role.isParentContext : false,
+        }],
+      });
+
+      expect(result.priceLines).toHaveLength(2);
+      expect(result.priceLines.every((line) => line.color === LAYER_COLORS[layer])).toBe(true);
+    },
+  );
+
+  it('active DAILY selected is green, not white', () => {
+    const result = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      selectedRange: { range_id: 'r1' },
+      savedRangeOverlays: [{
+        rangeId: 'r1',
+        structureLayer: 'DAILY',
+        rangeScope: 'MAJOR',
+        status: 'ACTIVE',
+        high: 2420.25,
+        low: 2388.5,
+        isActive: true,
+      }],
+    });
+
+    expect(result.priceLines.every((line) => line.role === 'selected')).toBe(true);
+    expect(result.priceLines.every((line) => line.color === LAYER_COLORS.DAILY)).toBe(true);
+    expect(result.priceLines.every((line) => line.color !== '#f8fafc')).toBe(true);
+    expect(result.priceLines.find((line) => line.kind === 'RH')?.lineWidth).toBe(3);
+  });
+
+  it('parent WEEKLY lines are red, not orange', () => {
+    const result = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      parentRangeOverlays: [
+        { rangeId: 'p1', structureLayer: 'WEEKLY', kind: 'high', price: 2500, label: 'Parent WEEKLY RH' },
+        { rangeId: 'p1', structureLayer: 'WEEKLY', kind: 'low', price: 2300, label: 'Parent WEEKLY RL' },
+      ],
+    });
+
+    expect(result.priceLines).toHaveLength(2);
+    expect(result.priceLines.every((line) => line.role === 'parent')).toBe(true);
+    expect(result.priceLines.every((line) => line.color === LAYER_COLORS.WEEKLY)).toBe(true);
+    expect(result.priceLines.every((line) => line.color !== '#f59e0b')).toBe(true);
+    expect(result.priceLines.every((line) => line.lineStyle === 'dashed')).toBe(true);
+    expect(result.priceLines.every((line) => line.lineWidth === 2)).toBe(true);
+  });
+
   it('mirrors selected range RH/RL as read-only price lines', () => {
     const result = adaptOverlaysForTradingView({
       timeframe: 'H1',
@@ -20,6 +88,7 @@ describe('adaptOverlaysForTradingView', () => {
     expect(result.priceLines).toHaveLength(2);
     expect(result.priceLines.map((line) => line.kind).sort()).toEqual(['RH', 'RL']);
     expect(result.priceLines.every((line) => line.role === 'selected')).toBe(true);
+    expect(result.priceLines.every((line) => line.color === LAYER_COLORS.DAILY)).toBe(true);
     expect(result.priceLines.find((line) => line.kind === 'RH')?.price).toBe(2420.25);
     expect(result.markers).toHaveLength(0);
   });
@@ -44,6 +113,7 @@ describe('adaptOverlaysForTradingView', () => {
 
     expect(result.priceLines).toHaveLength(2);
     expect(result.priceLines.every((line) => line.role === 'parent')).toBe(true);
+    expect(result.priceLines.every((line) => line.color === LAYER_COLORS.WEEKLY)).toBe(true);
   });
 
   it('falls back to selected saved range prices when overlay list is empty', () => {
@@ -62,6 +132,7 @@ describe('adaptOverlaysForTradingView', () => {
 
     expect(result.priceLines).toHaveLength(2);
     expect(result.priceLines.every((line) => line.role === 'selected')).toBe(true);
+    expect(result.priceLines.every((line) => line.color === LAYER_COLORS.WEEKLY)).toBe(true);
     expect(result.priceLines.map((line) => line.price).sort()).toEqual([2602.55, 2790.01]);
   });
 
@@ -147,6 +218,7 @@ describe('adaptOverlaysForTradingView', () => {
       id: 'draft:RH',
       kind: 'RH',
       price: 2410.5,
+      color: LAYER_COLORS.DAILY,
       lineStyle: 'dashed',
       label: 'Draft DAILY RH',
     });

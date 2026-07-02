@@ -75,6 +75,8 @@ const LAYER_COLORS: Record<string, string> = {
   MICRO: '#facc15',
 };
 
+export const TRADINGVIEW_LAYER_COLORS = LAYER_COLORS;
+
 function finitePrice(value: unknown): number | null {
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
@@ -123,9 +125,7 @@ function rangeRole(range: SavedRangeOverlayInput, selectedIds: Set<string>): Tra
   return 'saved';
 }
 
-function rangeLineColor(layer: string | undefined, role: TradingViewRangeLine['role']): string {
-  if (role === 'selected') return '#f8fafc';
-  if (role === 'parent') return '#f59e0b';
+function rangeLineColor(layer: string | undefined): string {
   return LAYER_COLORS[String(layer || '').toUpperCase()] || '#94a3b8';
 }
 
@@ -139,7 +139,7 @@ function addRangeLines(
   const id = rangeIdOf(range);
   const role = rangeRole(range, selectedIds);
   const layer = String(range.structureLayer || '').toUpperCase();
-  const color = rangeLineColor(layer, role);
+  const color = rangeLineColor(layer);
   const lineWidth = role === 'selected' ? 3 : role === 'parent' ? 2 : 1;
   const lineStyle = lineStyleFor(range);
 
@@ -242,7 +242,7 @@ function addParentLine(out: TradingViewRangeLine[], overlay: ParentRangeOverlayI
     role: 'parent',
     label: overlay.label || `${layer || 'Parent'} ${kind}`,
     price,
-    color: '#f59e0b',
+    color: rangeLineColor(layer),
     lineWidth: 2,
     lineStyle: 'dashed',
   });
