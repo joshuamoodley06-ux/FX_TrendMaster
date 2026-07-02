@@ -19,6 +19,7 @@ export type InspectorCommitSource =
   | 'range_chain_link'
   | 'range_reparent'
   | 'range_archive'
+  | 'range_hard_delete'
   | 'raw_delete';
 
 export type InspectorCommitKind =
@@ -28,7 +29,8 @@ export type InspectorCommitKind =
   | 'structural_event_patch'
   | 'structural_range'
   | 'structural_range_patch'
-  | 'structural_range_reparent';
+  | 'structural_range_reparent'
+  | 'structural_range_hard_delete';
 
 export type InspectorCommitRequest = {
   baseUrl: string;
@@ -80,6 +82,8 @@ function resolveCommitTarget(req: InspectorCommitRequest): { url: string; method
     }
     case 'structural_range_reparent':
       return { url: `${base}/api/v1/map/range/reparent`, method: 'POST' };
+    case 'structural_range_hard_delete':
+      return { url: `${base}/api/v1/map/ranges/hard-delete`, method: 'POST' };
     default: {
       const unknown = (req as { kind?: string }).kind ?? 'unknown';
       throw new Error(`Unknown inspector commit kind: ${unknown}`);
