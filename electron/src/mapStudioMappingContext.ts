@@ -91,11 +91,11 @@ export function hasUnsavedStructuralDraft(args: {
   structuralRangeDraftDirty: boolean;
   rangeDraftSynced: boolean;
   activeRangeId: string;
+  anchorsMatchActiveSavedRow?: boolean;
 }): boolean {
   if (args.structuralRangeDraftDirty) return true;
   if (!args.rhSet || !args.rlSet) return false;
-  if (args.rangeDraftSynced && args.activeRangeId) return false;
-  return true;
+  return args.rangeDraftSynced === false && args.anchorsMatchActiveSavedRow !== true;
 }
 
 export function evaluateRangeDraftSynced(args: {
@@ -120,7 +120,6 @@ export function evaluateRangeDraftSynced(args: {
   if (!args.savedRow || !args.activeRangeId) return false;
   const rowLayer = String(args.savedRow.structure_layer || args.savedRow.layer || '').toUpperCase();
   if (rowLayer !== String(args.structureLayer || '').toUpperCase()) return false;
-  if (args.isBrokenStatus(args.savedRow.status)) return false;
   const hi = Number(args.savedRow.range_high_price ?? args.savedRow.range_high);
   const lo = Number(args.savedRow.range_low_price ?? args.savedRow.range_low);
   return args.priceMatches(hi, args.rhPrice!) && args.priceMatches(lo, args.rlPrice!);

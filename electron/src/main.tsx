@@ -117,6 +117,7 @@ import { MappingCampaignPanel } from './mappingCampaignPanel';
 import { computeCampaignStatus } from './mappingCampaignManager';
 import {
   allowedChartTimeframesForStructureLayer,
+  anchorsMatchSavedRangeRow,
   buildDiscardStructuralDraftPlan,
   buildSkeletonMappingStatusLine,
   evaluateChildMappingParentBlockReason,
@@ -6943,6 +6944,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     isBrokenStatus: isStructuralRangeBrokenStatusValue,
   }), [activeStructuralRangeId, selectedSavedRange, rhAnchor.price, rlAnchor.price, structuralRangeDraftDirty, structureLayer]);
 
+  const anchorsMatchActiveSavedRow = useMemo(() => {
+    const activeId = String(activeStructuralRangeId || '');
+    if (!activeId) return false;
+    const activeSavedRow = safeArray<any>(savedStructuralRanges).find((row:any) => {
+      const rowId = String(row.range_id || row.id || '');
+      const rowLayer = normalizeStructureLayer(row.structure_layer || row.layer);
+      return rowId === activeId && rowLayer === structureLayer;
+    }) || null;
+    return anchorsMatchSavedRangeRow({
+      savedRow: activeSavedRow,
+      rhPrice: parseNum(rhAnchor.price),
+      rlPrice: parseNum(rlAnchor.price),
+      priceMatches: structuralPricesMatch,
+    });
+  }, [activeStructuralRangeId, savedStructuralRanges, structureLayer, rhAnchor.price, rlAnchor.price]);
+
   const saveNextRangeEligible = useMemo(() => {
     if (!activeStructuralRangeId) {
       return { eligible:false, reason:'Select the broken range as active first.', oldRangeId:null as string|null, parentRangeId:null as string|number|null, createdByEventId:null as string|number|null };
@@ -9164,6 +9181,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         structuralRangeDraftDirty,
         rangeDraftSynced,
         activeRangeId: String(activeStructuralRangeId || ''),
+        anchorsMatchActiveSavedRow,
       }),
       targetRangeId: targetId,
       activeRangeId: String(activeStructuralRangeId || ''),
@@ -9189,7 +9207,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     const confirmAction = evaluateDraftNavConfirmAction({
       rangeDraftSynced,
-      anchorsMatchActiveSavedRow: rangeDraftSynced,
+      anchorsMatchActiveSavedRow,
     });
     if (confirmAction === 'navigate-only') {
       const action = draftNavGuard.completeNavigation;
@@ -9507,12 +9525,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setSavedStructuralRanges((prev) => purgeLocalRanges(prev));
       setStructuralRanges((prev) => purgeLocalRanges(prev));
       setStructuralAnchorsByLayer((prev) => purgeStructuralAnchorsByLayer(prev, deletedLayers));
-      setDraftNavGuard((prev) => {
-        if (!prev) return null;
-        const targetId = String(prev.targetRange?.range_id || prev.targetRange?.id || '');
-        if (deletedIds.has(targetId)) return null;
-        return prev;
-      });
+      setDraftNavGuard(null);
       const deletedActive = deletedIds.has(String(activeStructuralRangeId));
       const deletedParent = deletedIds.has(String(selectedParentRangeId));
       const deletedLock = deletedIds.has(String(lockedChildMappingParentId));
@@ -9530,11 +9543,6 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (deletedActive) {
         activeStructuralRangeIdRef.current = '';
         setActiveStructuralRangeId('');
-      } else if (deletedParent || deletedLock) {
-        if (String(activeStructuralRangeId) && deletedIds.has(String(activeStructuralRangeId))) {
-          activeStructuralRangeIdRef.current = '';
-          setActiveStructuralRangeId('');
-        }
       }
       if (deletedParent) {
         selectedParentRangeIdRef.current = '';
