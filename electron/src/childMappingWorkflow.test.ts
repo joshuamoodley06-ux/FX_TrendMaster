@@ -84,22 +84,17 @@ describe('childMappingWorkflow', () => {
     parent_range_id: 12,
   };
 
-  it('maps INTRADAY parent to MICRO child layer', () => {
-    expect(expectedChildLayerForParent('INTRADAY')).toBe('MICRO');
+  it('does not auto-map INTRADAY parent to MICRO child layer', () => {
+    expect(expectedChildLayerForParent('INTRADAY')).toBeNull();
   });
 
-  it('builds child mapping session for intraday parent', () => {
+  it('does not build child mapping session for intraday parent', () => {
     const session = buildChildMappingSession(intradayParent);
-    expect(session).not.toBeNull();
-    expect(session?.childLayer).toBe('MICRO');
-    expect(session?.childSourceTf).toBe('M15');
-    expect(session?.parentRangeId).toBe('44');
+    expect(session).toBeNull();
   });
 
-  it('openChildMappingSetup returns chart timeframe M15 for micro', () => {
+  it('openChildMappingSetup does not return M15 for intraday parent', () => {
     const setup = openChildMappingSetup(intradayParent);
-    expect(setup?.chartTimeframe).toBe('M15');
-    expect(setup?.gap.expectedChildLayer).toBe('MICRO');
-    expect(setup?.gap.parentLayer).toBe('INTRADAY');
+    expect(setup).toBeNull();
   });
 });

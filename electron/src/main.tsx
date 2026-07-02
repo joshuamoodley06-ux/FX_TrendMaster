@@ -6157,6 +6157,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const parentId = String(parentRange?.range_id || parentRange?.id || '');
     const parentLayer = normalizeStructureLayer(parentRange?.structure_layer || parentRange?.layer);
     const childLayer = parentLayer ? expectedChildStructureLayer(parentLayer) : null;
+    if (parentLayer === 'INTRADAY') {
+      setMessage('Micro/M15 mapping is manual. Staying on Intraday.');
+      return false;
+    }
     if (!parentId || !parentLayer || !childLayer) {
       setMessage('No child mapping layer below this range.');
       return false;
@@ -8349,7 +8353,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           reconcileMappingRangeState(mergedNextRange, { keepChainDraftMode: false });
         }
         const childLayer = expectedChildStructureLayer(structureLayer);
-        if (childLayer && structureLayer !== 'DAILY') {
+        if (childLayer && structureLayer !== 'DAILY' && structureLayer !== 'INTRADAY') {
           await drillToChildMapping({
             ...(data.range || {}),
             range_id: newRangeId,
@@ -9737,7 +9741,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <p className="explorerModeHint mutedSmall">
         {explorerMappingMode === 'htf'
           ? 'Full hierarchy tree (Macro → Micro). Gap queue lists missing HTF MAJOR children only.'
-          : 'Full hierarchy tree. Gap queue lists missing Intraday / Micro MAJOR children.'}
+          : 'Full hierarchy tree. Gap queue lists missing Daily / Intraday MAJOR children.'}
       </p>
       <div className="explorerYearFilterRow">
         <label className="explorerYearLabel">Year

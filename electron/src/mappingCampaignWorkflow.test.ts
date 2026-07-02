@@ -27,7 +27,7 @@ describe('mappingCampaignWorkflow', () => {
     expect(gap?.parentId).toBe('2');
   });
 
-  it('prioritizes Daily without Intraday before Intraday without Micro', () => {
+  it('prioritizes Daily without Intraday and ignores Intraday without Micro', () => {
     const ranges = [
       { range_id: 1, structure_layer: 'WEEKLY', range_scope: 'MAJOR', status: 'ACTIVE', ...span },
       {
@@ -54,7 +54,7 @@ describe('mappingCampaignWorkflow', () => {
     expect(gap?.parentId).toBe('20');
   });
 
-  it('returns Intraday without Micro when higher tiers complete', () => {
+  it('returns complete when only Intraday without Micro remains', () => {
     const ranges = [
       { range_id: 1, structure_layer: 'WEEKLY', range_scope: 'MAJOR', status: 'ACTIVE', ...span },
       {
@@ -83,14 +83,12 @@ describe('mappingCampaignWorkflow', () => {
       },
     ];
     const gap = nextMappingCampaignGap(ranges);
-    expect(gap?.parentLayer).toBe('INTRADAY');
-    expect(gap?.parentId).toBe('44');
-    expect(gap?.expectedChildLayer).toBe('MICRO');
+    expect(gap).toBeNull();
   });
 
   it('detects child mapping gaps', () => {
     expect(isChildMappingGap({ parentLayer: 'DAILY', expectedChildLayer: 'INTRADAY' } as any)).toBe(true);
-    expect(isChildMappingGap({ parentLayer: 'INTRADAY', expectedChildLayer: 'MICRO' } as any)).toBe(true);
+    expect(isChildMappingGap({ parentLayer: 'INTRADAY', expectedChildLayer: 'MICRO' } as any)).toBe(false);
     expect(isChildMappingGap({ parentLayer: 'MICRO', expectedChildLayer: 'NANO' } as any)).toBe(false);
   });
 });

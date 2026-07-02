@@ -57,14 +57,12 @@ const TASK_BY_PAIR: Record<string, MappingTaskType> = {
   'MACRO|WEEKLY': 'MAP_WEEKLY',
   'WEEKLY|DAILY': 'MAP_DAILY',
   'DAILY|INTRADAY': 'MAP_INTRADAY',
-  'INTRADAY|MICRO': 'MAP_MICRO',
 };
 
 const EXPLORER_CHILD_BY_PARENT: Record<string, [string, string]> = {
   MACRO: ['WEEKLY', 'Weekly'],
   WEEKLY: ['DAILY', 'Daily'],
   DAILY: ['INTRADAY', 'Intraday'],
-  INTRADAY: ['MICRO', 'Micro'],
 };
 
 function normalizeLayer(range: Record<string, unknown>): string {
@@ -161,7 +159,6 @@ export function computeCampaignStatus(
     computeCampaignTierProgress(scoped, 'MACRO', 'WEEKLY'),
     computeCampaignTierProgress(scoped, 'WEEKLY', 'DAILY'),
     computeCampaignTierProgress(scoped, 'DAILY', 'INTRADAY'),
-    computeCampaignTierProgress(scoped, 'INTRADAY', 'MICRO'),
   ].filter((tier) => tier.total > 0);
   const nextTask = getNextMappingTask(ranges, { year: yearFilter });
   return {
@@ -210,7 +207,6 @@ export function mappingTaskLabel(task: MappingTaskType): string {
  * 1. Macro → Weekly
  * 2. Weekly → Daily
  * 3. Daily → Intraday
- * 4. Intraday → Micro
  */
 export function getNextMappingTask(
   ranges: Record<string, unknown>[],
@@ -232,11 +228,6 @@ export function getNextMappingTask(
     (g) => g.parentLayer === 'DAILY' && g.expectedChildLayer === 'INTRADAY',
   );
   if (intradayGaps.length) return buildTaskResult('MAP_INTRADAY', intradayGaps[0]);
-
-  const microGaps = computeMappingGaps(scoped, 'ltf').filter(
-    (g) => g.parentLayer === 'INTRADAY' && g.expectedChildLayer === 'MICRO',
-  );
-  if (microGaps.length) return buildTaskResult('MAP_MICRO', microGaps[0]);
 
   return buildTaskResult('CAMPAIGN_COMPLETE', null);
 }

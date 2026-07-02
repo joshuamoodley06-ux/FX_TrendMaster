@@ -7,7 +7,6 @@ export function isChildMappingGap(gap: MappingGap): boolean {
   return (
     (gap.parentLayer === 'WEEKLY' && gap.expectedChildLayer === 'DAILY')
     || (gap.parentLayer === 'DAILY' && gap.expectedChildLayer === 'INTRADAY')
-    || (gap.parentLayer === 'INTRADAY' && gap.expectedChildLayer === 'MICRO')
   );
 }
 
@@ -17,7 +16,7 @@ export function nextMappingCampaignGap(ranges: Record<string, unknown>[]): Mappi
 }
 
 export function campaignGapSummary(gap: MappingGap | null): string {
-  if (!gap) return 'Campaign complete — no Weekly→Daily, Daily→Intraday, or Intraday→Micro gaps.';
+  if (!gap) return 'Campaign complete — no Weekly→Daily or Daily→Intraday gaps.';
   return gap.label;
 }
 
