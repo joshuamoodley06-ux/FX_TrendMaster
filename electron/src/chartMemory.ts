@@ -429,10 +429,15 @@ export function pickRoutineAnchorTime(args: {
   savedDestMemory: ChartTimeframeMemory | null;
   savedDestPrice?: { low: number; high: number } | null;
   sameTf?: boolean;
+  ignoreSavedDestMemory?: boolean;
 }): RoutineAnchorPick {
   const sameTf = args.sameTf === true;
-  const priceDomain = routineSavedDestPriceDomain(args);
-  const savedMemory = sanitizeChartMemoryOnRead(args.savedDestMemory, args.destTf);
+  const priceDomain = args.ignoreSavedDestMemory
+    ? null
+    : routineSavedDestPriceDomain(args);
+  const savedMemory = args.ignoreSavedDestMemory
+    ? null
+    : sanitizeChartMemoryOnRead(args.savedDestMemory, args.destTf);
   const savedFit = memoryFitWindowFromChartMemory(savedMemory, priceDomain);
 
   if (args.globalReplayTime) {
@@ -621,29 +626,38 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
   savedDestPrice?: { low: number; high: number } | null;
   replayMode?: boolean;
   explicitReplayMode?: boolean;
+  ignoreSavedDestMemory?: boolean;
 }): RoutineTfCameraPlan {
   const reason = routineTfMemoryReason(args.sourceTf, args.destTf);
-  const priceDomain = routineSavedDestPriceDomain(args);
+  const savedDestMemory = args.ignoreSavedDestMemory ? null : args.savedDestMemory;
+  const savedDestPrice = args.ignoreSavedDestMemory ? null : args.savedDestPrice;
+  const priceDomain = routineSavedDestPriceDomain({
+    savedDestMemory,
+    savedDestPrice,
+  });
   const sameTf = String(args.sourceTf).toUpperCase() === String(args.destTf).toUpperCase();
+  const replayActive = args.replayMode === true || args.explicitReplayMode === true;
+  const globalReplayTime = replayActive ? args.globalReplayTime : null;
 
   if (args.cameraMode === 'LOCKED') {
     const fitWindow = memoryFitWindowFromChartMemory(
-      sanitizeChartMemoryOnRead(args.savedDestMemory, args.destTf),
+      sanitizeChartMemoryOnRead(savedDestMemory, args.destTf),
       priceDomain,
     );
     const lockedPick = pickRoutineAnchorTime({
       destTf: args.destTf,
-      globalReplayTime: args.globalReplayTime,
+      globalReplayTime,
       selectedCandleTime: args.selectedCandleTime,
       sourceViewport: args.sourceViewport,
-      savedDestMemory: args.savedDestMemory,
-      savedDestPrice: args.savedDestPrice,
+      savedDestMemory,
+      savedDestPrice,
       sameTf,
+      ignoreSavedDestMemory: args.ignoreSavedDestMemory,
     });
     return {
       intent: 'RESTORE_LOCKED',
       reason,
-      targetTime: lockedPick.targetTime || args.savedDestMemory?.start || null,
+      targetTime: lockedPick.targetTime || savedDestMemory?.start || null,
       fitWindow,
       priceDomain,
       anchorSource: 'locked',
@@ -652,12 +666,13 @@ export function resolveRoutineTfSwitchCameraPlan(args: {
 
   const pick = pickRoutineAnchorTime({
     destTf: args.destTf,
-    globalReplayTime: args.globalReplayTime,
+    globalReplayTime,
     selectedCandleTime: args.selectedCandleTime,
     sourceViewport: args.sourceViewport,
-    savedDestMemory: args.savedDestMemory,
-    savedDestPrice: args.savedDestPrice,
+    savedDestMemory,
+    savedDestPrice,
     sameTf,
+    ignoreSavedDestMemory: args.ignoreSavedDestMemory,
   });
 
   if (pick.useLatestFallback) {
