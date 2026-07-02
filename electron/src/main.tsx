@@ -1422,6 +1422,36 @@ function collectSiblingRangeIds(selectedId: string, allRanges: any[]): string[] 
     .map((r:any) => String(r.range_id || r.id));
 }
 
+function withoutStructuralRangeIds(rows: any[], deletedIds: Set<string>): any[] {
+  if (!deletedIds.size) return safeArray(rows);
+  return safeArray(rows).filter((r:any) => !deletedIds.has(String(r.range_id || r.id)));
+}
+
+function eventReferencesStructuralRangeId(event: MapEvent, rangeId: string): boolean {
+  const id = String(rangeId);
+  return [
+    event.range_id,
+    event.active_range_id,
+    event.parent_range_id,
+    event.old_range_id,
+    event.new_range_id,
+  ].some((ref) => ref !== undefined && ref !== null && String(ref) === id);
+}
+
+function purgeEventsByTfForDeletedRangeIds(
+  prev: Record<string, MapEvent[]>,
+  deletedIds: Set<string>,
+): Record<string, MapEvent[]> {
+  if (!deletedIds.size) return prev;
+  const next: Record<string, MapEvent[]> = {};
+  for (const [tf, rows] of Object.entries(prev || {})) {
+    next[tf] = safeArray<MapEvent>(rows).filter(
+      (event) => !Array.from(deletedIds).some((id) => eventReferencesStructuralRangeId(event, id)),
+    );
+  }
+  return next;
+}
+
 function countRangeDescendants(rangeId: string, allRanges: any[]): number {
   const direct = allRanges.filter((r:any) => String(r.parent_range_id || '') === String(rangeId));
   return direct.length + direct.reduce((sum, child) => sum + countRangeDescendants(String(child.range_id || child.id), allRanges), 0);
@@ -9388,30 +9418,122 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
   };
 
-  const archiveStructuralRange = async (range: any) => {
+  const deleteStructuralRangePermanently = async (range: any) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
-    const childCount = countRangeDescendants(id, savedStructuralRanges);
-    const ok = window.confirm(
-      childCount > 0
-        ? 'This range has child ranges. Archiving may orphan or hide children.\n\nArchive anyway?'
-        : `Archive range #${id}?`,
-    );
-    if (!ok) return;
+    const mappingCase = getCurrentMappingCaseRef();
+    if (!mappingCase.hasCase) {
+      setMessage('Select a mapping case before deleting ranges.');
+      return;
+    }
+    const rowCaseId = range?.case_id ?? mappingCase.case_id;
+    const rowRawCaseId = range?.raw_case_id ?? mappingCase.raw_case_id;
+    const rowCaseRef = range?.case_ref
+      ?? (rowRawCaseId ? `raw:${rowRawCaseId}` : null)
+      ?? mappingCase.case_ref;
+    const rowSymbol = String(range?.symbol || symbol || 'XAUUSD');
+    const descendantCount = countRangeDescendants(id, savedStructuralRanges);
+    const confirmText = descendantCount > 0
+      ? `Permanently delete range #${id} and its subtree (${descendantCount} child range${descendantCount === 1 ? '' : 's'})?\n\nThis cannot be undone. Chain-linked successors in the same case will also be removed.`
+      : `Permanently delete range #${id}?\n\nThis cannot be undone. Chain-linked successors in the same case will also be removed.`;
+    if (!window.confirm(confirmText)) return;
+    const typed = window.prompt('Type DELETE to confirm permanent removal:');
+    if (typed !== 'DELETE') {
+      setMessage('Delete cancelled — confirmation text did not match DELETE.');
+      return;
+    }
+    const deletePayload = {
+      range_ids: [Number(id)],
+      symbol: rowSymbol,
+      case_id: rowCaseId ?? undefined,
+      raw_case_id: rowRawCaseId ?? undefined,
+      case_ref: rowCaseRef ?? undefined,
+      confirm: 'DELETE' as const,
+      include_descendants: true,
+    };
     try {
-      await inspectorCommitOrThrow({
+      const result = await inspectorCommitOrThrow<{
+        deleted_range_ids?: number[];
+        deleted_event_count?: number;
+        deleted_child_count?: number;
+        deleted_ranges?: number;
+        warnings?: string[];
+        error?: string;
+        detail?: string;
+      }>({
         baseUrl: BASE_URL,
-        kind: 'structural_range_patch',
-        source: 'range_archive',
-        pathParams: { rangeId: id },
-        payload: { status: 'ABANDONED' },
+        kind: 'structural_range_hard_delete',
+        source: 'range_hard_delete',
+        payload: deletePayload,
       });
-      if (String(activeStructuralRangeId) === id) setActiveStructuralRangeId('');
-      await refreshSavedRangesForCurrentCase();
-      try { await refreshHierarchyAudit(); } catch {}
-      setMessage(`Archived range #${id}.`);
+      const deletedIds = new Set(
+        safeArray<number | string>(result?.deleted_range_ids).map((x) => String(x)),
+      );
+      console.warn('[hard-delete]', {
+        selectedRangeId: id,
+        payload: deletePayload,
+        deleted_range_ids: Array.from(deletedIds),
+        deleted_ranges: result?.deleted_ranges,
+        deleted_event_count: result?.deleted_event_count,
+      });
+      if (!deletedIds.size || !deletedIds.has(id)) {
+        throw new Error(
+          `Hard delete did not remove range #${id}. Response deleted_range_ids=${Array.from(deletedIds).join(',') || '(empty)'}`,
+        );
+      }
+      const purgeLocalRanges = (rows: StructuralRange[]) => withoutStructuralRangeIds(rows, deletedIds);
+      setSavedStructuralRanges((prev) => purgeLocalRanges(prev));
+      setStructuralRanges((prev) => purgeLocalRanges(prev));
+      const deletedActive = deletedIds.has(String(activeStructuralRangeId));
+      const deletedParent = deletedIds.has(String(selectedParentRangeId));
+      const deletedLock = deletedIds.has(String(lockedChildMappingParentId));
+      if (deletedActive) {
+        activeStructuralRangeIdRef.current = '';
+        setActiveStructuralRangeId('');
+        clearStructuralRangeDraft();
+      } else if (deletedParent || deletedLock) {
+        if (String(activeStructuralRangeId) && deletedIds.has(String(activeStructuralRangeId))) {
+          clearStructuralRangeDraft();
+        }
+      }
+      if (deletedParent) {
+        selectedParentRangeIdRef.current = '';
+        setSelectedParentRangeId('');
+      }
+      if (deletedLock) clearLockedChildMappingParent();
+      setEventsByTf((prev) => {
+        const next = purgeEventsByTfForDeletedRangeIds(prev, deletedIds);
+        eventsByTfRef.current = next;
+        return next;
+      });
+      setRangeLineHiddenByCase((prev) => {
+        const key = caseLineHiddenKey;
+        const current = new Set(prev[key] || []);
+        deletedIds.forEach((deletedId) => current.delete(deletedId));
+        return { ...prev, [key]: Array.from(current) };
+      });
+      const refreshedRows = await refreshSavedRangesForCurrentCase();
+      console.warn('[hard-delete] refreshSavedRangesForCurrentCase', {
+        count: refreshedRows.length,
+        stillContainsSelected: refreshedRows.some((r:any) => String(r.range_id || r.id) === id),
+      });
+      try { await refreshStructuralMapEventsForChart(); } catch {}
+      const auditData = await refreshHierarchyAudit().catch(() => null);
+      console.warn('[hard-delete] refreshHierarchyAudit', { ok: !!auditData });
+      const count = deletedIds.size;
+      const eventCount = Number(result?.deleted_event_count || 0);
+      const childCount = Number(result?.deleted_child_count || 0);
+      const stillPresent = refreshedRows.some((r:any) => String(r.range_id || r.id) === id);
+      if (stillPresent) {
+        throw new Error(`Range #${id} still returned by /api/v1/map/ranges after hard delete — VPS backend may be unpatched or wrong DB.`);
+      }
+      const warnText = safeArray<string>(result?.warnings).length
+        ? ` · warnings: ${safeArray<string>(result?.warnings).join('; ')}`
+        : '';
+      setMessage(`Deleted ${count} range${count === 1 ? '' : 's'} permanently (#${Array.from(deletedIds).join(', #')}) · ${eventCount} event${eventCount === 1 ? '' : 's'} · ${childCount} descendant${childCount === 1 ? '' : 's'}${warnText}`);
     } catch (err: any) {
-      setMessage(`Archive failed: ${err?.message || err}`);
+      console.warn('[hard-delete] failed', { selectedRangeId: id, error: err?.message || err });
+      setMessage(`Delete failed: ${err?.message || err}`);
     }
   };
 
@@ -9454,7 +9576,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <div className="explorerTreeActionMenuPanel" role="menu">
         <button type="button" role="menuitem" onClick={() => editStructuralRangeFromTree(range)}>Edit</button>
         <button type="button" role="menuitem" onClick={() => void relinkStructuralRange(range)}>Relink</button>
-        <button type="button" role="menuitem" className="dangerTiny" onClick={() => void archiveStructuralRange(range)}>Archive</button>
+        <button type="button" role="menuitem" className="dangerTiny" onClick={() => void deleteStructuralRangePermanently(range)}>Delete Permanently</button>
       </div>
     </details>
   );

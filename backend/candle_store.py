@@ -3339,85 +3339,312 @@ def delete_map_range(symbol: str = "XAUUSD", timeframe: str = "D1", range_key: s
     return {"ok": True, "archived": cur.rowcount, "symbol": symbol, "timeframe": tf, "range_key": range_key}
 
 
+def _derived_range_case_ref(row: dict[str, Any]) -> str | None:
+    ref = str(row.get("case_ref") or "").strip()
+    if ref:
+        return ref
+    raw = str(row.get("raw_case_id") or "").strip()
+    if raw:
+        return f"raw:{raw}"
+    case_id = row.get("case_id")
+    if case_id not in (None, ""):
+        return f"case:{case_id}"
+    return None
+
+
+def _range_row_matches_hard_delete_scope(
+    row: dict[str, Any],
+    *,
+    symbol: str | None,
+    case_id: int | None = None,
+    raw_case_id: str | None = None,
+    case_ref: str | None = None,
+) -> bool:
+    if symbol and str(row.get("symbol") or "").strip().upper() != str(symbol).strip().upper():
+        return False
+    if case_id is not None:
+        try:
+            if int(row.get("case_id") or -1) != int(case_id):
+                return False
+        except Exception:
+            return False
+    if raw_case_id and str(row.get("raw_case_id") or "").strip() != str(raw_case_id).strip():
+        return False
+    if case_ref:
+        derived = _derived_range_case_ref(row)
+        if str(derived or "") != str(case_ref).strip():
+            return False
+    return True
+
+
+def _build_hard_delete_range_closure(
+    conn: sqlite3.Connection,
+    seed_ids: list[int],
+    *,
+    symbol: str | None,
+    case_id: int | None = None,
+    raw_case_id: str | None = None,
+    case_ref: str | None = None,
+    include_descendants: bool,
+) -> tuple[set[int], list[dict[str, Any]]]:
+    """Expand seed range ids into a scoped delete closure."""
+    errors: list[dict[str, Any]] = []
+    closure: set[int] = set()
+    for rid in seed_ids:
+        row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (rid,)).fetchone()
+        if row is None:
+            errors.append({"range_id": rid, "error": "not_found"})
+            continue
+        d = dict(row)
+        if not _range_row_matches_hard_delete_scope(
+            d,
+            symbol=symbol,
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+        ):
+            errors.append({
+                "range_id": rid,
+                "error": "scope_mismatch",
+                "row_symbol": d.get("symbol"),
+                "row_case_id": d.get("case_id"),
+                "row_raw_case_id": d.get("raw_case_id"),
+                "row_case_ref": d.get("case_ref"),
+                "row_derived_case_ref": _derived_range_case_ref(d),
+            })
+            continue
+        closure.add(int(rid))
+
+    if not include_descendants or not closure:
+        return closure, errors
+
+    sym = str(symbol or "").strip().upper()
+    changed = True
+    while changed:
+        changed = False
+        current = sorted(closure)
+        if not current:
+            break
+        placeholders = ",".join(["?"] * len(current))
+
+        child_rows = conn.execute(
+            f"SELECT * FROM map_ranges WHERE symbol=? AND parent_range_id IN ({placeholders})",
+            [sym] + current,
+        ).fetchall()
+        for row in child_rows:
+            d = dict(row)
+            if not _range_row_matches_hard_delete_scope(
+                d,
+                symbol=symbol,
+                case_id=case_id,
+                raw_case_id=raw_case_id,
+                case_ref=case_ref,
+            ):
+                continue
+            rid = int(d["id"])
+            if rid not in closure:
+                closure.add(rid)
+                changed = True
+
+        chain_rows = conn.execute(
+            f"SELECT * FROM map_ranges WHERE symbol=? AND old_range_id IN ({placeholders})",
+            [sym] + current,
+        ).fetchall()
+        for row in chain_rows:
+            d = dict(row)
+            if not _range_row_matches_hard_delete_scope(
+                d,
+                symbol=symbol,
+                case_id=case_id,
+                raw_case_id=raw_case_id,
+                case_ref=case_ref,
+            ):
+                continue
+            rid = int(d["id"])
+            if rid not in closure:
+                closure.add(rid)
+                changed = True
+
+        forward_rows = conn.execute(
+            f"""
+            SELECT new_range_id AS linked_id FROM map_ranges
+            WHERE symbol=? AND id IN ({placeholders}) AND new_range_id IS NOT NULL
+            """,
+            [sym] + current,
+        ).fetchall()
+        for row in forward_rows:
+            if row["linked_id"] in (None, ""):
+                continue
+            linked = conn.execute("SELECT * FROM map_ranges WHERE id=?", (int(row["linked_id"]),)).fetchone()
+            if linked is None:
+                continue
+            d = dict(linked)
+            if not _range_row_matches_hard_delete_scope(
+                d,
+                symbol=symbol,
+                case_id=case_id,
+                raw_case_id=raw_case_id,
+                case_ref=case_ref,
+            ):
+                continue
+            rid = int(d["id"])
+            if rid not in closure:
+                closure.add(rid)
+                changed = True
+
+    return closure, errors
+
+
 def hard_delete_map_ranges(
     range_ids: list[int],
+    symbol: str | None = None,
+    case_id: int | None = None,
     raw_case_id: str | None = None,
+    case_ref: str | None = None,
     confirm: str = "",
+    include_descendants: bool = True,
 ) -> dict[str, Any]:
     """Permanently remove structural ranges and their linked research rows.
 
-    Raw OHLC candles are untouched. This deletes map_events, map_points, route_memory,
-    htf_state_snapshots, and range_objectives scoped to each range_id, then removes the range row.
+    Raw OHLC candles are untouched. Builds a recursive delete closure (children + chain
+    successors), deletes linked map_events/points/route_memory/htf_state_snapshots/
+    range_objectives, then scrubs survivor references to deleted rows.
     """
     init_db()
     if confirm != "DELETE":
         return {"ok": False, "error": "CONFIRM_DELETE_REQUIRED", "detail": "Pass confirm=DELETE to permanently remove ranges."}
-    ids = sorted({int(x) for x in range_ids if x is not None})
-    if not ids:
+    seed_ids = sorted({int(x) for x in range_ids if x is not None})
+    if not seed_ids:
         return {"ok": False, "error": "No range_ids provided"}
+    if not symbol:
+        return {"ok": False, "error": "SYMBOL_REQUIRED", "detail": "symbol is required for scoped hard delete."}
+    if not raw_case_id and not case_ref and case_id is None:
+        return {"ok": False, "error": "CASE_SCOPE_REQUIRED", "detail": "case_id, raw_case_id, or case_ref is required for scoped hard delete."}
 
-    deleted_ranges = 0
-    deleted_events = 0
-    deleted_points = 0
-    deleted_routes = 0
-    deleted_snapshots = 0
-    deleted_objectives = 0
-    errors: list[dict[str, Any]] = []
+    warnings: list[str] = []
     now = now_iso()
 
     with connect() as conn:
-        for rid in ids:
-            row = conn.execute("SELECT * FROM map_ranges WHERE id=?", (rid,)).fetchone()
-            if row is None:
-                errors.append({"range_id": rid, "error": "not_found"})
-                continue
-            d = dict(row)
-            if raw_case_id and str(d.get("raw_case_id") or "").strip() != str(raw_case_id).strip():
-                errors.append({"range_id": rid, "error": "raw_case_id_mismatch"})
-                continue
+        delete_ids, scope_errors = _build_hard_delete_range_closure(
+            conn,
+            seed_ids,
+            symbol=symbol,
+            case_id=case_id,
+            raw_case_id=raw_case_id,
+            case_ref=case_ref,
+            include_descendants=include_descendants,
+        )
+        if scope_errors:
+            return {"ok": False, "error": "SCOPE_VALIDATION_FAILED", "errors": scope_errors}
+        if not delete_ids:
+            return {"ok": False, "error": "No deletable ranges in scope"}
 
-            cur = conn.execute(
-                "DELETE FROM map_events WHERE range_id=? OR active_range_id=? OR parent_range_id=?",
-                (rid, rid, rid),
-            )
-            deleted_events += int(cur.rowcount or 0)
-            cur = conn.execute("DELETE FROM map_points WHERE range_id=?", (rid,))
-            deleted_points += int(cur.rowcount or 0)
-            cur = conn.execute("DELETE FROM route_memory WHERE range_id=?", (rid,))
-            deleted_routes += int(cur.rowcount or 0)
-            cur = conn.execute("DELETE FROM htf_state_snapshots WHERE range_id=?", (rid,))
-            deleted_snapshots += int(cur.rowcount or 0)
-            cur = conn.execute("DELETE FROM range_objectives WHERE range_id=?", (rid,))
-            deleted_objectives += int(cur.rowcount or 0)
-            cur = conn.execute("DELETE FROM map_ranges WHERE id=?", (rid,))
-            if int(cur.rowcount or 0):
-                deleted_ranges += 1
-            else:
-                errors.append({"range_id": rid, "error": "delete_failed"})
-
+        ids = sorted(delete_ids)
+        deleted_child_count = max(0, len(ids) - len(set(seed_ids)))
         placeholders = ",".join(["?"] * len(ids))
-        conn.execute(
+
+        linked_event_ids: set[int] = set()
+        for row in conn.execute(
+            f"SELECT created_by_event_id, broken_by_event_id FROM map_ranges WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall():
+            for field in ("created_by_event_id", "broken_by_event_id"):
+                val = row[field]
+                if val not in (None, ""):
+                    try:
+                        linked_event_ids.add(int(val))
+                    except Exception:
+                        warnings.append(f"invalid {field} on deleted range")
+
+        event_id_rows = conn.execute(
             f"""
-            UPDATE map_ranges
-            SET parent_range_id=NULL, old_range_id=NULL, new_range_id=NULL, updated_at=?
-            WHERE parent_range_id IN ({placeholders})
+            SELECT id FROM map_events
+            WHERE range_id IN ({placeholders})
+               OR active_range_id IN ({placeholders})
+               OR parent_range_id IN ({placeholders})
                OR old_range_id IN ({placeholders})
                OR new_range_id IN ({placeholders})
             """,
-            [now] + ids + ids + ids,
-        )
+            ids + ids + ids + ids + ids,
+        ).fetchall()
+        for row in event_id_rows:
+            linked_event_ids.add(int(row["id"]))
+
+        deleted_event_count = 0
+        if linked_event_ids:
+            event_placeholders = ",".join(["?"] * len(linked_event_ids))
+            event_ids = sorted(linked_event_ids)
+            cur = conn.execute(
+                f"DELETE FROM event_features WHERE event_id IN ({event_placeholders}) OR range_id IN ({placeholders}) OR parent_range_id IN ({placeholders})",
+                event_ids + ids + ids,
+            )
+            deleted_event_count += int(cur.rowcount or 0)
+            cur = conn.execute(f"DELETE FROM map_events WHERE id IN ({event_placeholders})", event_ids)
+            deleted_event_count += int(cur.rowcount or 0)
+
+        cur = conn.execute(f"DELETE FROM map_points WHERE range_id IN ({placeholders})", ids)
+        deleted_points = int(cur.rowcount or 0)
+        cur = conn.execute(f"DELETE FROM route_memory WHERE range_id IN ({placeholders})", ids)
+        deleted_routes = int(cur.rowcount or 0)
+        cur = conn.execute(f"DELETE FROM htf_state_snapshots WHERE range_id IN ({placeholders})", ids)
+        deleted_snapshots = int(cur.rowcount or 0)
+        cur = conn.execute(f"DELETE FROM range_objectives WHERE range_id IN ({placeholders})", ids)
+        deleted_objectives = int(cur.rowcount or 0)
+        cur = conn.execute(f"DELETE FROM map_ranges WHERE id IN ({placeholders})", ids)
+        deleted_ranges = int(cur.rowcount or 0)
+
+        scrubbed_reference_count = 0
+        range_ref_fields = ("parent_range_id", "old_range_id", "new_range_id")
+        for field in range_ref_fields:
+            cur = conn.execute(
+                f"UPDATE map_ranges SET {field}=NULL, updated_at=? WHERE {field} IN ({placeholders})",
+                [now] + ids,
+            )
+            scrubbed_reference_count += int(cur.rowcount or 0)
+
+        event_ref_fields = ("active_range_id", "parent_range_id", "old_range_id", "new_range_id", "range_id")
+        for field in event_ref_fields:
+            cur = conn.execute(
+                f"UPDATE map_events SET {field}=NULL, updated_at=? WHERE {field} IN ({placeholders})",
+                [now] + ids,
+            )
+            scrubbed_reference_count += int(cur.rowcount or 0)
+
+        if linked_event_ids:
+            event_placeholders = ",".join(["?"] * len(linked_event_ids))
+            event_ids = sorted(linked_event_ids)
+            for field in ("created_by_event_id", "broken_by_event_id"):
+                cur = conn.execute(
+                    f"UPDATE map_ranges SET {field}=NULL, updated_at=? WHERE {field} IN ({event_placeholders})",
+                    [now] + event_ids,
+                )
+                scrubbed_reference_count += int(cur.rowcount or 0)
+
         conn.commit()
+
+    if deleted_ranges <= 0:
+        return {
+            "ok": False,
+            "error": "DELETE_AFFECTED_ZERO_ROWS",
+            "detail": "No map_ranges rows were deleted. Check case scope and VPS backend patch.",
+            "requested_range_ids": seed_ids,
+            "deleted_range_ids": [],
+            "deleted_ranges": 0,
+        }
 
     return {
         "ok": True,
+        "deleted_range_ids": ids,
         "deleted_ranges": deleted_ranges,
-        "deleted_events": deleted_events,
+        "deleted_event_count": deleted_event_count,
+        "deleted_child_count": deleted_child_count,
+        "scrubbed_reference_count": scrubbed_reference_count,
         "deleted_points": deleted_points,
         "deleted_routes": deleted_routes,
         "deleted_snapshots": deleted_snapshots,
         "deleted_objectives": deleted_objectives,
-        "range_ids": ids,
-        "errors": errors,
+        "warnings": warnings,
+        "errors": [],
     }
 
 

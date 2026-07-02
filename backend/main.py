@@ -4666,10 +4666,16 @@ def map_ranges_hard_delete(response: Response, payload: dict[str, Any] = Body(..
     if isinstance(raw_ids, (int, str)):
         raw_ids = [raw_ids]
     range_ids = [int(x) for x in raw_ids if str(x).strip().isdigit()]
+    case_id_raw = body.get("case_id")
+    case_id = int(case_id_raw) if case_id_raw not in (None, "") and str(case_id_raw).strip().isdigit() else None
     result = market_memory.hard_delete_map_ranges(
         range_ids=range_ids,
+        symbol=str(body.get("symbol") or "XAUUSD"),
+        case_id=case_id,
         raw_case_id=body.get("raw_case_id"),
+        case_ref=body.get("case_ref"),
         confirm=str(body.get("confirm") or ""),
+        include_descendants=body.get("include_descendants", True) is not False,
     )
     if not result.get("ok"):
         response.status_code = int(result.get("status") or 400)
