@@ -199,6 +199,7 @@ import {
   legacyChartMemoryKey,
   memoryFitWindowFromChartMemory,
   minimumRoutineVisibleBarsForTimeframe,
+  parseChartTimeMs,
   parseRoutineTfMemoryReason,
   purgePoisonedH1MemoryKeys,
   readChartMemoryFromStore,
@@ -10206,10 +10207,29 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       }
     }
 
-    const selectedTimeForRestore = selectedCandle?.time
-      || tradingViewSelectedCandle?.time
-      || tradingViewAdmittedSelectedCandle?.time
-      || null;
+    const selectedTimeCandidates = [
+      selectedCandle?.time,
+      tradingViewSelectedCandle?.time,
+      tradingViewAdmittedSelectedCandle?.time,
+    ];
+    const selectedTimeForRestore = (() => {
+      const loaded = loadedCandleContextRef.current;
+      if (!loaded || String(loaded.chartTimeframe || '').toUpperCase() !== sourceTf) return null;
+      const loadedSymbol = String(loaded.symbol || '').toUpperCase();
+      if (loadedSymbol && loadedSymbol !== String(symbol || '').toUpperCase()) return null;
+      const loadedCase = String(loaded.caseId || '');
+      if (loadedCase && loadedCase !== caseId) return null;
+      const loadedTimes = new Set(
+        safeArray<Candle>(candles)
+          .map((c) => parseChartTimeMs(c.time))
+          .filter((ms): ms is number => ms !== null),
+      );
+      for (const candidate of selectedTimeCandidates) {
+        const ms = parseChartTimeMs(candidate);
+        if (ms !== null && loadedTimes.has(ms)) return String(candidate);
+      }
+      return null;
+    })();
     skipSelectionClearForTfSwitchRef.current = true;
 
     const crossTfH1 = isCrossTfH1Entry(sourceTf, tf);
@@ -10245,6 +10265,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       || cameraPriceDomainByCaseTf[destLegacyKey]
       || null;
 
+    const ignoreSavedDestMemory = sourceTf !== tf && (tf === 'M15' || tf === 'M5');
+
     const plan = resolveRoutineTfSwitchCameraPlan({
       cameraMode,
       sourceTf,
@@ -10256,6 +10278,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       savedDestPrice,
       explicitReplayMode: candleReplayMode,
       replayMode: candleReplayMode,
+      ignoreSavedDestMemory,
     });
 
     cameraLog('routine tf anchor', {

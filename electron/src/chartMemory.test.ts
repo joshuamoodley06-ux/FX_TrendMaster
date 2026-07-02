@@ -192,7 +192,7 @@ describe('chartMemory', () => {
       expect(parseChartTimeMs(String(plan.targetTime))!).toBeLessThan(parseChartTimeMs('2024-04-01T00:00:00.000Z')!);
     });
 
-    it('uses stored global replay even when explicit replay mode is off', () => {
+    it('ignores stored global replay when replay mode is off', () => {
       const plan = resolveRoutineTfSwitchCameraPlan({
         cameraMode: 'CASE',
         sourceTf: 'D1',
@@ -202,6 +202,22 @@ describe('chartMemory', () => {
         globalReplayTime: '2024-02-15T00:00:00.000Z',
         selectedCandleTime: null,
         explicitReplayMode: false,
+        replayMode: false,
+      });
+      expect(plan.anchorSource).toBe('sourceViewport');
+      expect(plan.targetTime).not.toBe('2024-02-15T00:00:00.000Z');
+    });
+
+    it('uses stored global replay when replay mode is active', () => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf: 'D1',
+        destTf: 'H4',
+        savedDestMemory: staleNearLatestDest,
+        sourceViewport: historicalSourceViewport,
+        globalReplayTime: '2024-02-15T00:00:00.000Z',
+        selectedCandleTime: null,
+        replayMode: true,
       });
       expect(plan.anchorSource).toBe('globalReplay');
       expect(plan.targetTime).toBe('2024-02-15T00:00:00.000Z');
@@ -222,6 +238,35 @@ describe('chartMemory', () => {
       });
       expect(plan.fitWindow?.start).toBe('2024-03-01T00:00:00.000Z');
       expect(plan.anchorSource).toBe('savedDest');
+    });
+
+    it('ignores stale saved M15 destination memory on cross-timeframe lower-TF entry', () => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf: 'H4',
+        destTf: 'M15',
+        savedDestMemory: staleNearLatestDest,
+        sourceViewport: null,
+        globalReplayTime: null,
+        selectedCandleTime: null,
+        ignoreSavedDestMemory: true,
+      });
+      expect(plan.anchorSource).toBe('latest');
+      expect(plan.intent).toBe('LATEST');
+    });
+
+    it('keeps saved M15 memory for same-timeframe reloads', () => {
+      const plan = resolveRoutineTfSwitchCameraPlan({
+        cameraMode: 'CASE',
+        sourceTf: 'M15',
+        destTf: 'M15',
+        savedDestMemory: staleNearLatestDest,
+        sourceViewport: null,
+        globalReplayTime: null,
+        selectedCandleTime: null,
+      });
+      expect(plan.anchorSource).toBe('savedDest');
+      expect(plan.fitWindow?.start).toBe(staleNearLatestDest.start);
     });
 
     it('prefers selected candle over saved destination on H1 to H1', () => {
