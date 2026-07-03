@@ -347,6 +347,7 @@ export function resolveMappingInputCandle(args: {
   selectedCandle: FxtmCandleRow | null | undefined;
   replayCandle: FxtmCandleRow | null | undefined;
   candleReplayMode?: boolean;
+  allowSelectedFallbackWhenMappingInputEnabled?: boolean;
 }): MappingInputCandle | null {
   const replayCutTime = args.replayCandle?.time ?? null;
   const replayMode = !!args.candleReplayMode;
@@ -354,6 +355,11 @@ export function resolveMappingInputCandle(args: {
     if (args.admittedMappingInputCandle?.time
       && isReplaySelectableCandle(args.admittedMappingInputCandle.time, replayCutTime, replayMode)) {
       return args.admittedMappingInputCandle;
+    }
+    if (args.allowSelectedFallbackWhenMappingInputEnabled
+      && args.selectedCandle?.time
+      && isReplaySelectableCandle(args.selectedCandle.time, replayCutTime, replayMode)) {
+      return args.selectedCandle as MappingInputCandle;
     }
     return null;
   }

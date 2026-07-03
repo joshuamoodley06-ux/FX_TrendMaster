@@ -5157,7 +5157,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return rows[clamp(candleReplayIndexRef.current, 0, rows.length - 1)] || null;
   };
 
-  const resolveMappingInputCandleAtAction = (): Candle | null => (
+  const resolveMappingInputCandleAtAction = (opts?: { allowSelectedFallbackWhenMappingInputEnabled?: boolean }): Candle | null => (
     resolveMappingInputCandle({
       chartRenderer: chartRendererRef.current,
       mappingInputEnabled: tradingViewMappingInputEnabledRef.current,
@@ -5165,6 +5165,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       selectedCandle: selectedCandleRef.current,
       replayCandle: resolveReplayCandleAtAction(),
       candleReplayMode: candleReplayModeRef.current,
+      allowSelectedFallbackWhenMappingInputEnabled: opts?.allowSelectedFallbackWhenMappingInputEnabled,
     }) as Candle | null
   );
 
@@ -5315,9 +5316,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return false;
   };
 
-  const assertAdmittedMappingInputCandle = (actionLabel = 'Marking'): boolean => {
+  const assertAdmittedMappingInputCandle = (actionLabel = 'Marking', opts?: { allowSelectedFallbackWhenMappingInputEnabled?: boolean }): boolean => {
     if (chartRendererRef.current !== 'tradingview' || !tradingViewMappingInputEnabledRef.current) return true;
-    if (resolveMappingInputCandleAtAction()) return true;
+    if (resolveMappingInputCandleAtAction(opts)) return true;
     setMessage(`${actionLabel} blocked — click a visible TradingView candle first.`);
     setTradingViewSelectionWarning('No admitted TradingView candle for mapping.');
     return false;
@@ -8443,9 +8444,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       chainDraftMode
       && (structuralRangeDraftDirty || saveNextRangeEligible.eligible || resolvedBroken)
     );
+    const bosMappingInputCandle = resolveMappingInputCandleAtAction({
+      allowSelectedFallbackWhenMappingInputEnabled: true,
+    });
     const tvSelectionReady = chartRendererRef.current !== 'tradingview'
       || !tradingViewMappingInputEnabledRef.current
-      || !!admittedMappingInputCandleRef.current;
+      || !!bosMappingInputCandle;
     const feedGuard = getCandleFeedGuard();
     const bosBlockReason = evaluateStructuralBosBlockReason({
       hasCase: true,
@@ -8466,8 +8470,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       return false;
     }
     if (!assertCandleFeedReady('BOS save')) return false;
-    if (!assertAdmittedMappingInputCandle('BOS save')) return false;
-    const candle = resolveMappingInputCandleAtAction();
+    if (!assertAdmittedMappingInputCandle('BOS save', { allowSelectedFallbackWhenMappingInputEnabled: true })) return false;
+    const candle = resolveMappingInputCandleAtAction({ allowSelectedFallbackWhenMappingInputEnabled: true });
     const quickAnchor = candle && options?.quickButton
       ? { price: Number(direction === 'UP' ? candle.high : candle.low).toFixed(2), time: candle.time, candle }
       : null;
@@ -8497,7 +8501,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     setStructuralSaving(true);
     try {
-      const candle = anchor.candle || resolveMappingInputCandleAtAction();
+      const candle = anchor.candle || resolveMappingInputCandleAtAction({ allowSelectedFallbackWhenMappingInputEnabled: true });
       if (!candle) { throw new Error(`Select a candle, then click ${direction === 'UP' ? '↑ Break Up' : '↓ Break Down'}.`); }
       const sourceBreakRole = direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN';
       const legacyBreakRole = direction === 'UP' ? 'BH' : 'BL';
