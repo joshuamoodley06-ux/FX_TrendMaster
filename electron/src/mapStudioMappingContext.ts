@@ -77,6 +77,50 @@ export function expectedChildStructureLayerForContext(structureLayer: string): s
   return STRUCTURE_LAYER_ORDER[idx + 1];
 }
 
+export function pickParentScopedActiveRange(args: {
+  ranges: Array<{
+    range_id?: string | number | null;
+    id?: string | number | null;
+    parent_range_id?: string | number | null;
+    structure_layer?: string | null;
+    layer?: string | null;
+    range_scope?: string | null;
+    status?: string | null;
+  }>;
+  targetLayer: string;
+  parentRangeId?: string | number | null;
+  currentActiveRangeId?: string | number | null;
+  isBrokenStatus: (status: string | null | undefined) => boolean;
+  isMajorRange?: (range: unknown) => boolean;
+  compareRanges?: (a: unknown, b: unknown) => number;
+}): unknown | null {
+  const targetLayer = String(args.targetLayer || '').toUpperCase();
+  if (!targetLayer) return null;
+  const parentId = String(args.parentRangeId || '');
+  const activeId = String(args.currentActiveRangeId || '');
+  const isMajor = args.isMajorRange || (() => true);
+  const layerRows = args.ranges.filter((range) =>
+    String(range.structure_layer || range.layer || '').toUpperCase() === targetLayer
+    && isMajor(range)
+    && !args.isBrokenStatus(range.status),
+  );
+
+  const activeRow = activeId
+    ? layerRows.find((range) => String(range.range_id || range.id || '') === activeId)
+    : null;
+  if (!parentId) {
+    if (activeRow) return activeRow;
+    if (args.compareRanges) layerRows.sort(args.compareRanges);
+    return layerRows[layerRows.length - 1] || null;
+  }
+
+  if (activeRow && String(activeRow.parent_range_id || '') === parentId) return activeRow;
+  const parentRows = layerRows.filter((range) => String(range.parent_range_id || '') === parentId);
+  if (!parentRows.length) return null;
+  if (args.compareRanges) parentRows.sort(args.compareRanges);
+  return parentRows[parentRows.length - 1] || null;
+}
+
 export function responsibleChildConfirmLabel(childLayer: string): string {
   return `Confirm responsible ${structureLayerDisplayTitle(childLayer)} Range`;
 }

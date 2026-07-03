@@ -18,6 +18,7 @@ import {
   isChartTimeframeAllowedForStructureLayer,
   layersForDeletedRangeIds,
   parentContainsChildByLifecycle,
+  pickParentScopedActiveRange,
   purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
   shouldRetainChildMappingLock,
@@ -73,6 +74,46 @@ describe('mapStudioMappingContext', () => {
     expect(structureLayerRangeConfirmLabel('MICRO')).toBe('Confirm Micro Range');
     expect(structureLayerRangeConfirmNextLabel('INTRADAY')).toBe('Confirm Next Intraday Range');
     expect(structureLayerRangeConfirmNextLabel('MICRO')).toBe('Confirm Next Micro Range');
+  });
+
+  describe('parent-scoped active range selection', () => {
+    const ranges = [
+      { range_id: '455', structure_layer: 'WEEKLY', range_scope: 'MAJOR', status: 'ACTIVE' },
+      { range_id: '456', structure_layer: 'DAILY', range_scope: 'MAJOR', parent_range_id: '455', status: 'ACTIVE', range_start_time: '2025-12-26T00:00:00Z' },
+      { range_id: '460', structure_layer: 'WEEKLY', range_scope: 'MAJOR', status: 'ACTIVE' },
+      { range_id: '461', structure_layer: 'DAILY', range_scope: 'MAJOR', parent_range_id: '460', status: 'ACTIVE', range_start_time: '2026-01-02T00:00:00Z' },
+    ];
+    const compareByStart = (a: any, b: any) =>
+      new Date(String(a.range_start_time || 0)).getTime() - new Date(String(b.range_start_time || 0)).getTime();
+    const isMajor = (range: any) => String(range?.range_scope || 'MAJOR').toUpperCase() !== 'MINOR';
+
+    it('does not restore a child range from a different selected parent', () => {
+      const picked = pickParentScopedActiveRange({
+        ranges,
+        targetLayer: 'DAILY',
+        parentRangeId: '460',
+        currentActiveRangeId: '456',
+        isBrokenStatus: isBroken,
+        isMajorRange: isMajor,
+        compareRanges: compareByStart,
+      }) as any;
+
+      expect(picked?.range_id).toBe('461');
+    });
+
+    it('returns null when the selected parent has no child in the target layer', () => {
+      const picked = pickParentScopedActiveRange({
+        ranges,
+        targetLayer: 'DAILY',
+        parentRangeId: '999',
+        currentActiveRangeId: '456',
+        isBrokenStatus: isBroken,
+        isMajorRange: isMajor,
+        compareRanges: compareByStart,
+      });
+
+      expect(picked).toBeNull();
+    });
   });
 
   describe('layer-generic confirm eligibility', () => {

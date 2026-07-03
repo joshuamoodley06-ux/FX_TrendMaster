@@ -135,6 +135,7 @@ import {
   hasUnsavedStructuralDraft,
   isChartTimeframeAllowedForStructureLayer,
   layersForDeletedRangeIds,
+  pickParentScopedActiveRange,
   purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
   shouldRetainChildMappingLock,
@@ -10996,14 +10997,41 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const layerRows = safeArray<any>(savedStructuralRanges).filter(
       (r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === layer,
     );
-    const preferredSaved = (() => {
-      if (activeStructuralRangeId) {
-        const activeRow = layerRows.find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId));
-        if (activeRow && !isStructuralRangeBrokenStatusValue(activeRow.status)) return activeRow;
+    const parentIdForLayer = (() => {
+      const parentLayer = expectedParentStructureLayer(layer);
+      if (!parentLayer) return '';
+      if (lockedChildMappingParentId) return lockedChildMappingParentId;
+      const selectedRow = selectedParentRangeId
+        ? findSavedRangeRowById(selectedParentRangeId)
+        : null;
+      if (
+        selectedRow
+        && normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) === parentLayer
+        && isRangeMajor(selectedRow)
+      ) {
+        return String(selectedParentRangeId);
       }
-      const nonBroken = layerRows.filter((r:any) => !isStructuralRangeBrokenStatusValue(r.status)).sort(compareRangesByStartDate);
-      return nonBroken.length ? nonBroken[nonBroken.length - 1] : null;
+      const activeRow = activeStructuralRangeId
+        ? findSavedRangeRowById(activeStructuralRangeId)
+        : null;
+      if (
+        activeRow
+        && normalizeStructureLayer(activeRow.structure_layer || activeRow.layer) === parentLayer
+        && isRangeMajor(activeRow)
+      ) {
+        return String(activeStructuralRangeId);
+      }
+      return '';
     })();
+    const preferredSaved = pickParentScopedActiveRange({
+      ranges: savedStructuralRanges,
+      targetLayer: layer,
+      parentRangeId: parentIdForLayer,
+      currentActiveRangeId: activeStructuralRangeId,
+      isBrokenStatus: isStructuralRangeBrokenStatusValue,
+      isMajorRange: isRangeMajor,
+      compareRanges: compareRangesByStartDate,
+    }) as any | null;
 
     setStructureLayer(layer);
     setSourceTimeframe(defaultSourceTimeframeForStructureLayer(layer));
@@ -11015,6 +11043,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
     if (preferredSaved) {
       reconcileMappingRangeState(preferredSaved, { keepChainDraftMode: chainDraftMode });
+      return;
+    }
+
+    if (parentIdForLayer) {
+      activeStructuralRangeIdRef.current = '';
+      setActiveStructuralRangeId('');
+      clearStructuralRangeDraft(layer);
+      setRhAnchor({ price:'', time:'', candle:null });
+      setRlAnchor({ price:'', time:'', candle:null });
+      setRangeHigh('');
+      setRangeLow('');
+      setStructuralRangeDraftDirty(false);
+      setMessage(`${layer} context: plot a fresh child range under #${parentIdForLayer}.`);
       return;
     }
 
