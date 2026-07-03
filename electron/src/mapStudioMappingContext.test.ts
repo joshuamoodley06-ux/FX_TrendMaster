@@ -7,6 +7,7 @@ import {
   evaluateChildStructuralRangeConfirm,
   evaluateDraftNavConfirmAction,
   evaluateRangeDraftSynced,
+  evaluateStructuralAnchorEditBlockReason,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
@@ -701,6 +702,10 @@ describe('mapStudioMappingContext', () => {
       expect(reason).toContain('Intraday window is not inside Daily #437');
       expect(reason).toContain('Select the correct Daily or move RH/RL');
       expect(allowsBoundaryCorrectionForParentBlock(reason)).toBe(true);
+      expect(evaluateStructuralAnchorEditBlockReason({
+        scopeTimeframeBlockReason: null,
+        childMappingParentBlockReason: reason,
+      })).toBeNull();
     });
 
     it('allows child window inside locked Daily parent', () => {
@@ -748,6 +753,10 @@ describe('mapStudioMappingContext', () => {
       });
       expect(parentBlock).toContain('does not match locked Daily #434');
       expect(allowsBoundaryCorrectionForParentBlock(parentBlock)).toBe(false);
+      expect(evaluateStructuralAnchorEditBlockReason({
+        scopeTimeframeBlockReason: null,
+        childMappingParentBlockReason: parentBlock,
+      })).toBe(parentBlock);
       expect(evaluateStructuralBosBlockReason({
         hasCase: true,
         structureLayer: 'INTRADAY',

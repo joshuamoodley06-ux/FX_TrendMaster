@@ -125,6 +125,7 @@ import {
   evaluateChildStructuralRangeConfirm,
   evaluateDraftNavConfirmAction,
   evaluateRangeDraftSynced,
+  evaluateStructuralAnchorEditBlockReason,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
@@ -6176,7 +6177,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     lockChildMappingParent(parentId);
     setActiveStructuralRangeId('');
     if (opts?.clearDraft !== false) {
-      clearStructuralRangeDraft();
+      clearStructuralRangeDraft(childLayer);
     }
     setChainDraftMode(false);
     const childChartTf = defaultChartTimeframeForStructureLayer(childLayer);
@@ -6266,7 +6267,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setSourceTimeframe(session.childSourceTf);
     lockChildMappingParent(parentId);
     setActiveStructuralRangeId('');
-    clearStructuralRangeDraft();
+    clearStructuralRangeDraft(session.childLayer);
     setRhAnchor({ price: '', time: '', candle: null });
     setRlAnchor({ price: '', time: '', candle: null });
     setStructuralRangeDraftDirty(false);
@@ -6498,13 +6499,18 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return parentRangeIdForStructureLayer(structureLayer, rangeScope, selectedParentRangeId);
   };
 
-  const clearStructuralRangeDraft = () => {
+  const clearStructuralRangeDraft = (layerForCache: StructureLayer = structureLayer) => {
     setRhAnchor({ price:'', time:'', candle:null });
     setRlAnchor({ price:'', time:'', candle:null });
     setRangeHigh('');
     setRangeLow('');
     setRangeByTf((prev:any) => ({ ...prev, [timeframe]: { high:'', low:'' } }));
     setRangeWindowByTf((prev:any) => ({ ...prev, [timeframe]: { start:'', end:'' } }));
+    setStructuralAnchorsByLayer(prev => {
+      const next = { ...prev };
+      delete next[layerForCache];
+      return next;
+    });
     setStructuralRangeDraftDirty(false);
     autoRangeSaveAttemptRef.current = '';
   };
@@ -6939,8 +6945,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const childMappingParentBoundaryCorrectionAllowed = allowsBoundaryCorrectionForParentBlock(childMappingParentBlockReason);
   const structuralCommitBlockReason = scopeTimeframeBlockReason || childMappingParentBlockReason;
-  const structuralAnchorEditBlockReason = scopeTimeframeBlockReason
-    || (childMappingParentBoundaryCorrectionAllowed ? null : childMappingParentBlockReason);
+  const structuralAnchorEditBlockReason = evaluateStructuralAnchorEditBlockReason({
+    scopeTimeframeBlockReason,
+    childMappingParentBlockReason,
+  });
 
   const rangeDraftSynced = useMemo(() => evaluateRangeDraftSynced({
     structuralRangeDraftDirty,
@@ -11525,6 +11533,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BH')} title="↑ · BOS Up"><span>↑</span></button>
       <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BL')} title="↓ · BOS Down"><span>↓</span></button>
       <button type="button" className="quickSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="U · Undo">Undo</button>
+      {childMappingParentBoundaryCorrectionAllowed && (
+        <button type="button" className="quickSaveBtn secondary" onClick={clearMappingDraftSelection} disabled={structuralSaving} title="Clear invalid RH/RL draft">Clear</button>
+      )}
       {(structuralRangeDraftDirty || structuralBosDraftDirty || structuralSaving) && (
         <span className="quickDraftStatus dirty" title={structuralSaving ? 'Syncing…' : 'Draft'}>{structuralSaving ? 'sync…' : 'draft'}</span>
       )}
@@ -11561,6 +11572,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <button type="button" className="structuralMarkBtn" onClick={refreshHierarchyAudit} title="Refresh audit">Audit</button>
       <button type="button" className="structuralMarkBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
       <button type="button" className="structuralMarkBtn" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="Undo last event (LIFO)">Undo</button>
+      {childMappingParentBoundaryCorrectionAllowed && (
+        <button type="button" className="structuralMarkBtn" onClick={clearMappingDraftSelection} disabled={structuralSaving} title="Clear invalid RH/RL draft">Clear</button>
+      )}
       {(structuralRangeDraftDirty || structuralBosDraftDirty) && (
         <span className="structuralDraftBadge" title="Unsaved draft — use Commit in Inspector footer">draft</span>
       )}

@@ -709,6 +709,15 @@ export function allowsBoundaryCorrectionForParentBlock(reason: string | null | u
   return !!reason && reason.includes('move RH/RL');
 }
 
+export function evaluateStructuralAnchorEditBlockReason(args: {
+  scopeTimeframeBlockReason?: string | null;
+  childMappingParentBlockReason?: string | null;
+}): string | null {
+  if (args.scopeTimeframeBlockReason) return args.scopeTimeframeBlockReason;
+  if (allowsBoundaryCorrectionForParentBlock(args.childMappingParentBlockReason)) return null;
+  return args.childMappingParentBlockReason || null;
+}
+
 export function evaluateStructuralBosBlockReason(args: {
   hasCase: boolean;
   structureLayer: string;
