@@ -718,6 +718,21 @@ export function evaluateStructuralAnchorEditBlockReason(args: {
   return args.childMappingParentBlockReason || null;
 }
 
+export function evaluateScopedChildMappingParentBlockReason(args: {
+  childMappingParentBlockReason?: string | null;
+  structureLayer: string;
+  activeRangeLayer?: string | null;
+  forActiveRangeAction?: boolean;
+}): string | null {
+  const reason = args.childMappingParentBlockReason || null;
+  if (!reason) return null;
+  if (!args.forActiveRangeAction) return reason;
+  const activeLayer = String(args.activeRangeLayer || '').toUpperCase();
+  const currentLayer = String(args.structureLayer || '').toUpperCase();
+  if (activeLayer && currentLayer && activeLayer !== currentLayer) return null;
+  return reason;
+}
+
 export function evaluateStructuralBosBlockReason(args: {
   hasCase: boolean;
   structureLayer: string;

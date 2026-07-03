@@ -126,6 +126,7 @@ import {
   evaluateDraftNavConfirmAction,
   evaluateRangeDraftSynced,
   evaluateStructuralAnchorEditBlockReason,
+  evaluateScopedChildMappingParentBlockReason,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
@@ -6919,9 +6920,23 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const childMappingParentBlockReasonRef = useRef<string | null>(null);
   childMappingParentBlockReasonRef.current = childMappingParentBlockReason;
+  const activeStructuralRangeLayerForGate = useMemo(() => {
+    const activeRow = activeStructuralRangeId ? (selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId)) : null;
+    return activeRow ? normalizeStructureLayer(activeRow.structure_layer || activeRow.layer) : null;
+  }, [activeStructuralRangeId, selectedSavedRange, savedStructuralRanges]);
+  const activeRangeActionChildMappingParentBlockReason = evaluateScopedChildMappingParentBlockReason({
+    childMappingParentBlockReason,
+    structureLayer,
+    activeRangeLayer: activeStructuralRangeLayerForGate,
+    forActiveRangeAction: true,
+  });
+  const activeRangeActionChildMappingParentBlockReasonRef = useRef<string | null>(null);
+  activeRangeActionChildMappingParentBlockReasonRef.current = activeRangeActionChildMappingParentBlockReason;
 
-  const assertStructuralCommitGate = (actionLabel = 'Save'): boolean => {
-    const block = childMappingParentBlockReasonRef.current;
+  const assertStructuralCommitGate = (actionLabel = 'Save', opts?: { activeRangeAction?: boolean }): boolean => {
+    const block = opts?.activeRangeAction
+      ? activeRangeActionChildMappingParentBlockReasonRef.current
+      : childMappingParentBlockReasonRef.current;
     if (!block) return true;
     setMessage(`${actionLabel} blocked — ${block}`);
     return false;
@@ -6945,6 +6960,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const childMappingParentBoundaryCorrectionAllowed = allowsBoundaryCorrectionForParentBlock(childMappingParentBlockReason);
   const structuralCommitBlockReason = scopeTimeframeBlockReason || childMappingParentBlockReason;
+  const activeRangeActionCommitBlockReason = scopeTimeframeBlockReason || activeRangeActionChildMappingParentBlockReason;
   const structuralAnchorEditBlockReason = evaluateStructuralAnchorEditBlockReason({
     scopeTimeframeBlockReason,
     childMappingParentBlockReason,
@@ -8237,7 +8253,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving the next range.'); return false; }
     const scopeBlock = evaluateStructureScopeTimeframeBlockReason(structureLayer, sourceTimeframe, timeframe);
     if (scopeBlock) { setMessage(scopeBlock); return false; }
-    if (!assertStructuralCommitGate('Save next range')) return false;
+    if (!assertStructuralCommitGate('Save next range', { activeRangeAction: true })) return false;
     if (!assertCandleFeedReady('Save next range')) return false;
     const oldRangeId = String(saveNextRangeEligible.oldRangeId || activeStructuralRangeId);
     const createdByEventId = saveNextRangeEligible.createdByEventId;
@@ -8440,7 +8456,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       needsRangeConfirm,
       responsibleChildDraftBlocked: responsibleChildDraft.blocked,
       responsibleChildDraftReason: responsibleChildDraft.blockReason,
-      childMappingParentBlockReason,
+      childMappingParentBlockReason: activeRangeActionChildMappingParentBlockReason,
       candleFeedReady: feedGuard.ready,
       admittedMappingCandle: tvSelectionReady,
       candleFeedMessage: feedGuard.message,
@@ -11137,13 +11153,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (structuralSaving || quickEventSaving) return true;
     if (!getCurrentMappingCaseRef().hasCase) return true;
     if (scopeTimeframeBlockReason) return true;
-    if (childMappingParentBlockReason) return true;
     if (inspectorCommitAction.kind === 'next_range') {
+      if (activeRangeActionChildMappingParentBlockReason) return true;
       return !saveNextRangeEligible.eligible || !rhAnchor.price || !rlAnchor.price;
     }
     if (inspectorCommitAction.kind === 'bos') {
+      if (activeRangeActionChildMappingParentBlockReason) return true;
       return !activeStructuralRangeId || (!bhAnchor.price && !blAnchor.price);
     }
+    if (childMappingParentBlockReason) return true;
     return !rhAnchor.price || !rlAnchor.price;
   }, [
     structuralSaving,
@@ -11159,6 +11177,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     rawActiveCaseId,
     scopeTimeframeBlockReason,
     childMappingParentBlockReason,
+    activeRangeActionChildMappingParentBlockReason,
   ]);
 
   const tradingViewOverlays = useMemo(() => {
@@ -11423,8 +11442,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
               type="button"
               className="chainDrillBtn"
               onClick={() => void (confirmChildRange.useSaveNextPath ? saveNextStructuralRange() : saveStructuralRange())}
-              disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason}
-              title={confirmChildRange.saveBlockHint || confirmChildRange.label}
+              disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)}
+              title={(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : structuralCommitBlockReason) || confirmChildRange.saveBlockHint || confirmChildRange.label}
             >
               {structuralSaving ? '…' : confirmChildRange.label}
             </button>
@@ -11504,7 +11523,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     || !!structuralAnchorEditBlockReason
     || (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled)
     || (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled ? !tvMappingSelectionReady : !mappingInputCandle);
-  const structuralBosQuickDisabled = structuralQuickAnchorDisabled || !!childMappingParentBlockReason;
+  const structuralBosQuickDisabled = structuralQuickAnchorDisabled || !!activeRangeActionChildMappingParentBlockReason;
   const structuralQuickAnchorHint = structuralAnchorEditBlockReason
     ? structuralAnchorEditBlockReason
     : candleFeedLoading
@@ -11546,8 +11565,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             type="button"
             className="quickSaveBtn primary emph"
             onClick={() => void (confirmChildRange.useSaveNextPath ? saveNextStructuralRange() : saveStructuralRange())}
-            disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason}
-            title={saveBlockReason || confirmChildRange.saveBlockHint || confirmChildRange.label}
+            disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)}
+            title={(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : saveBlockReason) || confirmChildRange.saveBlockHint || confirmChildRange.label}
           >
             {structuralSaving ? '…' : confirmChildRange.label}
           </button>
@@ -11567,8 +11586,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <button type="button" className="structuralMarkBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
       <button type="button" className="structuralMarkBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
       <span className="structuralMarkDivider" />
-      <button type="button" className={`structuralMarkBtn primary ${confirmChildRange.eligible || chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason} title={saveBlockReason || (confirmChildRange.eligible ? confirmChildRange.label : chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : compactQuickSaveLabel)}</button>
-      <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!structuralCommitBlockReason} title={scopeTimeframeBlockReason || saveNextRangeEligible.reason || 'Save next range'}>Next</button>
+      <button type="button" className={`structuralMarkBtn primary ${confirmChildRange.eligible || chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!(confirmChildRange.useSaveNextPath || (chainDraftMode && saveNextRangeEligible.eligible) ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)} title={(confirmChildRange.useSaveNextPath || (chainDraftMode && saveNextRangeEligible.eligible) ? activeRangeActionCommitBlockReason : saveBlockReason) || (confirmChildRange.eligible ? confirmChildRange.label : chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : compactQuickSaveLabel)}</button>
+      <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!activeRangeActionCommitBlockReason} title={activeRangeActionCommitBlockReason || saveNextRangeEligible.reason || 'Save next range'}>Next</button>
       <button type="button" className="structuralMarkBtn" onClick={refreshHierarchyAudit} title="Refresh audit">Audit</button>
       <button type="button" className="structuralMarkBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
       <button type="button" className="structuralMarkBtn" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="Undo last event (LIFO)">Undo</button>
@@ -11804,8 +11823,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             <div className="toolsCorrectionPane">
               <p className="mutedSmall">Manual save/correction — primary path is candle + keyboard (H/L/↑/↓).</p>
               <div className="caseActionRow compactActionRow">
-                <button type="button" className="gpsSaveBtn" onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!structuralCommitBlockReason}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
-                <button type="button" className="gpsSaveBtn secondary" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!structuralCommitBlockReason}>Save Next Range</button>
+                <button type="button" className="gpsSaveBtn" onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!(confirmChildRange.useSaveNextPath || (chainDraftMode && saveNextRangeEligible.eligible) ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+                <button type="button" className="gpsSaveBtn secondary" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!activeRangeActionCommitBlockReason}>Save Next Range</button>
                 <button type="button" className="gpsSaveBtn secondary" onClick={() => void handleInspectorStructuralCommit()} disabled={inspectorCommitDisabled}>Force Commit</button>
               </div>
               <details className="structuralPanelDetails">

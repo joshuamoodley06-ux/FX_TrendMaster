@@ -7,6 +7,7 @@ import {
   evaluateChildStructuralRangeConfirm,
   evaluateDraftNavConfirmAction,
   evaluateRangeDraftSynced,
+  evaluateScopedChildMappingParentBlockReason,
   evaluateStructuralAnchorEditBlockReason,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
@@ -706,6 +707,24 @@ describe('mapStudioMappingContext', () => {
         scopeTimeframeBlockReason: null,
         childMappingParentBlockReason: reason,
       })).toBeNull();
+      expect(evaluateScopedChildMappingParentBlockReason({
+        childMappingParentBlockReason: reason,
+        structureLayer: 'INTRADAY',
+        activeRangeLayer: 'DAILY',
+        forActiveRangeAction: true,
+      })).toBeNull();
+      expect(evaluateScopedChildMappingParentBlockReason({
+        childMappingParentBlockReason: reason,
+        structureLayer: 'INTRADAY',
+        activeRangeLayer: 'DAILY',
+        forActiveRangeAction: false,
+      })).toBe(reason);
+      expect(evaluateScopedChildMappingParentBlockReason({
+        childMappingParentBlockReason: reason,
+        structureLayer: 'INTRADAY',
+        activeRangeLayer: 'INTRADAY',
+        forActiveRangeAction: true,
+      })).toBe(reason);
     });
 
     it('allows child window inside locked Daily parent', () => {
