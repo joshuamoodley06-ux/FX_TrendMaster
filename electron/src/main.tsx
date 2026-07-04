@@ -6116,9 +6116,24 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const resolveActiveRangeIdForAnchors = () => {
     const isBrokenRange = (r: any) => String(r?.status || '').toUpperCase() === 'BROKEN';
-    const layerRows = safeArray<any>(savedStructuralRanges).filter(
+    let layerRows = safeArray<any>(savedStructuralRanges).filter(
       (r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === structureLayer,
     );
+
+    const effectiveParentId = lockedChildMappingParentIdRef.current
+      || lockedChildMappingParentId
+      || selectedParentRangeIdRef.current
+      || selectedParentRangeId
+      || '';
+
+    const hasParent = !!expectedParentStructureLayer(structureLayer);
+    if (hasParent && effectiveParentId) {
+      layerRows = layerRows.filter(r => String(r.parent_range_id || '') === String(effectiveParentId));
+    } else if (hasParent && !effectiveParentId) {
+      // If we expect a parent but have none selected, do not allow auto-restoring a random range for this layer.
+      return '';
+    }
+
     const rowById = (id: string) => layerRows.find((r:any) => String(r.range_id || r.id) === String(id));
     if (activeStructuralRangeId) {
       const activeRow = rowById(activeStructuralRangeId);
@@ -6174,6 +6189,14 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setSourceTimeframe(childSourceTf);
     lockChildMappingParent(parentId);
     setActiveStructuralRangeId('');
+
+    // Clear cached anchors for the child layer so we don't auto-restore stale draft from local storage
+    setStructuralAnchorsByLayer(prev => {
+      const next = { ...prev };
+      delete next[childLayer];
+      return next;
+    });
+
     if (opts?.clearDraft !== false) {
       clearStructuralRangeDraft();
     }
@@ -8005,13 +8028,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setMessage(`Use ${structureLayerRangeConfirmNextLabel(saveLayer)} to chain after BOS.`);
       return false;
     }
-    const isUpdate = !forceCreate && !!(existsInLedger && activeStructuralRangeId && activeRangeLayer === saveLayer && activeRangeScope === rangeScope && !isBrokenSameLayerActive);
-    const isBrokenUpdate = !!(isUpdate && activeRangeForSave && isStructuralRangeBrokenStatusValue(activeRangeForSave.status));
-    if (!forceCreate && activeStructuralRangeId && !existsInLedger) {
-      setMessage(`Active range #${activeStructuralRangeId} is not in this case — saving as a new range.`);
-    } else if (!forceCreate && activeStructuralRangeId && activeRangeLayer && activeRangeLayer !== saveLayer) {
-      setMessage(`Active range #${activeStructuralRangeId} is ${activeRangeLayer}. Saving new ${saveLayer} range instead.`);
-    }
+    let isUpdate = !forceCreate && !!(existsInLedger && activeStructuralRangeId && activeRangeLayer === saveLayer && activeRangeScope === rangeScope && !isBrokenSameLayerActive);
+
     const parentResolve = options?.saveScope?.parentRangeId
       ? {
           parentId: String(options.saveScope.parentRangeId),
@@ -8031,6 +8049,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             orphanWarning: null,
           }
         : resolveParentIdForStructuralSave();
+
+    if (isUpdate && activeRangeForSave) {
+      const activeParentId = String(activeRangeForSave.parent_range_id || '');
+      const targetParentId = String(parentResolve.parentId || '');
+      if (activeParentId !== targetParentId) {
+        console.warn('[Save Guard] Active range parent mismatch. Forcing new range create.', { activeParentId, targetParentId, activeStructuralRangeId });
+        isUpdate = false;
+      }
+    }
+
+    const isBrokenUpdate = !!(isUpdate && activeRangeForSave && isStructuralRangeBrokenStatusValue(activeRangeForSave.status));
+    if (!forceCreate && activeStructuralRangeId && !existsInLedger) {
+      setMessage(`Active range #${activeStructuralRangeId} is not in this case — saving as a new range.`);
+    } else if (!forceCreate && activeStructuralRangeId && activeRangeLayer && activeRangeLayer !== saveLayer) {
+      setMessage(`Active range #${activeStructuralRangeId} is ${activeRangeLayer}. Saving new ${saveLayer} range instead.`);
+    }
     if (parentResolve.autoSelected && parentResolve.parentId && !lockedChildMappingParentIdRef.current) {
       setSelectedParentRangeId(String(parentResolve.parentId));
     }
@@ -8049,7 +8083,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       const safeCaseKey = String(mappingCase.case_ref || mappingCase.raw_case_id || mappingCase.case_id || 'case').replace(/[^0-9A-Za-z_-]+/g, '_');
       const parentRangeIdForSave = parentResolve.parentId ? Number(parentResolve.parentId) : null;
       const payload = {
-        ...(isUpdate ? { range_id: activeStructuralRangeId } : { range_key: `${safeCaseKey}_${saveLayer}_${saveSourceTf}_${Date.now()}` }),
+        ...(isUpdate ? { range_id: Number(activeStructuralRangeId) || activeStructuralRangeId } : { range_key: `${safeCaseKey}_${saveLayer}_${saveSourceTf}_${Date.now()}` }),
         case_id: mappingCase.case_id,
         raw_case_id: mappingCase.raw_case_id,
         case_ref: mappingCase.case_ref,
@@ -10909,7 +10943,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const chartTf = defaultChartTimeframeForStructureLayer(structureLayer);
     if (String(timeframe).toUpperCase() !== chartTf) return;
     reconcileMappingRangeStateForCurrentLayer({ respectChainDraft: true });
-  }, [timeframe, structureLayer, savedStructuralRanges, activeStructuralRangeId, chainDraftMode, structuralRangeDraftDirty, structuralSaving]);
+  }, [timeframe, structureLayer, savedStructuralRanges, activeStructuralRangeId, chainDraftMode, structuralRangeDraftDirty, structuralSaving, lockedChildMappingParentId, selectedParentRangeId]);
 
   const selectStructureLayer = (layer: StructureLayer) => {
     const nextAnchorsByLayer: Partial<Record<StructureLayer, LayerAnchorPair>> = {
@@ -10957,9 +10991,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setSelectedParentRangeId('');
     }
 
-    const layerRows = safeArray<any>(savedStructuralRanges).filter(
+    const effectiveParentId = lockedChildMappingParentId
+      || selectedParentRangeId
+      || '';
+
+    let layerRows = safeArray<any>(savedStructuralRanges).filter(
       (r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === layer,
     );
+
+    const hasParent = !!expectedParentStructureLayer(layer);
+    if (hasParent && effectiveParentId) {
+      layerRows = layerRows.filter(r => String(r.parent_range_id || '') === String(effectiveParentId));
+    } else if (hasParent && !effectiveParentId) {
+      // If we expect a parent but have none selected, do not allow auto-restoring a random range for this layer.
+      layerRows = [];
+    }
+
     const preferredSaved = (() => {
       if (activeStructuralRangeId) {
         const activeRow = layerRows.find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId));
