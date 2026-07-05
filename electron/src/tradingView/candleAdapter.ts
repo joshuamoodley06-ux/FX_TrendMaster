@@ -244,7 +244,9 @@ export function applyChartModeWindow(candles: FxtmCandleRow[], window: TradingVi
     const cut = rawTimeMs(window.replayCutTime);
     if (!Number.isFinite(cut)) return rows;
     // Future-only cut — never trim left-side history.
-    return rows.filter((c) => candleTimeMs(c) <= cut);
+    const hierarchyEnd = rawTimeMs(window.hierarchyEnd);
+    const displayCut = Number.isFinite(hierarchyEnd) ? Math.max(cut, hierarchyEnd) : cut;
+    return rows.filter((c) => candleTimeMs(c) <= displayCut);
   }
 
   if (window.mode === 'hierarchy' || window.mode === 'full') {
