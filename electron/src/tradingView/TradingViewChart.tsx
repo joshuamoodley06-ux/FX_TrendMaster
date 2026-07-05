@@ -19,6 +19,7 @@ import {
 import {
   isRoutineTfMemoryReason,
   isPostRoutineSettleActive,
+  isStructuralNavigationReason,
   shouldBlockTradingViewAutoFit,
   shouldBlockTradingViewFitContent,
   targetVisibleBarsForTimeframe,
@@ -629,7 +630,9 @@ export function TradingViewChart({
 
     const pendingReason = pendingFitReason ?? tradingViewCameraBridge.current.pendingFitReason;
 
-    if (chartMode === 'hierarchy') {
+    const isStructuralNav = isStructuralNavigationReason(pendingReason);
+
+    if (chartMode === 'hierarchy' || (chartMode === 'replay' && isStructuralNav)) {
       if (fitRequest.from && fitRequest.to) {
         runProgrammaticFit(() => {
           chartRef.current!.timeScale().setVisibleRange({ from: fitRequest.from!, to: fitRequest.to! });
@@ -641,7 +644,7 @@ export function TradingViewChart({
       return;
     }
 
-    if (chartMode === 'replay') {
+    if (chartMode === 'replay' && !isStructuralNav) {
       programmaticFitRef.current = true;
       const status = applyReplayAnchorFit(fitRequest);
       window.requestAnimationFrame(() => {
