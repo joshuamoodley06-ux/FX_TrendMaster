@@ -17,9 +17,14 @@ describe('cameraUtils', () => {
     { time: '2024-01-03T00:00:00.000Z', open: 2, high: 4, low: 1, close: 3 },
   ];
 
-  it('parseStructuralTimeMs parses valid dates', () => {
+  it('parseStructuralTimeMs parses valid dates and MT5 format', () => {
     expect(parseStructuralTimeMs('2024-01-01')).toBe(new Date('2024-01-01T00:00:00.000Z').getTime());
     expect(parseStructuralTimeMs('2024-01-01T12:00:00.000Z')).toBe(new Date('2024-01-01T12:00:00.000Z').getTime());
+
+    const mt5Raw = '2024.11.04 08:00';
+    const oldCandleTimeMsResult = Date.parse(mt5Raw.includes('T') ? mt5Raw : mt5Raw.replace(' ', 'T'));
+    const oldParsed = Number.isFinite(oldCandleTimeMsResult) ? oldCandleTimeMsResult : null;
+    expect(parseStructuralTimeMs(mt5Raw)).toBe(oldParsed);
     expect(parseStructuralTimeMs('?')).toBeNull();
   });
 

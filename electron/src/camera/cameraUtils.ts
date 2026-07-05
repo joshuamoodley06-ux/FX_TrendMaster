@@ -21,6 +21,14 @@ export function isPlausibleMarketTimeMs(ms: number | null, candles?: Candle[]): 
   return true;
 }
 
+// Exactly match the underlying `candleTimeMs` helper from main.tsx that used to power parseStructuralTimeMs
+function oldCandleTimeMs(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const raw = String(value).trim();
+  const ms = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T'));
+  return Number.isFinite(ms) ? ms : null;
+}
+
 export function parseStructuralTimeMs(value: any): number | null {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
@@ -29,7 +37,7 @@ export function parseStructuralTimeMs(value: any): number | null {
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
   }
-  const ms = new Date(raw.includes('T') ? raw : `${raw}T00:00:00.000Z`).getTime();
+  const ms = oldCandleTimeMs(raw);
   return Number.isFinite(ms) ? ms : null;
 }
 
@@ -69,8 +77,8 @@ export function buildCandleWindowFit(candles: Candle[], centerTime: string, padB
 export function candleIndexNearest(candles:Candle[], time?:string|null): number {
   if (!candles.length) return 0;
   if (!time) return candles.length - 1;
-  const cut = new Date(String(time)).getTime();
-  if (!Number.isFinite(cut)) return candles.length - 1;
+  const cut = oldCandleTimeMs(time);
+  if (cut === null) return candles.length - 1;
   let best = 0;
   let dist = Math.abs(new Date(String(candles[0].time)).getTime() - cut);
   for (let i=1; i<candles.length; i++) {
