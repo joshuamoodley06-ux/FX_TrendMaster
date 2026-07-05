@@ -3053,6 +3053,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [lockedChildMappingParentId, setLockedChildMappingParentId] = useState('');
   const [activeStructuralRangeId, setActiveStructuralRangeId] = useState<string>('');
   const activeStructuralRangeIdRef = useRef('');
+  const explicitHierarchySelectionIdRef = useRef('');
   const selectedParentRangeIdRef = useRef('');
   const lockedChildMappingParentIdRef = useRef('');
   const skipSavedReplayHydrateRef = useRef(false);
@@ -3888,7 +3889,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const selectedId = String(activeStructuralRangeId || '');
     const parentId = String(selectedParentRangeId || '');
     const chain = selectedId ? collectParentContextChain(selectedId, allRanges) : [];
-    const resolvedParentId = parentId || String(chain[1] || '');
+    const chainParentId = String(chain[1] || '');
+    const resolvedParentId = parentId && (!chain.length || chain.includes(parentId))
+      ? parentId
+      : chainParentId;
     const ancestorIds = chain.slice(2);
     const visibleIds = chartMappingFocusMode
       ? null
@@ -6051,6 +6055,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
 
     const rowById = (id: string) => layerRows.find((r:any) => String(r.range_id || r.id) === String(id));
+    const explicitId = String(explicitHierarchySelectionIdRef.current || '');
+    if (explicitId) {
+      const explicitRow = rowById(explicitId);
+      if (explicitRow) return explicitId;
+      explicitHierarchySelectionIdRef.current = '';
+    }
     if (activeStructuralRangeId) {
       const activeRow = rowById(activeStructuralRangeId);
       if (activeRow && !isBrokenRange(activeRow)) return String(activeStructuralRangeId);
@@ -7199,6 +7209,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
     skipSavedReplayHydrateRef.current = true;
+    explicitHierarchySelectionIdRef.current = id;
     activeStructuralRangeIdRef.current = id;
     setActiveStructuralRangeId(id);
     const nextLayer = normalizeStructureLayer(range.structure_layer || range.layer) || structureLayer;
@@ -9187,14 +9198,14 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     action();
   };
 
-  const applyExplorerRowSelection = (range: any, opts?: { routeInspector?: boolean }) => {
+  const applyExplorerRowSelection = (range: any, opts?: { routeInspector?: boolean; parentContextOnly?: boolean }) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
     tradingViewSuppressedHierarchyRangeIdRef.current = '';
     const rangeLayer = normalizeStructureLayer(range?.structure_layer || range?.layer);
     const neededParentLayer = expectedParentStructureLayer(structureLayer);
 
-    if (rangeLayer && neededParentLayer && rangeLayer === neededParentLayer && rangeLayer !== structureLayer) {
+    if (opts?.parentContextOnly && rangeLayer && neededParentLayer && rangeLayer === neededParentLayer && rangeLayer !== structureLayer) {
       lockChildMappingParent(id);
       setRangeLineHiddenByCase((prev) => {
         const key = activeCaseDisplayId || 'global';
