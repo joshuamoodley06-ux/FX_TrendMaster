@@ -927,8 +927,8 @@ function parentContainsChildByLifecycle(parent: any, childTimesMs: number[]): bo
   const pEnd = parentLifecycleEndMs(parent);
   const cMin = Math.min(...childTimesMs);
   const cMax = Math.max(...childTimesMs);
-  if (pStart !== null && cMin < pStart) return false;
-  if (pEnd !== null && cMax > pEnd) return false;
+  if (pStart !== null && cMax < pStart) return false;
+  if (pEnd !== null && cMin > pEnd) return false;
   return true;
 }
 

@@ -782,6 +782,36 @@ describe('mapStudioMappingContext', () => {
       ])).toBe(false);
     });
 
+    it('allows child formation before parent start when child continues into parent lifecycle', () => {
+      const weekly488 = {
+        range_id: '488',
+        structure_layer: 'WEEKLY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        active_from_time: '2026-03-01T00:00:00.000Z',
+        range_start_time: '2026-03-01T00:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(weekly488, [
+        Date.parse('2026-02-25T00:00:00.000Z'),
+        Date.parse('2026-03-02T00:00:00.000Z'),
+      ])).toBe(true);
+    });
+
+    it('rejects child lifecycle fully before parent start', () => {
+      const weekly488 = {
+        range_id: '488',
+        structure_layer: 'WEEKLY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        active_from_time: '2026-03-01T00:00:00.000Z',
+        range_start_time: '2026-03-01T00:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(weekly488, [
+        Date.parse('2026-02-25T00:00:00.000Z'),
+        Date.parse('2026-02-28T23:59:59.000Z'),
+      ])).toBe(false);
+    });
+
     it('allows child anchors on the inactive day for ended Daily parents with midnight boundary', () => {
       const endedDaily = {
         ...daily434,
