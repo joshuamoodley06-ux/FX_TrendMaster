@@ -18,6 +18,10 @@ import {
   purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
   shouldRetainChildMappingLock,
+  shouldBlockResponsibleChildDraftForLayer,
+  shouldAllowSelectedRangeUpdate,
+  shouldHydrateSavedRangeIntoDraft,
+  shouldRouteStructuralRangeSaveToNext,
   shouldSuppressAutoParentRewrite,
   shouldSuppressDraftRangeOverlay,
   structureLayerRangeConfirmLabel,
@@ -286,7 +290,7 @@ describe('mapStudioMappingContext', () => {
   describe('draft lifecycle v2', () => {
     const priceMatches = (a: number, b: number) => Math.abs(a - b) < 0.005;
 
-    it('blocks Weekly BOS when unsaved Daily child draft exists under parent', () => {
+    it('does not hard-block Weekly BOS when unsaved Daily child draft exists under parent', () => {
       const childDraft = evaluateUnsavedResponsibleChildDraft({
         parentLayer: 'WEEKLY',
         parentRangeId: '433',
@@ -300,9 +304,9 @@ describe('mapStudioMappingContext', () => {
         savedRanges: [],
         priceMatches,
       });
-      expect(childDraft.blocked).toBe(true);
-      expect(childDraft.blockReason).toBe('Confirm responsible Daily Range before Weekly BOS');
-      expect(childDraft.confirmLabel).toBe('Confirm responsible Daily Range');
+      expect(childDraft.blocked).toBe(false);
+      expect(childDraft.blockReason).toBeNull();
+      expect(childDraft.confirmLabel).toBeNull();
 
       expect(evaluateStructuralBosBlockReason({
         hasCase: true,
@@ -315,7 +319,7 @@ describe('mapStudioMappingContext', () => {
         responsibleChildDraftReason: childDraft.blockReason,
         candleFeedReady: true,
         admittedMappingCandle: true,
-      })).toBe('Confirm responsible Daily Range before Weekly BOS');
+      })).toBeNull();
     });
 
     it('does not block parent BOS when matching saved child range exists', () => {
@@ -452,7 +456,7 @@ describe('mapStudioMappingContext', () => {
       }).clearChainDraftMode).toBe(false);
     });
 
-    it('prioritizes responsible child draft over next-range and admitted-candle BOS blocks', () => {
+    it('does not let responsible Daily draft override Weekly next-range confirmation', () => {
       expect(evaluateStructuralBosBlockReason({
         hasCase: true,
         structureLayer: 'WEEKLY',
@@ -464,7 +468,90 @@ describe('mapStudioMappingContext', () => {
         responsibleChildDraftReason: 'Confirm responsible Daily Range before Weekly BOS',
         candleFeedReady: false,
         admittedMappingCandle: false,
-      })).toBe('Confirm responsible Daily Range before Weekly BOS');
+      })).toBe('Confirm next Weekly Range before BOS');
+    });
+
+    it('treats responsible Daily draft as warning-only for Weekly but blocking for non-Weekly layers', () => {
+      expect(shouldBlockResponsibleChildDraftForLayer('WEEKLY')).toBe(false);
+      expect(shouldBlockResponsibleChildDraftForLayer('DAILY')).toBe(true);
+      expect(shouldBlockResponsibleChildDraftForLayer('INTRADAY')).toBe(true);
+    });
+
+    it('keeps non-Weekly responsible child draft blocking behavior in chain mode', () => {
+      const childDraft = evaluateUnsavedResponsibleChildDraft({
+        parentLayer: 'DAILY',
+        parentRangeId: '501',
+        childLayer: 'INTRADAY',
+        childRhSet: true,
+        childRlSet: true,
+        childRhPrice: 2410,
+        childRlPrice: 2405,
+        activeRangeLayer: 'DAILY',
+        chainDraftMode: true,
+        savedRanges: [],
+        priceMatches,
+      });
+      expect(childDraft.blocked).toBe(true);
+      expect(childDraft.blockReason).toBe('Confirm responsible Intraday Range before Daily BOS');
+      expect(childDraft.confirmLabel).toBe('Confirm responsible Intraday Range');
+    });
+
+    it('routes selected Weekly chain draft to Save Next instead of updating the selected Weekly', () => {
+      expect(shouldRouteStructuralRangeSaveToNext({
+        structureLayer: 'WEEKLY',
+        activeRangeLayer: 'WEEKLY',
+        chainDraftMode: true,
+        saveNextRangeEligible: true,
+        rhSet: true,
+        rlSet: true,
+      })).toBe(true);
+    });
+
+    it('keeps saved Weekly hierarchy selection out of editable draft mode by default', () => {
+      expect(shouldHydrateSavedRangeIntoDraft({
+        structureLayer: 'WEEKLY',
+        editMode: false,
+        chainDraftMode: false,
+      })).toBe(false);
+    });
+
+    it('allows explicit Weekly edit mode to hydrate and update selected Weekly', () => {
+      expect(shouldHydrateSavedRangeIntoDraft({
+        structureLayer: 'WEEKLY',
+        editMode: true,
+        chainDraftMode: false,
+      })).toBe(true);
+      expect(shouldAllowSelectedRangeUpdate({
+        structureLayer: 'WEEKLY',
+        editMode: true,
+      })).toBe(true);
+    });
+
+    it('blocks selected Weekly update when not in explicit edit mode', () => {
+      expect(shouldAllowSelectedRangeUpdate({
+        structureLayer: 'WEEKLY',
+        editMode: false,
+      })).toBe(false);
+    });
+
+    it('does not route Daily selected range edits to Save Next', () => {
+      expect(shouldRouteStructuralRangeSaveToNext({
+        structureLayer: 'DAILY',
+        activeRangeLayer: 'DAILY',
+        chainDraftMode: true,
+        saveNextRangeEligible: true,
+        rhSet: true,
+        rlSet: true,
+      })).toBe(false);
+      expect(shouldHydrateSavedRangeIntoDraft({
+        structureLayer: 'DAILY',
+        editMode: false,
+        chainDraftMode: false,
+      })).toBe(true);
+      expect(shouldAllowSelectedRangeUpdate({
+        structureLayer: 'DAILY',
+        editMode: false,
+      })).toBe(true);
     });
 
     it('does not block Confirm Intraday Range child save workflow', () => {

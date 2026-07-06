@@ -306,6 +306,7 @@ export function evaluateUnsavedResponsibleChildDraft(args: {
   if (args.childConfirmEligible || args.childNextConfirmEligible) return inactive;
   const activeRangeLayer = args.activeRangeLayer ? String(args.activeRangeLayer).toUpperCase() : null;
   if (activeRangeLayer && activeRangeLayer !== parentLayer) return inactive;
+  if (parentLayer === 'WEEKLY') return inactive;
   if (!args.chainDraftMode && parentLayer !== 'WEEKLY' && parentLayer !== 'MACRO') return inactive;
   if (!args.childRhSet || !args.childRlSet) return inactive;
   const matchingSavedChildId = findMatchingSavedChildRange({
@@ -434,6 +435,49 @@ export function evaluateChildStructuralRangeConfirm(args: {
     sameLayerChainContinuation: false,
     useSaveNextPath: false,
   };
+}
+
+export function shouldBlockResponsibleChildDraftForLayer(parentLayer: string): boolean {
+  return String(parentLayer || '').toUpperCase() !== 'WEEKLY';
+}
+
+export function shouldRouteStructuralRangeSaveToNext(args: {
+  structureLayer: string;
+  activeRangeLayer: string | null;
+  chainDraftMode: boolean;
+  saveNextRangeEligible: boolean;
+  rhSet: boolean;
+  rlSet: boolean;
+}): boolean {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  const activeLayer = args.activeRangeLayer ? String(args.activeRangeLayer).toUpperCase() : null;
+  return !!(
+    layer === 'WEEKLY'
+    && activeLayer === layer
+    && args.chainDraftMode
+    && args.saveNextRangeEligible
+    && args.rhSet
+    && args.rlSet
+  );
+}
+
+export function shouldHydrateSavedRangeIntoDraft(args: {
+  structureLayer: string;
+  editMode: boolean;
+  chainDraftMode: boolean;
+}): boolean {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  if (layer === 'WEEKLY' && !args.editMode && !args.chainDraftMode) return false;
+  return true;
+}
+
+export function shouldAllowSelectedRangeUpdate(args: {
+  structureLayer: string;
+  editMode: boolean;
+}): boolean {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  if (layer === 'WEEKLY') return !!args.editMode;
+  return true;
 }
 
 export function shouldSuppressDraftRangeOverlay(args: {
@@ -721,7 +765,8 @@ export function evaluateStructuralBosBlockReason(args: {
 }): string | null {
   if (!args.hasCase) return 'Create or select a mapping case first (Case tab).';
   if (args.childMappingParentBlockReason) return args.childMappingParentBlockReason;
-  if (args.responsibleChildDraftBlocked && args.responsibleChildDraftReason) {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  if (layer !== 'WEEKLY' && args.responsibleChildDraftBlocked && args.responsibleChildDraftReason) {
     return args.responsibleChildDraftReason;
   }
   const layerTitle = structureLayerDisplayTitle(args.structureLayer);
