@@ -77,50 +77,6 @@ export function expectedChildStructureLayerForContext(structureLayer: string): s
   return STRUCTURE_LAYER_ORDER[idx + 1];
 }
 
-export function pickParentScopedActiveRange(args: {
-  ranges: Array<{
-    range_id?: string | number | null;
-    id?: string | number | null;
-    parent_range_id?: string | number | null;
-    structure_layer?: string | null;
-    layer?: string | null;
-    range_scope?: string | null;
-    status?: string | null;
-  }>;
-  targetLayer: string;
-  parentRangeId?: string | number | null;
-  currentActiveRangeId?: string | number | null;
-  isBrokenStatus: (status: string | null | undefined) => boolean;
-  isMajorRange?: (range: unknown) => boolean;
-  compareRanges?: (a: unknown, b: unknown) => number;
-}): unknown | null {
-  const targetLayer = String(args.targetLayer || '').toUpperCase();
-  if (!targetLayer) return null;
-  const parentId = String(args.parentRangeId || '');
-  const activeId = String(args.currentActiveRangeId || '');
-  const isMajor = args.isMajorRange || (() => true);
-  const layerRows = args.ranges.filter((range) =>
-    String(range.structure_layer || range.layer || '').toUpperCase() === targetLayer
-    && isMajor(range)
-    && !args.isBrokenStatus(range.status),
-  );
-
-  const activeRow = activeId
-    ? layerRows.find((range) => String(range.range_id || range.id || '') === activeId)
-    : null;
-  if (!parentId) {
-    if (activeRow) return activeRow;
-    if (args.compareRanges) layerRows.sort(args.compareRanges);
-    return layerRows[layerRows.length - 1] || null;
-  }
-
-  if (activeRow && String(activeRow.parent_range_id || '') === parentId) return activeRow;
-  const parentRows = layerRows.filter((range) => String(range.parent_range_id || '') === parentId);
-  if (!parentRows.length) return null;
-  if (args.compareRanges) parentRows.sort(args.compareRanges);
-  return parentRows[parentRows.length - 1] || null;
-}
-
 export function responsibleChildConfirmLabel(childLayer: string): string {
   return `Confirm responsible ${structureLayerDisplayTitle(childLayer)} Range`;
 }
@@ -350,6 +306,7 @@ export function evaluateUnsavedResponsibleChildDraft(args: {
   if (args.childConfirmEligible || args.childNextConfirmEligible) return inactive;
   const activeRangeLayer = args.activeRangeLayer ? String(args.activeRangeLayer).toUpperCase() : null;
   if (activeRangeLayer && activeRangeLayer !== parentLayer) return inactive;
+  if (parentLayer === 'WEEKLY') return inactive;
   if (!args.chainDraftMode && parentLayer !== 'WEEKLY' && parentLayer !== 'MACRO') return inactive;
   if (!args.childRhSet || !args.childRlSet) return inactive;
   const matchingSavedChildId = findMatchingSavedChildRange({
@@ -478,6 +435,49 @@ export function evaluateChildStructuralRangeConfirm(args: {
     sameLayerChainContinuation: false,
     useSaveNextPath: false,
   };
+}
+
+export function shouldBlockResponsibleChildDraftForLayer(parentLayer: string): boolean {
+  return String(parentLayer || '').toUpperCase() !== 'WEEKLY';
+}
+
+export function shouldRouteStructuralRangeSaveToNext(args: {
+  structureLayer: string;
+  activeRangeLayer: string | null;
+  chainDraftMode: boolean;
+  saveNextRangeEligible: boolean;
+  rhSet: boolean;
+  rlSet: boolean;
+}): boolean {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  const activeLayer = args.activeRangeLayer ? String(args.activeRangeLayer).toUpperCase() : null;
+  return !!(
+    layer === 'WEEKLY'
+    && activeLayer === layer
+    && args.chainDraftMode
+    && args.saveNextRangeEligible
+    && args.rhSet
+    && args.rlSet
+  );
+}
+
+export function shouldHydrateSavedRangeIntoDraft(args: {
+  structureLayer: string;
+  editMode: boolean;
+  chainDraftMode: boolean;
+}): boolean {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  if (layer === 'WEEKLY' && !args.editMode && !args.chainDraftMode) return false;
+  return true;
+}
+
+export function shouldAllowSelectedRangeUpdate(args: {
+  structureLayer: string;
+  editMode: boolean;
+}): boolean {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  if (layer === 'WEEKLY') return !!args.editMode;
+  return true;
 }
 
 export function shouldSuppressDraftRangeOverlay(args: {
@@ -670,8 +670,8 @@ export function parentContainsChildByLifecycle(
   const pEnd = parentLifecycleEndMs(parent);
   const cMin = Math.min(...childTimesMs);
   const cMax = Math.max(...childTimesMs);
-  if (pStart !== null && cMin < pStart) return false;
-  if (pEnd !== null && cMax > pEnd) return false;
+  if (pStart !== null && cMax < pStart) return false;
+  if (pEnd !== null && cMin > pEnd) return false;
   return true;
 }
 
@@ -749,34 +749,6 @@ export function evaluateChildMappingParentBlockReason(args: {
   return null;
 }
 
-export function allowsBoundaryCorrectionForParentBlock(reason: string | null | undefined): boolean {
-  return !!reason && reason.includes('move RH/RL');
-}
-
-export function evaluateStructuralAnchorEditBlockReason(args: {
-  scopeTimeframeBlockReason?: string | null;
-  childMappingParentBlockReason?: string | null;
-}): string | null {
-  if (args.scopeTimeframeBlockReason) return args.scopeTimeframeBlockReason;
-  if (allowsBoundaryCorrectionForParentBlock(args.childMappingParentBlockReason)) return null;
-  return args.childMappingParentBlockReason || null;
-}
-
-export function evaluateScopedChildMappingParentBlockReason(args: {
-  childMappingParentBlockReason?: string | null;
-  structureLayer: string;
-  activeRangeLayer?: string | null;
-  forActiveRangeAction?: boolean;
-}): string | null {
-  const reason = args.childMappingParentBlockReason || null;
-  if (!reason) return null;
-  if (!args.forActiveRangeAction) return reason;
-  const activeLayer = String(args.activeRangeLayer || '').toUpperCase();
-  const currentLayer = String(args.structureLayer || '').toUpperCase();
-  if (activeLayer && currentLayer && activeLayer !== currentLayer) return null;
-  return reason;
-}
-
 export function evaluateStructuralBosBlockReason(args: {
   hasCase: boolean;
   structureLayer: string;
@@ -793,7 +765,8 @@ export function evaluateStructuralBosBlockReason(args: {
 }): string | null {
   if (!args.hasCase) return 'Create or select a mapping case first (Case tab).';
   if (args.childMappingParentBlockReason) return args.childMappingParentBlockReason;
-  if (args.responsibleChildDraftBlocked && args.responsibleChildDraftReason) {
+  const layer = String(args.structureLayer || '').toUpperCase();
+  if (layer !== 'WEEKLY' && args.responsibleChildDraftBlocked && args.responsibleChildDraftReason) {
     return args.responsibleChildDraftReason;
   }
   const layerTitle = structureLayerDisplayTitle(args.structureLayer);

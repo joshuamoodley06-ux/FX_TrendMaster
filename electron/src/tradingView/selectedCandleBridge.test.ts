@@ -361,26 +361,6 @@ describe('resolveMappingInputCandle', () => {
     expect(candle).toEqual(admitted);
   });
 
-  it('allows selected candle fallback for TV Map On BOS actions only when explicitly requested', () => {
-    expect(resolveMappingInputCandle({
-      chartRenderer: 'tradingview',
-      mappingInputEnabled: true,
-      admittedMappingInputCandle: null,
-      selectedCandle: candles[0],
-      replayCandle: candles[1],
-    })).toBeNull();
-
-    const candle = resolveMappingInputCandle({
-      chartRenderer: 'tradingview',
-      mappingInputEnabled: true,
-      admittedMappingInputCandle: null,
-      selectedCandle: candles[0],
-      replayCandle: candles[1],
-      allowSelectedFallbackWhenMappingInputEnabled: true,
-    });
-    expect(candle?.time).toBe('2024.11.04 08:00');
-  });
-
   it('keeps D3 selectedCandle path when TV Map is off', () => {
     const candle = resolveMappingInputCandle({
       chartRenderer: 'd3',

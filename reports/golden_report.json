@@ -1,0 +1,13 @@
+{
+  "total_ranges": 4,
+  "counts_by_layer": {
+    "MACRO": 1,
+    "WEEKLY": 1,
+    "DAILY": 2
+  },
+  "counts_by_status": {
+    "ACTIVE": 3,
+    "BROKEN": 1
+  },
+  "orphan_count": 1
+}

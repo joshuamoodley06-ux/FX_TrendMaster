@@ -18,6 +18,7 @@ import {
 } from './candleAdapter';
 import {
   isRoutineTfMemoryReason,
+  isStructuralNavigationReason,
   isPostRoutineSettleActive,
   shouldBlockTradingViewAutoFit,
   shouldBlockTradingViewFitContent,
@@ -638,6 +639,16 @@ export function TradingViewChart({
         updateFitDebugStatus(`hierarchy:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
         notifyFitApplied({ token: fitRequest.token, kind: 'hierarchy' });
       }
+      return;
+    }
+
+    if (chartMode === 'replay' && isStructuralNavigationReason(pendingReason) && fitRequest.from && fitRequest.to) {
+      runProgrammaticFit(() => {
+        chartRef.current!.timeScale().setVisibleRange({ from: fitRequest.from!, to: fitRequest.to! });
+      });
+      lastFitTokenRef.current = fitRequest.token;
+      updateFitDebugStatus(`replay-structural:${fitRequest.token}:${timeDebugKey(fitRequest.from)}:${timeDebugKey(fitRequest.to)}`);
+      notifyFitApplied({ token: fitRequest.token, kind: 'hierarchy' });
       return;
     }
 

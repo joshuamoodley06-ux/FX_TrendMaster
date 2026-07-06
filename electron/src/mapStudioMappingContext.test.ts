@@ -1,14 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
-  allowsBoundaryCorrectionForParentBlock,
   buildDiscardStructuralDraftPlan,
   buildSkeletonMappingStatusLine,
   evaluateChildMappingParentBlockReason,
   evaluateChildStructuralRangeConfirm,
   evaluateDraftNavConfirmAction,
   evaluateRangeDraftSynced,
-  evaluateScopedChildMappingParentBlockReason,
-  evaluateStructuralAnchorEditBlockReason,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
@@ -18,10 +15,13 @@ import {
   isChartTimeframeAllowedForStructureLayer,
   layersForDeletedRangeIds,
   parentContainsChildByLifecycle,
-  pickParentScopedActiveRange,
   purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
   shouldRetainChildMappingLock,
+  shouldBlockResponsibleChildDraftForLayer,
+  shouldAllowSelectedRangeUpdate,
+  shouldHydrateSavedRangeIntoDraft,
+  shouldRouteStructuralRangeSaveToNext,
   shouldSuppressAutoParentRewrite,
   shouldSuppressDraftRangeOverlay,
   structureLayerRangeConfirmLabel,
@@ -74,46 +74,6 @@ describe('mapStudioMappingContext', () => {
     expect(structureLayerRangeConfirmLabel('MICRO')).toBe('Confirm Micro Range');
     expect(structureLayerRangeConfirmNextLabel('INTRADAY')).toBe('Confirm Next Intraday Range');
     expect(structureLayerRangeConfirmNextLabel('MICRO')).toBe('Confirm Next Micro Range');
-  });
-
-  describe('parent-scoped active range selection', () => {
-    const ranges = [
-      { range_id: '455', structure_layer: 'WEEKLY', range_scope: 'MAJOR', status: 'ACTIVE' },
-      { range_id: '456', structure_layer: 'DAILY', range_scope: 'MAJOR', parent_range_id: '455', status: 'ACTIVE', range_start_time: '2025-12-26T00:00:00Z' },
-      { range_id: '460', structure_layer: 'WEEKLY', range_scope: 'MAJOR', status: 'ACTIVE' },
-      { range_id: '461', structure_layer: 'DAILY', range_scope: 'MAJOR', parent_range_id: '460', status: 'ACTIVE', range_start_time: '2026-01-02T00:00:00Z' },
-    ];
-    const compareByStart = (a: any, b: any) =>
-      new Date(String(a.range_start_time || 0)).getTime() - new Date(String(b.range_start_time || 0)).getTime();
-    const isMajor = (range: any) => String(range?.range_scope || 'MAJOR').toUpperCase() !== 'MINOR';
-
-    it('does not restore a child range from a different selected parent', () => {
-      const picked = pickParentScopedActiveRange({
-        ranges,
-        targetLayer: 'DAILY',
-        parentRangeId: '460',
-        currentActiveRangeId: '456',
-        isBrokenStatus: isBroken,
-        isMajorRange: isMajor,
-        compareRanges: compareByStart,
-      }) as any;
-
-      expect(picked?.range_id).toBe('461');
-    });
-
-    it('returns null when the selected parent has no child in the target layer', () => {
-      const picked = pickParentScopedActiveRange({
-        ranges,
-        targetLayer: 'DAILY',
-        parentRangeId: '999',
-        currentActiveRangeId: '456',
-        isBrokenStatus: isBroken,
-        isMajorRange: isMajor,
-        compareRanges: compareByStart,
-      });
-
-      expect(picked).toBeNull();
-    });
   });
 
   describe('layer-generic confirm eligibility', () => {
@@ -330,7 +290,7 @@ describe('mapStudioMappingContext', () => {
   describe('draft lifecycle v2', () => {
     const priceMatches = (a: number, b: number) => Math.abs(a - b) < 0.005;
 
-    it('blocks Weekly BOS when unsaved Daily child draft exists under parent', () => {
+    it('does not hard-block Weekly BOS when unsaved Daily child draft exists under parent', () => {
       const childDraft = evaluateUnsavedResponsibleChildDraft({
         parentLayer: 'WEEKLY',
         parentRangeId: '433',
@@ -344,9 +304,9 @@ describe('mapStudioMappingContext', () => {
         savedRanges: [],
         priceMatches,
       });
-      expect(childDraft.blocked).toBe(true);
-      expect(childDraft.blockReason).toBe('Confirm responsible Daily Range before Weekly BOS');
-      expect(childDraft.confirmLabel).toBe('Confirm responsible Daily Range');
+      expect(childDraft.blocked).toBe(false);
+      expect(childDraft.blockReason).toBeNull();
+      expect(childDraft.confirmLabel).toBeNull();
 
       expect(evaluateStructuralBosBlockReason({
         hasCase: true,
@@ -359,7 +319,7 @@ describe('mapStudioMappingContext', () => {
         responsibleChildDraftReason: childDraft.blockReason,
         candleFeedReady: true,
         admittedMappingCandle: true,
-      })).toBe('Confirm responsible Daily Range before Weekly BOS');
+      })).toBeNull();
     });
 
     it('does not block parent BOS when matching saved child range exists', () => {
@@ -496,7 +456,7 @@ describe('mapStudioMappingContext', () => {
       }).clearChainDraftMode).toBe(false);
     });
 
-    it('prioritizes responsible child draft over next-range and admitted-candle BOS blocks', () => {
+    it('does not let responsible Daily draft override Weekly next-range confirmation', () => {
       expect(evaluateStructuralBosBlockReason({
         hasCase: true,
         structureLayer: 'WEEKLY',
@@ -508,7 +468,90 @@ describe('mapStudioMappingContext', () => {
         responsibleChildDraftReason: 'Confirm responsible Daily Range before Weekly BOS',
         candleFeedReady: false,
         admittedMappingCandle: false,
-      })).toBe('Confirm responsible Daily Range before Weekly BOS');
+      })).toBe('Confirm next Weekly Range before BOS');
+    });
+
+    it('treats responsible Daily draft as warning-only for Weekly but blocking for non-Weekly layers', () => {
+      expect(shouldBlockResponsibleChildDraftForLayer('WEEKLY')).toBe(false);
+      expect(shouldBlockResponsibleChildDraftForLayer('DAILY')).toBe(true);
+      expect(shouldBlockResponsibleChildDraftForLayer('INTRADAY')).toBe(true);
+    });
+
+    it('keeps non-Weekly responsible child draft blocking behavior in chain mode', () => {
+      const childDraft = evaluateUnsavedResponsibleChildDraft({
+        parentLayer: 'DAILY',
+        parentRangeId: '501',
+        childLayer: 'INTRADAY',
+        childRhSet: true,
+        childRlSet: true,
+        childRhPrice: 2410,
+        childRlPrice: 2405,
+        activeRangeLayer: 'DAILY',
+        chainDraftMode: true,
+        savedRanges: [],
+        priceMatches,
+      });
+      expect(childDraft.blocked).toBe(true);
+      expect(childDraft.blockReason).toBe('Confirm responsible Intraday Range before Daily BOS');
+      expect(childDraft.confirmLabel).toBe('Confirm responsible Intraday Range');
+    });
+
+    it('routes selected Weekly chain draft to Save Next instead of updating the selected Weekly', () => {
+      expect(shouldRouteStructuralRangeSaveToNext({
+        structureLayer: 'WEEKLY',
+        activeRangeLayer: 'WEEKLY',
+        chainDraftMode: true,
+        saveNextRangeEligible: true,
+        rhSet: true,
+        rlSet: true,
+      })).toBe(true);
+    });
+
+    it('keeps saved Weekly hierarchy selection out of editable draft mode by default', () => {
+      expect(shouldHydrateSavedRangeIntoDraft({
+        structureLayer: 'WEEKLY',
+        editMode: false,
+        chainDraftMode: false,
+      })).toBe(false);
+    });
+
+    it('allows explicit Weekly edit mode to hydrate and update selected Weekly', () => {
+      expect(shouldHydrateSavedRangeIntoDraft({
+        structureLayer: 'WEEKLY',
+        editMode: true,
+        chainDraftMode: false,
+      })).toBe(true);
+      expect(shouldAllowSelectedRangeUpdate({
+        structureLayer: 'WEEKLY',
+        editMode: true,
+      })).toBe(true);
+    });
+
+    it('blocks selected Weekly update when not in explicit edit mode', () => {
+      expect(shouldAllowSelectedRangeUpdate({
+        structureLayer: 'WEEKLY',
+        editMode: false,
+      })).toBe(false);
+    });
+
+    it('does not route Daily selected range edits to Save Next', () => {
+      expect(shouldRouteStructuralRangeSaveToNext({
+        structureLayer: 'DAILY',
+        activeRangeLayer: 'DAILY',
+        chainDraftMode: true,
+        saveNextRangeEligible: true,
+        rhSet: true,
+        rlSet: true,
+      })).toBe(false);
+      expect(shouldHydrateSavedRangeIntoDraft({
+        structureLayer: 'DAILY',
+        editMode: false,
+        chainDraftMode: false,
+      })).toBe(true);
+      expect(shouldAllowSelectedRangeUpdate({
+        structureLayer: 'DAILY',
+        editMode: false,
+      })).toBe(true);
     });
 
     it('does not block Confirm Intraday Range child save workflow', () => {
@@ -743,29 +786,6 @@ describe('mapStudioMappingContext', () => {
       });
       expect(reason).toContain('Intraday window is not inside Daily #437');
       expect(reason).toContain('Select the correct Daily or move RH/RL');
-      expect(allowsBoundaryCorrectionForParentBlock(reason)).toBe(true);
-      expect(evaluateStructuralAnchorEditBlockReason({
-        scopeTimeframeBlockReason: null,
-        childMappingParentBlockReason: reason,
-      })).toBeNull();
-      expect(evaluateScopedChildMappingParentBlockReason({
-        childMappingParentBlockReason: reason,
-        structureLayer: 'INTRADAY',
-        activeRangeLayer: 'DAILY',
-        forActiveRangeAction: true,
-      })).toBeNull();
-      expect(evaluateScopedChildMappingParentBlockReason({
-        childMappingParentBlockReason: reason,
-        structureLayer: 'INTRADAY',
-        activeRangeLayer: 'DAILY',
-        forActiveRangeAction: false,
-      })).toBe(reason);
-      expect(evaluateScopedChildMappingParentBlockReason({
-        childMappingParentBlockReason: reason,
-        structureLayer: 'INTRADAY',
-        activeRangeLayer: 'INTRADAY',
-        forActiveRangeAction: true,
-      })).toBe(reason);
     });
 
     it('allows child window inside locked Daily parent', () => {
@@ -812,11 +832,6 @@ describe('mapStudioMappingContext', () => {
         allowOrphanOverride: false,
       });
       expect(parentBlock).toContain('does not match locked Daily #434');
-      expect(allowsBoundaryCorrectionForParentBlock(parentBlock)).toBe(false);
-      expect(evaluateStructuralAnchorEditBlockReason({
-        scopeTimeframeBlockReason: null,
-        childMappingParentBlockReason: parentBlock,
-      })).toBe(parentBlock);
       expect(evaluateStructuralBosBlockReason({
         hasCase: true,
         structureLayer: 'INTRADAY',
@@ -851,6 +866,36 @@ describe('mapStudioMappingContext', () => {
       expect(parentContainsChildByLifecycle(daily437, [
         Date.parse('2026-02-24T08:00:00.000Z'),
         Date.parse('2026-02-24T12:00:00.000Z'),
+      ])).toBe(false);
+    });
+
+    it('allows child formation before parent start when child continues into parent lifecycle', () => {
+      const weekly488 = {
+        range_id: '488',
+        structure_layer: 'WEEKLY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        active_from_time: '2026-03-01T00:00:00.000Z',
+        range_start_time: '2026-03-01T00:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(weekly488, [
+        Date.parse('2026-02-25T00:00:00.000Z'),
+        Date.parse('2026-03-02T00:00:00.000Z'),
+      ])).toBe(true);
+    });
+
+    it('rejects child lifecycle fully before parent start', () => {
+      const weekly488 = {
+        range_id: '488',
+        structure_layer: 'WEEKLY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        active_from_time: '2026-03-01T00:00:00.000Z',
+        range_start_time: '2026-03-01T00:00:00.000Z',
+      };
+      expect(parentContainsChildByLifecycle(weekly488, [
+        Date.parse('2026-02-25T00:00:00.000Z'),
+        Date.parse('2026-02-28T23:59:59.000Z'),
       ])).toBe(false);
     });
 
