@@ -25,15 +25,7 @@ export function isPlausibleMarketTimeMs(ms: number | null, candles?: Candle[]): 
 function oldCandleTimeMs(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   const raw = String(value).trim();
-  const mt5 = raw.match(/^(\d{4})\.(\d{2})\.(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
-  if (mt5) {
-    const [, year, month, day, hour, minute, second = '0'] = mt5;
-    return Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
-  }
-  const normalized = raw.includes('T')
-    ? (raw.endsWith('Z') ? raw : `${raw}Z`)
-    : raw.replace(' ', 'T') + (raw.includes('Z') ? '' : 'Z');
-  const ms = Date.parse(normalized);
+  const ms = Date.parse(raw.includes('T') ? raw : raw.replace(' ', 'T'));
   return Number.isFinite(ms) ? ms : null;
 }
 
