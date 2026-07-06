@@ -120,10 +120,13 @@ import {
   anchorsMatchSavedRangeRow,
   buildDiscardStructuralDraftPlan,
   buildSkeletonMappingStatusLine,
+  allowsBoundaryCorrectionForParentBlock,
   evaluateChildMappingParentBlockReason,
   evaluateChildStructuralRangeConfirm,
   evaluateDraftNavConfirmAction,
   evaluateRangeDraftSynced,
+  evaluateStructuralAnchorEditBlockReason,
+  evaluateScopedChildMappingParentBlockReason,
   evaluateStructureScopeTimeframeBlockReason,
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
@@ -132,6 +135,7 @@ import {
   hasUnsavedStructuralDraft,
   isChartTimeframeAllowedForStructureLayer,
   layersForDeletedRangeIds,
+  pickParentScopedActiveRange,
   purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
   shouldRetainChildMappingLock,
@@ -5154,7 +5158,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return rows[clamp(candleReplayIndexRef.current, 0, rows.length - 1)] || null;
   };
 
-  const resolveMappingInputCandleAtAction = (): Candle | null => (
+  const resolveMappingInputCandleAtAction = (opts?: { allowSelectedFallbackWhenMappingInputEnabled?: boolean }): Candle | null => (
     resolveMappingInputCandle({
       chartRenderer: chartRendererRef.current,
       mappingInputEnabled: tradingViewMappingInputEnabledRef.current,
@@ -5162,6 +5166,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       selectedCandle: selectedCandleRef.current,
       replayCandle: resolveReplayCandleAtAction(),
       candleReplayMode: candleReplayModeRef.current,
+      allowSelectedFallbackWhenMappingInputEnabled: opts?.allowSelectedFallbackWhenMappingInputEnabled,
     }) as Candle | null
   );
 
@@ -5312,9 +5317,9 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return false;
   };
 
-  const assertAdmittedMappingInputCandle = (actionLabel = 'Marking'): boolean => {
+  const assertAdmittedMappingInputCandle = (actionLabel = 'Marking', opts?: { allowSelectedFallbackWhenMappingInputEnabled?: boolean }): boolean => {
     if (chartRendererRef.current !== 'tradingview' || !tradingViewMappingInputEnabledRef.current) return true;
-    if (resolveMappingInputCandleAtAction()) return true;
+    if (resolveMappingInputCandleAtAction(opts)) return true;
     setMessage(`${actionLabel} blocked — click a visible TradingView candle first.`);
     setTradingViewSelectionWarning('No admitted TradingView candle for mapping.');
     return false;
@@ -6175,7 +6180,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     lockChildMappingParent(parentId);
     setActiveStructuralRangeId('');
     if (opts?.clearDraft !== false) {
-      clearStructuralRangeDraft();
+      clearStructuralRangeDraft(childLayer);
     }
     setChainDraftMode(false);
     const childChartTf = defaultChartTimeframeForStructureLayer(childLayer);
@@ -6265,7 +6270,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     setSourceTimeframe(session.childSourceTf);
     lockChildMappingParent(parentId);
     setActiveStructuralRangeId('');
-    clearStructuralRangeDraft();
+    clearStructuralRangeDraft(session.childLayer);
     setRhAnchor({ price: '', time: '', candle: null });
     setRlAnchor({ price: '', time: '', candle: null });
     setStructuralRangeDraftDirty(false);
@@ -6497,13 +6502,18 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return parentRangeIdForStructureLayer(structureLayer, rangeScope, selectedParentRangeId);
   };
 
-  const clearStructuralRangeDraft = () => {
+  const clearStructuralRangeDraft = (layerForCache: StructureLayer = structureLayer) => {
     setRhAnchor({ price:'', time:'', candle:null });
     setRlAnchor({ price:'', time:'', candle:null });
     setRangeHigh('');
     setRangeLow('');
     setRangeByTf((prev:any) => ({ ...prev, [timeframe]: { high:'', low:'' } }));
     setRangeWindowByTf((prev:any) => ({ ...prev, [timeframe]: { start:'', end:'' } }));
+    setStructuralAnchorsByLayer(prev => {
+      const next = { ...prev };
+      delete next[layerForCache];
+      return next;
+    });
     setStructuralRangeDraftDirty(false);
     autoRangeSaveAttemptRef.current = '';
   };
@@ -6912,9 +6922,23 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const childMappingParentBlockReasonRef = useRef<string | null>(null);
   childMappingParentBlockReasonRef.current = childMappingParentBlockReason;
+  const activeStructuralRangeLayerForGate = useMemo(() => {
+    const activeRow = activeStructuralRangeId ? (selectedSavedRange || findSavedRangeRowById(activeStructuralRangeId)) : null;
+    return activeRow ? normalizeStructureLayer(activeRow.structure_layer || activeRow.layer) : null;
+  }, [activeStructuralRangeId, selectedSavedRange, savedStructuralRanges]);
+  const activeRangeActionChildMappingParentBlockReason = evaluateScopedChildMappingParentBlockReason({
+    childMappingParentBlockReason,
+    structureLayer,
+    activeRangeLayer: activeStructuralRangeLayerForGate,
+    forActiveRangeAction: true,
+  });
+  const activeRangeActionChildMappingParentBlockReasonRef = useRef<string | null>(null);
+  activeRangeActionChildMappingParentBlockReasonRef.current = activeRangeActionChildMappingParentBlockReason;
 
-  const assertStructuralCommitGate = (actionLabel = 'Save'): boolean => {
-    const block = childMappingParentBlockReasonRef.current;
+  const assertStructuralCommitGate = (actionLabel = 'Save', opts?: { activeRangeAction?: boolean }): boolean => {
+    const block = opts?.activeRangeAction
+      ? activeRangeActionChildMappingParentBlockReasonRef.current
+      : childMappingParentBlockReasonRef.current;
     if (!block) return true;
     setMessage(`${actionLabel} blocked — ${block}`);
     return false;
@@ -6936,7 +6960,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
   const canSetRhRlStructuralDraft = mappingSkeletonContextReady || orphanRangeDraftAllowed;
 
+  const childMappingParentBoundaryCorrectionAllowed = allowsBoundaryCorrectionForParentBlock(childMappingParentBlockReason);
   const structuralCommitBlockReason = scopeTimeframeBlockReason || childMappingParentBlockReason;
+  const activeRangeActionCommitBlockReason = scopeTimeframeBlockReason || activeRangeActionChildMappingParentBlockReason;
+  const structuralAnchorEditBlockReason = evaluateStructuralAnchorEditBlockReason({
+    scopeTimeframeBlockReason,
+    childMappingParentBlockReason,
+  });
 
   const rangeDraftSynced = useMemo(() => evaluateRangeDraftSynced({
     structuralRangeDraftDirty,
@@ -7838,6 +7868,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       setMessage('Open a case first (Folder tab).');
       return;
     }
+    if ((kind === 'RH' || kind === 'RL') && structuralAnchorEditBlockReason) {
+      setMessage(structuralAnchorEditBlockReason);
+      return;
+    }
     if ((kind === 'RH' || kind === 'RL') && !canSetRhRlStructuralDraft) {
       setMessage(mappingRhRlDraftBlockMessage);
       return;
@@ -8221,7 +8255,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (!mappingCase.hasCase) { setMessage('Create or select a mapping case before saving the next range.'); return false; }
     const scopeBlock = evaluateStructureScopeTimeframeBlockReason(structureLayer, sourceTimeframe, timeframe);
     if (scopeBlock) { setMessage(scopeBlock); return false; }
-    if (!assertStructuralCommitGate('Save next range')) return false;
+    if (!assertStructuralCommitGate('Save next range', { activeRangeAction: true })) return false;
     if (!assertCandleFeedReady('Save next range')) return false;
     const oldRangeId = String(saveNextRangeEligible.oldRangeId || activeStructuralRangeId);
     const createdByEventId = saveNextRangeEligible.createdByEventId;
@@ -8411,9 +8445,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       chainDraftMode
       && (structuralRangeDraftDirty || saveNextRangeEligible.eligible || resolvedBroken)
     );
+    const bosMappingInputCandle = resolveMappingInputCandleAtAction({
+      allowSelectedFallbackWhenMappingInputEnabled: true,
+    });
     const tvSelectionReady = chartRendererRef.current !== 'tradingview'
       || !tradingViewMappingInputEnabledRef.current
-      || !!admittedMappingInputCandleRef.current;
+      || !!bosMappingInputCandle;
     const feedGuard = getCandleFeedGuard();
     const bosBlockReason = evaluateStructuralBosBlockReason({
       hasCase: true,
@@ -8424,7 +8461,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       needsRangeConfirm,
       responsibleChildDraftBlocked: responsibleChildDraft.blocked,
       responsibleChildDraftReason: responsibleChildDraft.blockReason,
-      childMappingParentBlockReason,
+      childMappingParentBlockReason: activeRangeActionChildMappingParentBlockReason,
       candleFeedReady: feedGuard.ready,
       admittedMappingCandle: tvSelectionReady,
       candleFeedMessage: feedGuard.message,
@@ -8434,8 +8471,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       return false;
     }
     if (!assertCandleFeedReady('BOS save')) return false;
-    if (!assertAdmittedMappingInputCandle('BOS save')) return false;
-    const candle = resolveMappingInputCandleAtAction();
+    if (!assertAdmittedMappingInputCandle('BOS save', { allowSelectedFallbackWhenMappingInputEnabled: true })) return false;
+    const candle = resolveMappingInputCandleAtAction({ allowSelectedFallbackWhenMappingInputEnabled: true });
     const quickAnchor = candle && options?.quickButton
       ? { price: Number(direction === 'UP' ? candle.high : candle.low).toFixed(2), time: candle.time, candle }
       : null;
@@ -8465,7 +8502,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     setStructuralSaving(true);
     try {
-      const candle = anchor.candle || resolveMappingInputCandleAtAction();
+      const candle = anchor.candle || resolveMappingInputCandleAtAction({ allowSelectedFallbackWhenMappingInputEnabled: true });
       if (!candle) { throw new Error(`Select a candle, then click ${direction === 'UP' ? '↑ Break Up' : '↓ Break Down'}.`); }
       const sourceBreakRole = direction === 'UP' ? 'BREAK_UP' : 'BREAK_DOWN';
       const legacyBreakRole = direction === 'UP' ? 'BH' : 'BL';
@@ -10960,14 +10997,41 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const layerRows = safeArray<any>(savedStructuralRanges).filter(
       (r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === layer,
     );
-    const preferredSaved = (() => {
-      if (activeStructuralRangeId) {
-        const activeRow = layerRows.find((r:any) => String(r.range_id || r.id) === String(activeStructuralRangeId));
-        if (activeRow && !isStructuralRangeBrokenStatusValue(activeRow.status)) return activeRow;
+    const parentIdForLayer = (() => {
+      const parentLayer = expectedParentStructureLayer(layer);
+      if (!parentLayer) return '';
+      if (lockedChildMappingParentId) return lockedChildMappingParentId;
+      const selectedRow = selectedParentRangeId
+        ? findSavedRangeRowById(selectedParentRangeId)
+        : null;
+      if (
+        selectedRow
+        && normalizeStructureLayer(selectedRow.structure_layer || selectedRow.layer) === parentLayer
+        && isRangeMajor(selectedRow)
+      ) {
+        return String(selectedParentRangeId);
       }
-      const nonBroken = layerRows.filter((r:any) => !isStructuralRangeBrokenStatusValue(r.status)).sort(compareRangesByStartDate);
-      return nonBroken.length ? nonBroken[nonBroken.length - 1] : null;
+      const activeRow = activeStructuralRangeId
+        ? findSavedRangeRowById(activeStructuralRangeId)
+        : null;
+      if (
+        activeRow
+        && normalizeStructureLayer(activeRow.structure_layer || activeRow.layer) === parentLayer
+        && isRangeMajor(activeRow)
+      ) {
+        return String(activeStructuralRangeId);
+      }
+      return '';
     })();
+    const preferredSaved = pickParentScopedActiveRange({
+      ranges: savedStructuralRanges,
+      targetLayer: layer,
+      parentRangeId: parentIdForLayer,
+      currentActiveRangeId: activeStructuralRangeId,
+      isBrokenStatus: isStructuralRangeBrokenStatusValue,
+      isMajorRange: isRangeMajor,
+      compareRanges: compareRangesByStartDate,
+    }) as any | null;
 
     setStructureLayer(layer);
     setSourceTimeframe(defaultSourceTimeframeForStructureLayer(layer));
@@ -10979,6 +11043,19 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
 
     if (preferredSaved) {
       reconcileMappingRangeState(preferredSaved, { keepChainDraftMode: chainDraftMode });
+      return;
+    }
+
+    if (parentIdForLayer) {
+      activeStructuralRangeIdRef.current = '';
+      setActiveStructuralRangeId('');
+      clearStructuralRangeDraft(layer);
+      setRhAnchor({ price:'', time:'', candle:null });
+      setRlAnchor({ price:'', time:'', candle:null });
+      setRangeHigh('');
+      setRangeLow('');
+      setStructuralRangeDraftDirty(false);
+      setMessage(`${layer} context: plot a fresh child range under #${parentIdForLayer}.`);
       return;
     }
 
@@ -11012,6 +11089,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       });
       if (matchedSaved) {
         reconcileMappingRangeState(matchedSaved, { keepChainDraftMode: chainDraftMode });
+        return;
+      }
+      const nextParentLayerForStoredDraft = expectedParentStructureLayer(layer);
+      if (nextParentLayerForStoredDraft && selectedParentRangeId && !activeStructuralRangeId) {
+        setRhAnchor({ price:'', time:'', candle:null });
+        setRlAnchor({ price:'', time:'', candle:null });
+        setRangeHigh('');
+        setRangeLow('');
+        setStructuralRangeDraftDirty(false);
         return;
       }
       setRhAnchor(stored.rh || { price:'', time:'', candle:null });
@@ -11112,13 +11198,15 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (structuralSaving || quickEventSaving) return true;
     if (!getCurrentMappingCaseRef().hasCase) return true;
     if (scopeTimeframeBlockReason) return true;
-    if (childMappingParentBlockReason) return true;
     if (inspectorCommitAction.kind === 'next_range') {
+      if (activeRangeActionChildMappingParentBlockReason) return true;
       return !saveNextRangeEligible.eligible || !rhAnchor.price || !rlAnchor.price;
     }
     if (inspectorCommitAction.kind === 'bos') {
+      if (activeRangeActionChildMappingParentBlockReason) return true;
       return !activeStructuralRangeId || (!bhAnchor.price && !blAnchor.price);
     }
+    if (childMappingParentBlockReason) return true;
     return !rhAnchor.price || !rlAnchor.price;
   }, [
     structuralSaving,
@@ -11134,6 +11222,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     rawActiveCaseId,
     scopeTimeframeBlockReason,
     childMappingParentBlockReason,
+    activeRangeActionChildMappingParentBlockReason,
   ]);
 
   const tradingViewOverlays = useMemo(() => {
@@ -11398,8 +11487,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
               type="button"
               className="chainDrillBtn"
               onClick={() => void (confirmChildRange.useSaveNextPath ? saveNextStructuralRange() : saveStructuralRange())}
-              disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason}
-              title={confirmChildRange.saveBlockHint || confirmChildRange.label}
+              disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)}
+              title={(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : structuralCommitBlockReason) || confirmChildRange.saveBlockHint || confirmChildRange.label}
             >
               {structuralSaving ? '…' : confirmChildRange.label}
             </button>
@@ -11476,11 +11565,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     || !tradingViewMappingInputEnabled
     || !!admittedMappingInputCandle;
   const structuralQuickAnchorDisabled = structuralSaving || quickEventSaving || candleFeedLoading || !candleFeedGuard.ready
-    || !!structuralCommitBlockReason
+    || !!structuralAnchorEditBlockReason
     || (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled)
     || (chartRenderer === 'tradingview' && tradingViewMappingInputEnabled ? !tvMappingSelectionReady : !mappingInputCandle);
-  const structuralQuickAnchorHint = structuralCommitBlockReason
-    ? structuralCommitBlockReason
+  const structuralBosQuickDisabled = structuralQuickAnchorDisabled || !!activeRangeActionChildMappingParentBlockReason;
+  const structuralQuickAnchorHint = structuralAnchorEditBlockReason
+    ? structuralAnchorEditBlockReason
     : candleFeedLoading
     ? 'Loading candle feed…'
     : chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled
@@ -11504,9 +11594,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     <div className="quickAnchorBar quickAnchorBarCompact skeletonMapBar" aria-label="Skeleton mapping — H/L/↑/↓ or buttons">
       <button type="button" className={`structuralQuickBtn chipBtn ${rhAnchor.price ? 'active' : ''}`} disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RH')} title="H · Range High"><span>RH</span></button>
       <button type="button" className={`structuralQuickBtn chipBtn ${rlAnchor.price ? 'active' : ''}`} disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RL')} title="L · Range Low"><span>RL</span></button>
-      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BH')} title="↑ · BOS Up"><span>↑</span></button>
-      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BL')} title="↓ · BOS Down"><span>↓</span></button>
+      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BH')} title="↑ · BOS Up"><span>↑</span></button>
+      <button type="button" className="structuralQuickBtn chipBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BL')} title="↓ · BOS Down"><span>↓</span></button>
       <button type="button" className="quickSaveBtn secondary" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="U · Undo">Undo</button>
+      {childMappingParentBoundaryCorrectionAllowed && (
+        <button type="button" className="quickSaveBtn secondary" onClick={clearMappingDraftSelection} disabled={structuralSaving} title="Clear invalid RH/RL draft">Clear</button>
+      )}
       {(structuralRangeDraftDirty || structuralBosDraftDirty || structuralSaving) && (
         <span className="quickDraftStatus dirty" title={structuralSaving ? 'Syncing…' : 'Draft'}>{structuralSaving ? 'sync…' : 'draft'}</span>
       )}
@@ -11517,8 +11610,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             type="button"
             className="quickSaveBtn primary emph"
             onClick={() => void (confirmChildRange.useSaveNextPath ? saveNextStructuralRange() : saveStructuralRange())}
-            disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason}
-            title={saveBlockReason || confirmChildRange.saveBlockHint || confirmChildRange.label}
+            disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)}
+            title={(confirmChildRange.useSaveNextPath ? activeRangeActionCommitBlockReason : saveBlockReason) || confirmChildRange.saveBlockHint || confirmChildRange.label}
           >
             {structuralSaving ? '…' : confirmChildRange.label}
           </button>
@@ -11535,14 +11628,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     <div className="structuralMarkToolbar" aria-label="Structural mapping toolbar">
       <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RH')} title="Range High">RH</button>
       <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('RL')} title="Range Low">RL</button>
-      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
-      <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
+      <button type="button" className="structuralMarkBtn" disabled={structuralBosQuickDisabled} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
       <span className="structuralMarkDivider" />
-      <button type="button" className={`structuralMarkBtn primary ${confirmChildRange.eligible || chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason} title={saveBlockReason || (confirmChildRange.eligible ? confirmChildRange.label : chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : compactQuickSaveLabel)}</button>
-      <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!structuralCommitBlockReason} title={scopeTimeframeBlockReason || saveNextRangeEligible.reason || 'Save next range'}>Next</button>
+      <button type="button" className={`structuralMarkBtn primary ${confirmChildRange.eligible || chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!(confirmChildRange.useSaveNextPath || (chainDraftMode && saveNextRangeEligible.eligible) ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)} title={(confirmChildRange.useSaveNextPath || (chainDraftMode && saveNextRangeEligible.eligible) ? activeRangeActionCommitBlockReason : saveBlockReason) || (confirmChildRange.eligible ? confirmChildRange.label : chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : compactQuickSaveLabel)}</button>
+      <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!activeRangeActionCommitBlockReason} title={activeRangeActionCommitBlockReason || saveNextRangeEligible.reason || 'Save next range'}>Next</button>
       <button type="button" className="structuralMarkBtn" onClick={refreshHierarchyAudit} title="Refresh audit">Audit</button>
       <button type="button" className="structuralMarkBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
       <button type="button" className="structuralMarkBtn" onClick={undoLastQuickEvent} disabled={!canUndoQuickEvent || quickEventSaving} title="Undo last event (LIFO)">Undo</button>
+      {childMappingParentBoundaryCorrectionAllowed && (
+        <button type="button" className="structuralMarkBtn" onClick={clearMappingDraftSelection} disabled={structuralSaving} title="Clear invalid RH/RL draft">Clear</button>
+      )}
       {(structuralRangeDraftDirty || structuralBosDraftDirty) && (
         <span className="structuralDraftBadge" title="Unsaved draft — use Commit in Inspector footer">draft</span>
       )}
@@ -11772,8 +11868,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             <div className="toolsCorrectionPane">
               <p className="mutedSmall">Manual save/correction — primary path is candle + keyboard (H/L/↑/↓).</p>
               <div className="caseActionRow compactActionRow">
-                <button type="button" className="gpsSaveBtn" onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!structuralCommitBlockReason}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
-                <button type="button" className="gpsSaveBtn secondary" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!structuralCommitBlockReason}>Save Next Range</button>
+                <button type="button" className="gpsSaveBtn" onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!(confirmChildRange.useSaveNextPath || (chainDraftMode && saveNextRangeEligible.eligible) ? activeRangeActionCommitBlockReason : structuralCommitBlockReason)}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+                <button type="button" className="gpsSaveBtn secondary" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!activeRangeActionCommitBlockReason}>Save Next Range</button>
                 <button type="button" className="gpsSaveBtn secondary" onClick={() => void handleInspectorStructuralCommit()} disabled={inspectorCommitDisabled}>Force Commit</button>
               </div>
               <details className="structuralPanelDetails">
