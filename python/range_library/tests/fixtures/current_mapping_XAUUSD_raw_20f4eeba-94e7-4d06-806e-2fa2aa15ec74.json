@@ -1,0 +1,43 @@
+{
+  "metadata": {
+    "symbol": "XAUUSD",
+    "fixture_type": "representative_synthetic",
+    "description": "Synthetic range export for scaffold tests. Not production data."
+  },
+  "ranges": [
+    {
+      "id": "synthetic-w1-root",
+      "layer": "W1",
+      "status": "active"
+    },
+    {
+      "id": "synthetic-d1-parent",
+      "layer": "D1",
+      "status": "active",
+      "parent_id": "synthetic-w1-root"
+    },
+    {
+      "id": "synthetic-d1-archived",
+      "layer": "D1",
+      "status": "archived",
+      "parent_id": "synthetic-w1-root"
+    },
+    {
+      "id": "synthetic-h4-confirmed",
+      "layer": "H4",
+      "status": "confirmed",
+      "parent_id": "synthetic-d1-parent"
+    },
+    {
+      "id": "synthetic-h4-active",
+      "layer": "H4",
+      "status": "active",
+      "parent_id": "synthetic-d1-parent"
+    },
+    {
+      "id": "synthetic-h1-orphan",
+      "layer": "H1",
+      "status": "candidate"
+    }
+  ]
+}
