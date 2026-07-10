@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .bulk_import import bulk_import_source_dir, format_bulk_import_summary
 from .config import resolve_db_path
 from .importer import import_source
 from .inspection import (
@@ -37,6 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
     import_parser.add_argument("--source", type=Path, required=True, help="Raw JSON source path.")
     import_parser.add_argument("--source-kind", required=True, help="Source format label.")
     import_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+
+    bulk_import_parser = subparsers.add_parser("bulk-import", help="Import all JSON files from a folder.")
+    bulk_import_parser.add_argument("--source-dir", type=Path, required=True, help="Folder containing JSON exports.")
+    bulk_import_parser.add_argument("--source-kind", required=True, help="Source format label.")
+    bulk_import_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    bulk_import_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
 
     list_runs_parser = subparsers.add_parser("list-runs", help="List recent import runs.")
     list_runs_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
@@ -95,6 +102,15 @@ def main(argv: list[str] | None = None) -> int:
             f"issues={summary.validation_issue_count} "
             f"duplicates={summary.duplicate_candidate_count}"
         )
+        return 0
+
+    if args.command == "bulk-import":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = bulk_import_source_dir(db_path, args.source_dir, args.source_kind)
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            parser.error(str(exc))
+        print(format_bulk_import_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "list-runs":
