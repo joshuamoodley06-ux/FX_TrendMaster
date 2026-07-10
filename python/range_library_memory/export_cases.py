@@ -114,7 +114,65 @@ def discover_cases(connection: sqlite3.Connection, *, symbol: str | None = None)
                 }
             )
 
+    if not cases:
+        cases.extend(discover_map_only_cases(connection, symbol_filter=symbol_filter))
+
     return sorted(cases, key=lambda item: item["case_ref"])
+
+
+def discover_map_only_cases(connection: sqlite3.Connection, *, symbol_filter: str | None) -> list[dict[str, Any]]:
+    discovered: dict[str, dict[str, Any]] = {}
+    for table in ("map_ranges", "map_events"):
+        if not table_exists(connection, table):
+            continue
+        columns = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not columns.intersection({"case_ref", "raw_case_id", "case_id"}):
+            continue
+        select_columns = sorted(columns)
+        clauses: list[str] = []
+        params: list[Any] = []
+        if symbol_filter and "symbol" in columns:
+            clauses.append("UPPER(symbol) = ?")
+            params.append(symbol_filter)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        for row in connection.execute(f"SELECT {', '.join(select_columns)} FROM {table}{where}", tuple(params)).fetchall():
+            row_dict = dict(row)
+            case_ref, raw_case_id, case_id = map_only_case_identity(row_dict)
+            if case_ref is None:
+                continue
+            if case_ref not in discovered:
+                discovered[case_ref] = {
+                    "case_ref": case_ref,
+                    "kind": "map_only",
+                    "case_id": case_id,
+                    "raw_case_id": raw_case_id,
+                    "symbol": str(row_dict.get("symbol") or symbol_filter or "UNKNOWN").upper(),
+                    "label": case_ref.replace(":", "_"),
+                    "case": {
+                        "case_ref": case_ref,
+                        "raw_case_id": raw_case_id,
+                        "case_id": case_id,
+                        "source": "map_rows",
+                    },
+                }
+    return list(discovered.values())
+
+
+def map_only_case_identity(row: dict[str, Any]) -> tuple[str | None, str | None, int | None]:
+    case_ref = text_or_none(row.get("case_ref"))
+    raw_case_id = text_or_none(row.get("raw_case_id"))
+    case_id = int_or_none(row.get("case_id"))
+    if case_ref:
+        if case_ref.startswith("raw:") and raw_case_id is None:
+            raw_case_id = case_ref.removeprefix("raw:")
+        if case_ref.startswith("case:") and case_id is None:
+            case_id = int_or_none(case_ref.removeprefix("case:"))
+        return case_ref, raw_case_id, case_id
+    if raw_case_id:
+        return f"raw:{raw_case_id}", raw_case_id, case_id
+    if case_id is not None:
+        return f"case:{case_id}", raw_case_id, case_id
+    return None, None, None
 
 
 def build_case_package(connection: sqlite3.Connection, case: dict[str, Any]) -> dict[str, Any]:
@@ -152,6 +210,9 @@ def fetch_rows(connection: sqlite3.Connection, table: str, case: dict[str, Any])
         return []
     clauses: list[str] = []
     params: list[Any] = []
+    if case["case_ref"] is not None and column_exists(connection, table, "case_ref"):
+        clauses.append("case_ref = ?")
+        params.append(case["case_ref"])
     if case["case_id"] is not None and column_exists(connection, table, "case_id"):
         clauses.append("case_id = ?")
         params.append(case["case_id"])
@@ -159,13 +220,10 @@ def fetch_rows(connection: sqlite3.Connection, table: str, case: dict[str, Any])
         if column_exists(connection, table, "raw_case_id"):
             clauses.append("raw_case_id = ?")
             params.append(case["raw_case_id"])
-        if column_exists(connection, table, "case_ref"):
-            clauses.append("case_ref = ?")
-            params.append(case["case_ref"])
     if not clauses:
         return []
     order = order_clause(connection, table)
-    sql = f"SELECT * FROM {table} WHERE {' OR '.join(f'({clause})' for clause in clauses)} {order}"
+    sql = f"SELECT DISTINCT * FROM {table} WHERE {' OR '.join(f'({clause})' for clause in clauses)} {order}"
     return [decode_json_columns(dict(row)) for row in connection.execute(sql, tuple(params)).fetchall()]
 
 
@@ -228,6 +286,22 @@ def decode_json_columns(row: dict[str, Any]) -> dict[str, Any]:
 def sanitize_label(value: str) -> str:
     sanitized = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("._")
     return sanitized[:80] or "case_export"
+
+
+def text_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def int_or_none(value: Any) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def deterministic_file_name(case: dict[str, Any]) -> str:

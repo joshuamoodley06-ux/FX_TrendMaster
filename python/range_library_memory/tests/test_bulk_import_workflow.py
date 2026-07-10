@@ -208,6 +208,73 @@ def test_export_cases_from_local_db_writes_sanitized_analyst_packages(tmp_path: 
     assert str(source_db) not in exported[0].output_path.read_text(encoding="utf-8")
 
 
+def test_export_cases_discovers_map_only_case_refs(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.sqlite3"
+    output_dir = tmp_path / "exports"
+    with sqlite3.connect(source_db) as connection:
+        connection.execute(
+            "CREATE TABLE map_ranges (id INTEGER PRIMARY KEY, case_ref TEXT, symbol TEXT, timeframe TEXT, range_high_price REAL, range_low_price REAL)"
+        )
+        connection.execute(
+            "CREATE TABLE map_events (id INTEGER PRIMARY KEY, case_ref TEXT, symbol TEXT, timeframe TEXT, event_type TEXT, time TEXT, price REAL)"
+        )
+        connection.execute(
+            "INSERT INTO map_ranges VALUES (?,?,?,?,?,?)",
+            (1, "raw:map-only-case", "XAUUSD", "D1", 2450.25, 2388.75),
+        )
+        connection.execute(
+            "INSERT INTO map_ranges VALUES (?,?,?,?,?,?)",
+            (2, "raw:map-only-case", "XAUUSD", "H4", 2432.5, 2401.25),
+        )
+        connection.execute(
+            "INSERT INTO map_events VALUES (?,?,?,?,?,?,?)",
+            (1, "raw:map-only-case", "XAUUSD", "D1", "RANGE_HIGH", "2026-06-03T12:00:00Z", 2450.25),
+        )
+
+    exported = export_cases(source_db=source_db, output_dir=output_dir, symbol="XAUUSD")
+
+    assert len(exported) == 1
+    assert exported[0].case_ref == "raw:map-only-case"
+    payload_text = exported[0].output_path.read_text(encoding="utf-8")
+    payload = json.loads(payload_text)
+    assert payload["schema_version"] == "analyst_input_v1"
+    assert payload["case_refs"] == ["raw:map-only-case"]
+    assert len(payload["data"]["ranges"]) == 2
+    assert len(payload["data"]["events"]) == 1
+    assert payload["data"]["raw_ledgers"] == {}
+    assert payload["source"]["source_db"] == "local_source_db"
+    assert str(source_db) not in payload_text
+
+
+def test_export_cases_discovers_map_only_raw_case_ids(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.sqlite3"
+    output_dir = tmp_path / "exports"
+    with sqlite3.connect(source_db) as connection:
+        connection.execute(
+            "CREATE TABLE map_ranges (id INTEGER PRIMARY KEY, raw_case_id TEXT, symbol TEXT, timeframe TEXT, range_high_price REAL, range_low_price REAL)"
+        )
+        connection.execute(
+            "CREATE TABLE map_events (id INTEGER PRIMARY KEY, raw_case_id TEXT, symbol TEXT, timeframe TEXT, event_type TEXT, time TEXT, price REAL)"
+        )
+        connection.execute(
+            "INSERT INTO map_ranges VALUES (?,?,?,?,?,?)",
+            (1, "raw-id-only", "XAUUSD", "D1", 2450.25, 2388.75),
+        )
+        connection.execute(
+            "INSERT INTO map_events VALUES (?,?,?,?,?,?,?)",
+            (1, "raw-id-only", "XAUUSD", "D1", "RANGE_LOW", "2026-06-02T12:00:00Z", 2388.75),
+        )
+
+    exported = export_cases(source_db=source_db, output_dir=output_dir, symbol="XAUUSD")
+
+    assert len(exported) == 1
+    payload = json.loads(exported[0].output_path.read_text(encoding="utf-8"))
+    assert payload["case_refs"] == ["raw:raw-id-only"]
+    assert payload["data"]["ranges"][0]["raw_case_id"] == "raw-id-only"
+    assert payload["data"]["events"][0]["event_type"] == "RANGE_LOW"
+    assert payload["data"]["raw_ledgers"] == {}
+
+
 def test_export_command_has_no_hardcoded_credentials() -> None:
     source = (PYTHON_DIR / "range_library_memory" / "export_cases.py").read_text(encoding="utf-8").lower()
 
