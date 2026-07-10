@@ -152,6 +152,78 @@ python -m range_library_memory.cli list-issues --db-path $db --status open --lim
 python -m range_library_memory.cli list-duplicates --db-path $db --status open --limit 20 --json
 ```
 
+## Current FXTM Export Smoke Test
+
+Use this focused smoke test when you want one clear local verification flow for the current FXTM analyst export package shape. The fixture is sanitized, small, and representative of the current app output wrapper, including `data.ranges`, `data.events`, metadata wrapper fields, and `data.raw_ledgers`.
+
+Use a local throwaway DB path:
+
+```powershell
+$db = "data/local/range_library_memory_current_export_smoke.sqlite3"
+```
+
+Initialize the DB:
+
+```powershell
+python -m range_library_memory.cli init --db-path $db
+```
+
+Import the current FXTM export smoke fixture:
+
+```powershell
+python -m range_library_memory.cli import --source python/range_library_memory/tests/fixtures/current_fxtm_export_smoke.json --source-kind fxtm_export --db-path $db
+```
+
+List recent runs:
+
+```powershell
+python -m range_library_memory.cli list-runs --db-path $db --limit 5
+```
+
+Show the latest run. Replace `1` with the latest run id from `list-runs`:
+
+```powershell
+python -m range_library_memory.cli show-run --db-path $db --import-run-id 1
+```
+
+List duplicate candidates:
+
+```powershell
+python -m range_library_memory.cli list-duplicates --db-path $db --status open --limit 20
+```
+
+List validation issues:
+
+```powershell
+python -m range_library_memory.cli list-issues --db-path $db --status open --limit 20
+```
+
+Expected result:
+
+- Import completes.
+- `ranges_seen` is `2`.
+- `events_seen` is `4`.
+- `validation_issue_count` is `0`.
+- Raw ledger events from `data.raw_ledgers` are included.
+- `duplicate_candidate_count` may be `0` on the first import.
+- No generated `.sqlite`, `.sqlite3`, or `.db` file should be committed.
+
+## When This Fails
+
+- Wrong working directory: run commands from the repository root so fixture paths resolve.
+- Missing package import: set `PYTHONPATH=python` for the shell session if `range_library_memory` cannot be imported.
+- Stale smoke DB: use a new `$db` path or remove the local throwaway DB before rerunning.
+- Generated SQLite file in Git status: leave it untracked and remove or move it before committing.
+- Real export shape changed: add a narrow importer compatibility patch only for the new raw export placement or key shape, while preserving raw payload JSON unchanged.
+
+## Before Moving To Parent-Child Feature Engine
+
+- Current FXTM export fixture imports successfully.
+- Inspection commands show the expected range, event, validation, and duplicate counts.
+- Raw payload preservation test passes.
+- Validation review and duplicate review commands still pass tests.
+- `python -m pytest python/range_library_memory/tests` passes.
+
 ## Safety Notes
 
 - Never commit generated `.sqlite`, `.sqlite3`, or `.db` files.
