@@ -1,0 +1,33 @@
+{
+  "ranges": [
+    {
+      "id": "bad-range-1",
+      "timeframe": "D1",
+      "start_time_utc": "2026-02-02T00:00:00Z",
+      "end_time_utc": "2026-02-01T00:00:00Z",
+      "high": 100,
+      "low": 110
+    },
+    {
+      "symbol": "XAUUSD",
+      "timeframe": "",
+      "start_time_utc": "2026-02-03T00:00:00Z",
+      "high": "not-a-number"
+    }
+  ],
+  "events": [
+    {
+      "id": "bad-event-1",
+      "range_source_record_id": "missing-range",
+      "price": "bad-price"
+    },
+    {
+      "id": "bad-event-2",
+      "event_type": "touch",
+      "event_time_utc": "2026-02-02T12:00:00Z",
+      "range_source_record_id": "bad-range-1",
+      "raw_range_source_record_id": "different-range",
+      "price": 105
+    }
+  ]
+}

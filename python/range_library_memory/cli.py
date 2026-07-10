@@ -42,7 +42,8 @@ def main(argv: list[str] | None = None) -> int:
             "Imported Range Library Memory source "
             f"run={summary.import_run_id} "
             f"ranges={summary.ranges_inserted}/{summary.ranges_seen} "
-            f"events={summary.events_inserted}/{summary.events_seen}"
+            f"events={summary.events_inserted}/{summary.events_seen} "
+            f"issues={summary.validation_issue_count}"
         )
         return 0
 
