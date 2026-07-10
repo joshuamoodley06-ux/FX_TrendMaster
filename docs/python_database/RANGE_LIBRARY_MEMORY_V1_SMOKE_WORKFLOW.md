@@ -26,6 +26,12 @@ Import a raw JSON source:
 python -m range_library_memory.cli import --source python/range_library_memory/tests/fixtures/basic_import.json --source-kind fixture --db-path data/local/range_library_memory_smoke.sqlite3
 ```
 
+Bulk import a folder of JSON exports:
+
+```powershell
+python -m range_library_memory.cli bulk-import --source-dir data/local/range_memory_exports --source-kind fxtm_export --db-path data/local/range_library_memory_smoke.sqlite3
+```
+
 List recent import runs:
 
 ```powershell
@@ -208,6 +214,52 @@ Expected result:
 - `duplicate_candidate_count` may be `0` on the first import.
 - No generated `.sqlite`, `.sqlite3`, or `.db` file should be committed.
 
+## Export VPS Cases Safely
+
+This workflow is intentionally offline. Do not point Range Library Memory directly at a production backend DB or VPS service. Export case JSON first, copy the JSON folder locally, and import from that local folder.
+
+From a local copy of the source SQLite DB, export sanitized analyst package JSON files:
+
+```powershell
+python -m range_library_memory.export_cases --source-db data/local/source_case_copy.sqlite3 --output-dir data/local/range_memory_exports --symbol XAUUSD
+```
+
+Optional: limit the export while testing the workflow:
+
+```powershell
+python -m range_library_memory.export_cases --source-db data/local/source_case_copy.sqlite3 --output-dir data/local/range_memory_exports --symbol XAUUSD --limit 5
+```
+
+Bulk import the exported JSON folder into Range Library Memory:
+
+```powershell
+python -m range_library_memory.cli bulk-import --source-dir data/local/range_memory_exports --source-kind fxtm_export --db-path $db
+```
+
+Use JSON output for automation or logs:
+
+```powershell
+python -m range_library_memory.cli bulk-import --source-dir data/local/range_memory_exports --source-kind fxtm_export --db-path $db --json
+```
+
+Inspect the imported memory:
+
+```powershell
+python -m range_library_memory.cli list-runs --db-path $db --limit 20
+python -m range_library_memory.cli show-run --db-path $db --import-run-id 1
+python -m range_library_memory.cli list-issues --db-path $db --status open --limit 20
+python -m range_library_memory.cli list-duplicates --db-path $db --status open --limit 20
+```
+
+Safety rules for VPS case export:
+
+- Export to JSON first, then copy the JSON folder locally.
+- Never connect this importer directly to VPS.
+- Never point this importer directly at a production backend DB.
+- Never commit exported real case JSON unless it has been deliberately sanitized.
+- Never commit generated `.sqlite`, `.sqlite3`, or `.db` files.
+- Treat duplicate candidates as advisory review items only.
+
 ## When This Fails
 
 - Wrong working directory: run commands from the repository root so fixture paths resolve.
@@ -215,6 +267,7 @@ Expected result:
 - Stale smoke DB: use a new `$db` path or remove the local throwaway DB before rerunning.
 - Generated SQLite file in Git status: leave it untracked and remove or move it before committing.
 - Real export shape changed: add a narrow importer compatibility patch only for the new raw export placement or key shape, while preserving raw payload JSON unchanged.
+- Bulk import reports failed files: open the listed JSON file, fix or re-export it, then rerun bulk import. Successful files from the same run remain imported.
 
 ## Before Moving To Parent-Child Feature Engine
 
