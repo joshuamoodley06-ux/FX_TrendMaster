@@ -1,0 +1,44 @@
+{
+  "ranges": [
+    {
+      "id": "range-1",
+      "symbol": "XAUUSD",
+      "timeframe": "D1",
+      "range_type": "external",
+      "start_time_utc": "2026-01-01T00:00:00Z",
+      "end_time_utc": "2026-01-02T00:00:00Z",
+      "high": 2060.5,
+      "low": 2015.25,
+      "doctrine_note": "keep this raw"
+    },
+    {
+      "source_record_id": "range-2",
+      "symbol": "EURUSD",
+      "timeframe": "H4",
+      "type": "internal",
+      "start": "2026-01-03T04:00:00Z",
+      "end": "2026-01-03T08:00:00Z",
+      "high": "1.105",
+      "low": "1.101"
+    }
+  ],
+  "events": [
+    {
+      "id": "event-1",
+      "range_source_record_id": "range-1",
+      "event_type": "touch",
+      "event_time_utc": "2026-01-01T12:00:00Z",
+      "price": 2050.0,
+      "raw_marker": {
+        "side": "high"
+      }
+    },
+    {
+      "source_record_id": "event-2",
+      "range_source_record_id": "range-2",
+      "type": "break",
+      "timestamp": "2026-01-03T07:30:00Z",
+      "price": "1.104"
+    }
+  ]
+}
