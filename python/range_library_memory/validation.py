@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -57,13 +58,13 @@ def record_event_issues(
 def validate_range(record: dict[str, Any]) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
 
-    source_record_id = first_present(record, ("source_record_id", "id"))
+    source_record_id = first_present(record, ("source_record_id", "range_id", "id"))
     symbol = first_present(record, ("symbol",))
-    timeframe = first_present(record, ("timeframe",))
-    start_time = first_present(record, ("start_time_utc", "start_time", "start"))
-    end_time = first_present(record, ("end_time_utc", "end_time", "end"))
-    high = first_present(record, ("high",))
-    low = first_present(record, ("low",))
+    timeframe = first_present(record, ("timeframe", "source_timeframe", "chart_timeframe"))
+    start_time = first_present(record, ("start_time_utc", "start_time", "start", "range_start_time", "active_from_time", "range_high_time"))
+    end_time = first_present(record, ("end_time_utc", "end_time", "end", "range_end_time", "inactive_from_time", "range_low_time"))
+    high = first_present(record, ("high", "range_high_price", "range_high", "rh"))
+    low = first_present(record, ("low", "range_low_price", "range_low", "rl"))
 
     if is_missing(source_record_id):
         issues.append(issue("warning", "missing_source_record_id", "Range is missing source_record_id.", "source_record_id"))
@@ -116,8 +117,8 @@ def validate_range(record: dict[str, Any]) -> list[ValidationIssue]:
 
 def validate_event(record: dict[str, Any], known_range_source_ids: set[str]) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
-    event_type = first_present(record, ("event_type", "type"))
-    event_time = first_present(record, ("event_time_utc", "event_time", "time", "timestamp"))
+    event_type = first_present(record, ("event_type", "type", "legacy_event_type"))
+    event_time = first_present(record, ("event_time_utc", "event_time", "time", "timestamp", "candle_time", "candle_time_utc_ms"))
     price = first_present(record, ("price",))
 
     if is_missing(event_type):
@@ -128,7 +129,7 @@ def validate_event(record: dict[str, Any], known_range_source_ids: set[str]) -> 
     if price is not None and parse_number(price) is None:
         issues.append(issue("error", "non_numeric_event_price", "Event price is not numeric.", "price", price))
 
-    range_links = present_values(record, ("range_source_record_id", "raw_range_source_record_id", "range_id"))
+    range_links = present_values(record, ("range_source_record_id", "raw_range_source_record_id", "active_range_id", "range_id"))
     unique_links = {str(value) for value in range_links}
     if len(unique_links) > 1:
         issues.append(
@@ -213,11 +214,33 @@ def first_present(record: dict[str, Any], keys: tuple[str, ...]) -> Any:
     for key in keys:
         if key in record:
             return record[key]
+    nested_payload = raw_payload(record)
+    if nested_payload:
+        for key in keys:
+            if key in nested_payload:
+                return nested_payload[key]
     return None
 
 
 def present_values(record: dict[str, Any], keys: tuple[str, ...]) -> list[Any]:
-    return [record[key] for key in keys if key in record and not is_missing(record[key])]
+    values = [record[key] for key in keys if key in record and not is_missing(record[key])]
+    nested_payload = raw_payload(record)
+    if nested_payload:
+        values.extend(nested_payload[key] for key in keys if key in nested_payload and not is_missing(nested_payload[key]))
+    return values
+
+
+def raw_payload(record: dict[str, Any]) -> dict[str, Any]:
+    payload = record.get("raw_payload_json")
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 def is_missing(value: Any) -> bool:
