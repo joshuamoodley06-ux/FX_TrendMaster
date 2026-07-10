@@ -43,7 +43,8 @@ def main(argv: list[str] | None = None) -> int:
             f"run={summary.import_run_id} "
             f"ranges={summary.ranges_inserted}/{summary.ranges_seen} "
             f"events={summary.events_inserted}/{summary.events_seen} "
-            f"issues={summary.validation_issue_count}"
+            f"issues={summary.validation_issue_count} "
+            f"duplicates={summary.duplicate_candidate_count}"
         )
         return 0
 

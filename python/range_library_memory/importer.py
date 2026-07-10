@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import connect
+from .duplicates import record_duplicate_candidates
 from .models import ImportSummary
 from .schema import init_schema
 from .validation import record_event_issues, record_range_issues
@@ -52,6 +53,12 @@ def import_source(db_path: str | Path, source_path: str | Path, source_kind: str
                 range_id_by_source_id=range_id_by_source_id,
             )
             validation_issue_count = range_stats["issues"] + event_stats["issues"]
+            duplicate_candidate_count = record_duplicate_candidates(
+                connection,
+                import_run_id,
+                raw_range_ids=range_stats["ids"],
+                raw_event_ids=event_stats["ids"],
+            )
             insert_import_results(
                 connection=connection,
                 import_run_id=import_run_id,
@@ -62,6 +69,7 @@ def import_source(db_path: str | Path, source_path: str | Path, source_kind: str
                 events_inserted=event_stats["inserted"],
                 events_reused=event_stats["reused"],
                 validation_issue_count=validation_issue_count,
+                duplicate_candidate_count=duplicate_candidate_count,
             )
             finish_import_run(
                 connection=connection,
@@ -92,6 +100,7 @@ def import_source(db_path: str | Path, source_path: str | Path, source_kind: str
         events_inserted=event_stats["inserted"],
         events_reused=event_stats["reused"],
         validation_issue_count=validation_issue_count,
+        duplicate_candidate_count=duplicate_candidate_count,
     )
 
 
@@ -191,7 +200,7 @@ def store_ranges(
     import_run_id: int,
     ranges: list[RangeRecord],
 ) -> tuple[dict[str, int], dict[str, int]]:
-    stats = {"seen": len(ranges), "inserted": 0, "reused": 0, "issues": 0}
+    stats = {"seen": len(ranges), "inserted": 0, "reused": 0, "issues": 0, "ids": []}
     range_id_by_source_id: dict[str, int] = {}
 
     for record in ranges:
@@ -204,6 +213,7 @@ def store_ranges(
         else:
             raw_range_id = insert_raw_range(connection, import_run_id, record, raw_json, payload_hash)
             stats["inserted"] += 1
+        stats["ids"].append(raw_range_id)
 
         source_record_id = obvious_value(record, SOURCE_ID_KEYS)
         if source_record_id is not None:
@@ -225,7 +235,7 @@ def store_events(
     *,
     range_id_by_source_id: dict[str, int],
 ) -> dict[str, int]:
-    stats = {"seen": len(events), "inserted": 0, "reused": 0, "issues": 0}
+    stats = {"seen": len(events), "inserted": 0, "reused": 0, "issues": 0, "ids": []}
     known_range_source_ids = set(range_id_by_source_id)
 
     for record in events:
@@ -235,6 +245,7 @@ def store_events(
         if existing_id is not None:
             stats["reused"] += 1
             raw_event_id = existing_id
+            stats["ids"].append(raw_event_id)
             stats["issues"] += record_event_issues(
                 connection=connection,
                 import_run_id=import_run_id,
@@ -253,6 +264,7 @@ def store_events(
             raw_range_id=raw_range_id_for_event(record, range_id_by_source_id),
         )
         stats["inserted"] += 1
+        stats["ids"].append(raw_event_id)
         stats["issues"] += record_event_issues(
             connection=connection,
             import_run_id=import_run_id,
@@ -363,6 +375,7 @@ def insert_import_results(
     events_inserted: int,
     events_reused: int,
     validation_issue_count: int,
+    duplicate_candidate_count: int,
 ) -> None:
     summary = {
         "ranges_seen": ranges_seen,
@@ -372,7 +385,7 @@ def insert_import_results(
         "events_inserted": events_inserted,
         "events_reused": events_reused,
         "validation_issue_count": validation_issue_count,
-        "duplicate_candidate_count": 0,
+        "duplicate_candidate_count": duplicate_candidate_count,
     }
     connection.execute(
         """
@@ -399,7 +412,7 @@ def insert_import_results(
             events_inserted,
             events_reused,
             validation_issue_count,
-            0,
+            duplicate_candidate_count,
             json.dumps(summary, sort_keys=True, separators=(",", ":")),
             utc_now(),
         ),

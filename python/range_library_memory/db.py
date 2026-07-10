@@ -17,5 +17,6 @@ def connect(db_path: str | Path, *, initialize: bool = False) -> sqlite3.Connect
     """Open a SQLite connection and enable foreign-key enforcement."""
     path = ensure_db_parent(db_path) if initialize else Path(db_path)
     connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     return connection
