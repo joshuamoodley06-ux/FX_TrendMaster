@@ -203,9 +203,8 @@ def raw_mapping_ledger_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     seen_event_ids: set[str] = set()
     ledger_payloads = [payload]
-    raw_ledgers = payload.get("rawLedgers")
-    if isinstance(raw_ledgers, dict):
-        ledger_payloads.extend(ledger for ledger in raw_ledgers.values() if isinstance(ledger, dict))
+    for container in raw_ledger_containers(payload):
+        ledger_payloads.extend(ledger for ledger in container.values() if isinstance(ledger, dict))
 
     for ledger_payload in ledger_payloads:
         for key in ("sequence_by_intent", "sequence_by_timeline"):
@@ -220,6 +219,21 @@ def raw_mapping_ledger_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
                     seen_event_ids.add(event_id_text)
                 events.append(event)
     return events
+
+
+def raw_ledger_containers(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    containers: list[dict[str, Any]] = []
+    for key in ("rawLedgers", "raw_ledgers"):
+        value = payload.get(key)
+        if isinstance(value, dict):
+            containers.append(value)
+    data = payload.get("data")
+    if isinstance(data, dict):
+        for key in ("rawLedgers", "raw_ledgers"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                containers.append(value)
+    return containers
 
 
 def ensure_records(value: Any, label: str) -> list[dict[str, Any]]:

@@ -1,0 +1,174 @@
+{
+  "schema_version": "analyst_input_v1",
+  "symbol": "XAUUSD",
+  "year": 2026,
+  "label": "XAUUSD_2026_SMOKE",
+  "case_refs": ["case:sanitized-map", "raw:sanitized-raw"],
+  "generated_at_utc_ms": 1783706400000,
+  "source": {
+    "base_url": "https://sanitized.example.invalid",
+    "fetched_at": "2026-07-10T19:00:00.000Z"
+  },
+  "data": {
+    "ranges": [
+      {
+        "range_id": 101,
+        "symbol": "XAUUSD",
+        "timeframe": "D1",
+        "source_timeframe": "D1",
+        "chart_timeframe": "D1",
+        "structure_layer": "DAILY",
+        "range_scope": "MAJOR",
+        "status": "ACTIVE",
+        "range_high_price": 2450.25,
+        "range_low_price": 2388.75,
+        "range_high_time": "2026-06-03T12:00:00.000Z",
+        "range_low_time": "2026-06-02T04:00:00.000Z",
+        "range_start_time": "2026-06-01T00:00:00.000Z",
+        "range_end_time": "2026-06-05T00:00:00.000Z",
+        "parent_range_id": null,
+        "case_ref": "case:sanitized-map"
+      },
+      {
+        "range_id": 202,
+        "symbol": "XAUUSD",
+        "timeframe": "H4",
+        "source_timeframe": "H4",
+        "chart_timeframe": "H1",
+        "structure_layer": "INTRADAY",
+        "range_scope": "MINOR",
+        "status": "ACTIVE",
+        "range_high_price": 2432.5,
+        "range_low_price": 2401.25,
+        "range_high_time": "2026-06-04T08:00:00.000Z",
+        "range_low_time": "2026-06-04T00:00:00.000Z",
+        "range_start_time": "2026-06-04T00:00:00.000Z",
+        "range_end_time": "2026-06-04T16:00:00.000Z",
+        "parent_range_id": 101,
+        "case_ref": "case:sanitized-map"
+      }
+    ],
+    "events": [
+      {
+        "event_id": "map-event-current-1",
+        "range_id": 101,
+        "symbol": "XAUUSD",
+        "timeframe": "D1",
+        "source_timeframe": "D1",
+        "event_type": "RANGE_HIGH",
+        "event_time": "2026-06-03T12:00:00.000Z",
+        "price": 2450.25,
+        "case_ref": "case:sanitized-map"
+      },
+      {
+        "event_id": "map-event-current-2",
+        "active_range_id": 202,
+        "symbol": "XAUUSD",
+        "timeframe": "H4",
+        "source_timeframe": "H4",
+        "event_type": "BOS_UP",
+        "time": "2026-06-04T12:00:00.000Z",
+        "price": 2434.0,
+        "case_ref": "case:sanitized-map"
+      }
+    ],
+    "candles": {
+      "D1": [],
+      "H4": []
+    },
+    "raw_ledgers": {
+      "raw:sanitized-raw": {
+        "ok": true,
+        "meta": {
+          "case_id": "sanitized-raw",
+          "schema_version": "raw_mapping_v1",
+          "total_records": 2,
+          "ledger_hash": "sanitized-ledger-hash",
+          "case": {
+            "case_id": "sanitized-raw",
+            "symbol": "XAUUSD",
+            "case_name": "Sanitized raw smoke case",
+            "base_timeframe": "D1",
+            "price_scale_default": 100,
+            "status": "ACTIVE"
+          }
+        },
+        "sequence_by_intent": [
+          {
+            "event_id": "raw-current-1",
+            "case_id": "sanitized-raw",
+            "symbol": "XAUUSD",
+            "timeframe": "D1",
+            "candle_time_utc_ms": 1780488000000,
+            "candle_index": 45,
+            "price": 2450.25,
+            "price_int": 245025,
+            "price_scale": 100,
+            "event_type": "SET_ANCHOR",
+            "event_side": "HIGH",
+            "source": "manual",
+            "created_order": 1,
+            "is_deleted": 0,
+            "raw_payload_json": {
+              "semantic_side": "HIGH",
+              "legacy_event_type": "RANGE_HIGH",
+              "active_range_id": 101,
+              "display_marker_id": "sanitized-marker-high"
+            }
+          },
+          {
+            "event_id": "raw-current-2",
+            "case_id": "sanitized-raw",
+            "symbol": "XAUUSD",
+            "timeframe": "D1",
+            "candle_time_utc_ms": 1780344000000,
+            "candle_index": 43,
+            "price": 2388.75,
+            "price_int": 238875,
+            "price_scale": 100,
+            "event_type": "SET_ANCHOR",
+            "event_side": "LOW",
+            "source": "manual",
+            "created_order": 2,
+            "is_deleted": 0,
+            "raw_payload_json": {
+              "semantic_side": "LOW",
+              "legacy_event_type": "RANGE_LOW",
+              "active_range_id": 101,
+              "display_marker_id": "sanitized-marker-low"
+            }
+          }
+        ],
+        "sequence_by_timeline": [
+          {
+            "event_id": "raw-current-2",
+            "case_id": "sanitized-raw",
+            "symbol": "XAUUSD",
+            "timeframe": "D1",
+            "candle_time_utc_ms": 1780344000000,
+            "price": 2388.75,
+            "event_type": "SET_ANCHOR",
+            "event_side": "LOW",
+            "source": "manual",
+            "created_order": 2,
+            "is_deleted": 0
+          },
+          {
+            "event_id": "raw-current-1",
+            "case_id": "sanitized-raw",
+            "symbol": "XAUUSD",
+            "timeframe": "D1",
+            "candle_time_utc_ms": 1780488000000,
+            "price": 2450.25,
+            "event_type": "SET_ANCHOR",
+            "event_side": "HIGH",
+            "source": "manual",
+            "created_order": 1,
+            "is_deleted": 0
+          }
+        ]
+      }
+    }
+  },
+  "warnings": []
+}
