@@ -173,18 +173,53 @@ def split_payload(payload: Any) -> tuple[list[RangeRecord], list[EventRecord]]:
     if not isinstance(payload, dict):
         raise ValueError("Import source must be a JSON object or list.")
 
-    ranges = ensure_records(payload.get("ranges", []), "ranges")
-    events = ensure_records(payload.get("events", []), "events")
+    ranges = first_record_list(payload, ("ranges", "range_records", "records", "map_ranges"))
+    events = first_record_list(payload, ("events", "map_events"))
+    if not ranges and isinstance(payload.get("data"), dict):
+        ranges = first_record_list(payload["data"], ("ranges", "range_records", "records", "map_ranges"))
+    if not events and isinstance(payload.get("data"), dict):
+        events = first_record_list(payload["data"], ("events", "map_events"))
+    events.extend(raw_mapping_ledger_events(payload))
 
     for range_record in ranges:
         nested_events = range_record.get("events")
         if nested_events is not None:
             for event in ensure_records(nested_events, "range.events"):
                 linked_event = dict(event)
-                linked_event.setdefault("range_source_record_id", obvious_value(range_record, SOURCE_ID_KEYS))
+                linked_event.setdefault("range_source_record_id", obvious_value(range_record, RANGE_SOURCE_ID_KEYS))
                 events.append(linked_event)
 
     return ranges, events
+
+
+def first_record_list(payload: dict[str, Any], keys: tuple[str, ...]) -> list[dict[str, Any]]:
+    for key in keys:
+        if key in payload:
+            return ensure_records(payload.get(key, []), key)
+    return []
+
+
+def raw_mapping_ledger_events(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    seen_event_ids: set[str] = set()
+    ledger_payloads = [payload]
+    raw_ledgers = payload.get("rawLedgers")
+    if isinstance(raw_ledgers, dict):
+        ledger_payloads.extend(ledger for ledger in raw_ledgers.values() if isinstance(ledger, dict))
+
+    for ledger_payload in ledger_payloads:
+        for key in ("sequence_by_intent", "sequence_by_timeline"):
+            if key not in ledger_payload:
+                continue
+            for event in ensure_records(ledger_payload.get(key, []), key):
+                event_id = obvious_value(event, EVENT_SOURCE_ID_KEYS)
+                if event_id is not None:
+                    event_id_text = str(event_id)
+                    if event_id_text in seen_event_ids:
+                        continue
+                    seen_event_ids.add(event_id_text)
+                events.append(event)
+    return events
 
 
 def ensure_records(value: Any, label: str) -> list[dict[str, Any]]:
@@ -215,7 +250,7 @@ def store_ranges(
             stats["inserted"] += 1
         stats["ids"].append(raw_range_id)
 
-        source_record_id = obvious_value(record, SOURCE_ID_KEYS)
+        source_record_id = obvious_value(record, RANGE_SOURCE_ID_KEYS)
         if source_record_id is not None:
             range_id_by_source_id[str(source_record_id)] = raw_range_id
         stats["issues"] += record_range_issues(
@@ -310,14 +345,14 @@ def insert_raw_range(
         """,
         (
             import_run_id,
-            text_or_none(obvious_value(record, SOURCE_ID_KEYS)),
+            text_or_none(obvious_value(record, RANGE_SOURCE_ID_KEYS)),
             text_or_none(obvious_value(record, ("symbol",))),
-            text_or_none(obvious_value(record, ("timeframe",))),
-            text_or_none(obvious_value(record, ("range_type", "type"))),
-            text_or_none(obvious_value(record, ("start_time_utc", "start_time", "start"))),
-            text_or_none(obvious_value(record, ("end_time_utc", "end_time", "end"))),
-            numeric_or_none(obvious_value(record, ("high",))),
-            numeric_or_none(obvious_value(record, ("low",))),
+            text_or_none(obvious_value(record, ("timeframe", "source_timeframe", "chart_timeframe"))),
+            text_or_none(obvious_value(record, ("range_type", "type", "structure_layer", "layer", "range_scope"))),
+            text_or_none(obvious_value(record, ("start_time_utc", "start_time", "start", "range_start_time", "active_from_time", "range_high_time"))),
+            text_or_none(obvious_value(record, ("end_time_utc", "end_time", "end", "range_end_time", "inactive_from_time", "range_low_time"))),
+            numeric_or_none(obvious_value(record, ("high", "range_high_price", "range_high", "rh"))),
+            numeric_or_none(obvious_value(record, ("low", "range_low_price", "range_low", "rl"))),
             raw_json,
             payload_hash,
             utc_now(),
@@ -352,9 +387,9 @@ def insert_raw_event(
         (
             import_run_id,
             raw_range_id,
-            text_or_none(obvious_value(record, SOURCE_ID_KEYS)),
-            text_or_none(obvious_value(record, ("event_type", "type"))),
-            text_or_none(obvious_value(record, ("event_time_utc", "event_time", "time", "timestamp"))),
+            text_or_none(obvious_value(record, EVENT_SOURCE_ID_KEYS)),
+            text_or_none(obvious_value(record, ("event_type", "type", "legacy_event_type"))),
+            time_or_none(obvious_value(record, ("event_time_utc", "event_time", "time", "timestamp", "candle_time", "candle_time_utc_ms"))),
             numeric_or_none(obvious_value(record, ("price",))),
             raw_json,
             payload_hash,
@@ -420,7 +455,7 @@ def insert_import_results(
 
 
 def raw_range_id_for_event(record: EventRecord, range_id_by_source_id: dict[str, int]) -> int | None:
-    source_id = obvious_value(record, ("range_source_record_id", "raw_range_source_record_id", "range_id"))
+    source_id = obvious_value(record, ("range_source_record_id", "raw_range_source_record_id", "active_range_id", "range_id"))
     if source_id is None:
         return None
     return range_id_by_source_id.get(str(source_id))
@@ -438,13 +473,24 @@ def sha256_text(value: str) -> str:
     return sha256_bytes(value.encode("utf-8"))
 
 
-SOURCE_ID_KEYS = ("source_record_id", "id")
+RANGE_SOURCE_ID_KEYS = ("source_record_id", "range_id", "id")
+EVENT_SOURCE_ID_KEYS = ("source_record_id", "event_id", "id")
 
 
 def obvious_value(record: dict[str, Any], keys: tuple[str, ...]) -> Any:
     for key in keys:
         if key in record:
             return record[key]
+    nested_payload = record.get("raw_payload_json")
+    if isinstance(nested_payload, str):
+        try:
+            nested_payload = json.loads(nested_payload)
+        except json.JSONDecodeError:
+            nested_payload = None
+    if isinstance(nested_payload, dict):
+        for key in keys:
+            if key in nested_payload:
+                return nested_payload[key]
     return None
 
 
@@ -452,6 +498,12 @@ def text_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def time_or_none(value: Any) -> str | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 10_000_000_000:
+        return datetime.fromtimestamp(value / 1000, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return text_or_none(value)
 
 
 def numeric_or_none(value: Any) -> float | None:

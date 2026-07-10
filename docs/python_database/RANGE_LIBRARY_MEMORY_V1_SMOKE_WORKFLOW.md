@@ -101,6 +101,12 @@ Import the duplicate changed payload fixture:
 python -m range_library_memory.cli import --source python/range_library_memory/tests/fixtures/duplicate_changed_payload.json --source-kind fixture --db-path $db
 ```
 
+Import the representative FXTM export-shape fixture:
+
+```powershell
+python -m range_library_memory.cli import --source python/range_library_memory/tests/fixtures/real_fxtm_export_shape.json --source-kind fxtm_export --db-path $db
+```
+
 List import runs:
 
 ```powershell
@@ -165,6 +171,7 @@ Human checks after the smoke flow:
 - Imports create `import_runs` rows.
 - The validation issue fixture import becomes `completed_with_issues`.
 - Duplicate candidates do not change import status by themselves.
+- Representative `fxtm_export` imports preserve saved range/event rows and raw ledger event objects as raw payload JSON.
 - `range_import_results` shows validation issue and duplicate candidate counts.
 - Resolved issues keep raw range and raw event rows unchanged.
 - Reviewed duplicate candidates do not merge, delete, or rewrite anything.
