@@ -13,6 +13,7 @@ from typing import Any
 from .db import connect
 from .models import ImportSummary
 from .schema import init_schema
+from .validation import record_event_issues, record_range_issues
 
 RangeRecord = dict[str, Any]
 EventRecord = dict[str, Any]
@@ -50,6 +51,7 @@ def import_source(db_path: str | Path, source_path: str | Path, source_kind: str
                 events,
                 range_id_by_source_id=range_id_by_source_id,
             )
+            validation_issue_count = range_stats["issues"] + event_stats["issues"]
             insert_import_results(
                 connection=connection,
                 import_run_id=import_run_id,
@@ -59,11 +61,12 @@ def import_source(db_path: str | Path, source_path: str | Path, source_kind: str
                 events_seen=event_stats["seen"],
                 events_inserted=event_stats["inserted"],
                 events_reused=event_stats["reused"],
+                validation_issue_count=validation_issue_count,
             )
             finish_import_run(
                 connection=connection,
                 import_run_id=import_run_id,
-                status="completed",
+                status="completed_with_issues" if validation_issue_count else "completed",
                 source_sha256=source_sha256,
             )
             connection.commit()
@@ -88,6 +91,7 @@ def import_source(db_path: str | Path, source_path: str | Path, source_kind: str
         events_seen=event_stats["seen"],
         events_inserted=event_stats["inserted"],
         events_reused=event_stats["reused"],
+        validation_issue_count=validation_issue_count,
     )
 
 
@@ -187,7 +191,7 @@ def store_ranges(
     import_run_id: int,
     ranges: list[RangeRecord],
 ) -> tuple[dict[str, int], dict[str, int]]:
-    stats = {"seen": len(ranges), "inserted": 0, "reused": 0}
+    stats = {"seen": len(ranges), "inserted": 0, "reused": 0, "issues": 0}
     range_id_by_source_id: dict[str, int] = {}
 
     for record in ranges:
@@ -204,6 +208,12 @@ def store_ranges(
         source_record_id = obvious_value(record, SOURCE_ID_KEYS)
         if source_record_id is not None:
             range_id_by_source_id[str(source_record_id)] = raw_range_id
+        stats["issues"] += record_range_issues(
+            connection=connection,
+            import_run_id=import_run_id,
+            raw_range_id=raw_range_id,
+            record=record,
+        )
 
     return stats, range_id_by_source_id
 
@@ -215,7 +225,8 @@ def store_events(
     *,
     range_id_by_source_id: dict[str, int],
 ) -> dict[str, int]:
-    stats = {"seen": len(events), "inserted": 0, "reused": 0}
+    stats = {"seen": len(events), "inserted": 0, "reused": 0, "issues": 0}
+    known_range_source_ids = set(range_id_by_source_id)
 
     for record in events:
         raw_json = raw_payload_json(record)
@@ -223,9 +234,17 @@ def store_events(
         existing_id = find_existing_id(connection, "raw_events", payload_hash)
         if existing_id is not None:
             stats["reused"] += 1
+            raw_event_id = existing_id
+            stats["issues"] += record_event_issues(
+                connection=connection,
+                import_run_id=import_run_id,
+                raw_event_id=raw_event_id,
+                record=record,
+                known_range_source_ids=known_range_source_ids,
+            )
             continue
 
-        insert_raw_event(
+        raw_event_id = insert_raw_event(
             connection=connection,
             import_run_id=import_run_id,
             record=record,
@@ -234,6 +253,13 @@ def store_events(
             raw_range_id=raw_range_id_for_event(record, range_id_by_source_id),
         )
         stats["inserted"] += 1
+        stats["issues"] += record_event_issues(
+            connection=connection,
+            import_run_id=import_run_id,
+            raw_event_id=raw_event_id,
+            record=record,
+            known_range_source_ids=known_range_source_ids,
+        )
 
     return stats
 
@@ -336,6 +362,7 @@ def insert_import_results(
     events_seen: int,
     events_inserted: int,
     events_reused: int,
+    validation_issue_count: int,
 ) -> None:
     summary = {
         "ranges_seen": ranges_seen,
@@ -344,7 +371,7 @@ def insert_import_results(
         "events_seen": events_seen,
         "events_inserted": events_inserted,
         "events_reused": events_reused,
-        "validation_issue_count": 0,
+        "validation_issue_count": validation_issue_count,
         "duplicate_candidate_count": 0,
     }
     connection.execute(
@@ -371,7 +398,7 @@ def insert_import_results(
             events_seen,
             events_inserted,
             events_reused,
-            0,
+            validation_issue_count,
             0,
             json.dumps(summary, sort_keys=True, separators=(",", ":")),
             utc_now(),

@@ -19,3 +19,4 @@ class ImportSummary:
     events_seen: int
     events_inserted: int
     events_reused: int
+    validation_issue_count: int
