@@ -20,3 +20,4 @@ class ImportSummary:
     events_inserted: int
     events_reused: int
     validation_issue_count: int
+    duplicate_candidate_count: int
