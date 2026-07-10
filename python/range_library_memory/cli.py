@@ -14,6 +14,15 @@ from .inspection import (
     list_runs,
     show_run,
 )
+from .review import (
+    ALLOWED_DUPLICATE_STATUSES,
+    format_duplicates,
+    format_issues,
+    list_duplicates,
+    list_issues,
+    resolve_issue,
+    review_duplicate,
+)
 from .schema import init_schema
 
 
@@ -38,6 +47,29 @@ def build_parser() -> argparse.ArgumentParser:
     show_run_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
     show_run_parser.add_argument("--import-run-id", type=int, required=True, help="Import run id.")
     show_run_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    list_issues_parser = subparsers.add_parser("list-issues", help="List validation issues.")
+    list_issues_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    list_issues_parser.add_argument("--status", choices=("open", "resolved"), default="open")
+    list_issues_parser.add_argument("--limit", type=int, default=20, help="Maximum number of issues to show.")
+    list_issues_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    resolve_issue_parser = subparsers.add_parser("resolve-issue", help="Resolve a validation issue.")
+    resolve_issue_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    resolve_issue_parser.add_argument("--issue-id", type=int, required=True, help="Validation issue id.")
+    resolve_issue_parser.add_argument("--notes", required=True, help="Manual resolution notes.")
+
+    list_duplicates_parser = subparsers.add_parser("list-duplicates", help="List duplicate candidates.")
+    list_duplicates_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    list_duplicates_parser.add_argument("--status", default="open", choices=ALLOWED_DUPLICATE_STATUSES)
+    list_duplicates_parser.add_argument("--limit", type=int, default=20, help="Maximum number of candidates to show.")
+    list_duplicates_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    review_duplicate_parser = subparsers.add_parser("review-duplicate", help="Review a duplicate candidate.")
+    review_duplicate_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    review_duplicate_parser.add_argument("--candidate-id", type=int, required=True, help="Duplicate candidate id.")
+    review_duplicate_parser.add_argument("--status", required=True, choices=ALLOWED_DUPLICATE_STATUSES)
+    review_duplicate_parser.add_argument("--notes", required=True, help="Manual review notes.")
 
     return parser
 
@@ -71,6 +103,40 @@ def main(argv: list[str] | None = None) -> int:
             print(format_list_runs(list_runs(db_path, limit=args.limit), as_json=args.json))
         except InspectionError as exc:
             parser.error(str(exc))
+        return 0
+
+    if args.command == "list-issues":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            print(format_issues(list_issues(db_path, status=args.status, limit=args.limit), as_json=args.json))
+        except InspectionError as exc:
+            parser.error(str(exc))
+        return 0
+
+    if args.command == "resolve-issue":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            resolve_issue(db_path, issue_id=args.issue_id, notes=args.notes)
+        except InspectionError as exc:
+            parser.error(str(exc))
+        print(f"Resolved validation issue {args.issue_id}")
+        return 0
+
+    if args.command == "list-duplicates":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            print(format_duplicates(list_duplicates(db_path, status=args.status, limit=args.limit), as_json=args.json))
+        except InspectionError as exc:
+            parser.error(str(exc))
+        return 0
+
+    if args.command == "review-duplicate":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            review_duplicate(db_path, candidate_id=args.candidate_id, status=args.status, notes=args.notes)
+        except InspectionError as exc:
+            parser.error(str(exc))
+        print(f"Reviewed duplicate candidate {args.candidate_id}")
         return 0
 
     if args.command == "show-run":
