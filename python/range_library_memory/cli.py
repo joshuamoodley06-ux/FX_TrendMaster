@@ -8,6 +8,13 @@ from pathlib import Path
 from .bulk_import import bulk_import_source_dir, format_bulk_import_summary
 from .config import resolve_db_path
 from .duplicate_summary import format_duplicate_summary, summarize_duplicates
+from .event_ohlc_evidence import (
+    EventOhlcEvidenceError,
+    build_event_ohlc_evidence,
+    format_build_summary as format_event_ohlc_build_summary,
+    format_event_ohlc_summary,
+    summarize_event_ohlc,
+)
 from .importer import import_source
 from .inspection import (
     InspectionError,
@@ -119,6 +126,27 @@ def build_parser() -> argparse.ArgumentParser:
     weekly_family_parser.add_argument("--weekly-source-id", required=True, help="Original map_ranges id for the Weekly.")
     weekly_family_parser.add_argument("--as-of", default=None, help="Required cutoff for active Weekly ranges.")
     weekly_family_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    build_event_parser = subparsers.add_parser("build-event-ohlc-evidence", help="Build mapped BOS vs OHLC evidence.")
+    build_event_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    build_event_parser.add_argument("--source-db", type=Path, required=True, help="Original market_memory.db path.")
+    build_event_parser.add_argument("--case-ref", default=None)
+    build_event_parser.add_argument("--symbol", default=None)
+    build_event_parser.add_argument("--layer", default=None)
+    build_event_parser.add_argument("--range-source-id", default=None)
+    build_event_parser.add_argument("--event-source-id", default=None)
+    build_event_parser.add_argument("--as-of", default=None)
+    build_event_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    event_summary_parser = subparsers.add_parser("event-ohlc-summary", help="Summarize mapped BOS vs OHLC evidence.")
+    event_summary_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    event_summary_parser.add_argument("--case-ref", default=None)
+    event_summary_parser.add_argument("--symbol", default=None)
+    event_summary_parser.add_argument("--layer", default=None)
+    event_summary_parser.add_argument("--range-source-id", default=None)
+    event_summary_parser.add_argument("--evidence-status", default=None)
+    event_summary_parser.add_argument("--resolution-status", default=None)
+    event_summary_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
 
     return parser
 
@@ -248,6 +276,41 @@ def main(argv: list[str] | None = None) -> int:
         except (InspectionError, WeeklyFamilyCoverageError, ValueError) as exc:
             parser.error(str(exc))
         print(format_weekly_family_coverage(report, as_json=args.json))
+        return 0
+
+    if args.command == "build-event-ohlc-evidence":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = build_event_ohlc_evidence(
+                db_path,
+                source_db=args.source_db,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                layer=args.layer,
+                range_source_id=args.range_source_id,
+                event_source_id=args.event_source_id,
+                as_of=args.as_of,
+            )
+        except (InspectionError, EventOhlcEvidenceError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_event_ohlc_build_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "event-ohlc-summary":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = summarize_event_ohlc(
+                db_path,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                layer=args.layer,
+                range_source_id=args.range_source_id,
+                evidence_status=args.evidence_status,
+                resolution_status=args.resolution_status,
+            )
+        except InspectionError as exc:
+            parser.error(str(exc))
+        print(format_event_ohlc_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "show-run":

@@ -14,6 +14,8 @@ REQUIRED_TABLES = (
     "validation_issues",
     "duplicate_candidates",
     "parent_child_relationships",
+    "event_ohlc_evidence",
+    "resolved_range_lifecycles",
 )
 
 
@@ -130,6 +132,94 @@ CREATE TABLE IF NOT EXISTS parent_child_relationships (
     created_at_utc TEXT NOT NULL,
     updated_at_utc TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS event_ohlc_evidence (
+    id INTEGER PRIMARY KEY,
+    built_at_utc TEXT NOT NULL,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT NOT NULL,
+    structure_layer TEXT NOT NULL,
+    source_timeframe TEXT NOT NULL,
+    range_source_id TEXT NOT NULL,
+    event_source_id TEXT,
+    raw_range_id INTEGER,
+    raw_event_id INTEGER,
+    event_type TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    range_active_from_time TEXT,
+    range_formation_time TEXT NOT NULL,
+    boundary_type TEXT NOT NULL,
+    boundary_price REAL NOT NULL,
+    boundary_anchor_time TEXT NOT NULL,
+    mapped_event_time TEXT,
+    mapped_event_price REAL,
+    mapped_break_level_price REAL,
+    source_event_candle_time TEXT,
+    source_event_open REAL,
+    source_event_high REAL,
+    source_event_low REAL,
+    source_event_close REAL,
+    first_boundary_contact_time TEXT,
+    first_wick_breach_time TEXT,
+    first_wick_breach_price REAL,
+    first_close_breach_time TEXT,
+    first_close_breach_price REAL,
+    candles_to_wick_breach INTEGER,
+    candles_to_close_breach INTEGER,
+    mapped_new_range_id TEXT,
+    transition_status TEXT NOT NULL,
+    transition_reason_codes_json TEXT NOT NULL,
+    evidence_status TEXT NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    resolution_confidence TEXT NOT NULL,
+    effective_break_time TEXT,
+    effective_break_kind TEXT,
+    as_of_time TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_ohlc_evidence_range_source_id
+    ON event_ohlc_evidence(range_source_id);
+CREATE INDEX IF NOT EXISTS idx_event_ohlc_evidence_event_source_id
+    ON event_ohlc_evidence(event_source_id);
+CREATE INDEX IF NOT EXISTS idx_event_ohlc_evidence_scope
+    ON event_ohlc_evidence(case_ref, symbol, structure_layer, source_timeframe);
+
+CREATE TABLE IF NOT EXISTS resolved_range_lifecycles (
+    id INTEGER PRIMARY KEY,
+    built_at_utc TEXT NOT NULL,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT NOT NULL,
+    structure_layer TEXT NOT NULL,
+    source_timeframe TEXT NOT NULL,
+    range_source_id TEXT NOT NULL,
+    raw_range_id INTEGER,
+    raw_status TEXT,
+    raw_active_from_time TEXT,
+    raw_inactive_from_time TEXT,
+    raw_broken_by_event_id TEXT,
+    effective_status TEXT NOT NULL,
+    effective_active_from_time TEXT NOT NULL,
+    effective_inactive_from_time TEXT,
+    resolution_source TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    resolution_confidence TEXT NOT NULL,
+    supporting_event_source_id TEXT,
+    supporting_evidence_id INTEGER,
+    reason_codes_json TEXT NOT NULL,
+    as_of_time TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_resolved_range_lifecycles_range_source_id
+    ON resolved_range_lifecycles(range_source_id);
+CREATE INDEX IF NOT EXISTS idx_resolved_range_lifecycles_scope
+    ON resolved_range_lifecycles(case_ref, symbol, structure_layer, source_timeframe);
 """
 
 

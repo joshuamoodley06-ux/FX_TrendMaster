@@ -116,6 +116,32 @@ def load_candles(
     return [candle for _parsed, _rowid, candle in sorted(candles, key=lambda item: (item[0], item[1]))]
 
 
+def latest_candle_time(connection: sqlite3.Connection, *, symbol: str, timeframe: str) -> str | None:
+    columns = candle_columns(connection)
+    rows = connection.execute(
+        f"""
+        SELECT rowid AS source_rowid,
+               {columns['symbol']} AS symbol,
+               {columns['timeframe']} AS timeframe,
+               {columns['time']} AS candle_time
+        FROM candles
+        WHERE {columns['symbol']} = ?
+          AND {columns['timeframe']} = ?
+        ORDER BY source_rowid ASC
+        """,
+        (symbol, timeframe),
+    ).fetchall()
+    latest: datetime | None = None
+    for row in rows:
+        parsed = parse_source_timestamp(
+            str(row["candle_time"]),
+            symbol=str(row["symbol"]),
+            timeframe=str(row["timeframe"]),
+        )
+        latest = parsed if latest is None or parsed > latest else latest
+    return format_canonical_time(latest) if latest else None
+
+
 def parse_source_timestamp(value: str, *, symbol: str, timeframe: str) -> datetime:
     raw = str(value).strip()
     for pattern in ("%Y.%m.%d %H:%M", "%Y-%m-%d %H:%M:%S"):

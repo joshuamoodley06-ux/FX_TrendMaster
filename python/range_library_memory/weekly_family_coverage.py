@@ -49,7 +49,12 @@ class ChildCoverage:
     link_status: str
     link_confidence: str
     review_status: str
+    effective_status: str
+    effective_active_from_time: str
     effective_end_time: str
+    lifecycle_resolution_source: str
+    lifecycle_resolution_status: str
+    lifecycle_resolution_confidence: str
 
 
 def analyze_weekly_family_coverage(
@@ -191,8 +196,28 @@ def load_children(
                 f"Linked Daily child source id cannot be resolved: {relationship['child_range_id']}"
             )
         child_range = raw_range_from_row(child)
-        end_time = child_end_time(child_range, parent_end=parent_end, as_of=as_of)
-        start_time = normalize_required_time(child_range.active_from_time, field_name="child.active_from_time")
+        lifecycle = latest_resolved_lifecycle(connection, child_range.source_record_id)
+        if lifecycle:
+            start_time = normalize_required_time(
+                lifecycle["effective_active_from_time"],
+                field_name="resolved.effective_active_from_time",
+            )
+            end_time = (
+                normalize_required_time(lifecycle["effective_inactive_from_time"], field_name="resolved.effective_inactive_from_time")
+                if lifecycle["effective_inactive_from_time"]
+                else child_end_time_from_status(str(lifecycle["effective_status"]), child_range.source_record_id, parent_end=parent_end, as_of=as_of)
+            )
+            effective_status = str(lifecycle["effective_status"])
+            resolution_source = str(lifecycle["resolution_source"])
+            resolution_status = str(lifecycle["resolution_status"])
+            resolution_confidence = str(lifecycle["resolution_confidence"])
+        else:
+            end_time = child_end_time(child_range, parent_end=parent_end, as_of=as_of)
+            start_time = normalize_required_time(child_range.active_from_time, field_name="child.active_from_time")
+            effective_status = child_range.status
+            resolution_source = "RAW"
+            resolution_status = "RAW_FALLBACK"
+            resolution_confidence = "low"
         ensure_window_order(
             start_time,
             end_time,
@@ -208,10 +233,28 @@ def load_children(
                 link_status=str(relationship["link_status"]),
                 link_confidence=str(relationship["link_confidence"]),
                 review_status=str(relationship["review_status"]),
+                effective_status=effective_status,
+                effective_active_from_time=start_time,
                 effective_end_time=end_time,
+                lifecycle_resolution_source=resolution_source,
+                lifecycle_resolution_status=resolution_status,
+                lifecycle_resolution_confidence=resolution_confidence,
             )
         )
-    return sorted(children, key=lambda item: (item.range.active_from_time or "", item.range.source_record_id))
+    return sorted(children, key=lambda item: (item.effective_active_from_time or "", item.range.source_record_id))
+
+
+def latest_resolved_lifecycle(connection: sqlite3.Connection, source_record_id: str) -> sqlite3.Row | None:
+    return connection.execute(
+        """
+        SELECT *
+        FROM resolved_range_lifecycles
+        WHERE range_source_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (source_record_id,),
+    ).fetchone()
 
 
 def raw_range_from_row(row: sqlite3.Row) -> RawRange:
@@ -256,6 +299,14 @@ def child_end_time(child: RawRange, *, parent_end: str, as_of: str | None) -> st
     raise WeeklyFamilyCoverageError(
         f"Unsupported Daily child status without inactive_from_time: {child.status} ({child.source_record_id})"
     )
+
+
+def child_end_time_from_status(status: str, source_record_id: str, *, parent_end: str, as_of: str | None) -> str:
+    if status == "ACTIVE":
+        return min_time(parent_end, as_of) if as_of else parent_end
+    if status in INACTIVE_STATUSES:
+        raise WeeklyFamilyCoverageError(f"{status} resolved Daily child is missing effective_inactive_from_time: {source_record_id}")
+    raise WeeklyFamilyCoverageError(f"Unsupported resolved Daily child status without inactive time: {status} ({source_record_id})")
 
 
 def post_formation_start(weekly: RawRange) -> str:
@@ -307,8 +358,8 @@ def covering_children(candle: SourceCandle, children: list[ChildCoverage]) -> li
     covered = [
         child.range.source_record_id
         for child in children
-        if child.range.active_from_time
-        and normalize_time(child.range.active_from_time) <= normalize_time(candle.time) <= normalize_time(child.effective_end_time)
+        if child.effective_active_from_time
+        and normalize_time(child.effective_active_from_time) <= normalize_time(candle.time) <= normalize_time(child.effective_end_time)
     ]
     return sorted(covered)
 
@@ -319,6 +370,15 @@ def child_output(child: ChildCoverage) -> dict[str, Any]:
         "status": child.range.status,
         "active_from_time": child.range.active_from_time,
         "inactive_from_time": child.range.inactive_from_time,
+        "raw_status": child.range.status,
+        "raw_active_from_time": child.range.active_from_time,
+        "raw_inactive_from_time": child.range.inactive_from_time,
+        "effective_status": child.effective_status,
+        "effective_active_from_time": child.effective_active_from_time,
+        "effective_inactive_from_time": child.effective_end_time if child.effective_status != "ACTIVE" else None,
+        "lifecycle_resolution_source": child.lifecycle_resolution_source,
+        "lifecycle_resolution_status": child.lifecycle_resolution_status,
+        "lifecycle_resolution_confidence": child.lifecycle_resolution_confidence,
         "direction_of_break": child.range.direction_of_break,
         "link_source": child.link_source,
         "link_status": child.link_status,
