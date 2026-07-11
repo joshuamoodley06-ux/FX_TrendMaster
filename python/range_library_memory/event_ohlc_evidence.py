@@ -88,20 +88,28 @@ def build_event_ohlc_evidence(
     }
     try:
         with closing(open_source_market_db(source_db)) as source_connection, connect(path) as connection:
-            clear_scope(connection, filters)
             ranges = latest_ranges(connection)
             events = latest_events(connection)
             selected = select_events(events, ranges, filters)
+            affected_range_ids = selected_range_ids(selected)
+            if filters["range_source_id"]:
+                affected_range_ids.add(filters["range_source_id"])
+            if not filters["event_source_id"]:
+                affected_range_ids.update(range_ids_in_scope(ranges, filters))
+            clear_scope(connection, filters, affected_range_ids)
             built_evidence = 0
             built_lifecycles: set[str] = set()
+            evidence_by_range: dict[str, list[tuple[dict[str, Any], int]]] = {}
             for event in selected:
                 evidence = evaluate_event(connection, source_connection, ranges, event, now=now, as_of=as_of)
                 evidence_id = insert_event_evidence(connection, evidence)
                 built_evidence += 1
-                if evidence["range_source_id"] not in built_lifecycles and evidence["evidence_status"] != "MISSING_RANGE":
-                    lifecycle = lifecycle_from_evidence(ranges[evidence["range_source_id"]], evidence, evidence_id)
-                    insert_resolved_lifecycle(connection, lifecycle)
-                    built_lifecycles.add(evidence["range_source_id"])
+                if evidence["evidence_status"] != "MISSING_RANGE":
+                    evidence_by_range.setdefault(evidence["range_source_id"], []).append((evidence, evidence_id))
+            for range_id in sorted(evidence_by_range):
+                evidence, evidence_id = select_lifecycle_evidence(evidence_by_range[range_id])
+                insert_resolved_lifecycle(connection, lifecycle_from_evidence(ranges[range_id], evidence, evidence_id))
+                built_lifecycles.add(range_id)
             for range_id, range_row in ranges.items():
                 if filters["range_source_id"] and range_id != filters["range_source_id"]:
                     continue
@@ -111,7 +119,7 @@ def build_event_ohlc_evidence(
                     continue
                 if filters["layer"] and range_row.structure_layer != filters["layer"]:
                     continue
-                if range_id not in built_lifecycles and not any(e.active_range_id == range_id or e.range_id == range_id for e in selected):
+                if range_id not in built_lifecycles and range_id in affected_range_ids:
                     lifecycle = raw_active_lifecycle(range_row, as_of=as_of, timestamp=now)
                     insert_resolved_lifecycle(connection, lifecycle)
                     built_lifecycles.add(range_id)
@@ -444,11 +452,36 @@ def select_events(events: list[RawEvent], ranges: dict[str, RawRange], filters: 
     return sorted(selected, key=lambda item: (item.event_time or "", item.source_record_id))
 
 
-def clear_scope(connection: sqlite3.Connection, filters: dict[str, str | None]) -> None:
+def selected_range_ids(events: list[RawEvent]) -> set[str]:
+    return {range_id for event in events if (range_id := event.active_range_id or event.range_id or event.old_range_id)}
+
+
+def range_ids_in_scope(ranges: dict[str, RawRange], filters: dict[str, str | None]) -> set[str]:
+    return {
+        range_id
+        for range_id, row in ranges.items()
+        if (not filters["range_source_id"] or range_id == filters["range_source_id"])
+        and (not filters["case_ref"] or row.case_ref == filters["case_ref"])
+        and (not filters["symbol"] or row.symbol == filters["symbol"])
+        and (not filters["layer"] or row.structure_layer == filters["layer"])
+    }
+
+
+def clear_scope(
+    connection: sqlite3.Connection,
+    filters: dict[str, str | None],
+    affected_range_ids: set[str],
+) -> None:
     event_where, event_params = scope_where(filters, include_event=True)
-    lifecycle_where, lifecycle_params = scope_where(filters, include_event=False)
     connection.execute(f"DELETE FROM event_ohlc_evidence{event_where}", tuple(event_params))
-    connection.execute(f"DELETE FROM resolved_range_lifecycles{lifecycle_where}", tuple(lifecycle_params))
+    if affected_range_ids:
+        placeholders = ", ".join("?" for _ in affected_range_ids)
+        connection.execute(
+            f"DELETE FROM resolved_range_lifecycles WHERE range_source_id IN ({placeholders})",
+            tuple(sorted(affected_range_ids)),
+        )
+    elif not any(filters.values()):
+        connection.execute("DELETE FROM resolved_range_lifecycles")
 
 
 def scope_where(filters: dict[str, str | None], *, include_event: bool) -> tuple[str, list[Any]]:
@@ -579,6 +612,9 @@ def transition_for(
     reason_codes: set[str],
     transition_reasons: set[str],
 ) -> str:
+    if event.new_range_id and range_row.new_range_id and event.new_range_id != range_row.new_range_id:
+        transition_reasons.add("NEW_RANGE_ID_MISMATCH")
+        return "INVALID"
     new_range_id = event.new_range_id or range_row.new_range_id
     if not new_range_id:
         return "NOT_PRESENT"
@@ -593,6 +629,9 @@ def transition_for(
         transition_reasons.add("OLD_RANGE_ID_MISMATCH")
     if new_range.created_by_event_id and new_range.created_by_event_id != event.source_record_id:
         transition_reasons.add("CREATED_BY_EVENT_ID_MISMATCH")
+    for claimed_old_id in (event.active_range_id, event.range_id, event.old_range_id):
+        if claimed_old_id and claimed_old_id != range_row.source_record_id:
+            transition_reasons.add("OLD_RANGE_ID_MISMATCH")
     return "INVALID" if transition_reasons else "VALID"
 
 
@@ -767,14 +806,49 @@ def lifecycle_from_evidence(range_row: RawRange, evidence: dict[str, Any], evide
     )
 
 
+def select_lifecycle_evidence(
+    evidence_rows: list[tuple[dict[str, Any], int]],
+) -> tuple[dict[str, Any], int]:
+    factual = [item for item in evidence_rows if item[0].get("effective_break_time")]
+    if factual:
+        return min(
+            factual,
+            key=lambda item: (
+                item[0]["effective_break_time"],
+                0 if item[0]["resolution_status"] == "MAPPED_CONFIRMED" else 1,
+                item[0]["event_source_id"],
+                item[1],
+            ),
+        )
+    precedence = {
+        "UNBROKEN_THROUGH_AS_OF": 0,
+        "MISSING_DATA": 1,
+        "NEEDS_REVIEW": 2,
+        "UNRESOLVED": 3,
+    }
+    return min(
+        evidence_rows,
+        key=lambda item: (
+            precedence.get(item[0]["resolution_status"], 4),
+            item[0]["event_source_id"],
+            item[1],
+        ),
+    )
+
+
 def raw_active_lifecycle(range_row: RawRange, *, as_of: str | None, timestamp: str) -> dict[str, Any]:
+    raw_status = (range_row.status or "ACTIVE").upper()
+    is_active = raw_status == "ACTIVE"
+    effective_inactive = range_row.inactive_from_time if not is_active else None
+    if effective_inactive and range_row.active_from_time and effective_inactive < range_row.active_from_time:
+        effective_inactive = None
     return lifecycle_payload(
         range_row,
-        effective_status=range_row.status or "ACTIVE",
+        effective_status=raw_status,
         effective_active=range_row.active_from_time or "",
-        effective_inactive=range_row.inactive_from_time,
-        resolution_source="RAW_ACTIVE",
-        resolution_status="NEEDS_REVIEW" if not range_row.active_from_time else "UNBROKEN_THROUGH_AS_OF",
+        effective_inactive=effective_inactive,
+        resolution_source="RAW_ACTIVE" if is_active else "RAW_FALLBACK",
+        resolution_status="NEEDS_REVIEW",
         resolution_confidence="low",
         supporting_event=None,
         evidence_id=None,

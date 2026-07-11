@@ -348,6 +348,102 @@ def test_rebuild_replaces_only_requested_scope(tmp_path: Path) -> None:
     assert count_rows(rlm, "event_ohlc_evidence") == 2
 
 
+def test_event_scoped_rebuild_preserves_unrelated_lifecycle(tmp_path: Path) -> None:
+    rlm, source = build_basic_up_case(tmp_path)
+    add_range(rlm, range_payload(range_id="r2"), source_id="r2")
+    add_event(rlm, event_payload(event_id="e2", active_range_id="r2", range_id="r2"), source_id="e2")
+    build_event_ohlc_evidence(rlm, source_db=source)
+    before = dict(fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'r2'"))
+
+    build_event_ohlc_evidence(rlm, source_db=source, event_source_id="e1")
+
+    after = dict(fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'r2'"))
+    assert after == before
+    assert count_rows(rlm, "resolved_range_lifecycles") == 2
+
+
+def test_event_scope_combined_filters_only_rebuild_matching_range(tmp_path: Path) -> None:
+    rlm, source = build_basic_up_case(tmp_path)
+    add_range(rlm, range_payload(range_id="r2", case_ref="other"), source_id="r2")
+    add_event(rlm, event_payload(event_id="e2", case_ref="other", active_range_id="r2", range_id="r2"), source_id="e2")
+    build_event_ohlc_evidence(rlm, source_db=source)
+    before = dict(fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'r2'"))
+
+    result = build_event_ohlc_evidence(
+        rlm, source_db=source, event_source_id="e1", case_ref="case", layer="DAILY", range_source_id="r1"
+    )
+
+    assert result["events_processed"] == 1
+    assert dict(fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'r2'")) == before
+
+
+def test_multiple_events_choose_earliest_factual_break_and_one_lifecycle(tmp_path: Path) -> None:
+    rlm, source = build_basic_up_case(tmp_path)
+    add_event(rlm, event_payload(event_id="elate", event_time="2026-01-04T00:00:00Z"), source_id="elate")
+
+    build_event_ohlc_evidence(rlm, source_db=source, range_source_id="r1")
+
+    lifecycle = fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'r1'")
+    assert lifecycle["effective_inactive_from_time"] == "2026-01-03T00:00:00Z"
+    assert count_rows(rlm, "resolved_range_lifecycles") == 1
+
+
+def test_equal_break_time_prefers_mapped_confirmed(tmp_path: Path) -> None:
+    rlm, source = build_basic_up_case(tmp_path)
+    add_event(rlm, event_payload(event_id="confirmed", event_time="2026-01-03T00:00:00Z"), source_id="confirmed")
+
+    build_event_ohlc_evidence(rlm, source_db=source, range_source_id="r1")
+
+    lifecycle = fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'r1'")
+    assert lifecycle["supporting_event_source_id"] == "confirmed"
+    assert lifecycle["resolution_status"] == "MAPPED_CONFIRMED"
+
+
+def test_new_range_id_mismatch_invalidates_transition_only(tmp_path: Path) -> None:
+    rlm, source = build_basic_up_case(tmp_path)
+    add_range(rlm, range_payload(range_id="r1", new_range_id="r2"), source_id="r1")
+    add_range(rlm, range_payload(range_id="r2", old_range_id="r1", created_by_event_id="e1"), source_id="r2")
+    add_range(rlm, range_payload(range_id="r3"), source_id="r3")
+    add_event(rlm, event_payload(new_range_id="r3"), source_id="e1")
+
+    build_event_ohlc_evidence(rlm, source_db=source, event_source_id="e1")
+
+    row = fetch_one(rlm, "SELECT * FROM event_ohlc_evidence WHERE event_source_id = 'e1'")
+    assert row["transition_status"] == "INVALID"
+    assert "NEW_RANGE_ID_MISMATCH" in row["transition_reason_codes_json"]
+    assert fetch_one(rlm, "SELECT * FROM raw_ranges WHERE source_record_id = 'r3'")["source_record_id"] == "r3"
+
+
+def test_matching_new_range_ids_validate_transition(tmp_path: Path) -> None:
+    rlm, source = build_basic_up_case(tmp_path)
+    add_range(rlm, range_payload(range_id="r1", new_range_id="r2"), source_id="r1")
+    add_range(rlm, range_payload(range_id="r2", old_range_id="r1", created_by_event_id="e1"), source_id="r2")
+    add_event(rlm, event_payload(new_range_id="r2", old_range_id="r1"), source_id="e1")
+
+    build_event_ohlc_evidence(rlm, source_db=source, event_source_id="e1")
+
+    assert fetch_one(rlm, "SELECT * FROM event_ohlc_evidence")["transition_status"] == "VALID"
+
+
+def test_raw_fallback_never_claims_unbroken_ohlc_evidence(tmp_path: Path) -> None:
+    rlm = memory_db(tmp_path)
+    source = source_db(tmp_path)
+    add_range(rlm, range_payload(range_id="active", status="ACTIVE", inactive_from_time=None), source_id="active")
+    add_range(
+        rlm,
+        range_payload(range_id="broken", status="BROKEN", inactive_from_time="2025-12-01T00:00:00Z"),
+        source_id="broken",
+    )
+
+    build_event_ohlc_evidence(rlm, source_db=source)
+
+    active = fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'active'")
+    broken = fetch_one(rlm, "SELECT * FROM resolved_range_lifecycles WHERE range_source_id = 'broken'")
+    assert (active["resolution_source"], active["resolution_status"]) == ("RAW_ACTIVE", "NEEDS_REVIEW")
+    assert (broken["resolution_source"], broken["resolution_status"]) == ("RAW_FALLBACK", "NEEDS_REVIEW")
+    assert broken["effective_inactive_from_time"] is None
+
+
 def test_raw_ranges_raw_events_and_source_db_remain_unchanged(tmp_path: Path) -> None:
     rlm, source = build_basic_up_case(tmp_path)
     before_range_payload = fetch_one(rlm, "SELECT raw_payload_json FROM raw_ranges WHERE source_record_id = 'r1'")["raw_payload_json"]
