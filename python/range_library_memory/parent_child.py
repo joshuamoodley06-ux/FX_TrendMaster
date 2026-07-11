@@ -418,6 +418,8 @@ def boundary_interaction(parent: RangeRow | None, child: RangeRow) -> str:
         return "needs_review"
     parent_low, parent_high = normalized_bounds(parent.low, parent.high)
     child_low, child_high = normalized_bounds(child.low, child.high)
+    if child_high < parent_low or child_low > parent_high:
+        return "outside_parent"
     breached_low = child_low < parent_low
     breached_high = child_high > parent_high
     if breached_low and breached_high:
@@ -426,8 +428,6 @@ def boundary_interaction(parent: RangeRow | None, child: RangeRow) -> str:
         return "breached_parent_high"
     if breached_low:
         return "breached_parent_low"
-    if child_high < parent_low or child_low > parent_high:
-        return "outside_parent"
     return "inside_parent"
 
 
@@ -438,6 +438,8 @@ def lifecycle_relationship(parent: RangeRow | None, child: RangeRow) -> str:
     child_start = parse_time(child.start_time)
     child_end = parse_time(child.end_time) or child_start
     if parent_start is None or child_start is None or child_end is None:
+        return "needs_review"
+    if lifecycle_ambiguous(parent):
         return "needs_review"
     cutoff = lifecycle_cutoff(parent)
     if child_end < parent_start:

@@ -206,7 +206,7 @@ def test_uncertain_inactive_parent_becomes_needs_review(tmp_path: Path) -> None:
 
     row = relationship(db_path)
     assert row["link_status"] == "NEEDS_REVIEW"
-    assert row["child_lifecycle_relationship"] == "formed_during_active_parent"
+    assert row["child_lifecycle_relationship"] == "needs_review"
 
 
 @pytest.mark.parametrize(
@@ -235,10 +235,12 @@ def test_child_position_classification(tmp_path: Path, low: float, high: float, 
         (2025.0, 2120.0, "breached_parent_high"),
         (1980.0, 2050.0, "breached_parent_low"),
         (1980.0, 2120.0, "breached_both_sides"),
+        (2110.0, 2120.0, "outside_parent"),
+        (1980.0, 1990.0, "outside_parent"),
     ],
 )
 def test_boundary_interaction_classification(tmp_path: Path, low: float, high: float, expected: str) -> None:
-    db_path = imported_db(tmp_path, [weekly_range(), daily_range(range_low_price=low, range_high_price=high)])
+    db_path = imported_db(tmp_path, [weekly_range(), daily_range(parent_range_id="weekly-1", range_low_price=low, range_high_price=high)])
 
     build_parent_child(db_path, parent_layer="WEEKLY", child_layer="DAILY")
 
