@@ -69,6 +69,16 @@ def analyze_weekly_family_coverage(
             parent_end = lifecycle_end(weekly, as_of_time)
             parent_start = normalize_required_time(weekly.active_from_time, field_name="weekly.active_from_time")
             post_start = post_formation_start(weekly)
+            ensure_window_order(
+                parent_start,
+                parent_end,
+                message=f"Weekly lifecycle start is after end: {parent_start} > {parent_end}",
+            )
+            ensure_window_order(
+                post_start,
+                parent_end,
+                message=f"Weekly post-formation start is after lifecycle end: {post_start} > {parent_end}",
+            )
 
             parent_candles = load_source_candles(
                 source_connection,
@@ -182,6 +192,15 @@ def load_children(
             )
         child_range = raw_range_from_row(child)
         end_time = child_end_time(child_range, parent_end=parent_end, as_of=as_of)
+        start_time = normalize_required_time(child_range.active_from_time, field_name="child.active_from_time")
+        ensure_window_order(
+            start_time,
+            end_time,
+            message=(
+                f"Daily child lifecycle start is after end: {child_range.source_record_id} "
+                f"{start_time} > {end_time}"
+            ),
+        )
         children.append(
             ChildCoverage(
                 range=child_range,
@@ -276,6 +295,7 @@ def coverage_window(
     return {
         "start_time": start_time,
         "end_time": end_time,
+        "candle_data_status": "AVAILABLE" if total else "NO_CANDLES",
         "d1_candle_count": total,
         "covered_candle_count": covered,
         "coverage_percent": percent,
@@ -341,6 +361,11 @@ def normalize_time(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def ensure_window_order(start_time: str, end_time: str, *, message: str) -> None:
+    if normalize_time(start_time) > normalize_time(end_time):
+        raise WeeklyFamilyCoverageError(message)
 
 
 def format_time(value: datetime) -> str:

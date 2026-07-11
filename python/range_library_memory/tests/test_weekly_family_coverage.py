@@ -14,6 +14,7 @@ if str(PYTHON_DIR) not in sys.path:
 
 from range_library_memory.cli import main
 from range_library_memory.schema import init_schema
+from range_library_memory.source_market_db import SourceMarketDbError, load_candles, open_source_market_db
 from range_library_memory.weekly_family_coverage import (
     WeeklyFamilyCoverageError,
     analyze_weekly_family_coverage,
@@ -216,9 +217,120 @@ def test_full_post_formation_daily_coverage(tmp_path: Path) -> None:
 
     post = report["windows"]["post_formation"]
     assert post["d1_candle_count"] == 5
+    assert post["candle_data_status"] == "AVAILABLE"
     assert post["covered_candle_count"] == 5
     assert post["coverage_status"] == "FULL"
     assert report["post_formation_gaps"] == []
+
+
+def test_source_adapter_loads_metatrader_timestamps_as_canonical_iso(tmp_path: Path) -> None:
+    source_db = create_source_db(tmp_path)
+    add_candles(source_db, ["2026.01.02 00:00", "2026.01.03 00:00"])
+
+    with open_source_market_db(source_db) as connection:
+        candles = load_candles(
+            connection,
+            symbol="XAUUSD",
+            timeframe="D1",
+            start_time="2026-01-02T00:00:00Z",
+            end_time="2026-01-03T00:00:00Z",
+        )
+
+    assert [candle.time for candle in candles] == ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"]
+    assert candles[0].open == 2000.0
+    assert candles[0].source == "fixture"
+
+
+def test_source_adapter_loads_space_separated_iso_timestamps(tmp_path: Path) -> None:
+    source_db = create_source_db(tmp_path)
+    add_candles(source_db, ["2026-01-02 00:00:00"])
+
+    with open_source_market_db(source_db) as connection:
+        candles = load_candles(
+            connection,
+            symbol="XAUUSD",
+            timeframe="D1",
+            start_time="2026-01-02T00:00:00Z",
+            end_time="2026-01-02T00:00:00Z",
+        )
+
+    assert candles[0].time == "2026-01-02T00:00:00Z"
+
+
+def test_source_adapter_loads_millisecond_iso_timestamps(tmp_path: Path) -> None:
+    source_db = create_source_db(tmp_path)
+    add_candles(source_db, ["2026-01-02T00:00:00.000Z"])
+
+    with open_source_market_db(source_db) as connection:
+        candles = load_candles(
+            connection,
+            symbol="XAUUSD",
+            timeframe="D1",
+            start_time="2026-01-02T00:00:00Z",
+            end_time="2026-01-02T00:00:00Z",
+        )
+
+    assert candles[0].time == "2026-01-02T00:00:00Z"
+
+
+def test_source_adapter_loads_mixed_supported_timestamp_formats(tmp_path: Path) -> None:
+    source_db = create_source_db(tmp_path)
+    add_candles(
+        source_db,
+        [
+            "2026.01.03 00:00",
+            "2026-01-02 00:00:00",
+            "2026-01-04T00:00:00.000Z",
+            "2026-01-05T02:00:00+02:00",
+        ],
+    )
+
+    with open_source_market_db(source_db) as connection:
+        candles = load_candles(
+            connection,
+            symbol="XAUUSD",
+            timeframe="D1",
+            start_time="2026-01-02T00:00:00Z",
+            end_time="2026-01-05T00:00:00Z",
+        )
+
+    assert [candle.time for candle in candles] == [
+        "2026-01-02T00:00:00Z",
+        "2026-01-03T00:00:00Z",
+        "2026-01-04T00:00:00Z",
+        "2026-01-05T00:00:00Z",
+    ]
+
+
+def test_source_adapter_filters_inclusive_start_and_end_after_parsing(tmp_path: Path) -> None:
+    source_db = create_source_db(tmp_path)
+    add_candles(source_db, ["2026.01.01 00:00", "2026.01.02 00:00", "2026.01.03 00:00", "2026.01.04 00:00"])
+
+    with open_source_market_db(source_db) as connection:
+        candles = load_candles(
+            connection,
+            symbol="XAUUSD",
+            timeframe="D1",
+            start_time="2026-01-02T00:00:00Z",
+            end_time="2026-01-03T00:00:00Z",
+        )
+
+    assert [candle.time for candle in candles] == ["2026-01-02T00:00:00Z", "2026-01-03T00:00:00Z"]
+
+
+def test_malformed_source_timestamp_fails_with_context(tmp_path: Path) -> None:
+    source_db = create_source_db(tmp_path)
+    add_candles(source_db, ["not-a-time"])
+
+    with open_source_market_db(source_db) as connection:
+        with pytest.raises(SourceMarketDbError, match="symbol=XAUUSD timeframe=D1: not-a-time"):
+            load_candles(
+                connection,
+                symbol="XAUUSD",
+                timeframe="D1",
+                start_time="2026-01-02T00:00:00Z",
+                end_time="2026-01-03T00:00:00Z",
+            )
 
 
 def test_partial_coverage_reports_exact_missing_d1_candle_timestamps(tmp_path: Path) -> None:
@@ -293,6 +405,75 @@ def test_active_daily_child_uses_parent_as_of_cutoff(tmp_path: Path) -> None:
 
     assert report["windows"]["post_formation"]["covered_candle_count"] == 3
     assert report["post_formation_gaps"] == [{"candle_time": "2026-01-02T00:00:00Z"}]
+
+
+def test_weekly_lifecycle_start_after_end_fails(tmp_path: Path) -> None:
+    memory_db, source_db = base_full_case(tmp_path)
+    with sqlite3.connect(memory_db) as connection:
+        connection.execute(
+            "UPDATE raw_ranges SET raw_payload_json = ? WHERE source_record_id = '433'",
+            (
+                json.dumps(
+                    weekly_payload(
+                        active_from_time="2026-01-07T00:00:00Z",
+                        inactive_from_time="2026-01-06T00:00:00Z",
+                    ),
+                    sort_keys=True,
+                ),
+            ),
+        )
+
+    with pytest.raises(WeeklyFamilyCoverageError, match="Weekly lifecycle start is after end"):
+        analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+
+def test_post_formation_start_after_lifecycle_end_fails(tmp_path: Path) -> None:
+    memory_db, source_db = base_full_case(tmp_path)
+    with sqlite3.connect(memory_db) as connection:
+        connection.execute(
+            "UPDATE raw_ranges SET raw_payload_json = ? WHERE source_record_id = '433'",
+            (
+                json.dumps(
+                    weekly_payload(
+                        inactive_from_time="2026-01-06T00:00:00Z",
+                        range_high_time="2026-01-08T00:00:00Z",
+                        range_low_time="2026-01-07T00:00:00Z",
+                    ),
+                    sort_keys=True,
+                ),
+            ),
+        )
+
+    with pytest.raises(WeeklyFamilyCoverageError, match="Weekly post-formation start is after lifecycle end"):
+        analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+
+def test_daily_child_active_time_after_inactive_time_fails(tmp_path: Path) -> None:
+    memory_db, source_db = base_full_case(tmp_path)
+    add_range(
+        memory_db,
+        "507",
+        daily_payload("507", active="2026-06-17T00:00:00Z", inactive="2026-04-28T00:00:00Z"),
+    )
+    add_relationship(memory_db, child_id="507")
+
+    with pytest.raises(
+        WeeklyFamilyCoverageError,
+        match="Daily child lifecycle start is after end: 507 2026-06-17T00:00:00Z > 2026-04-28T00:00:00Z",
+    ):
+        analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+
+def test_zero_candles_reports_no_candles_status(tmp_path: Path) -> None:
+    memory_db = create_memory_db(tmp_path)
+    source_db = create_source_db(tmp_path)
+    add_range(memory_db, "433", weekly_payload())
+
+    report = analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+    assert report["windows"]["parent_lifecycle"]["candle_data_status"] == "NO_CANDLES"
+    assert report["windows"]["post_formation"]["candle_data_status"] == "NO_CANDLES"
+    assert report["windows"]["post_formation"]["coverage_status"] == "NONE"
 
 
 def test_latest_weekly_raw_range_version_is_used_for_lifecycle(tmp_path: Path) -> None:
