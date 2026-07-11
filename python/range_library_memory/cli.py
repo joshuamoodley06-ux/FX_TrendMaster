@@ -32,6 +32,11 @@ from .review import (
     review_duplicate,
 )
 from .schema import init_schema
+from .weekly_family_coverage import (
+    WeeklyFamilyCoverageError,
+    analyze_weekly_family_coverage,
+    format_weekly_family_coverage,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -104,6 +109,16 @@ def build_parser() -> argparse.ArgumentParser:
     parent_child_summary_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
     parent_child_summary_parser.add_argument("--case-ref", default=None, help="Filter by case_ref.")
     parent_child_summary_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    weekly_family_parser = subparsers.add_parser(
+        "weekly-family-coverage",
+        help="Measure D1 candle coverage for a Weekly range's linked Daily family.",
+    )
+    weekly_family_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    weekly_family_parser.add_argument("--source-db", type=Path, required=True, help="Original market_memory.db path.")
+    weekly_family_parser.add_argument("--weekly-source-id", required=True, help="Original map_ranges id for the Weekly.")
+    weekly_family_parser.add_argument("--as-of", default=None, help="Required cutoff for active Weekly ranges.")
+    weekly_family_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
 
     return parser
 
@@ -219,6 +234,20 @@ def main(argv: list[str] | None = None) -> int:
         except InspectionError as exc:
             parser.error(str(exc))
         print(format_parent_child_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "weekly-family-coverage":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            report = analyze_weekly_family_coverage(
+                db_path,
+                source_db=args.source_db,
+                weekly_source_id=args.weekly_source_id,
+                as_of=args.as_of,
+            )
+        except (InspectionError, WeeklyFamilyCoverageError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_weekly_family_coverage(report, as_json=args.json))
         return 0
 
     if args.command == "show-run":
