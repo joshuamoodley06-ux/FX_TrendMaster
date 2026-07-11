@@ -31,13 +31,17 @@ def open_source_market_db(source_db: str | Path) -> sqlite3.Connection:
         raise SourceMarketDbError(f"Source database does not exist: {path}")
 
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
     try:
-        connection.execute("PRAGMA query_only = ON")
-    except sqlite3.DatabaseError:
-        pass
-    require_source_tables(connection)
-    return connection
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA query_only = ON")
+        except sqlite3.DatabaseError:
+            pass
+        require_source_tables(connection)
+        return connection
+    except Exception:
+        connection.close()
+        raise
 
 
 def require_source_tables(connection: sqlite3.Connection) -> None:

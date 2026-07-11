@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,30 +64,28 @@ def analyze_weekly_family_coverage(
     as_of_time = normalize_required_time(as_of, field_name="as_of") if as_of else None
 
     try:
-        source_connection = open_source_market_db(source_db)
+        with closing(open_source_market_db(source_db)) as source_connection, connect(rlm_path) as memory_connection:
+            weekly = resolve_weekly(memory_connection, weekly_id)
+            parent_end = lifecycle_end(weekly, as_of_time)
+            parent_start = normalize_required_time(weekly.active_from_time, field_name="weekly.active_from_time")
+            post_start = post_formation_start(weekly)
+
+            parent_candles = load_source_candles(
+                source_connection,
+                symbol=weekly.symbol,
+                start_time=parent_start,
+                end_time=parent_end,
+            )
+            post_candles = load_source_candles(
+                source_connection,
+                symbol=weekly.symbol,
+                start_time=post_start,
+                end_time=parent_end,
+            )
+
+            children = load_children(memory_connection, weekly_source_id=weekly_id, parent_end=parent_end, as_of=as_of_time)
     except SourceMarketDbError as exc:
         raise WeeklyFamilyCoverageError(str(exc)) from exc
-
-    with source_connection, connect(rlm_path) as memory_connection:
-        weekly = resolve_weekly(memory_connection, weekly_id)
-        parent_end = lifecycle_end(weekly, as_of_time)
-        parent_start = normalize_required_time(weekly.active_from_time, field_name="weekly.active_from_time")
-        post_start = post_formation_start(weekly)
-
-        parent_candles = load_source_candles(
-            source_connection,
-            symbol=weekly.symbol,
-            start_time=parent_start,
-            end_time=parent_end,
-        )
-        post_candles = load_source_candles(
-            source_connection,
-            symbol=weekly.symbol,
-            start_time=post_start,
-            end_time=parent_end,
-        )
-
-        children = load_children(memory_connection, weekly_source_id=weekly_id, parent_end=parent_end, as_of=as_of_time)
 
     parent_window = coverage_window(parent_start, parent_end, parent_candles, children)
     post_window = coverage_window(post_start, parent_end, post_candles, children)
@@ -142,7 +141,7 @@ def format_weekly_family_coverage(report: dict[str, Any], *, as_json: bool = Fal
 
 def resolve_weekly(connection: sqlite3.Connection, weekly_source_id: str) -> RawRange:
     row = connection.execute(
-        "SELECT * FROM raw_ranges WHERE source_record_id = ? ORDER BY id ASC LIMIT 1",
+        "SELECT * FROM raw_ranges WHERE source_record_id = ? ORDER BY id DESC LIMIT 1",
         (weekly_source_id,),
     ).fetchone()
     if row is None:
@@ -174,11 +173,13 @@ def load_children(
     children: list[ChildCoverage] = []
     for relationship in rows:
         child = connection.execute(
-            "SELECT * FROM raw_ranges WHERE source_record_id = ? ORDER BY id ASC LIMIT 1",
+            "SELECT * FROM raw_ranges WHERE source_record_id = ? ORDER BY id DESC LIMIT 1",
             (relationship["child_range_id"],),
         ).fetchone()
         if child is None:
-            continue
+            raise WeeklyFamilyCoverageError(
+                f"Linked Daily child source id cannot be resolved: {relationship['child_range_id']}"
+            )
         child_range = raw_range_from_row(child)
         end_time = child_end_time(child_range, parent_end=parent_end, as_of=as_of)
         children.append(
@@ -229,7 +230,13 @@ def child_end_time(child: RawRange, *, parent_end: str, as_of: str | None) -> st
     if child.status == "ACTIVE":
         cutoff = min_time(parent_end, as_of) if as_of else parent_end
         return cutoff
-    return parent_end
+    if child.status in INACTIVE_STATUSES:
+        raise WeeklyFamilyCoverageError(
+            f"{child.status} Daily child is missing inactive_from_time: {child.source_record_id}"
+        )
+    raise WeeklyFamilyCoverageError(
+        f"Unsupported Daily child status without inactive_from_time: {child.status} ({child.source_record_id})"
+    )
 
 
 def post_formation_start(weekly: RawRange) -> str:

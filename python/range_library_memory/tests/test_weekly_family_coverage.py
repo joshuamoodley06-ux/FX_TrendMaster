@@ -103,6 +103,10 @@ def add_range(db_path: Path, source_id: str, payload: dict) -> None:
         )
 
 
+def add_raw_range_version(db_path: Path, source_id: str, payload: dict) -> None:
+    add_range(db_path, source_id, payload)
+
+
 def add_relationship(
     db_path: Path,
     *,
@@ -289,6 +293,89 @@ def test_active_daily_child_uses_parent_as_of_cutoff(tmp_path: Path) -> None:
 
     assert report["windows"]["post_formation"]["covered_candle_count"] == 3
     assert report["post_formation_gaps"] == [{"candle_time": "2026-01-02T00:00:00Z"}]
+
+
+def test_latest_weekly_raw_range_version_is_used_for_lifecycle(tmp_path: Path) -> None:
+    memory_db = create_memory_db(tmp_path)
+    source_db = create_source_db(tmp_path)
+    add_candles(
+        source_db,
+        [
+            "2026-01-02T00:00:00Z",
+            "2026-01-03T00:00:00Z",
+            "2026-01-04T00:00:00Z",
+            "2026-01-05T00:00:00Z",
+        ],
+    )
+    add_raw_range_version(
+        memory_db,
+        "433",
+        weekly_payload(inactive_from_time="2026-01-03T00:00:00Z", range_end_time="2026-01-03T00:00:00Z"),
+    )
+    add_raw_range_version(
+        memory_db,
+        "433",
+        weekly_payload(inactive_from_time="2026-01-05T00:00:00Z", range_end_time="2026-01-05T00:00:00Z"),
+    )
+    add_range(memory_db, "501", daily_payload("501", active="2026-01-02T00:00:00Z", inactive="2026-01-05T00:00:00Z"))
+    add_relationship(memory_db, child_id="501")
+
+    report = analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+    assert report["windows"]["post_formation"]["end_time"] == "2026-01-05T00:00:00Z"
+    assert report["windows"]["post_formation"]["d1_candle_count"] == 4
+    assert report["windows"]["post_formation"]["coverage_status"] == "FULL"
+
+
+def test_latest_daily_raw_range_version_is_used_for_coverage(tmp_path: Path) -> None:
+    memory_db, source_db = base_full_case(tmp_path)
+    add_raw_range_version(
+        memory_db,
+        "501",
+        daily_payload("501", active="2026-01-02T00:00:00Z", inactive="2026-01-06T00:00:00Z"),
+    )
+    with sqlite3.connect(memory_db) as connection:
+        connection.execute("DELETE FROM parent_child_relationships WHERE child_range_id = '502'")
+        connection.execute("DELETE FROM raw_ranges WHERE source_record_id = '502'")
+
+    report = analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+    assert report["windows"]["post_formation"]["covered_candle_count"] == 5
+    assert report["windows"]["post_formation"]["coverage_status"] == "FULL"
+
+
+def test_unresolved_linked_daily_child_fails_cleanly(tmp_path: Path) -> None:
+    memory_db, source_db = base_full_case(tmp_path)
+    add_relationship(memory_db, child_id="missing-daily")
+
+    with pytest.raises(WeeklyFamilyCoverageError, match="missing-daily"):
+        analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+
+def test_broken_child_missing_inactive_from_time_fails(tmp_path: Path) -> None:
+    memory_db, source_db = base_full_case(tmp_path)
+    add_range(
+        memory_db,
+        "505",
+        daily_payload("505", active="2026-01-03T00:00:00Z", inactive=None, status="BROKEN"),
+    )
+    add_relationship(memory_db, child_id="505")
+
+    with pytest.raises(WeeklyFamilyCoverageError, match="BROKEN Daily child is missing inactive_from_time: 505"):
+        analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
+
+
+def test_abandoned_child_missing_inactive_from_time_fails(tmp_path: Path) -> None:
+    memory_db, source_db = base_full_case(tmp_path)
+    add_range(
+        memory_db,
+        "506",
+        daily_payload("506", active="2026-01-03T00:00:00Z", inactive=None, status="ABANDONED"),
+    )
+    add_relationship(memory_db, child_id="506")
+
+    with pytest.raises(WeeklyFamilyCoverageError, match="ABANDONED Daily child is missing inactive_from_time: 506"):
+        analyze_weekly_family_coverage(memory_db, source_db=source_db, weekly_source_id="433")
 
 
 def test_weekly_source_id_resolves_through_source_record_id(tmp_path: Path) -> None:
