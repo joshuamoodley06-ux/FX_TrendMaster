@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -65,9 +66,12 @@ def load_candles(
     end_time: str,
 ) -> list[SourceCandle]:
     columns = candle_columns(connection)
+    start = parse_source_timestamp(start_time, symbol=symbol, timeframe=timeframe)
+    end = parse_source_timestamp(end_time, symbol=symbol, timeframe=timeframe)
     rows = connection.execute(
         f"""
-        SELECT {columns['symbol']} AS symbol,
+        SELECT rowid AS source_rowid,
+               {columns['symbol']} AS symbol,
                {columns['timeframe']} AS timeframe,
                {columns['time']} AS candle_time,
                {columns['open']} AS open_price,
@@ -79,26 +83,62 @@ def load_candles(
         FROM candles
         WHERE {columns['symbol']} = ?
           AND {columns['timeframe']} = ?
-          AND {columns['time']} >= ?
-          AND {columns['time']} <= ?
-        ORDER BY {columns['time']} ASC
+        ORDER BY source_rowid ASC
         """,
-        (symbol, timeframe, start_time, end_time),
+        (symbol, timeframe),
     ).fetchall()
-    return [
-        SourceCandle(
+    candles: list[tuple[datetime, int, SourceCandle]] = []
+    for row in rows:
+        parsed_time = parse_source_timestamp(
+            str(row["candle_time"]),
             symbol=str(row["symbol"]),
             timeframe=str(row["timeframe"]),
-            time=str(row["candle_time"]),
-            open=float(row["open_price"]),
-            high=float(row["high_price"]),
-            low=float(row["low_price"]),
-            close=float(row["close_price"]),
-            volume=float(row["volume"]) if row["volume"] is not None else None,
-            source=str(row["source"]) if row["source"] is not None else None,
         )
-        for row in rows
-    ]
+        if parsed_time < start or parsed_time > end:
+            continue
+        candles.append(
+            (
+                parsed_time,
+                int(row["source_rowid"]),
+                SourceCandle(
+                    symbol=str(row["symbol"]),
+                    timeframe=str(row["timeframe"]),
+                    time=format_canonical_time(parsed_time),
+                    open=float(row["open_price"]),
+                    high=float(row["high_price"]),
+                    low=float(row["low_price"]),
+                    close=float(row["close_price"]),
+                    volume=float(row["volume"]) if row["volume"] is not None else None,
+                    source=str(row["source"]) if row["source"] is not None else None,
+                ),
+            )
+        )
+    return [candle for _parsed, _rowid, candle in sorted(candles, key=lambda item: (item[0], item[1]))]
+
+
+def parse_source_timestamp(value: str, *, symbol: str, timeframe: str) -> datetime:
+    raw = str(value).strip()
+    for pattern in ("%Y.%m.%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(raw, pattern).replace(tzinfo=UTC)
+        except ValueError:
+            pass
+    text = raw
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise SourceMarketDbError(
+            f"Could not parse candle timestamp for symbol={symbol} timeframe={timeframe}: {raw}"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def format_canonical_time(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def candle_columns(connection: sqlite3.Connection) -> dict[str, str]:
