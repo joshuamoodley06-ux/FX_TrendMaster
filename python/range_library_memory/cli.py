@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .bulk_import import bulk_import_source_dir, format_bulk_import_summary
 from .config import resolve_db_path
+from .duplicate_summary import format_duplicate_summary, summarize_duplicates
 from .importer import import_source
 from .inspection import (
     InspectionError,
@@ -77,6 +78,15 @@ def build_parser() -> argparse.ArgumentParser:
     review_duplicate_parser.add_argument("--candidate-id", type=int, required=True, help="Duplicate candidate id.")
     review_duplicate_parser.add_argument("--status", required=True, choices=ALLOWED_DUPLICATE_STATUSES)
     review_duplicate_parser.add_argument("--notes", required=True, help="Manual review notes.")
+
+    duplicate_summary_parser = subparsers.add_parser("duplicate-summary", help="Summarize duplicate candidates.")
+    duplicate_summary_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    duplicate_summary_parser.add_argument("--case-ref", default=None, help="Filter by case_ref in linked raw payloads.")
+    duplicate_summary_parser.add_argument("--rule-code", default=None, help="Filter by duplicate rule_code.")
+    duplicate_summary_parser.add_argument("--candidate-type", default=None, help="Filter by candidate_type.")
+    duplicate_summary_parser.add_argument("--confidence", default=None, help="Filter by confidence.")
+    duplicate_summary_parser.add_argument("--status", default=None, help="Filter by review status.")
+    duplicate_summary_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
 
     return parser
 
@@ -153,6 +163,22 @@ def main(argv: list[str] | None = None) -> int:
         except InspectionError as exc:
             parser.error(str(exc))
         print(f"Reviewed duplicate candidate {args.candidate_id}")
+        return 0
+
+    if args.command == "duplicate-summary":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = summarize_duplicates(
+                db_path,
+                case_ref=args.case_ref,
+                rule_code=args.rule_code,
+                candidate_type=args.candidate_type,
+                confidence=args.confidence,
+                status=args.status,
+            )
+        except InspectionError as exc:
+            parser.error(str(exc))
+        print(format_duplicate_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "show-run":
