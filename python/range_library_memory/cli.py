@@ -16,6 +16,12 @@ from .inspection import (
     list_runs,
     show_run,
 )
+from .parent_child import (
+    build_parent_child,
+    format_build_summary,
+    format_parent_child_summary,
+    summarize_parent_child,
+)
 from .review import (
     ALLOWED_DUPLICATE_STATUSES,
     format_duplicates,
@@ -87,6 +93,16 @@ def build_parser() -> argparse.ArgumentParser:
     duplicate_summary_parser.add_argument("--confidence", default=None, help="Filter by confidence.")
     duplicate_summary_parser.add_argument("--status", default=None, help="Filter by review status.")
     duplicate_summary_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    build_parent_child_parser = subparsers.add_parser("build-parent-child", help="Build derived parent-child relationships.")
+    build_parent_child_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    build_parent_child_parser.add_argument("--parent-layer", required=True, help="Parent layer. Only WEEKLY is supported.")
+    build_parent_child_parser.add_argument("--child-layer", required=True, help="Child layer. Only DAILY is supported.")
+
+    parent_child_summary_parser = subparsers.add_parser("parent-child-summary", help="Summarize parent-child relationships.")
+    parent_child_summary_parser.add_argument("--db-path", type=Path, default=None, help="SQLite database path.")
+    parent_child_summary_parser.add_argument("--case-ref", default=None, help="Filter by case_ref.")
+    parent_child_summary_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
 
     return parser
 
@@ -179,6 +195,24 @@ def main(argv: list[str] | None = None) -> int:
         except InspectionError as exc:
             parser.error(str(exc))
         print(format_duplicate_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "build-parent-child":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = build_parent_child(db_path, parent_layer=args.parent_layer, child_layer=args.child_layer)
+        except (InspectionError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_build_summary(summary))
+        return 0
+
+    if args.command == "parent-child-summary":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = summarize_parent_child(db_path, case_ref=args.case_ref)
+        except InspectionError as exc:
+            parser.error(str(exc))
+        print(format_parent_child_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "show-run":

@@ -13,6 +13,7 @@ REQUIRED_TABLES = (
     "range_import_results",
     "validation_issues",
     "duplicate_candidates",
+    "parent_child_relationships",
 )
 
 
@@ -104,6 +105,39 @@ CREATE TABLE IF NOT EXISTS duplicate_candidates (
     created_at_utc TEXT NOT NULL,
     review_status TEXT NOT NULL DEFAULT 'open',
     review_notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS parent_child_relationships (
+    id INTEGER PRIMARY KEY,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT,
+    parent_range_id TEXT,
+    parent_layer TEXT,
+    parent_timeframe TEXT,
+    parent_start_time TEXT,
+    parent_end_time TEXT,
+    parent_high REAL,
+    parent_low REAL,
+    parent_status TEXT,
+    child_range_id TEXT,
+    child_layer TEXT,
+    child_timeframe TEXT,
+    child_start_time TEXT,
+    child_end_time TEXT,
+    child_high REAL,
+    child_low REAL,
+    child_status TEXT,
+    relationship_type TEXT,
+    link_confidence TEXT,
+    link_status TEXT,
+    review_status TEXT,
+    child_position_in_parent TEXT,
+    child_boundary_interaction TEXT,
+    child_lifecycle_relationship TEXT,
+    notes TEXT,
+    created_at TEXT,
+    updated_at TEXT
 );
 """
 
