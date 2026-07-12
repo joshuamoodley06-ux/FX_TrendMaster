@@ -171,15 +171,15 @@ def evaluate_weekly(
     direction = "UP" if evidence["event_type"] == "BOS_UP" else "DOWN"
     break_time = canonical_time(evidence["effective_break_time"])
     if parse_time(break_time) > parse_time(cutoff):
-    return finish(row, "UNRESOLVED", "INCOMPLETE", "UNRESOLVED", "low", reasons | {"CREATION_BREAK_AFTER_AS_OF"})
-row.update(
-    creation_break_direction=direction,
-    creation_break_time=break_time,
-    creation_break_level=float(evidence["boundary_price"]),
-    creation_break_kind=evidence["effective_break_kind"],
-    pending_from_time=break_time,
-    supporting_event_evidence_id=evidence["id"],
-)
+        return finish(row, "UNRESOLVED", "INCOMPLETE", "UNRESOLVED", "low", reasons | {"CREATION_BREAK_AFTER_AS_OF"})
+    row.update(
+        creation_break_direction=direction,
+        creation_break_time=break_time,
+        creation_break_level=float(evidence["boundary_price"]),
+        creation_break_kind=evidence["effective_break_kind"],
+        pending_from_time=break_time,
+        supporting_event_evidence_id=evidence["id"],
+    )
 
     reclaim = latest_break_reclaim(connection, str(link["old_range_id"]))
     if reclaim is None:
@@ -200,14 +200,14 @@ row.update(
         if parse_time(reclaim_time) < parse_time(break_time):
             return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"CREATION_RECLAIM_BEFORE_BREAK"})
         if parse_time(reclaim_time) <= parse_time(cutoff):
-    row.update(
-        creation_reclaim_time=reclaim_time,
-        creation_reclaim_kind=reclaim["effective_reclaim_kind"],
-        confirmed_from_time=reclaim_time,
-    )
-    return finish(row, f"CONFIRMED_{direction}", "OBSERVED", "RESOLVED", confidence, reasons)
-reasons.add("CREATION_RECLAIM_AFTER_AS_OF")
-return finish(row, f"PENDING_RECLAIM_{direction}", "CENSORED", "PENDING", confidence, reasons)
+            row.update(
+                creation_reclaim_time=reclaim_time,
+                creation_reclaim_kind=reclaim["effective_reclaim_kind"],
+                confirmed_from_time=reclaim_time,
+            )
+            return finish(row, f"CONFIRMED_{direction}", "OBSERVED", "RESOLVED", confidence, reasons)
+        reasons.add("CREATION_RECLAIM_AFTER_AS_OF")
+        return finish(row, f"PENDING_RECLAIM_{direction}", "CENSORED", "PENDING", confidence, reasons)
 
     if reclaim["current_state"] == PENDING_STATE:
         if reclaim_time:
