@@ -17,7 +17,26 @@ jobs:
       - name: Run focused review queue tests
         env:
           PYTHONPATH: python
-        run: python -m pytest python/range_library_memory/tests/test_structure_review_queue.py -q
+        shell: bash
+        run: |
+          set +e
+          python -m pytest python/range_library_memory/tests/test_structure_review_queue.py -q --tb=short > focused-review-queue.log 2>&1
+          code=$?
+          cat focused-review-queue.log
+          echo "FOCUSED_EXIT_CODE=$code" >> "$GITHUB_ENV"
+          exit 0
+      - name: Upload focused test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: focused-review-queue-log
+          path: focused-review-queue.log
+      - name: Stop if focused tests failed
+        shell: bash
+        run: |
+          if [ "${FOCUSED_EXIT_CODE}" != "0" ]; then
+            exit "${FOCUSED_EXIT_CODE}"
+          fi
       - name: Run full Range Library Memory suite
         env:
           PYTHONPATH: python
