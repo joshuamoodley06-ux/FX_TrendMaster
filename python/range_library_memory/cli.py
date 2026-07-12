@@ -7,6 +7,12 @@ from pathlib import Path
 
 from .bulk_import import bulk_import_source_dir, format_bulk_import_summary
 from .config import resolve_db_path
+from .daily_range_timeline import (
+    DailyRangeTimelineError,
+    build_daily_range_timelines,
+    format_summary as format_daily_range_timeline_summary,
+    summarize_daily_range_timelines,
+)
 from .duplicate_summary import format_duplicate_summary, summarize_duplicates
 from .event_ohlc_evidence import (
     EventOhlcEvidenceError,
@@ -195,6 +201,28 @@ def build_parser() -> argparse.ArgumentParser:
     phase_summary_parser.add_argument("--state")
     phase_summary_parser.add_argument("--observation-status")
     phase_summary_parser.add_argument("--json", action="store_true")
+
+    daily_parser = subparsers.add_parser("build-daily-range-timelines", help="Build factual Daily range timelines.")
+    daily_parser.add_argument("--db-path", type=Path, default=None)
+    daily_parser.add_argument("--source-db", type=Path, required=True)
+    daily_parser.add_argument("--case-ref")
+    daily_parser.add_argument("--symbol")
+    daily_parser.add_argument("--daily-source-id")
+    daily_parser.add_argument("--weekly-source-id")
+    daily_parser.add_argument("--as-of")
+    daily_parser.add_argument("--json", action="store_true")
+
+    daily_summary_parser = subparsers.add_parser("daily-range-timeline-summary", help="Summarize Daily range timelines.")
+    daily_summary_parser.add_argument("--db-path", type=Path, default=None)
+    daily_summary_parser.add_argument("--case-ref")
+    daily_summary_parser.add_argument("--symbol")
+    daily_summary_parser.add_argument("--daily-source-id")
+    daily_summary_parser.add_argument("--weekly-source-id")
+    daily_summary_parser.add_argument("--daily-state")
+    daily_summary_parser.add_argument("--parent-link-status")
+    daily_summary_parser.add_argument("--weekly-phase")
+    daily_summary_parser.add_argument("--observation-status")
+    daily_summary_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -402,6 +430,42 @@ def main(argv: list[str] | None = None) -> int:
         except (InspectionError, WeeklyPhaseSequenceError, ValueError) as exc:
             parser.error(str(exc))
         print(format_weekly_phase_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "build-daily-range-timelines":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = build_daily_range_timelines(
+                db_path,
+                source_db=args.source_db,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                daily_source_id=args.daily_source_id,
+                weekly_source_id=args.weekly_source_id,
+                as_of=args.as_of,
+            )
+        except (InspectionError, DailyRangeTimelineError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_daily_range_timeline_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "daily-range-timeline-summary":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = summarize_daily_range_timelines(
+                db_path,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                daily_source_id=args.daily_source_id,
+                weekly_source_id=args.weekly_source_id,
+                daily_state=args.daily_state,
+                parent_link_status=args.parent_link_status,
+                weekly_phase=args.weekly_phase,
+                observation_status=args.observation_status,
+            )
+        except (InspectionError, DailyRangeTimelineError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_daily_range_timeline_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "show-run":
