@@ -156,4 +156,20 @@ addition = '''def test_many_duplicate_candidates_collapse_to_one_reference_backl
 if anchor not in tests:
     raise SystemExit("Expected daily trend test anchor was not found")
 tests = tests.replace(anchor, addition + anchor, 1)
+
+overlap_old = '''    result = build_structure_review_queue(db)
+    assert result["action_required_count"] == 0
+    assert list_structure_review_queue(db) == []
+'''
+overlap_new = '''    result = build_structure_review_queue(db)
+    items = list_structure_review_queue(db)
+    assert result["action_required_count"] == 0
+    assert result["reference_only_count"] == 1
+    assert len(items) == 1
+    assert items[0]["item_type"] == "DUPLICATE_AUDIT_BACKLOG"
+'''
+if overlap_old not in tests:
+    raise SystemExit("Expected overlap noise assertions were not found")
+tests = tests.replace(overlap_old, overlap_new, 1)
+
 test_path.write_text(tests, encoding="utf-8")
