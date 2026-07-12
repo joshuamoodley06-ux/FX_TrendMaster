@@ -197,6 +197,10 @@ def test_requested_as_of_before_daily_break_returns_pending(tmp_path: Path) -> N
     build_daily_trend_relationships(db, as_of="2026-01-14T00:00:00Z")
     row = get_row(db)
     assert row["trend_relationship"] == "PENDING"
+    assert row["daily_t0_formation_time"] == "2026-01-11T00:00:00Z"
+    assert row["daily_t1_break_time"] is None
+    assert row["daily_break_direction"] is None
+    assert row["classification_time"] is None
     assert "DAILY_BREAK_AFTER_AS_OF" in row["reason_codes_json"]
 
 
@@ -241,3 +245,15 @@ def test_daily_break_before_weekly_creation_break_is_transition_unresolved(tmp_p
     row = get_row(db)
     assert row["trend_relationship"] == "TRANSITION"
     assert row["weekly_direction_at_daily_break"] == "UNRESOLVED"
+
+
+def test_requested_as_of_before_daily_formation_hides_future_milestones(tmp_path: Path) -> None:
+    db = make_db(tmp_path)
+    build_daily_trend_relationships(db, as_of="2026-01-05T00:00:00Z")
+    row = get_row(db)
+    assert row["trend_relationship"] == "PENDING"
+    assert row["daily_t0_formation_time"] is None
+    assert row["daily_t1_break_time"] is None
+    assert row["daily_break_direction"] is None
+    assert row["classification_time"] is None
+    assert "DAILY_NOT_FORMED_AS_OF" in row["reason_codes_json"]

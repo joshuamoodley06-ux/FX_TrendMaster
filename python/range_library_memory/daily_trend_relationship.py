@@ -171,9 +171,9 @@ def evaluate_daily(
     if not t0:
         return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"MISSING_DAILY_FORMATION_TIME"})
     t0 = canonical_time(t0)
-    row["daily_t0_formation_time"] = t0
-    if parse_time(t0) > parse_time(cutoff):
-        return finish(row, "PENDING", "CENSORED", "PENDING", "low", reasons | {"DAILY_NOT_FORMED_AS_OF"})
+if parse_time(t0) > parse_time(cutoff):
+    return finish(row, "PENDING", "CENSORED", "PENDING", "low", reasons | {"DAILY_NOT_FORMED_AS_OF"})
+row["daily_t0_formation_time"] = t0
 
     formation_state = direction_state_at(context, t0)
     row["weekly_direction_at_daily_formation"] = formation_state
@@ -287,9 +287,9 @@ def base_row(daily: sqlite3.Row, built_at: str) -> dict[str, Any]:
         "parent_weekly_source_id": daily["parent_weekly_source_id"],
         "weekly_direction_context_id": None,
         "parent_link_status": daily["parent_link_status"],
-        "daily_t0_formation_time": daily["t0_formation_time"],
-        "daily_t1_break_time": daily["t1_break_time"],
-        "daily_break_direction": daily["t1_break_direction"],
+        "daily_t0_formation_time": None,
+        "daily_t1_break_time": None,
+        "daily_break_direction": None,
         "weekly_direction_at_daily_formation": None,
         "weekly_direction_at_daily_break": None,
         "weekly_confirmed_direction": None,

@@ -146,6 +146,8 @@ def test_reclaim_after_requested_as_of_remains_pending(tmp_path: Path) -> None:
     row = get_row(db)
     assert row["current_direction_state"] == "PENDING_RECLAIM_UP"
     assert row["confirmed_from_time"] is None
+    assert row["creation_reclaim_time"] is None
+    assert row["creation_reclaim_kind"] is None
     assert "CREATION_RECLAIM_AFTER_AS_OF" in row["reason_codes_json"]
 
 
@@ -239,3 +241,16 @@ def test_requested_as_of_after_phase_data_is_capped(tmp_path: Path) -> None:
     row = get_row(db)
     assert row["as_of_time"] == "2026-02-01T00:00:00Z"
     assert "AS_OF_CAPPED_TO_WEEKLY_PHASE_DATA" in row["reason_codes_json"]
+
+
+def test_creation_break_after_as_of_hides_future_break_fields(tmp_path: Path) -> None:
+    db = make_db(tmp_path)
+    build_weekly_direction_contexts(db, as_of="2026-01-05T00:00:00Z")
+    row = get_row(db)
+    assert row["current_direction_state"] == "UNRESOLVED"
+    assert row["creation_break_direction"] is None
+    assert row["creation_break_time"] is None
+    assert row["creation_break_level"] is None
+    assert row["creation_break_kind"] is None
+    assert row["pending_from_time"] is None
+    assert row["confirmed_from_time"] is None
