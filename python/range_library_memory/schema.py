@@ -19,6 +19,8 @@ REQUIRED_TABLES = (
     "weekly_break_reclaim_lifecycles",
     "weekly_phase_sequences",
     "daily_range_timelines",
+    "weekly_direction_contexts",
+    "daily_trend_relationships",
 )
 
 
@@ -403,6 +405,92 @@ CREATE INDEX IF NOT EXISTS idx_daily_timeline_t2
     ON daily_range_timelines(t2_reclaim_time);
 CREATE INDEX IF NOT EXISTS idx_daily_timeline_sequence
     ON daily_range_timelines(parent_weekly_source_id, daily_sequence_in_weekly);
+
+CREATE TABLE IF NOT EXISTS weekly_direction_contexts (
+    id INTEGER PRIMARY KEY,
+    built_at_utc TEXT NOT NULL,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT NOT NULL,
+    source_timeframe TEXT NOT NULL,
+    weekly_range_source_id TEXT NOT NULL UNIQUE,
+    raw_range_id INTEGER,
+    raw_status TEXT,
+    creation_link_source TEXT NOT NULL,
+    creation_old_weekly_source_id TEXT,
+    creation_event_source_id TEXT,
+    creation_break_direction TEXT,
+    creation_break_time TEXT,
+    creation_break_level REAL,
+    creation_break_kind TEXT,
+    creation_reclaim_time TEXT,
+    creation_reclaim_kind TEXT,
+    pending_from_time TEXT,
+    confirmed_from_time TEXT,
+    current_direction_state TEXT NOT NULL,
+    observation_status TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    resolution_confidence TEXT NOT NULL,
+    supporting_event_evidence_id INTEGER,
+    supporting_break_reclaim_id INTEGER,
+    supporting_weekly_phase_sequence_id INTEGER,
+    reason_codes_json TEXT NOT NULL,
+    as_of_time TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_weekly_direction_source
+    ON weekly_direction_contexts(weekly_range_source_id);
+CREATE INDEX IF NOT EXISTS idx_weekly_direction_scope
+    ON weekly_direction_contexts(case_ref, symbol);
+CREATE INDEX IF NOT EXISTS idx_weekly_direction_state
+    ON weekly_direction_contexts(current_direction_state);
+CREATE INDEX IF NOT EXISTS idx_weekly_direction_break_time
+    ON weekly_direction_contexts(creation_break_time);
+CREATE INDEX IF NOT EXISTS idx_weekly_direction_confirmed_from
+    ON weekly_direction_contexts(confirmed_from_time);
+
+CREATE TABLE IF NOT EXISTS daily_trend_relationships (
+    id INTEGER PRIMARY KEY,
+    built_at_utc TEXT NOT NULL,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT NOT NULL,
+    daily_range_source_id TEXT NOT NULL UNIQUE,
+    daily_timeline_id INTEGER,
+    parent_weekly_source_id TEXT,
+    weekly_direction_context_id INTEGER,
+    parent_link_status TEXT,
+    daily_t0_formation_time TEXT,
+    daily_t1_break_time TEXT,
+    daily_break_direction TEXT,
+    weekly_direction_at_daily_formation TEXT,
+    weekly_direction_at_daily_break TEXT,
+    weekly_confirmed_direction TEXT,
+    weekly_context_changed_during_daily INTEGER,
+    classification_time TEXT,
+    trend_relationship TEXT NOT NULL,
+    observation_status TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    resolution_confidence TEXT NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    as_of_time TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_trend_source
+    ON daily_trend_relationships(daily_range_source_id);
+CREATE INDEX IF NOT EXISTS idx_daily_trend_scope
+    ON daily_trend_relationships(case_ref, symbol);
+CREATE INDEX IF NOT EXISTS idx_daily_trend_parent
+    ON daily_trend_relationships(parent_weekly_source_id);
+CREATE INDEX IF NOT EXISTS idx_daily_trend_relationship
+    ON daily_trend_relationships(trend_relationship);
+CREATE INDEX IF NOT EXISTS idx_daily_trend_classification_time
+    ON daily_trend_relationships(classification_time);
+
 """
 
 

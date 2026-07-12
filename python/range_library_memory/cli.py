@@ -13,6 +13,12 @@ from .daily_range_timeline import (
     format_summary as format_daily_range_timeline_summary,
     summarize_daily_range_timelines,
 )
+from .daily_trend_relationship import (
+    DailyTrendRelationshipError,
+    build_daily_trend_relationships,
+    format_summary as format_daily_trend_summary,
+    summarize_daily_trend_relationships,
+)
 from .duplicate_summary import format_duplicate_summary, summarize_duplicates
 from .event_ohlc_evidence import (
     EventOhlcEvidenceError,
@@ -61,6 +67,12 @@ from .weekly_phase_sequence import (
     build_weekly_phase_sequences,
     format_summary as format_weekly_phase_summary,
     summarize_weekly_phase_sequences,
+)
+from .weekly_direction_context import (
+    WeeklyDirectionContextError,
+    build_weekly_direction_contexts,
+    format_summary as format_weekly_direction_summary,
+    summarize_weekly_direction_contexts,
 )
 
 
@@ -223,6 +235,54 @@ def build_parser() -> argparse.ArgumentParser:
     daily_summary_parser.add_argument("--weekly-phase")
     daily_summary_parser.add_argument("--observation-status")
     daily_summary_parser.add_argument("--json", action="store_true")
+
+    weekly_direction_parser = subparsers.add_parser(
+        "build-weekly-direction-contexts",
+        help="Build historical Weekly direction context from the break that created each Weekly.",
+    )
+    weekly_direction_parser.add_argument("--db-path", type=Path, default=None)
+    weekly_direction_parser.add_argument("--case-ref")
+    weekly_direction_parser.add_argument("--symbol")
+    weekly_direction_parser.add_argument("--weekly-source-id")
+    weekly_direction_parser.add_argument("--as-of")
+    weekly_direction_parser.add_argument("--json", action="store_true")
+
+    weekly_direction_summary_parser = subparsers.add_parser(
+        "weekly-direction-context-summary",
+        help="Summarize Weekly direction contexts.",
+    )
+    weekly_direction_summary_parser.add_argument("--db-path", type=Path, default=None)
+    weekly_direction_summary_parser.add_argument("--case-ref")
+    weekly_direction_summary_parser.add_argument("--symbol")
+    weekly_direction_summary_parser.add_argument("--weekly-source-id")
+    weekly_direction_summary_parser.add_argument("--direction-state")
+    weekly_direction_summary_parser.add_argument("--observation-status")
+    weekly_direction_summary_parser.add_argument("--json", action="store_true")
+
+    daily_trend_parser = subparsers.add_parser(
+        "build-daily-trend-relationships",
+        help="Classify Daily BOS direction against historical Weekly direction context.",
+    )
+    daily_trend_parser.add_argument("--db-path", type=Path, default=None)
+    daily_trend_parser.add_argument("--case-ref")
+    daily_trend_parser.add_argument("--symbol")
+    daily_trend_parser.add_argument("--daily-source-id")
+    daily_trend_parser.add_argument("--weekly-source-id")
+    daily_trend_parser.add_argument("--as-of")
+    daily_trend_parser.add_argument("--json", action="store_true")
+
+    daily_trend_summary_parser = subparsers.add_parser(
+        "daily-trend-relationship-summary",
+        help="Summarize Daily ProTrend, CounterTrend, transition, and pending relationships.",
+    )
+    daily_trend_summary_parser.add_argument("--db-path", type=Path, default=None)
+    daily_trend_summary_parser.add_argument("--case-ref")
+    daily_trend_summary_parser.add_argument("--symbol")
+    daily_trend_summary_parser.add_argument("--daily-source-id")
+    daily_trend_summary_parser.add_argument("--weekly-source-id")
+    daily_trend_summary_parser.add_argument("--trend-relationship")
+    daily_trend_summary_parser.add_argument("--observation-status")
+    daily_trend_summary_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -466,6 +526,70 @@ def main(argv: list[str] | None = None) -> int:
         except (InspectionError, DailyRangeTimelineError, ValueError) as exc:
             parser.error(str(exc))
         print(format_daily_range_timeline_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "build-weekly-direction-contexts":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = build_weekly_direction_contexts(
+                db_path,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                weekly_source_id=args.weekly_source_id,
+                as_of=args.as_of,
+            )
+        except (InspectionError, WeeklyDirectionContextError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_weekly_direction_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "weekly-direction-context-summary":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = summarize_weekly_direction_contexts(
+                db_path,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                weekly_source_id=args.weekly_source_id,
+                direction_state=args.direction_state,
+                observation_status=args.observation_status,
+            )
+        except (InspectionError, WeeklyDirectionContextError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_weekly_direction_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "build-daily-trend-relationships":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = build_daily_trend_relationships(
+                db_path,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                daily_source_id=args.daily_source_id,
+                weekly_source_id=args.weekly_source_id,
+                as_of=args.as_of,
+            )
+        except (InspectionError, DailyTrendRelationshipError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_daily_trend_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "daily-trend-relationship-summary":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = summarize_daily_trend_relationships(
+                db_path,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                daily_source_id=args.daily_source_id,
+                weekly_source_id=args.weekly_source_id,
+                trend_relationship=args.trend_relationship,
+                observation_status=args.observation_status,
+            )
+        except (InspectionError, DailyTrendRelationshipError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_daily_trend_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "show-run":
