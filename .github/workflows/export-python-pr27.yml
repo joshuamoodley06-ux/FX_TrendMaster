@@ -1,0 +1,23 @@
+name: Export Python PR 27
+
+on:
+  push:
+    branches:
+      - feat/daily-range-timeline-v01
+
+permissions:
+  contents: read
+
+jobs:
+  export-python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Upload Python source
+        uses: actions/upload-artifact@v4
+        with:
+          name: fxtm-python-pr27
+          path: python
+          if-no-files-found: error
+          retention-days: 1
