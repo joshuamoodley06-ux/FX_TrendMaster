@@ -105,10 +105,21 @@ def evaluate_weekly(
     built_at: str,
 ) -> dict[str, Any]:
     reasons: set[str] = set()
-    effective_as_of = canonical_time(as_of) if as_of else latest_candle_time(source, symbol=weekly["symbol"], timeframe="W1")
-    base = base_row(weekly, built_at, effective_as_of or built_at)
-    if not effective_as_of:
+    latest_available = latest_candle_time(source, symbol=weekly["symbol"], timeframe="W1")
+    if not latest_available:
+        base = base_row(weekly, built_at, built_at)
         return finish(base, "MISSING_CANDLES", "INCOMPLETE", "MISSING_DATA", "low", {"MISSING_W1_CANDLES"})
+    latest_available = canonical_time(latest_available)
+    if as_of:
+        requested_as_of = canonical_time(as_of)
+        if parse_time(requested_as_of) > parse_time(latest_available):
+            effective_as_of = latest_available
+            reasons.add("AS_OF_CAPPED_TO_LATEST_W1_DATA")
+        else:
+            effective_as_of = requested_as_of
+    else:
+        effective_as_of = latest_available
+    base = base_row(weekly, built_at, effective_as_of)
 
     lifecycle = connection.execute(
         """SELECT * FROM resolved_range_lifecycles
@@ -116,7 +127,7 @@ def evaluate_weekly(
            ORDER BY id DESC LIMIT 1""", (weekly["source_id"],)
     ).fetchone()
     if lifecycle is None or lifecycle["resolution_status"] not in {"MAPPED_CONFIRMED", "OHLC_DERIVED"} or not lifecycle["effective_inactive_from_time"]:
-        return finish(base, "MISSING_BREAK_EVIDENCE", "INCOMPLETE", "MISSING_BREAK_EVIDENCE", "low", {"NO_FACTUAL_RESOLVED_BREAK"})
+        return finish(base, "MISSING_BREAK_EVIDENCE", "INCOMPLETE", "MISSING_BREAK_EVIDENCE", "low", reasons | {"NO_FACTUAL_RESOLVED_BREAK"})
 
     evidence = None
     if lifecycle["supporting_evidence_id"] is not None:
@@ -124,12 +135,12 @@ def evaluate_weekly(
             "SELECT * FROM event_ohlc_evidence WHERE id = ?", (lifecycle["supporting_evidence_id"],)
         ).fetchone()
     if evidence is None or not evidence["effective_break_time"] or evidence["event_type"] not in {"BOS_UP", "BOS_DOWN"}:
-        return finish(base, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", {"SUPPORTING_BREAK_EVIDENCE_MISSING"})
+        return finish(base, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"SUPPORTING_BREAK_EVIDENCE_MISSING"})
 
     direction = "UP" if evidence["event_type"] == "BOS_UP" else "DOWN"
     break_time = canonical_time(evidence["effective_break_time"])
     if parse_time(break_time) > parse_time(effective_as_of):
-        return finish(base, "MISSING_BREAK_EVIDENCE", "INCOMPLETE", "MISSING_BREAK_EVIDENCE", "low", {"BREAK_AFTER_AS_OF"})
+        return finish(base, "MISSING_BREAK_EVIDENCE", "INCOMPLETE", "MISSING_BREAK_EVIDENCE", "low", reasons | {"BREAK_AFTER_AS_OF"})
     break_level = float(evidence["boundary_price"])
     range_height = weekly["high"] - weekly["low"] if weekly["high"] is not None and weekly["low"] is not None else None
     base.update({
@@ -139,15 +150,15 @@ def evaluate_weekly(
     })
     if range_height is None or range_height <= 0:
         base["range_height"] = range_height
-        return finish(base, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", {"INVALID_RANGE_HEIGHT"})
+        return finish(base, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"INVALID_RANGE_HEIGHT"})
     base["range_height"] = range_height
 
     candles = load_candles(source, symbol=weekly["symbol"], timeframe="W1", start_time=break_time, end_time=effective_as_of)
     if not candles:
-        return finish(base, "MISSING_CANDLES", "INCOMPLETE", "MISSING_DATA", "low", {"MISSING_W1_CANDLES"})
+        return finish(base, "MISSING_CANDLES", "INCOMPLETE", "MISSING_DATA", "low", reasons | {"MISSING_W1_CANDLES"})
     break_index = next((i for i, c in enumerate(candles) if c.time == break_time), None)
     if break_index is None:
-        return finish(base, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", {"BREAK_CANDLE_NOT_FOUND"})
+        return finish(base, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"BREAK_CANDLE_NOT_FOUND"})
 
     wick: tuple[int, SourceCandle] | None = None
     close: tuple[int, SourceCandle] | None = None

@@ -6,8 +6,6 @@ import sqlite3
 import sys
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[3]
 PYTHON_DIR = ROOT / "python"
 if str(PYTHON_DIR) not in sys.path:
@@ -91,6 +89,8 @@ def test_bos_down_wick_then_later_close_keeps_separate_times(tmp_path: Path) -> 
     assert value["first_wick_reclaim_time"] == "2026-01-12T00:00:00Z"
     assert value["first_close_reclaim_time"] == "2026-01-19T00:00:00Z"
     assert value["effective_reclaim_kind"] == "WICK"
+    assert value["reclaim_depth_price"] == 2.0
+    assert value["reclaim_depth_percent_of_range"] == 10.0
 
 
 def test_first_later_candle_wick_and_close(tmp_path: Path) -> None:
@@ -133,6 +133,30 @@ def test_pending_is_censored_and_respects_as_of(tmp_path: Path) -> None:
     value = row(memory)
     assert (value["current_state"], value["observation_status"]) == ("ABANDONED_PENDING_RECLAIM", "CENSORED")
     assert value["effective_reclaim_time"] is None
+    assert value["as_of_time"] == "2026-01-12T00:00:00Z"
+
+
+def test_requested_as_of_is_capped_to_latest_w1_data(tmp_path: Path) -> None:
+    memory, source = fixture_dbs(tmp_path)
+    candle(source, "2026.01.05 00:00", high=112, low=111, close=111)
+    candle(source, "2026.01.12 00:00", high=114, low=112, close=113)
+    build_weekly_break_reclaim(memory, source_db=source, as_of="2026-02-28T00:00:00Z")
+    value = row(memory)
+    assert value["as_of_time"] == "2026-01-12T00:00:00Z"
+    assert value["calendar_days_pending_as_of"] == 7.0
+    assert value["candles_pending_as_of"] == 1
+    assert "AS_OF_CAPPED_TO_LATEST_W1_DATA" in value["reason_codes_json"]
+
+
+def test_invalid_break_chronology_cannot_create_reclaim(tmp_path: Path) -> None:
+    memory, source = fixture_dbs(tmp_path, break_time="2026-02-01T00:00:00Z")
+    candle(source, "2026.01.05 00:00", high=112, low=108, close=109)
+    candle(source, "2026.01.12 00:00", high=114, low=107, close=108)
+    build_weekly_break_reclaim(memory, source_db=source)
+    value = row(memory)
+    assert value["current_state"] == "MISSING_BREAK_EVIDENCE"
+    assert value["effective_reclaim_time"] is None
+    assert "BREAK_AFTER_AS_OF" in value["reason_codes_json"]
 
 
 def test_missing_candles_and_missing_break_evidence(tmp_path: Path) -> None:
@@ -141,6 +165,7 @@ def test_missing_candles_and_missing_break_evidence(tmp_path: Path) -> None:
     assert row(memory)["current_state"] == "MISSING_CANDLES"
     with sqlite3.connect(memory) as con:
         con.execute("DELETE FROM event_ohlc_evidence"); con.execute("DELETE FROM resolved_range_lifecycles")
+    candle(source, "2026.01.12 00:00", high=109, low=95, close=100)
     build_weekly_break_reclaim(memory, source_db=source, as_of="2026-01-12T00:00:00Z")
     assert row(memory)["current_state"] == "MISSING_BREAK_EVIDENCE"
 
@@ -161,21 +186,32 @@ def test_scoped_rebuild_preserves_unrelated_row(tmp_path: Path) -> None:
     candle(source, "2026.01.05 00:00", high=112, low=111, close=111)
     build_weekly_break_reclaim(memory, source_db=source)
     with sqlite3.connect(memory) as con:
-        original = dict(zip([d[0] for d in con.execute("SELECT * FROM weekly_break_reclaim_lifecycles").description], con.execute("SELECT * FROM weekly_break_reclaim_lifecycles").fetchone()))
         con.execute("UPDATE weekly_break_reclaim_lifecycles SET weekly_range_source_id='other', case_ref='other' WHERE weekly_range_source_id='w1'")
-    build_weekly_break_reclaim(memory, source_db=source, weekly_source_id="w1")
+        unrelated_before = con.execute("SELECT * FROM weekly_break_reclaim_lifecycles WHERE weekly_range_source_id='other'").fetchone()
+    build_weekly_break_reclaim(
+        memory,
+        source_db=source,
+        case_ref="case",
+        symbol="XAUUSD",
+        weekly_source_id="w1",
+    )
     with sqlite3.connect(memory) as con:
         assert con.execute("SELECT COUNT(*) FROM weekly_break_reclaim_lifecycles WHERE weekly_range_source_id='other'").fetchone()[0] == 1
+        assert con.execute("SELECT * FROM weekly_break_reclaim_lifecycles WHERE weekly_range_source_id='other'").fetchone() == unrelated_before
+        assert con.execute("SELECT COUNT(*) FROM weekly_break_reclaim_lifecycles WHERE weekly_range_source_id='w1'").fetchone()[0] == 1
 
 
 def test_idempotent_deterministic_cli_and_data_safety(tmp_path: Path, capsys) -> None:
     memory, source = fixture_dbs(tmp_path)
     candle(source, "2026.01.05 00:00", high=112, low=111, close=111)
-    raw_hash = hashlib.sha256(memory.read_bytes()).hexdigest()
     source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
     assert main(["build-weekly-break-reclaim", "--db-path", str(memory), "--source-db", str(source), "--json"]) == 0
     first = json.loads(capsys.readouterr().out)
     assert first["rows_built"] == 1
+    assert main(["build-weekly-break-reclaim", "--db-path", str(memory), "--source-db", str(source), "--json"]) == 0
+    capsys.readouterr()
+    with sqlite3.connect(memory) as con:
+        assert con.execute("SELECT COUNT(*) FROM weekly_break_reclaim_lifecycles").fetchone()[0] == 1
     assert main(["weekly-break-reclaim-summary", "--db-path", str(memory), "--json"]) == 0
     summary1 = capsys.readouterr().out
     assert main(["weekly-break-reclaim-summary", "--db-path", str(memory), "--json"]) == 0
