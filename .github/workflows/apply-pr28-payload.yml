@@ -1,15 +1,17 @@
 name: Apply PR 28 Payload
 
 on:
-  push:
+  pull_request:
     branches:
-      - feat/weekly-direction-daily-relationship-v01
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   apply:
+    if: github.event.pull_request.head.ref == 'feat/weekly-direction-daily-relationship-v01'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
