@@ -1,6 +1,9 @@
 name: Export Python PR 27
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - feat/daily-range-timeline-v01
