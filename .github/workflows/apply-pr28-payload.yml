@@ -26,5 +26,6 @@ jobs:
           path: |
             .pr28_missing_payload.b64
             .pr28_missing_payload.tail
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 1
