@@ -24,9 +24,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [ ! -f .pr28_payload.b64 ]; then
+            echo "Payload already applied."
+            exit 0
+          fi
           base64 -d .pr28_payload.b64 | tar -xz
           rm .pr28_payload.b64
-          rm .github/workflows/apply-pr28-payload.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
