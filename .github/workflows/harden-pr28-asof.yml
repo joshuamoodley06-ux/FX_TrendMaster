@@ -1,4 +1,4 @@
-name: Harden PR 28 As Of
+name: Validate Final PR 28
 
 on:
   pull_request:
@@ -7,136 +7,41 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  harden:
+  validate:
     if: github.event.pull_request.head.ref == 'feat/weekly-direction-daily-relationship-v01'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
         with:
           ref: feat/weekly-direction-daily-relationship-v01
-          fetch-depth: 0
-      - name: Remove future milestone leakage
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          from pathlib import Path
-
-          weekly = Path('python/range_library_memory/weekly_direction_context.py')
-          text = weekly.read_text()
-          start = text.index('    row.update(\n        creation_break_direction=direction,')
-          end = text.index('\n\n    reclaim = latest_break_reclaim', start)
-          text = text[:start] + '''    if parse_time(break_time) > parse_time(cutoff):
-              return finish(row, "UNRESOLVED", "INCOMPLETE", "UNRESOLVED", "low", reasons | {"CREATION_BREAK_AFTER_AS_OF"})
-          row.update(
-              creation_break_direction=direction,
-              creation_break_time=break_time,
-              creation_break_level=float(evidence["boundary_price"]),
-              creation_break_kind=evidence["effective_break_kind"],
-              pending_from_time=break_time,
-              supporting_event_evidence_id=evidence["id"],
-          )''' + text[end:]
-          start = text.index('        row.update(\n            creation_reclaim_time=reclaim_time,')
-          end = text.index('\n\n    if reclaim["current_state"] == PENDING_STATE:', start)
-          text = text[:start] + '''        if parse_time(reclaim_time) <= parse_time(cutoff):
-              row.update(
-                  creation_reclaim_time=reclaim_time,
-                  creation_reclaim_kind=reclaim["effective_reclaim_kind"],
-                  confirmed_from_time=reclaim_time,
-              )
-              return finish(row, f"CONFIRMED_{direction}", "OBSERVED", "RESOLVED", confidence, reasons)
-          reasons.add("CREATION_RECLAIM_AFTER_AS_OF")
-          return finish(row, f"PENDING_RECLAIM_{direction}", "CENSORED", "PENDING", confidence, reasons)''' + text[end:]
-          weekly.write_text(text)
-
-          daily = Path('python/range_library_memory/daily_trend_relationship.py')
-          text = daily.read_text()
-          start = text.index('    t0 = canonical_time(t0)')
-          formation = text.index('    formation_state = direction_state_at(context, t0)', start)
-          text = text[:start] + '''    t0 = canonical_time(t0)
-          if parse_time(t0) > parse_time(cutoff):
-              return finish(row, "PENDING", "CENSORED", "PENDING", "low", reasons | {"DAILY_NOT_FORMED_AS_OF"})
-          row["daily_t0_formation_time"] = t0
-
-          ''' + text[formation:]
-          text = text.replace(
-              '        "daily_t0_formation_time": daily["t0_formation_time"],\n'
-              '        "daily_t1_break_time": daily["t1_break_time"],\n'
-              '        "daily_break_direction": daily["t1_break_direction"],',
-              '        "daily_t0_formation_time": None,\n'
-              '        "daily_t1_break_time": None,\n'
-              '        "daily_break_direction": None,',
-              1,
-          )
-          daily.write_text(text)
-
-          wt = Path('python/range_library_memory/tests/test_weekly_direction_context.py')
-          text = wt.read_text()
-          text = text.replace(
-              '    assert row["confirmed_from_time"] is None\n'
-              '    assert "CREATION_RECLAIM_AFTER_AS_OF" in row["reason_codes_json"]',
-              '    assert row["confirmed_from_time"] is None\n'
-              '    assert row["creation_reclaim_time"] is None\n'
-              '    assert row["creation_reclaim_kind"] is None\n'
-              '    assert "CREATION_RECLAIM_AFTER_AS_OF" in row["reason_codes_json"]',
-              1,
-          )
-          if 'test_creation_break_after_as_of_hides_future_break_fields' not in text:
-              text += '''
-
-          def test_creation_break_after_as_of_hides_future_break_fields(tmp_path: Path) -> None:
-              db = make_db(tmp_path)
-              build_weekly_direction_contexts(db, as_of="2026-01-05T00:00:00Z")
-              row = get_row(db)
-              assert row["current_direction_state"] == "UNRESOLVED"
-              assert row["creation_break_direction"] is None
-              assert row["creation_break_time"] is None
-              assert row["creation_break_level"] is None
-              assert row["creation_break_kind"] is None
-              assert row["pending_from_time"] is None
-              assert row["confirmed_from_time"] is None
-          '''
-          wt.write_text(text)
-
-          dt = Path('python/range_library_memory/tests/test_daily_trend_relationship.py')
-          text = dt.read_text()
-          text = text.replace(
-              '    assert row["trend_relationship"] == "PENDING"\n'
-              '    assert "DAILY_BREAK_AFTER_AS_OF" in row["reason_codes_json"]',
-              '    assert row["trend_relationship"] == "PENDING"\n'
-              '    assert row["daily_t0_formation_time"] == "2026-01-11T00:00:00Z"\n'
-              '    assert row["daily_t1_break_time"] is None\n'
-              '    assert row["daily_break_direction"] is None\n'
-              '    assert row["classification_time"] is None\n'
-              '    assert "DAILY_BREAK_AFTER_AS_OF" in row["reason_codes_json"]',
-              1,
-          )
-          if 'test_requested_as_of_before_daily_formation_hides_future_milestones' not in text:
-              text += '''
-
-          def test_requested_as_of_before_daily_formation_hides_future_milestones(tmp_path: Path) -> None:
-              db = make_db(tmp_path)
-              build_daily_trend_relationships(db, as_of="2026-01-05T00:00:00Z")
-              row = get_row(db)
-              assert row["trend_relationship"] == "PENDING"
-              assert row["daily_t0_formation_time"] is None
-              assert row["daily_t1_break_time"] is None
-              assert row["daily_break_direction"] is None
-              assert row["classification_time"] is None
-              assert "DAILY_NOT_FORMED_AS_OF" in row["reason_codes_json"]
-          '''
-          dt.write_text(text)
-          PY
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add python/range_library_memory/weekly_direction_context.py \
-                  python/range_library_memory/daily_trend_relationship.py \
-                  python/range_library_memory/tests/test_weekly_direction_context.py \
-                  python/range_library_memory/tests/test_daily_trend_relationship.py
-          git commit -m "fix: prevent as-of milestone hindsight leakage"
-          git push origin HEAD:feat/weekly-direction-daily-relationship-v01
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+      - name: Run complete Range Library Memory suite
+        env:
+          PYTHONPATH: python
+        run: python -m pytest python/range_library_memory/tests --basetemp .pytest-tmp | tee pytest-output.txt
+      - name: Upload final source and test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr28-final-validation
+          path: |
+            pytest-output.txt
+            python/range_library_memory/weekly_direction_context.py
+            python/range_library_memory/daily_trend_relationship.py
+            python/range_library_memory/schema.py
+            python/range_library_memory/cli.py
+            python/range_library_memory/tests/test_weekly_direction_context.py
+            python/range_library_memory/tests/test_daily_trend_relationship.py
+            python/range_library_memory/tests/test_direction_relationship_cli.py
+          if-no-files-found: warn
+          retention-days: 1
