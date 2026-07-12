@@ -24,6 +24,21 @@ jobs:
         run: python .github/tmp_patch_review_queue_duplicate_backlog.py
       - name: Install pytest
         run: python -m pip install pytest
+      - name: Capture focused queue test log
+        env:
+          PYTHONPATH: python
+        shell: bash
+        run: |
+          set +e
+          python -m pytest python/range_library_memory/tests/test_structure_review_queue.py -q --tb=short > focused-duplicate-backlog.log 2>&1
+          cat focused-duplicate-backlog.log
+          exit 0
+      - name: Upload focused test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: focused-duplicate-backlog-log
+          path: focused-duplicate-backlog.log
       - name: Run focused queue tests
         env:
           PYTHONPATH: python
