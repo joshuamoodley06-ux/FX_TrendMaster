@@ -1,4 +1,4 @@
-name: Apply PR 28 Payload
+name: Diagnose PR 28 Payload
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  apply:
+  diagnose:
     if: github.event.pull_request.head.ref == 'feat/weekly-direction-daily-relationship-v01'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -20,18 +20,30 @@ jobs:
         with:
           ref: feat/weekly-direction-daily-relationship-v01
           fetch-depth: 0
-      - name: Apply staged payload and commit
+      - name: Diagnose staged payload
         shell: bash
         run: |
-          set -euo pipefail
-          if [ ! -f .pr28_payload.b64 ]; then
-            echo "Payload already applied."
-            exit 0
-          fi
-          base64 -d .pr28_payload.b64 | tar -xz
-          rm .pr28_payload.b64
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "feat: add Weekly direction and Daily trend relationships"
-          git push origin HEAD:feat/weekly-direction-daily-relationship-v01
+          set +e
+          {
+            echo "PWD=$(pwd)"
+            ls -la .pr28_payload.b64
+            wc -c .pr28_payload.b64
+            base64 -d .pr28_payload.b64 > /tmp/pr28_payload.tar.gz
+            echo "decode_exit=$?"
+            gzip -t /tmp/pr28_payload.tar.gz
+            echo "gzip_exit=$?"
+            tar -tzf /tmp/pr28_payload.tar.gz
+            echo "list_exit=$?"
+            tar -xzf /tmp/pr28_payload.tar.gz
+            echo "extract_exit=$?"
+            git status --short
+          } > pr28-diagnostic.log 2>&1
+          cat pr28-diagnostic.log
+          exit 0
+      - name: Upload diagnostic
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr28-payload-diagnostic
+          path: pr28-diagnostic.log
+          if-no-files-found: error
+          retention-days: 1
