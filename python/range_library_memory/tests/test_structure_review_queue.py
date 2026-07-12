@@ -65,6 +65,10 @@ def daily_range(range_id: str = "428", **overrides) -> dict:
 def imported_db(tmp_path: Path, ranges: list[dict]) -> Path:
     db = tmp_path / "memory.sqlite3"
     import_source(db, write_source(tmp_path, ranges), "fixture")
+    # These tests add their own explicit duplicate candidate when needed.
+    # Ignore importer-generated overlap candidates so each fixture tests one root cause.
+    with sqlite3.connect(db) as connection:
+        connection.execute("UPDATE duplicate_candidates SET review_status='ignored'")
     return db
 
 
