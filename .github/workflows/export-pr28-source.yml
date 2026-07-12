@@ -1,4 +1,4 @@
-name: Export PR 28 Source
+name: Validate PR 28
 
 on:
   pull_request:
@@ -10,20 +10,44 @@ permissions:
   contents: read
 
 jobs:
-  export:
+  validate:
     if: github.event.pull_request.head.ref == 'feat/weekly-direction-daily-relationship-v01'
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout feature branch
         uses: actions/checkout@v4
         with:
           ref: feat/weekly-direction-daily-relationship-v01
-      - name: Upload implementation files
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest
+      - name: Run complete Range Library Memory suite
+        env:
+          PYTHONPATH: python
+        run: python -m pytest python/range_library_memory/tests --basetemp .pytest-tmp | tee pytest-output.txt
+      - name: Record implementation hashes
+        run: |
+          sha256sum \
+            python/range_library_memory/weekly_direction_context.py \
+            python/range_library_memory/daily_trend_relationship.py \
+            python/range_library_memory/schema.py \
+            python/range_library_memory/cli.py \
+            python/range_library_memory/tests/test_weekly_direction_context.py \
+            python/range_library_memory/tests/test_daily_trend_relationship.py \
+            python/range_library_memory/tests/test_direction_relationship_cli.py \
+            > implementation-sha256.txt
+      - name: Upload validation evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pr28-source
+          name: pr28-validation
           path: |
+            pytest-output.txt
+            implementation-sha256.txt
             python/range_library_memory/weekly_direction_context.py
             python/range_library_memory/daily_trend_relationship.py
             python/range_library_memory/schema.py
@@ -31,5 +55,5 @@ jobs:
             python/range_library_memory/tests/test_weekly_direction_context.py
             python/range_library_memory/tests/test_daily_trend_relationship.py
             python/range_library_memory/tests/test_direction_relationship_cli.py
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 1
