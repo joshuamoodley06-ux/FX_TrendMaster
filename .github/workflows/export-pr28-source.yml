@@ -1,0 +1,35 @@
+name: Export PR 28 Source
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    if: github.event.pull_request.head.ref == 'feat/weekly-direction-daily-relationship-v01'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout feature branch
+        uses: actions/checkout@v4
+        with:
+          ref: feat/weekly-direction-daily-relationship-v01
+      - name: Upload implementation files
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr28-source
+          path: |
+            python/range_library_memory/weekly_direction_context.py
+            python/range_library_memory/daily_trend_relationship.py
+            python/range_library_memory/schema.py
+            python/range_library_memory/cli.py
+            python/range_library_memory/tests/test_weekly_direction_context.py
+            python/range_library_memory/tests/test_daily_trend_relationship.py
+            python/range_library_memory/tests/test_direction_relationship_cli.py
+          if-no-files-found: error
+          retention-days: 1
