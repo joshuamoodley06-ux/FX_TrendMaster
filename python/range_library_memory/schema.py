@@ -18,6 +18,7 @@ REQUIRED_TABLES = (
     "resolved_range_lifecycles",
     "weekly_break_reclaim_lifecycles",
     "weekly_phase_sequences",
+    "daily_range_timelines",
 )
 
 
@@ -326,6 +327,82 @@ CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_t1
     ON weekly_phase_sequences(t1_break_time);
 CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_t2
     ON weekly_phase_sequences(t2_reclaim_time);
+
+CREATE TABLE IF NOT EXISTS daily_range_timelines (
+    id INTEGER PRIMARY KEY,
+    built_at_utc TEXT NOT NULL,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT NOT NULL,
+    source_timeframe TEXT NOT NULL,
+    daily_range_source_id TEXT NOT NULL UNIQUE,
+    raw_range_id INTEGER,
+    raw_status TEXT,
+    range_high REAL,
+    range_low REAL,
+    range_height REAL,
+    t0_formation_time TEXT,
+    t1_break_time TEXT,
+    t1_break_direction TEXT,
+    t1_break_level REAL,
+    t1_break_kind TEXT,
+    supporting_event_source_id TEXT,
+    supporting_evidence_id INTEGER,
+    first_wick_reclaim_time TEXT,
+    first_wick_reclaim_price REAL,
+    first_close_reclaim_time TEXT,
+    first_close_reclaim_price REAL,
+    t2_reclaim_time TEXT,
+    t2_reclaim_kind TEXT,
+    same_candle_close_reclaim INTEGER NOT NULL DEFAULT 0,
+    same_candle_wick_order_status TEXT,
+    reclaim_depth_price REAL,
+    reclaim_depth_percent_of_range REAL,
+    formation_to_break_days REAL,
+    break_to_reclaim_days REAL,
+    candles_to_wick_reclaim INTEGER,
+    candles_to_close_reclaim INTEGER,
+    candles_to_effective_reclaim INTEGER,
+    current_daily_state TEXT NOT NULL,
+    current_daily_phase_start_time TEXT,
+    current_daily_phase_age_days REAL,
+    parent_relationship_id INTEGER,
+    parent_weekly_source_id TEXT,
+    parent_link_source TEXT,
+    parent_link_status TEXT,
+    parent_link_confidence TEXT,
+    parent_membership_state TEXT NOT NULL,
+    parent_weekly_phase_sequence_id INTEGER,
+    weekly_phase_at_daily_formation TEXT,
+    weekly_phase_at_daily_break TEXT,
+    daily_sequence_in_weekly INTEGER,
+    observation_status TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    resolution_confidence TEXT NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    as_of_time TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_source
+    ON daily_range_timelines(daily_range_source_id);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_scope
+    ON daily_range_timelines(case_ref, symbol);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_parent
+    ON daily_range_timelines(parent_weekly_source_id);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_parent_status
+    ON daily_range_timelines(parent_link_status);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_state
+    ON daily_range_timelines(current_daily_state);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_t0
+    ON daily_range_timelines(t0_formation_time);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_t1
+    ON daily_range_timelines(t1_break_time);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_t2
+    ON daily_range_timelines(t2_reclaim_time);
+CREATE INDEX IF NOT EXISTS idx_daily_timeline_sequence
+    ON daily_range_timelines(parent_weekly_source_id, daily_sequence_in_weekly);
 """
 
 
