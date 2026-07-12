@@ -1,4 +1,4 @@
-name: Apply PR 28 Payload
+name: Apply Remaining PR 28 Payload
 
 on:
   pull_request:
@@ -20,38 +20,18 @@ jobs:
         with:
           ref: feat/weekly-direction-daily-relationship-v01
           fetch-depth: 0
-      - name: Apply staged payload with diagnostics
+      - name: Apply remaining implementation files
         shell: bash
         run: |
-          set +e
-          {
-            echo "PWD=$(pwd)"
-            wc -c .pr28_payload.b64 .pr28_payload.tail
-            cat .pr28_payload.b64 .pr28_payload.tail > /tmp/pr28_payload.full.b64
-            sha256sum /tmp/pr28_payload.full.b64
-            base64 -d /tmp/pr28_payload.full.b64 > /tmp/pr28_payload.tar.gz
-            echo "decode_exit=$?"
-            sha256sum /tmp/pr28_payload.tar.gz
-            gzip -t /tmp/pr28_payload.tar.gz
-            echo "gzip_exit=$?"
-            tar -xzf /tmp/pr28_payload.tar.gz
-            echo "extract_exit=$?"
-            rm -f .pr28_payload.b64 .pr28_payload.tail
-            git status --short
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add -A
-            git commit -m "feat: add Weekly direction and Daily trend relationships"
-            echo "commit_exit=$?"
-            git push origin HEAD:feat/weekly-direction-daily-relationship-v01
-            echo "push_exit=$?"
-          } > pr28-apply.log 2>&1
-          cat pr28-apply.log
-          exit 0
-      - name: Upload apply log
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr28-apply-log
-          path: pr28-apply.log
-          if-no-files-found: error
-          retention-days: 1
+          set -euo pipefail
+          if [ ! -f .pr28_missing_payload.b64 ]; then
+            echo "Remaining payload already applied."
+            exit 0
+          fi
+          base64 -d .pr28_missing_payload.b64 | tar -xz -C python
+          rm .pr28_missing_payload.b64
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: complete Weekly direction and Daily trend relationships"
+          git push origin HEAD:feat/weekly-direction-daily-relationship-v01
