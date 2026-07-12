@@ -16,6 +16,7 @@ REQUIRED_TABLES = (
     "parent_child_relationships",
     "event_ohlc_evidence",
     "resolved_range_lifecycles",
+    "weekly_break_reclaim_lifecycles",
 )
 
 
@@ -220,6 +221,62 @@ CREATE INDEX IF NOT EXISTS idx_resolved_range_lifecycles_range_source_id
     ON resolved_range_lifecycles(range_source_id);
 CREATE INDEX IF NOT EXISTS idx_resolved_range_lifecycles_scope
     ON resolved_range_lifecycles(case_ref, symbol, structure_layer, source_timeframe);
+
+CREATE TABLE IF NOT EXISTS weekly_break_reclaim_lifecycles (
+    id INTEGER PRIMARY KEY,
+    built_at_utc TEXT NOT NULL,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT NOT NULL,
+    source_timeframe TEXT NOT NULL,
+    weekly_range_source_id TEXT NOT NULL UNIQUE,
+    raw_range_id INTEGER,
+    range_high REAL,
+    range_low REAL,
+    range_height REAL,
+    break_direction TEXT,
+    break_level REAL,
+    break_time TEXT,
+    break_kind TEXT,
+    supporting_event_source_id TEXT,
+    supporting_evidence_id INTEGER,
+    abandoned_from_time TEXT,
+    first_wick_reclaim_time TEXT,
+    first_wick_reclaim_price REAL,
+    first_close_reclaim_time TEXT,
+    first_close_reclaim_price REAL,
+    effective_reclaim_time TEXT,
+    effective_reclaim_kind TEXT,
+    same_candle_close_reclaim INTEGER NOT NULL DEFAULT 0,
+    same_candle_wick_order_status TEXT,
+    reclaim_depth_price REAL,
+    reclaim_depth_percent_of_range REAL,
+    candles_to_wick_reclaim INTEGER,
+    candles_to_close_reclaim INTEGER,
+    candles_to_effective_reclaim INTEGER,
+    calendar_days_to_effective_reclaim REAL,
+    candles_pending_as_of INTEGER,
+    calendar_days_pending_as_of REAL,
+    current_state TEXT NOT NULL,
+    observation_status TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    resolution_confidence TEXT NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    as_of_time TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_weekly_break_reclaim_source_id
+    ON weekly_break_reclaim_lifecycles(weekly_range_source_id);
+CREATE INDEX IF NOT EXISTS idx_weekly_break_reclaim_scope
+    ON weekly_break_reclaim_lifecycles(case_ref, symbol);
+CREATE INDEX IF NOT EXISTS idx_weekly_break_reclaim_state
+    ON weekly_break_reclaim_lifecycles(current_state);
+CREATE INDEX IF NOT EXISTS idx_weekly_break_reclaim_break_time
+    ON weekly_break_reclaim_lifecycles(break_time);
+CREATE INDEX IF NOT EXISTS idx_weekly_break_reclaim_reclaim_time
+    ON weekly_break_reclaim_lifecycles(effective_reclaim_time);
 """
 
 

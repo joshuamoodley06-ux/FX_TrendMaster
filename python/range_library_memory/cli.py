@@ -44,6 +44,12 @@ from .weekly_family_coverage import (
     analyze_weekly_family_coverage,
     format_weekly_family_coverage,
 )
+from .weekly_break_reclaim import (
+    WeeklyBreakReclaimError,
+    build_weekly_break_reclaim,
+    format_summary as format_weekly_break_reclaim_summary,
+    summarize_weekly_break_reclaim,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -147,6 +153,24 @@ def build_parser() -> argparse.ArgumentParser:
     event_summary_parser.add_argument("--evidence-status", default=None)
     event_summary_parser.add_argument("--resolution-status", default=None)
     event_summary_parser.add_argument("--json", action="store_true", help="Print deterministic JSON.")
+
+    break_reclaim_parser = subparsers.add_parser("build-weekly-break-reclaim", help="Build Weekly break-reclaim lifecycles.")
+    break_reclaim_parser.add_argument("--db-path", type=Path, default=None)
+    break_reclaim_parser.add_argument("--source-db", type=Path, required=True)
+    break_reclaim_parser.add_argument("--case-ref", default=None)
+    break_reclaim_parser.add_argument("--symbol", default=None)
+    break_reclaim_parser.add_argument("--weekly-source-id", default=None)
+    break_reclaim_parser.add_argument("--as-of", default=None)
+    break_reclaim_parser.add_argument("--json", action="store_true")
+
+    break_reclaim_summary_parser = subparsers.add_parser("weekly-break-reclaim-summary", help="Summarize Weekly break-reclaim lifecycles.")
+    break_reclaim_summary_parser.add_argument("--db-path", type=Path, default=None)
+    break_reclaim_summary_parser.add_argument("--case-ref", default=None)
+    break_reclaim_summary_parser.add_argument("--symbol", default=None)
+    break_reclaim_summary_parser.add_argument("--weekly-source-id", default=None)
+    break_reclaim_summary_parser.add_argument("--state", default=None)
+    break_reclaim_summary_parser.add_argument("--observation-status", default=None)
+    break_reclaim_summary_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -311,6 +335,31 @@ def main(argv: list[str] | None = None) -> int:
         except InspectionError as exc:
             parser.error(str(exc))
         print(format_event_ohlc_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "build-weekly-break-reclaim":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = build_weekly_break_reclaim(
+                db_path, source_db=args.source_db, case_ref=args.case_ref, symbol=args.symbol,
+                weekly_source_id=args.weekly_source_id, as_of=args.as_of,
+            )
+        except (InspectionError, WeeklyBreakReclaimError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_weekly_break_reclaim_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "weekly-break-reclaim-summary":
+        db_path = resolve_db_path(args.db_path)
+        try:
+            summary = summarize_weekly_break_reclaim(
+                db_path, case_ref=args.case_ref, symbol=args.symbol,
+                weekly_source_id=args.weekly_source_id, state=args.state,
+                observation_status=args.observation_status,
+            )
+        except InspectionError as exc:
+            parser.error(str(exc))
+        print(format_weekly_break_reclaim_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "show-run":
