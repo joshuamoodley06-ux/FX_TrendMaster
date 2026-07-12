@@ -3,6 +3,8 @@ name: Temporary Review Queue Flood Patch
 on:
   push:
     branches: [feat/unified-structure-review-queue-v01]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
@@ -31,6 +33,7 @@ jobs:
           PYTHONPATH: python
         run: python -m pytest python/range_library_memory/tests -q
       - name: Commit tested patch
+        if: github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
