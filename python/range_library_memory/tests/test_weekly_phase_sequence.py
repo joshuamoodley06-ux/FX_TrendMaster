@@ -14,7 +14,7 @@ from range_library_memory.schema import init_schema
 from range_library_memory.weekly_phase_sequence import build_weekly_phase_sequences
 
 
-def fixture(tmp_path: Path, *, status: str = "ACTIVE", high_time: str | None = "2026-01-02T00:00:00Z",
+def fixture(tmp_path: Path, *, status: str | None = "ACTIVE", high_time: str | None = "2026-01-02T00:00:00Z",
             low_time: str | None = "2026-01-03T00:00:00Z", active: str | None = "2026-01-01T00:00:00Z") -> tuple[Path, Path]:
     memory, source = tmp_path / "memory.sqlite3", tmp_path / "source.sqlite3"
     init_schema(memory)
@@ -78,6 +78,39 @@ def test_raw_broken_without_factual_break_needs_review(tmp_path: Path) -> None:
     build_weekly_phase_sequences(memory, source_db=source)
     assert getrow(memory)["current_phase_state"] == "NEEDS_REVIEW"
     assert "RAW_BROKEN_WITHOUT_FACTUAL_BREAK" in getrow(memory)["reason_codes_json"]
+
+
+def test_missing_raw_status_never_becomes_active_pre_break(tmp_path: Path) -> None:
+    memory, source = fixture(tmp_path, status=None)
+    build_weekly_phase_sequences(memory, source_db=source)
+    row = getrow(memory)
+    assert row["raw_status"] == "UNKNOWN"
+    assert (row["current_phase_state"], row["observation_status"], row["resolution_status"], row["resolution_confidence"]) == (
+        "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low")
+    assert "MISSING_RAW_STATUS" in row["reason_codes_json"]
+
+
+def test_contradictory_break_reclaim_evidence_needs_review(tmp_path: Path) -> None:
+    cases = (
+        ("reclaimed_missing", "RECLAIMED", None, None, "RECLAIMED_WITHOUT_RECLAIM_TIME", True),
+        ("pending_with_time", "ABANDONED_PENDING_RECLAIM", "2026-01-12T00:00:00Z", None, "PENDING_STATE_WITH_RECLAIM_TIME", True),
+        ("reclaim_without_break", "RECLAIMED", "2026-01-12T00:00:00Z", "break_time", "RECLAIM_TIME_WITHOUT_FACTUAL_BREAK", False),
+    )
+    for folder_name, state, reclaim_time, missing_break_field, reason, preserves_t1 in cases:
+        folder = tmp_path / folder_name; folder.mkdir()
+        memory, source = fixture(folder, status="BROKEN")
+        add_reclaim(memory, state=state, reclaim_time=reclaim_time)
+        if missing_break_field:
+            with sqlite3.connect(memory) as con:
+                con.execute(f"UPDATE weekly_break_reclaim_lifecycles SET {missing_break_field}=NULL")
+        build_weekly_phase_sequences(memory, source_db=source)
+        row = getrow(memory)
+        assert row["current_phase_state"] == "NEEDS_REVIEW"
+        assert (row["observation_status"], row["resolution_status"], row["resolution_confidence"]) == ("INCOMPLETE", "NEEDS_REVIEW", "low")
+        assert reason in row["reason_codes_json"]
+        assert (row["t1_break_time"] is not None) is preserves_t1
+        if preserves_t1:
+            assert "RAW_BROKEN_WITHOUT_FACTUAL_BREAK" not in row["reason_codes_json"]
 
 
 def test_pending_and_reclaimed_durations(tmp_path: Path) -> None:

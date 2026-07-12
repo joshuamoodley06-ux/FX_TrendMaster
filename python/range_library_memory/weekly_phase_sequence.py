@@ -114,15 +114,25 @@ def evaluate(connection: sqlite3.Connection, source: sqlite3.Connection, weekly:
         "SELECT * FROM weekly_break_reclaim_lifecycles WHERE weekly_range_source_id=? ORDER BY id DESC LIMIT 1",
         (weekly["source_id"],),
     ).fetchone()
-    factual_break = bool(reclaim and reclaim["current_state"] in {"RECLAIMED", "ABANDONED_PENDING_RECLAIM"}
-                         and reclaim["break_time"] and reclaim["break_direction"] and reclaim["break_level"] is not None)
+    reclaim_state = reclaim["current_state"] if reclaim else None
+    reclaim_time = reclaim["effective_reclaim_time"] if reclaim else None
+    complete_break = bool(reclaim and reclaim["break_time"] and reclaim["break_direction"] and reclaim["break_level"] is not None)
+    factual_break = bool(complete_break and reclaim_state in {"RECLAIMED", "ABANDONED_PENDING_RECLAIM"})
     if factual_break:
         row.update({"t1_break_time": canonical_time(reclaim["break_time"]), "t1_break_direction": reclaim["break_direction"],
                     "t1_break_level": reclaim["break_level"], "t1_break_kind": reclaim["break_kind"],
                     "supporting_break_reclaim_id": reclaim["id"]})
-        if reclaim["current_state"] == "RECLAIMED" and reclaim["effective_reclaim_time"]:
-            row.update({"t2_reclaim_time": canonical_time(reclaim["effective_reclaim_time"]),
+        if reclaim_state == "RECLAIMED" and reclaim_time:
+            row.update({"t2_reclaim_time": canonical_time(reclaim_time),
                         "t2_reclaim_kind": reclaim["effective_reclaim_kind"]})
+
+    contradictory_reasons: set[str] = set()
+    if reclaim_state == "RECLAIMED" and not reclaim_time:
+        contradictory_reasons.add("RECLAIMED_WITHOUT_RECLAIM_TIME")
+    if reclaim_state == "ABANDONED_PENDING_RECLAIM" and reclaim_time:
+        contradictory_reasons.add("PENDING_STATE_WITH_RECLAIM_TIME")
+    if reclaim_time and not complete_break:
+        contradictory_reasons.add("RECLAIM_TIME_WITHOUT_FACTUAL_BREAK")
 
     t1, t2 = row["t1_break_time"], row["t2_reclaim_time"]
     if parse_time(t0) > parse_time(effective_as_of) or (t1 and parse_time(t1) > parse_time(effective_as_of)) or (t2 and parse_time(t2) > parse_time(effective_as_of)):
@@ -131,8 +141,8 @@ def evaluate(connection: sqlite3.Connection, source: sqlite3.Connection, weekly:
         reasons.add("BREAK_BEFORE_RANGE_FORMATION")
     if t1 and t2 and parse_time(t2) < parse_time(t1):
         reasons.add("RECLAIM_BEFORE_BREAK")
-    if reasons & {"MILESTONE_AFTER_AS_OF", "BREAK_BEFORE_RANGE_FORMATION", "RECLAIM_BEFORE_BREAK"}:
-        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons)
+    if reasons & {"MILESTONE_AFTER_AS_OF", "BREAK_BEFORE_RANGE_FORMATION", "RECLAIM_BEFORE_BREAK"} or contradictory_reasons:
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | contradictory_reasons)
 
     if t1:
         row["formation_to_break_days"] = elapsed_days(t0, t1)
@@ -146,6 +156,8 @@ def evaluate(connection: sqlite3.Connection, source: sqlite3.Connection, weekly:
         row["current_phase_start_time"] = t1
         row["current_phase_age_days"] = elapsed_days(t1, effective_as_of)
         return finish(row, "BREAK_PENDING_RECLAIM", "CENSORED", "PENDING", "high", reasons)
+    if weekly["status"] == "UNKNOWN":
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"MISSING_RAW_STATUS"})
     if weekly["status"] in {"BROKEN", "ABANDONED", "ARCHIVED"}:
         return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"RAW_BROKEN_WITHOUT_FACTUAL_BREAK"})
     if weekly["status"] in {"ACTIVE", "FORMING"}:
@@ -169,7 +181,7 @@ def select_weeklies(connection: sqlite3.Connection, filters: dict[str, str | Non
         result.append({"raw_id": value["id"], "import_run_id": value["import_run_id"], "source_id": str(value["source_record_id"]),
                        "case_ref": payload.get("case_ref"), "symbol": str(value["symbol"] or payload.get("symbol") or "").upper(),
                        "timeframe": str(payload.get("source_timeframe") or value["timeframe"] or "W1").upper(),
-                       "status": str(payload.get("status") or "ACTIVE").upper(),
+                       "status": normalize_status(payload.get("status")),
                        "active_time": optional_time(payload.get("active_from_time")),
                        "high_time": optional_time(payload.get("range_high_time")), "low_time": optional_time(payload.get("range_low_time")),
                        "high": number(payload.get("range_high_price", value["high"])), "low": number(payload.get("range_low_price", value["low"]))})
@@ -225,6 +237,12 @@ def optional_time(value: Any) -> str | None:
 def number(value: Any) -> float | None:
     try: return float(value) if value is not None else None
     except (TypeError, ValueError): return None
+
+
+def normalize_status(value: Any) -> str:
+    if value is None or not str(value).strip():
+        return "UNKNOWN"
+    return str(value).strip().upper()
 
 
 def elapsed_days(start: str, end: str) -> float:
