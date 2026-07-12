@@ -34,7 +34,7 @@ def make_db(
             "VALUES(1,'r','x','fixture','2026-01-01T00:00:00Z','completed')"
         )
         con.execute(
-            """INSERT INTO daily_range_tidelines(
+            """INSERT INTO daily_range_timelines(
                built_at_utc,import_run_id,case_ref,symbol,source_timeframe,daily_range_source_id,
                raw_range_id,raw_status,t0_formation_time,t1_break_time,t1_break_direction,
                current_daily_state,parent_weekly_source_id,parent_link_status,
@@ -158,16 +158,16 @@ def test_daily_without_factual_break_is_pending(tmp_path: Path) -> None:
     assert row["observation_status"] == "CENSORED"
 
 
-def test_parent_conflict_needs_review_but_does_not_change_daily_tideline(tmp_path: Path) -> None:
+def test_parent_conflict_needs_review_but_does_not_change_daily_timeline(tmp_path: Path) -> None:
     db = make_db(tmp_path, parent_membership="NEEDS_REVIEW", parent_link_status="CONFLICT")
     with sqlite3.connect(db) as con:
-        before = con.execute("SELECT * FROM daily_range_tidelines").fetchone()
+        before = con.execute("SELECT * FROM daily_range_timelines").fetchone()
     build_daily_trend_relationships(db)
     row = get_row(db)
     assert row["trend_relationship"] == "NEEDS_REVIEW"
     assert "PARENT_LINK_NEEDS_REVIEW" in row["reason_codes_json"]
     with sqlite3.connect(db) as con:
-        assert con.execute("SELECT * FROM daily_range_tidelines").fetchone() == before
+        assert con.execute("SELECT * FROM daily_range_timelines").fetchone() == before
 
 
 def test_weekly_context_review_propagates_review(tmp_path: Path) -> None:

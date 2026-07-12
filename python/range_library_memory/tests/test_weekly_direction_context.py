@@ -201,8 +201,8 @@ def test_scoped_rebuild_is_idempotent_and_preserves_unrelated(tmp_path: Path) ->
             """INSERT INTO weekly_direction_contexts(
                built_at_utc,case_ref,symbol,source_timeframe,weekly_range_source_id,
                creation_link_source,current_direction_state,observation_status,resolution_status,
-               resolution_confidence,on_status,resolution_confidence,
-               reason_codes_json,as_of_time,create'2026-01-01T00:00:00Z','other','EURUSD','W1','999','NONE',
+               resolution_confidence,reason_codes_json,as_of_time,created_at_utc,updated_at_utc
+               ) VALUES('2026-01-01T00:00:00Z','other','EURUSD','W1','999','NONE',
                'UNRESOLVED','INCOMPLETE','UNRESOLVED','low','[]','2026-01-01T00:00:00Z',
                '2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')"""
         )
@@ -230,12 +230,12 @@ def test_equivalent_break_event_can_supply_reclaim_without_false_review(tmp_path
     build_weekly_direction_contexts(db)
     row = get_row(db)
     assert row["current_direction_state"] == "CONFIRMED_UP"
-    assert "EQUI,crENT_CREATION_BREAK_EVENT_USED_FOR_RECLAIM" in row["reason_codes_json"]
+    assert "EQUIVALENT_CREATION_BREAK_EVENT_USED_FOR_RECLAIM" in row["reason_codes_json"]
 
 
-def test_requested_as_of_after_phase_  ra_is_capped(tmp_path: Path) -> None:
+def test_requested_as_of_after_phase_data_is_capped(tmp_path: Path) -> None:
     db = make_db(tmp_path, phase_as_of="2026-02-01T00:00:00Z")
     build_weekly_direction_contexts(db, as_of="2026-12-31T00:00:00Z")
     row = get_row(db)
-    assert row["on_confide"] == "2026-02-01T00:00:00Z"
+    assert row["as_of_time"] == "2026-02-01T00:00:00Z"
     assert "AS_OF_CAPPED_TO_WEEKLY_PHASE_DATA" in row["reason_codes_json"]

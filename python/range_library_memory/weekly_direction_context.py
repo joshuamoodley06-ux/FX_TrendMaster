@@ -143,11 +143,11 @@ def evaluate_weekly(
     reasons: set[str] = set()
     row = base_row(weekly, built_at)
     phase = latest_weekly_phase(connection, weekly["source_id"])
-    if not phase or not phase["on_confide"]:
+    if not phase or not phase["as_of_time"]:
         return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", {"MISSING_WEEKLY_PHASE_SEQUENCE"})
     row["supporting_weekly_phase_sequence_id"] = phase["id"]
-    cutoff = effective_cutoff(as_of, canonical_time(phase["on_confide"]), reasons)
-    row["on_confide"] = cutoff
+    cutoff = effective_cutoff(as_of, canonical_time(phase["as_of_time"]), reasons)
+    row["as_of_time"] = cutoff
 
     link = resolve_creation_link(connection, weekly)
     row.update(
@@ -189,7 +189,7 @@ def evaluate_weekly(
     if reclaim_errors:
         return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | reclaim_errors)
     if str(reclaim["supporting_event_source_id"]) != str(evidence["event_source_id"]):
-        reasons.add("EQUI,crENT_CREATION_BREAK_EVENT_USED_FOR_RECLAIM")
+        reasons.add("EQUIVALENT_CREATION_BREAK_EVENT_USED_FOR_RECLAIM")
 
     confidence = "high" if link["source"] == "EXPLICIT" else "medium"
     reclaim_time = reclaim["effective_reclaim_time"]
@@ -343,4 +343,282 @@ def load_weeklies(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = connection.execute(
         """
         SELECT *
-     
+        FROM raw_ranges
+        WHERE UPPER(COALESCE(json_extract(raw_payload_json, '$.structure_layer'), range_type, '')) = 'WEEKLY'
+          AND id IN (SELECT MAX(id) FROM raw_ranges GROUP BY source_record_id)
+        ORDER BY source_record_id
+        """
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["raw_payload_json"])
+        except (TypeError, json.JSONDecodeError):
+            payload = {}
+        result.append(
+            {
+                "raw_id": row["id"],
+                "import_run_id": row["import_run_id"],
+                "source_id": str(row["source_record_id"]),
+                "case_ref": payload.get("case_ref"),
+                "symbol": str(row["symbol"] or payload.get("symbol") or "").upper(),
+                "status": normalize_status(payload.get("status")),
+                "old_range_id": string_id(payload.get("old_range_id")),
+                "created_by_event_id": string_id(payload.get("created_by_event_id")),
+            }
+        )
+    return result
+
+
+def select_weeklies(rows: list[dict[str, Any]], filters: dict[str, str | None]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        if filters["case_ref"] and row["case_ref"] != filters["case_ref"]:
+            continue
+        if filters["symbol"] and row["symbol"] != filters["symbol"]:
+            continue
+        if filters["weekly_source_id"] and row["source_id"] != filters["weekly_source_id"]:
+            continue
+        selected.append(row)
+    return selected
+
+
+def latest_weekly_phase(connection: sqlite3.Connection, source_id: str) -> sqlite3.Row | None:
+    return connection.execute(
+        "SELECT * FROM weekly_phase_sequences WHERE weekly_range_source_id = ? ORDER BY id DESC LIMIT 1",
+        (source_id,),
+    ).fetchone()
+
+
+def latest_break_reclaim(connection: sqlite3.Connection, source_id: str) -> sqlite3.Row | None:
+    return connection.execute(
+        "SELECT * FROM weekly_break_reclaim_lifecycles WHERE weekly_range_source_id = ? ORDER BY id DESC LIMIT 1",
+        (source_id,),
+    ).fetchone()
+
+
+def clear_scope(
+    connection: sqlite3.Connection,
+    filters: dict[str, str | None],
+    selected_ids: set[str],
+) -> None:
+    if all(value is None for value in filters.values()):
+        connection.execute("DELETE FROM weekly_direction_contexts")
+        return
+    columns = {
+        "case_ref": "case_ref",
+        "symbol": "symbol",
+        "weekly_source_id": "weekly_range_source_id",
+    }
+    clauses: list[str] = []
+    params: list[Any] = []
+    for key, value in filters.items():
+        if value is not None:
+            clauses.append(f"{columns[key]} = ?")
+            params.append(value)
+    if clauses:
+        connection.execute(
+            "DELETE FROM weekly_direction_contexts WHERE " + " AND ".join(clauses),
+            tuple(params),
+        )
+    if selected_ids:
+        ordered = sorted(selected_ids, key=source_sort_key)
+        connection.execute(
+            f"DELETE FROM weekly_direction_contexts WHERE weekly_range_source_id IN ({','.join('?' for _ in ordered)})",
+            tuple(ordered),
+        )
+
+
+def base_row(weekly: dict[str, Any], built_at: str) -> dict[str, Any]:
+    return {
+        "built_at_utc": built_at,
+        "import_run_id": weekly["import_run_id"],
+        "case_ref": weekly["case_ref"],
+        "symbol": weekly["symbol"],
+        "source_timeframe": "W1",
+        "weekly_range_source_id": weekly["source_id"],
+        "raw_range_id": weekly["raw_id"],
+        "raw_status": weekly["status"],
+        "creation_link_source": "NONE",
+        "creation_old_weekly_source_id": None,
+        "creation_event_source_id": None,
+        "creation_break_direction": None,
+        "creation_break_time": None,
+        "creation_break_level": None,
+        "creation_break_kind": None,
+        "creation_reclaim_time": None,
+        "creation_reclaim_kind": None,
+        "pending_from_time": None,
+        "confirmed_from_time": None,
+        "current_direction_state": "UNRESOLVED",
+        "observation_status": "INCOMPLETE",
+        "resolution_status": "UNRESOLVED",
+        "resolution_confidence": "low",
+        "supporting_event_evidence_id": None,
+        "supporting_break_reclaim_id": None,
+        "supporting_weekly_phase_sequence_id": None,
+        "reason_codes_json": "[]",
+        "as_of_time": built_at,
+        "created_at_utc": built_at,
+        "updated_at_utc": built_at,
+    }
+
+
+def finish(
+    row: dict[str, Any],
+    state: str,
+    observation: str,
+    resolution: str,
+    confidence: str,
+    reasons: set[str],
+) -> dict[str, Any]:
+    row.update(
+        current_direction_state=state,
+        observation_status=observation,
+        resolution_status=resolution,
+        resolution_confidence=confidence,
+        reason_codes_json=json.dumps(sorted(reasons), separators=(",", ":")),
+    )
+    return row
+
+
+def insert_row(connection: sqlite3.Connection, row: dict[str, Any]) -> None:
+    keys = tuple(row)
+    connection.execute(
+        f"INSERT INTO weekly_direction_contexts ({','.join(keys)}) VALUES ({','.join('?' for _ in keys)})",
+        tuple(row[key] for key in keys),
+    )
+
+
+def build_summary(filters: dict[str, str | None], rows: list[dict[str, Any]]) -> dict[str, Any]:
+    count = lambda state: sum(1 for row in rows if row["current_direction_state"] == state)
+    return {
+        "filters": filters,
+        "weekly_ranges_selected": len(rows),
+        "rows_built": len(rows),
+        "confirmed_up_count": count("CONFIRMED_UP"),
+        "confirmed_down_count": count("CONFIRMED_DOWN"),
+        "pending_reclaim_up_count": count("PENDING_RECLAIM_UP"),
+        "pending_reclaim_down_count": count("PENDING_RECLAIM_DOWN"),
+        "unresolved_count": count("UNRESOLVED"),
+        "needs_review_count": count("NEEDS_REVIEW"),
+        "explicit_link_count": sum(row["creation_link_source"] == "EXPLICIT" for row in rows),
+        "derived_link_count": sum(row["creation_link_source"] == "EVIDENCE_DERIVED" for row in rows),
+    }
+
+
+def normalize_filters(
+    case_ref: str | None,
+    symbol: str | None,
+    weekly_source_id: str | None,
+) -> dict[str, str | None]:
+    return {
+        "case_ref": case_ref,
+        "symbol": symbol.upper() if symbol else None,
+        "weekly_source_id": str(weekly_source_id) if weekly_source_id else None,
+    }
+
+
+def normalize_status(value: Any) -> str:
+    return "UNKNOWN" if value is None or not str(value).strip() else str(value).strip().upper()
+
+
+def string_id(value: Any) -> str | None:
+    return None if value in (None, "") else str(value)
+
+
+def upper(value: str | None) -> str | None:
+    return value.upper() if value else None
+
+
+def effective_cutoff(as_of: str | None, latest: str, reasons: set[str]) -> str:
+    if not as_of:
+        return latest
+    requested = canonical_time(as_of)
+    if parse_time(requested) > parse_time(latest):
+        reasons.add("AS_OF_CAPPED_TO_WEEKLY_PHASE_DATA")
+        return latest
+    return requested
+
+
+def prices_differ(first: float, second: float) -> bool:
+    tolerance = max(abs(first), abs(second), 1.0) * 1e-9
+    return abs(first - second) > tolerance
+
+
+def canonical_time(value: str | None) -> str:
+    if not value:
+        raise WeeklyDirectionContextError("Timestamp is required")
+    return canonical_datetime(parse_time(value))
+
+
+def parse_time(value: str) -> datetime:
+    text = str(value).strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise WeeklyDirectionContextError(f"Invalid timestamp: {value}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def canonical_datetime(value: datetime) -> str:
+    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def utc_now() -> str:
+    return canonical_datetime(datetime.now(UTC))
+
+
+def source_sort_key(value: str) -> tuple[int, int | str]:
+    text = str(value)
+    return (0, int(text)) if text.isdigit() else (1, text)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="weekly_direction_context")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    build = subparsers.add_parser("build-weekly-direction-contexts")
+    build.add_argument("--db-path", required=True)
+    build.add_argument("--case-ref")
+    build.add_argument("--symbol")
+    build.add_argument("--weekly-source-id")
+    build.add_argument("--as-of")
+    build.add_argument("--json", action="store_true")
+    summary = subparsers.add_parser("weekly-direction-context-summary")
+    summary.add_argument("--db-path", required=True)
+    summary.add_argument("--case-ref")
+    summary.add_argument("--symbol")
+    summary.add_argument("--weekly-source-id")
+    summary.add_argument("--direction-state")
+    summary.add_argument("--observation-status")
+    summary.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    if args.command == "build-weekly-direction-contexts":
+        result = build_weekly_direction_contexts(
+            args.db_path,
+            case_ref=args.case_ref,
+            symbol=args.symbol,
+            weekly_source_id=args.weekly_source_id,
+            as_of=args.as_of,
+        )
+    else:
+        result = summarize_weekly_direction_contexts(
+            args.db_path,
+            case_ref=args.case_ref,
+            symbol=args.symbol,
+            weekly_source_id=args.weekly_source_id,
+            direction_state=args.direction_state,
+            observation_status=args.observation_status,
+        )
+    print(format_summary(result, as_json=args.json))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
