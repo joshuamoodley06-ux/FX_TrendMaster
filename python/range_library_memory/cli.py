@@ -50,6 +50,12 @@ from .weekly_break_reclaim import (
     format_summary as format_weekly_break_reclaim_summary,
     summarize_weekly_break_reclaim,
 )
+from .weekly_phase_sequence import (
+    WeeklyPhaseSequenceError,
+    build_weekly_phase_sequences,
+    format_summary as format_weekly_phase_summary,
+    summarize_weekly_phase_sequences,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -171,6 +177,24 @@ def build_parser() -> argparse.ArgumentParser:
     break_reclaim_summary_parser.add_argument("--state", default=None)
     break_reclaim_summary_parser.add_argument("--observation-status", default=None)
     break_reclaim_summary_parser.add_argument("--json", action="store_true")
+
+    phase_parser = subparsers.add_parser("build-weekly-phase-sequences", help="Build factual dated Weekly phase sequences.")
+    phase_parser.add_argument("--db-path", required=True)
+    phase_parser.add_argument("--source-db", required=True)
+    phase_parser.add_argument("--case-ref")
+    phase_parser.add_argument("--symbol")
+    phase_parser.add_argument("--weekly-source-id")
+    phase_parser.add_argument("--as-of")
+    phase_parser.add_argument("--json", action="store_true")
+
+    phase_summary_parser = subparsers.add_parser("weekly-phase-sequence-summary", help="Summarize Weekly phase sequences.")
+    phase_summary_parser.add_argument("--db-path", required=True)
+    phase_summary_parser.add_argument("--case-ref")
+    phase_summary_parser.add_argument("--symbol")
+    phase_summary_parser.add_argument("--weekly-source-id")
+    phase_summary_parser.add_argument("--state")
+    phase_summary_parser.add_argument("--observation-status")
+    phase_summary_parser.add_argument("--json", action="store_true")
 
     return parser
 
@@ -360,6 +384,24 @@ def main(argv: list[str] | None = None) -> int:
         except InspectionError as exc:
             parser.error(str(exc))
         print(format_weekly_break_reclaim_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "build-weekly-phase-sequences":
+        try:
+            summary = build_weekly_phase_sequences(args.db_path, source_db=args.source_db, case_ref=args.case_ref,
+                symbol=args.symbol, weekly_source_id=args.weekly_source_id, as_of=args.as_of)
+        except (InspectionError, WeeklyPhaseSequenceError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_weekly_phase_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "weekly-phase-sequence-summary":
+        try:
+            summary = summarize_weekly_phase_sequences(args.db_path, case_ref=args.case_ref, symbol=args.symbol,
+                weekly_source_id=args.weekly_source_id, state=args.state, observation_status=args.observation_status)
+        except (InspectionError, WeeklyPhaseSequenceError, ValueError) as exc:
+            parser.error(str(exc))
+        print(format_weekly_phase_summary(summary, as_json=args.json))
         return 0
 
     if args.command == "show-run":

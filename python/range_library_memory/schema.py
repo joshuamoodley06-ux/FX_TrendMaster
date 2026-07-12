@@ -17,6 +17,7 @@ REQUIRED_TABLES = (
     "event_ohlc_evidence",
     "resolved_range_lifecycles",
     "weekly_break_reclaim_lifecycles",
+    "weekly_phase_sequences",
 )
 
 
@@ -277,6 +278,54 @@ CREATE INDEX IF NOT EXISTS idx_weekly_break_reclaim_break_time
     ON weekly_break_reclaim_lifecycles(break_time);
 CREATE INDEX IF NOT EXISTS idx_weekly_break_reclaim_reclaim_time
     ON weekly_break_reclaim_lifecycles(effective_reclaim_time);
+
+CREATE TABLE IF NOT EXISTS weekly_phase_sequences (
+    id INTEGER PRIMARY KEY,
+    built_at_utc TEXT NOT NULL,
+    import_run_id INTEGER,
+    case_ref TEXT,
+    symbol TEXT NOT NULL,
+    source_timeframe TEXT NOT NULL,
+    weekly_range_source_id TEXT NOT NULL UNIQUE,
+    raw_range_id INTEGER,
+    raw_status TEXT,
+    range_high REAL,
+    range_low REAL,
+    t0_formation_time TEXT,
+    t1_break_time TEXT,
+    t1_break_direction TEXT,
+    t1_break_level REAL,
+    t1_break_kind TEXT,
+    t2_reclaim_time TEXT,
+    t2_reclaim_kind TEXT,
+    same_candle_break_reclaim INTEGER NOT NULL DEFAULT 0,
+    formation_to_break_days REAL,
+    break_to_reclaim_days REAL,
+    current_phase_state TEXT NOT NULL,
+    current_phase_start_time TEXT,
+    current_phase_age_days REAL,
+    observation_status TEXT NOT NULL,
+    resolution_status TEXT NOT NULL,
+    resolution_confidence TEXT NOT NULL,
+    supporting_break_reclaim_id INTEGER,
+    reason_codes_json TEXT NOT NULL,
+    as_of_time TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    updated_at_utc TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_source_id
+    ON weekly_phase_sequences(weekly_range_source_id);
+CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_scope
+    ON weekly_phase_sequences(case_ref, symbol);
+CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_state
+    ON weekly_phase_sequences(current_phase_state);
+CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_t0
+    ON weekly_phase_sequences(t0_formation_time);
+CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_t1
+    ON weekly_phase_sequences(t1_break_time);
+CREATE INDEX IF NOT EXISTS idx_weekly_phase_sequence_t2
+    ON weekly_phase_sequences(t2_reclaim_time);
 """
 
 
