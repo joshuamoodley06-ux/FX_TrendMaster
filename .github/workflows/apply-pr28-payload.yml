@@ -1,4 +1,4 @@
-name: Diagnose Remaining PR 28 Payload
+name: Apply Remaining PR 28 Payload
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  diagnose:
+  apply:
     if: github.event.pull_request.head.ref == 'feat/weekly-direction-daily-relationship-v01'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -20,30 +20,18 @@ jobs:
         with:
           ref: feat/weekly-direction-daily-relationship-v01
           fetch-depth: 0
-      - name: Diagnose remaining payload
+      - name: Apply remaining implementation files
         shell: bash
         run: |
-          set +e
-          {
-            wc -c .pr28_missing_payload.b64
-            sha256sum .pr28_missing_payload.b64
-            base64 -d .pr28_missing_payload.b64 > /tmp/pr28_missing.tar.gz
-            echo "decode_exit=$?"
-            sha256sum /tmp/pr28_missing.tar.gz
-            gzip -t /tmp/pr28_missing.tar.gz
-            echo "gzip_exit=$?"
-            tar -tzf /tmp/pr28_missing.tar.gz
-            echo "list_exit=$?"
-            tar -xzf /tmp/pr28_missing.tar.gz -C python
-            echo "extract_exit=$?"
-            git status --short
-          } > pr28-missing-diagnostic.log 2>&1
-          cat pr28-missing-diagnostic.log
-          exit 0
-      - name: Upload diagnostic
-        uses: actions/upload-artifact@v4
-        with:
-          name: pr28-missing-diagnostic
-          path: pr28-missing-diagnostic.log
-          if-no-files-found: error
-          retention-days: 1
+          set -euo pipefail
+          if [ ! -f .pr28_missing_payload.b64 ]; then
+            echo "Remaining payload already applied."
+            exit 0
+          fi
+          cat .pr28_missing_payload.b64 .pr28_missing_payload.tail | base64 -d | tar -xz -C python
+          rm .pr28_missing_payload.b64 .pr28_missing_payload.tail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: complete Weekly direction and Daily trend relationships"
+          git push origin HEAD:feat/weekly-direction-daily-relationship-v01
