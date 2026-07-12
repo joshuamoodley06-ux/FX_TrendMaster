@@ -92,7 +92,7 @@ def build_structure_review_queue(db_path: str | Path) -> dict[str, Any]:
 
         items.extend(collect_event_items(connection, now))
         items.extend(collect_validation_items(connection, now))
-        items.extend(collect_duplicate_items(connection, now))
+        items.extend(collect_duplicate_backlog_items(connection, now))
         items.extend(
             collect_daily_fallback_items(
                 connection,
@@ -644,95 +644,62 @@ def validation_issue_is_current(
     return True
 
 
-def collect_duplicate_items(connection: sqlite3.Connection, now: str) -> list[dict[str, Any]]:
-    """Surface only current, distinct, high-confidence duplicate records.
+def collect_duplicate_backlog_items(
+    connection: sqlite3.Connection,
+    now: str,
+) -> list[dict[str, Any]]:
+    """Keep importer duplicate noise out of the trader-facing chart queue.
 
-    Low-confidence overlapping windows and successive versions of the same source id
-    remain audit evidence. They are not actionable chart tasks.
+    The duplicate detector currently records audit candidates from signatures and
+    import history. Until logical event/range identity is normalized, individual
+    candidates are not trustworthy chart tasks. Preserve one reference-only backlog
+    item instead of flooding the review cockpit.
     """
-    rows = connection.execute(
+    row = connection.execute(
         """
-        SELECT candidate.*
-        FROM duplicate_candidates AS candidate
-        WHERE candidate.review_status = 'open'
-          AND LOWER(candidate.confidence) IN ('exact', 'high')
-          AND candidate.rule_code IN ('same_range_window', 'same_event_signature')
-          AND candidate.id = (
-              SELECT MAX(newer.id)
-              FROM duplicate_candidates AS newer
-              WHERE newer.review_status = 'open'
-                AND newer.rule_code = candidate.rule_code
-                AND COALESCE(newer.left_raw_range_id, -1) = COALESCE(candidate.left_raw_range_id, -1)
-                AND COALESCE(newer.right_raw_range_id, -1) = COALESCE(candidate.right_raw_range_id, -1)
-                AND COALESCE(newer.left_raw_event_id, -1) = COALESCE(candidate.left_raw_event_id, -1)
-                AND COALESCE(newer.right_raw_event_id, -1) = COALESCE(candidate.right_raw_event_id, -1)
-          )
-        ORDER BY candidate.id
+        SELECT COUNT(*) AS open_count,
+               SUM(CASE WHEN LOWER(candidate_type) = 'event' THEN 1 ELSE 0 END) AS event_count,
+               SUM(CASE WHEN LOWER(candidate_type) = 'range' THEN 1 ELSE 0 END) AS range_count
+        FROM duplicate_candidates
+        WHERE review_status = 'open'
         """
-    ).fetchall()
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        if not duplicate_pair_is_current_distinct(connection, row):
-            continue
-
-        left = raw_reference(
-            connection,
-            raw_range_id=row["left_raw_range_id"],
-            raw_event_id=row["left_raw_event_id"],
+    ).fetchone()
+    total = int(row["open_count"] or 0)
+    if total == 0:
+        return []
+    event_count = int(row["event_count"] or 0)
+    range_count = int(row["range_count"] or 0)
+    return [
+        item_payload(
+            review_key="duplicate-audit:backlog",
+            now=now,
+            actionability=REFERENCE_ONLY,
+            priority=95,
+            severity="LOW",
+            item_type="DUPLICATE_AUDIT_BACKLOG",
+            root_cause_code="DUPLICATE_LOGICAL_IDENTITY_NOT_NORMALIZED",
+            source_table="duplicate_candidates",
+            source_row_id=None,
+            case_ref=None,
+            symbol=None,
+            structure_layer=None,
+            source_timeframe=None,
+            range_source_id=None,
+            event_source_id=None,
+            candidate_range_ids=[],
+            reason_codes=["DUPLICATE_AUDIT_BACKLOG"],
+            title="Duplicate Audit Backlog",
+            trader_summary=(
+                f"Importer recorded {total} open duplicate candidates "
+                f"({event_count} event, {range_count} range). They are not individual "
+                "chart tasks until logical event and range identity is normalized."
+            ),
+            suggested_action=(
+                "No chart action. Resolve duplicate identity in a dedicated Python audit "
+                "before surfacing individual records."
+            ),
         )
-        right = raw_reference(
-            connection,
-            raw_range_id=row["right_raw_range_id"],
-            raw_event_id=row["right_raw_event_id"],
-        )
-        candidate_ranges = [
-            value
-            for value in (left.get("range_source_id"), right.get("range_source_id"))
-            if value
-        ]
-        logical_ids = sorted(
-            {
-                str(value)
-                for value in (
-                    left.get("range_source_id") or left.get("event_source_id"),
-                    right.get("range_source_id") or right.get("event_source_id"),
-                )
-                if value
-            },
-            key=source_sort_key,
-        )
-        logical_key = ":".join(logical_ids) or str(row["id"])
-        items.append(
-            item_payload(
-                review_key=(
-                    f"duplicate:{str(row['candidate_type']).lower()}:"
-                    f"{row['rule_code']}:{logical_key}"
-                ),
-                now=now,
-                actionability=ACTION_REQUIRED,
-                priority=18,
-                severity="HIGH",
-                item_type="DUPLICATE_CANDIDATE",
-                root_cause_code=str(row["rule_code"]),
-                source_table="duplicate_candidates",
-                source_row_id=row["id"],
-                case_ref=left.get("case_ref") or right.get("case_ref"),
-                symbol=left.get("symbol") or right.get("symbol"),
-                structure_layer=left.get("structure_layer") or right.get("structure_layer"),
-                source_timeframe=left.get("source_timeframe") or right.get("source_timeframe"),
-                range_source_id=left.get("range_source_id") or right.get("range_source_id"),
-                event_source_id=left.get("event_source_id") or right.get("event_source_id"),
-                candidate_range_ids=candidate_ranges,
-                reason_codes=[str(row["rule_code"])],
-                chart_time=left.get("event_time") or right.get("event_time"),
-                chart_start_time=left.get("range_start_time") or right.get("range_start_time"),
-                chart_end_time=left.get("range_end_time") or right.get("range_end_time"),
-                title=f"Possible Duplicate: {str(row['candidate_type']).replace('_', ' ').title()}",
-                trader_summary=str(row["reason"]),
-                suggested_action="Compare both current mapped records and mark duplicate or not duplicate.",
-            )
-        )
-    return items
+    ]
 
 
 def duplicate_pair_is_current_distinct(

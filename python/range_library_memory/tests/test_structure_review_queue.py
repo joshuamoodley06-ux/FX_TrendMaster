@@ -367,9 +367,50 @@ def test_validation_and_duplicate_sources_join_the_same_queue(tmp_path: Path) ->
     types = {item["item_type"] for item in items}
 
     assert result["rows_built"] == 2
-    assert types == {"VALIDATION_ISSUE", "DUPLICATE_CANDIDATE"}
-    duplicate = next(item for item in items if item["item_type"] == "DUPLICATE_CANDIDATE")
-    assert duplicate["candidate_range_ids"] == ["419", "425"]
+    assert result["action_required_count"] == 1
+    assert result["reference_only_count"] == 1
+    assert types == {"VALIDATION_ISSUE", "DUPLICATE_AUDIT_BACKLOG"}
+    backlog = next(item for item in items if item["item_type"] == "DUPLICATE_AUDIT_BACKLOG")
+    assert backlog["actionability"] == REFERENCE_ONLY
+    assert "1 open duplicate candidates" in backlog["trader_summary"]
+
+
+def test_many_duplicate_candidates_collapse_to_one_reference_backlog(tmp_path: Path) -> None:
+    db = imported_db(tmp_path, [weekly_range("419"), weekly_range("425")])
+    left = raw_range_row(db, "419")
+    right = raw_range_row(db, "425")
+    now = "2026-07-12T00:00:00Z"
+    with sqlite3.connect(db) as connection:
+        for index in range(5):
+            connection.execute(
+                """
+                INSERT INTO duplicate_candidates(
+                    import_run_id, candidate_type, left_raw_range_id,
+                    right_raw_range_id, rule_code, confidence, reason,
+                    created_at_utc, review_status
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    left["import_run_id"],
+                    "range",
+                    left["id"],
+                    right["id"],
+                    f"TEST_DUPLICATE_{index}",
+                    "high",
+                    "Synthetic duplicate audit candidate.",
+                    now,
+                    "open",
+                ),
+            )
+
+    result = build_structure_review_queue(db)
+    items = list_structure_review_queue(db)
+
+    assert result["action_required_count"] == 0
+    assert result["reference_only_count"] == 1
+    assert len(items) == 1
+    assert items[0]["item_type"] == "DUPLICATE_AUDIT_BACKLOG"
+    assert "5 open duplicate candidates" in items[0]["trader_summary"]
 
 
 def test_daily_trend_review_is_used_only_when_no_clearer_root_cause_exists(tmp_path: Path) -> None:
@@ -497,8 +538,11 @@ def test_importer_overlap_noise_does_not_become_chart_work(tmp_path: Path) -> No
         ).fetchone()[0] > 0
 
     result = build_structure_review_queue(db)
+    items = list_structure_review_queue(db)
     assert result["action_required_count"] == 0
-    assert list_structure_review_queue(db) == []
+    assert result["reference_only_count"] == 1
+    assert len(items) == 1
+    assert items[0]["item_type"] == "DUPLICATE_AUDIT_BACKLOG"
 
 
 def test_validation_queue_ignores_warnings_and_superseded_versions(tmp_path: Path) -> None:
@@ -538,5 +582,8 @@ def test_validation_queue_ignores_warnings_and_superseded_versions(tmp_path: Pat
         )
 
     result = build_structure_review_queue(db)
+    items = list_structure_review_queue(db)
     assert result["action_required_count"] == 0
-    assert list_structure_review_queue(db) == []
+    assert result["reference_only_count"] == 1
+    assert len(items) == 1
+    assert items[0]["item_type"] == "DUPLICATE_AUDIT_BACKLOG"
