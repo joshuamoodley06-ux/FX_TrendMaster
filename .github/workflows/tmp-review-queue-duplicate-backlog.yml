@@ -27,26 +27,7 @@ jobs:
       - name: Run focused queue tests
         env:
           PYTHONPATH: python
-        shell: bash
-        run: |
-          set +e
-          python -m pytest python/range_library_memory/tests/test_structure_review_queue.py -q --tb=short > focused-duplicate-backlog.log 2>&1
-          code=$?
-          cat focused-duplicate-backlog.log
-          echo "FOCUSED_EXIT_CODE=$code" >> "$GITHUB_ENV"
-          exit 0
-      - name: Upload focused test log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: focused-duplicate-backlog-log
-          path: focused-duplicate-backlog.log
-      - name: Stop if focused tests failed
-        shell: bash
-        run: |
-          if [ "${FOCUSED_EXIT_CODE}" != "0" ]; then
-            exit "${FOCUSED_EXIT_CODE}"
-          fi
+        run: python -m pytest python/range_library_memory/tests/test_structure_review_queue.py -q
       - name: Run full Range Library Memory suite
         env:
           PYTHONPATH: python
