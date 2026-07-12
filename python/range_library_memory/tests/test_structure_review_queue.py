@@ -248,7 +248,7 @@ def insert_validation_and_duplicate(db: Path) -> None:
                 "range",
                 left["id"],
                 right["id"],
-                "SAME_BOUNDARIES",
+                "same_range_window",
                 "high",
                 "Both Weekly ranges share the same boundaries.",
                 now,
@@ -474,3 +474,69 @@ def test_summary_filters_and_module_cli_are_deterministic(tmp_path: Path, capsys
 
     direct = summarize_structure_review_queue(db, structure_layer="weekly")
     assert direct["totals"]["active"] == 1
+
+
+
+def test_importer_overlap_noise_does_not_become_chart_work(tmp_path: Path) -> None:
+    db = tmp_path / "noise.sqlite3"
+    import_source(
+        db,
+        write_source(
+            tmp_path,
+            [
+                weekly_range("419"),
+                weekly_range("425", range_high_price=2200.0, range_low_price=1900.0),
+            ],
+        ),
+        "fixture",
+    )
+
+    with sqlite3.connect(db) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM duplicate_candidates WHERE rule_code='overlapping_range_window'"
+        ).fetchone()[0] > 0
+
+    result = build_structure_review_queue(db)
+    assert result["action_required_count"] == 0
+    assert list_structure_review_queue(db) == []
+
+
+def test_validation_queue_ignores_warnings_and_superseded_versions(tmp_path: Path) -> None:
+    db = imported_db(tmp_path, [weekly_range("419")])
+    old = raw_range_row(db, "419")
+    now = "2026-07-12T00:00:00Z"
+
+    revised = weekly_range("419", range_high_price=2110.0)
+    import_source(db, write_source(tmp_path, [revised]), "fixture-revision")
+    latest = raw_range_row(db, "419")
+    assert latest["id"] != old["id"]
+
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            """
+            INSERT INTO validation_issues(
+                import_run_id, raw_range_id, severity, issue_code, message,
+                field_name, created_at_utc
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                old["import_run_id"], old["id"], "error", "OLD_INVALID",
+                "Old revision issue.", "high", now,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_issues(
+                import_run_id, raw_range_id, severity, issue_code, message,
+                field_name, created_at_utc
+            ) VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                latest["import_run_id"], latest["id"], "warning", "CURRENT_WARNING",
+                "Current warning only.", "timeframe", now,
+            ),
+        )
+
+    result = build_structure_review_queue(db)
+    assert result["action_required_count"] == 0
+    assert list_structure_review_queue(db) == []

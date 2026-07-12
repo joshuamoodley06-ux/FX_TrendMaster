@@ -557,28 +557,54 @@ def collect_event_items(connection: sqlite3.Connection, now: str) -> list[dict[s
 
 
 def collect_validation_items(connection: sqlite3.Connection, now: str) -> list[dict[str, Any]]:
+    """Surface only current error-level validation faults.
+
+    Import warnings remain available in validation_issues for audit, but they do not
+    become chart tasks. Repeated imports of the same raw record collapse to one
+    current root cause.
+    """
     rows = connection.execute(
         """
-        SELECT *
-        FROM validation_issues
-        WHERE resolved_at_utc IS NULL
-        ORDER BY id
+        SELECT issue.*
+        FROM validation_issues AS issue
+        WHERE issue.resolved_at_utc IS NULL
+          AND issue.id = (
+              SELECT MAX(candidate.id)
+              FROM validation_issues AS candidate
+              WHERE candidate.resolved_at_utc IS NULL
+                AND COALESCE(candidate.raw_range_id, -1) = COALESCE(issue.raw_range_id, -1)
+                AND COALESCE(candidate.raw_event_id, -1) = COALESCE(issue.raw_event_id, -1)
+                AND candidate.issue_code = issue.issue_code
+          )
+        ORDER BY issue.id
         """
     ).fetchall()
     items: list[dict[str, Any]] = []
     for row in rows:
+        severity = normalize_severity(row["severity"])
+        if severity not in {"CRITICAL", "HIGH"}:
+            continue
+        if not validation_issue_is_current(connection, row):
+            continue
+
         ref = raw_reference(
             connection,
             raw_range_id=row["raw_range_id"],
             raw_event_id=row["raw_event_id"],
         )
-        severity = normalize_severity(row["severity"])
+        subject_key = (
+            ref.get("event_source_id")
+            or ref.get("range_source_id")
+            or f"raw-range-{row['raw_range_id']}"
+            if row["raw_range_id"] is not None
+            else f"raw-event-{row['raw_event_id']}"
+        )
         items.append(
             item_payload(
-                review_key=f"validation:{row['id']}",
+                review_key=f"validation:{row['issue_code']}:{subject_key}",
                 now=now,
                 actionability=ACTION_REQUIRED,
-                priority=8 if severity in {"CRITICAL", "HIGH"} else 28,
+                priority=8,
                 severity=severity,
                 item_type="VALIDATION_ISSUE",
                 root_cause_code=str(row["issue_code"]),
@@ -597,23 +623,58 @@ def collect_validation_items(connection: sqlite3.Connection, now: str) -> list[d
                 chart_end_time=ref.get("range_end_time"),
                 title=f"Validation: {str(row['issue_code']).replace('_', ' ').title()}",
                 trader_summary=str(row["message"]),
-                suggested_action="Open the linked range or event and confirm or correct the flagged fact.",
+                suggested_action="Open the linked range or event and correct the invalid structural fact.",
             )
         )
     return items
 
 
+def validation_issue_is_current(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> bool:
+    if row["raw_range_id"] is not None and not raw_record_is_latest(
+        connection, "raw_ranges", int(row["raw_range_id"])
+    ):
+        return False
+    if row["raw_event_id"] is not None and not raw_record_is_latest(
+        connection, "raw_events", int(row["raw_event_id"])
+    ):
+        return False
+    return True
+
+
 def collect_duplicate_items(connection: sqlite3.Connection, now: str) -> list[dict[str, Any]]:
+    """Surface only current, distinct, high-confidence duplicate records.
+
+    Low-confidence overlapping windows and successive versions of the same source id
+    remain audit evidence. They are not actionable chart tasks.
+    """
     rows = connection.execute(
         """
-        SELECT *
-        FROM duplicate_candidates
-        WHERE review_status = 'open'
-        ORDER BY id
+        SELECT candidate.*
+        FROM duplicate_candidates AS candidate
+        WHERE candidate.review_status = 'open'
+          AND LOWER(candidate.confidence) IN ('exact', 'high')
+          AND candidate.rule_code IN ('same_range_window', 'same_event_signature')
+          AND candidate.id = (
+              SELECT MAX(newer.id)
+              FROM duplicate_candidates AS newer
+              WHERE newer.review_status = 'open'
+                AND newer.rule_code = candidate.rule_code
+                AND COALESCE(newer.left_raw_range_id, -1) = COALESCE(candidate.left_raw_range_id, -1)
+                AND COALESCE(newer.right_raw_range_id, -1) = COALESCE(candidate.right_raw_range_id, -1)
+                AND COALESCE(newer.left_raw_event_id, -1) = COALESCE(candidate.left_raw_event_id, -1)
+                AND COALESCE(newer.right_raw_event_id, -1) = COALESCE(candidate.right_raw_event_id, -1)
+          )
+        ORDER BY candidate.id
         """
     ).fetchall()
     items: list[dict[str, Any]] = []
     for row in rows:
+        if not duplicate_pair_is_current_distinct(connection, row):
+            continue
+
         left = raw_reference(
             connection,
             raw_range_id=row["left_raw_range_id"],
@@ -629,14 +690,28 @@ def collect_duplicate_items(connection: sqlite3.Connection, now: str) -> list[di
             for value in (left.get("range_source_id"), right.get("range_source_id"))
             if value
         ]
-        severity = "HIGH" if str(row["confidence"]).lower() == "high" else "MEDIUM"
+        logical_ids = sorted(
+            {
+                str(value)
+                for value in (
+                    left.get("range_source_id") or left.get("event_source_id"),
+                    right.get("range_source_id") or right.get("event_source_id"),
+                )
+                if value
+            },
+            key=source_sort_key,
+        )
+        logical_key = ":".join(logical_ids) or str(row["id"])
         items.append(
             item_payload(
-                review_key=f"duplicate:{row['id']}",
+                review_key=(
+                    f"duplicate:{str(row['candidate_type']).lower()}:"
+                    f"{row['rule_code']}:{logical_key}"
+                ),
                 now=now,
                 actionability=ACTION_REQUIRED,
-                priority=18 if severity == "HIGH" else 40,
-                severity=severity,
+                priority=18,
+                severity="HIGH",
                 item_type="DUPLICATE_CANDIDATE",
                 root_cause_code=str(row["rule_code"]),
                 source_table="duplicate_candidates",
@@ -654,10 +729,68 @@ def collect_duplicate_items(connection: sqlite3.Connection, now: str) -> list[di
                 chart_end_time=left.get("range_end_time") or right.get("range_end_time"),
                 title=f"Possible Duplicate: {str(row['candidate_type']).replace('_', ' ').title()}",
                 trader_summary=str(row["reason"]),
-                suggested_action="Compare both mapped records and mark duplicate or not duplicate.",
+                suggested_action="Compare both current mapped records and mark duplicate or not duplicate.",
             )
         )
     return items
+
+
+def duplicate_pair_is_current_distinct(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> bool:
+    candidate_type = str(row["candidate_type"] or "").lower()
+    if candidate_type == "range":
+        table = "raw_ranges"
+        left_id = row["left_raw_range_id"]
+        right_id = row["right_raw_range_id"]
+    elif candidate_type == "event":
+        table = "raw_events"
+        left_id = row["left_raw_event_id"]
+        right_id = row["right_raw_event_id"]
+    else:
+        return False
+
+    if left_id is None or right_id is None:
+        return False
+    if not raw_record_is_latest(connection, table, int(left_id)):
+        return False
+    if not raw_record_is_latest(connection, table, int(right_id)):
+        return False
+
+    source_rows = connection.execute(
+        f"SELECT id, source_record_id FROM {table} WHERE id IN (?, ?)",
+        (int(left_id), int(right_id)),
+    ).fetchall()
+    if len(source_rows) != 2:
+        return False
+    source_ids = [row_value["source_record_id"] for row_value in source_rows]
+    if any(value in (None, "") for value in source_ids):
+        return False
+    return str(source_ids[0]) != str(source_ids[1])
+
+
+def raw_record_is_latest(
+    connection: sqlite3.Connection,
+    table: str,
+    raw_id: int,
+) -> bool:
+    if table not in {"raw_ranges", "raw_events"}:
+        raise ValueError(f"Unsupported raw table: {table}")
+    row = connection.execute(
+        f"SELECT source_record_id FROM {table} WHERE id = ?",
+        (raw_id,),
+    ).fetchone()
+    if row is None:
+        return False
+    source_id = row["source_record_id"]
+    if source_id in (None, ""):
+        return True
+    latest = connection.execute(
+        f"SELECT MAX(id) FROM {table} WHERE source_record_id = ?",
+        (source_id,),
+    ).fetchone()[0]
+    return int(latest) == raw_id
 
 
 def collect_daily_fallback_items(
