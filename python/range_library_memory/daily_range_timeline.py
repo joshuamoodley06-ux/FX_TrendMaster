@@ -21,11 +21,11 @@ from .source_market_db import (
     open_source_market_db,
 )
 
-FACTUAL_RESOLUTIONS = {"MAPPED_CONFIRMED", "OHLC_DERIVED"}
-INACTIVE_RAW_STATUSES = {"BROKEN", "ABANDONED", "ARCHIVED"}
-ACTIVE_RAW_STATUSES = {"ACTIVE", "FORMING"}
-PARENT_REVIEW_STATUSES = {"CONFLICT", "NEEDS_REVIEW"}
-UNUSABLE_WEEKLY_STATES = {"NEEDS_REVIEW", "INCOMPLETE_RANGE", "MISSING_CANDLES"}
+FACTUAL = {"MAPPED_CONFIRMED", "OHLC_DERIVED"}
+ACTIVE_RAW = {"ACTIVE", "FORMING"}
+INACTIVE_RAW = {"BROKEN", "ABANDONED", "ARCHIVED"}
+PARENT_REVIEW = {"CONFLICT", "NEEDS_REVIEW"}
+BAD_WEEKLY = {"NEEDS_REVIEW", "INCOMPLETE_RANGE", "MISSING_CANDLES"}
 
 
 class DailyRangeTimelineError(RuntimeError):
@@ -50,8 +50,9 @@ def build_daily_range_timelines(
             dailies = load_dailies(connection)
             relationships = latest_relationships(connection)
             selected = select_dailies(dailies, relationships, filters)
+            selected_ids = {daily["source_id"] for daily in selected}
             sequences = sequence_map(dailies, relationships)
-            clear_scope(connection, filters)
+            clear_scope(connection, filters, selected_ids)
             rows = [
                 evaluate_daily(
                     connection,
@@ -110,7 +111,7 @@ def summarize_daily_range_timelines(
             params.append(value)
     where = " WHERE " + " AND ".join(clauses) if clauses else ""
     with connect(path) as connection:
-        rows = connection.execute(
+        grouped = connection.execute(
             f"""
             SELECT current_daily_state,
                    observation_status,
@@ -130,12 +131,8 @@ def summarize_daily_range_timelines(
             """,
             tuple(params),
         ).fetchall()
-    groups = [dict(row) for row in rows]
-    return {
-        "filters": filters,
-        "total": sum(int(row["count"]) for row in groups),
-        "groups": groups,
-    }
+    groups = [dict(row) for row in grouped]
+    return {"filters": filters, "total": sum(int(row["count"]) for row in groups), "groups": groups}
 
 
 def format_summary(summary: dict[str, Any], *, as_json: bool = False) -> str:
@@ -168,105 +165,51 @@ def evaluate_daily(
 
     latest = latest_candle_time(source, symbol=daily["symbol"], timeframe="D1")
     if not latest:
-        return finish(
-            row,
-            "MISSING_CANDLES",
-            "INCOMPLETE",
-            "MISSING_DATA",
-            "low",
-            reasons | {"MISSING_D1_CANDLES"},
-        )
-    latest = canonical_time(latest)
-    cutoff = effective_cutoff(as_of, latest, reasons)
+        return finish(row, "MISSING_CANDLES", "INCOMPLETE", "MISSING_DATA", "low", reasons | {"MISSING_D1_CANDLES"})
+    cutoff = effective_cutoff(as_of, canonical_time(latest), reasons)
     row["as_of_time"] = cutoff
 
     if not daily["high_time"] or not daily["low_time"]:
-        return finish(
-            row,
-            "INCOMPLETE_RANGE",
-            "INCOMPLETE",
-            "INCOMPLETE_RANGE",
-            "low",
-            reasons | {"MISSING_RANGE_ANCHOR_TIME"},
-        )
+        return finish(row, "INCOMPLETE_RANGE", "INCOMPLETE", "INCOMPLETE_RANGE", "low", reasons | {"MISSING_RANGE_ANCHOR_TIME"})
 
-    formation_times = [parse_time(daily["high_time"]), parse_time(daily["low_time"])]
-    if daily["active_time"]:
-        formation_times.append(parse_time(daily["active_time"]))
-    t0 = canonical_datetime(max(formation_times))
+    t0 = formation_time(daily)
     row["t0_formation_time"] = t0
     row["weekly_phase_at_daily_formation"] = parent_phase(connection, row, t0)
-
     if parse_time(t0) > parse_time(cutoff):
         row["daily_sequence_in_weekly"] = None
-        return finish(
-            row,
-            "NEEDS_REVIEW",
-            "INCOMPLETE",
-            "NEEDS_REVIEW",
-            "low",
-            reasons | {"MILESTONE_AFTER_AS_OF"},
-        )
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"MILESTONE_AFTER_AS_OF"})
 
     height = range_height(daily)
     row["range_height"] = height
     if height is None or height <= 0:
-        return finish(
-            row,
-            "NEEDS_REVIEW",
-            "INCOMPLETE",
-            "NEEDS_REVIEW",
-            "low",
-            reasons | {"INVALID_RANGE_HEIGHT"},
-        )
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"INVALID_RANGE_HEIGHT"})
 
     lifecycle = latest_lifecycle(connection, daily["source_id"])
     evidence = supporting_evidence(connection, lifecycle, daily["source_id"])
     contradictions = evidence_errors(daily, lifecycle, evidence)
     if contradictions:
-        return finish(
-            row,
-            "NEEDS_REVIEW",
-            "INCOMPLETE",
-            "NEEDS_REVIEW",
-            "low",
-            reasons | contradictions,
-        )
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | contradictions)
 
-    if factual_break_available(lifecycle, evidence):
-        direction = "UP" if evidence["event_type"] == "BOS_UP" else "DOWN"
-        t1 = canonical_time(evidence["effective_break_time"])
-        row.update(
-            t1_break_time=t1,
-            t1_break_direction=direction,
-            t1_break_level=float(evidence["boundary_price"]),
-            t1_break_kind=evidence["effective_break_kind"],
-            supporting_event_source_id=evidence["event_source_id"],
-            supporting_evidence_id=evidence["id"],
-            weekly_phase_at_daily_break=parent_phase(connection, row, t1),
-        )
-        if parse_time(t1) < parse_time(t0):
-            return finish(
-                row,
-                "NEEDS_REVIEW",
-                "INCOMPLETE",
-                "NEEDS_REVIEW",
-                "low",
-                reasons | {"BREAK_BEFORE_RANGE_FORMATION"},
-            )
-        if parse_time(t1) > parse_time(cutoff):
-            return finish(
-                row,
-                "NEEDS_REVIEW",
-                "INCOMPLETE",
-                "NEEDS_REVIEW",
-                "low",
-                reasons | {"MILESTONE_AFTER_AS_OF"},
-            )
-        row["formation_to_break_days"] = elapsed_days(t0, t1)
-        return evaluate_reclaim(row, source, daily, cutoff, reasons)
+    if not factual_break_available(lifecycle, evidence):
+        return no_factual_break_state(row, daily["status"], t0, cutoff, reasons)
 
-    return no_factual_break_state(row, daily["status"], t0, cutoff, reasons)
+    direction = "UP" if evidence["event_type"] == "BOS_UP" else "DOWN"
+    t1 = canonical_time(evidence["effective_break_time"])
+    row.update(
+        t1_break_time=t1,
+        t1_break_direction=direction,
+        t1_break_level=float(evidence["boundary_price"]),
+        t1_break_kind=evidence["effective_break_kind"],
+        supporting_event_source_id=evidence["event_source_id"],
+        supporting_evidence_id=evidence["id"],
+        weekly_phase_at_daily_break=parent_phase(connection, row, t1),
+    )
+    if parse_time(t1) < parse_time(t0):
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"BREAK_BEFORE_RANGE_FORMATION"})
+    if parse_time(t1) > parse_time(cutoff):
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"MILESTONE_AFTER_AS_OF"})
+    row["formation_to_break_days"] = elapsed_days(t0, t1)
+    return evaluate_reclaim(row, source, daily, cutoff, reasons)
 
 
 def evaluate_reclaim(
@@ -279,32 +222,12 @@ def evaluate_reclaim(
     t1 = str(row["t1_break_time"])
     direction = str(row["t1_break_direction"])
     level = float(row["t1_break_level"])
-    candles = load_candles(
-        source,
-        symbol=daily["symbol"],
-        timeframe="D1",
-        start_time=t1,
-        end_time=cutoff,
-    )
+    candles = load_candles(source, symbol=daily["symbol"], timeframe="D1", start_time=t1, end_time=cutoff)
     if not candles:
-        return finish(
-            row,
-            "MISSING_CANDLES",
-            "INCOMPLETE",
-            "MISSING_DATA",
-            "low",
-            reasons | {"MISSING_D1_CANDLES_AFTER_BREAK"},
-        )
+        return finish(row, "MISSING_CANDLES", "INCOMPLETE", "MISSING_DATA", "low", reasons | {"MISSING_D1_CANDLES_AFTER_BREAK"})
     break_index = next((index for index, candle in enumerate(candles) if candle.time == t1), None)
     if break_index is None:
-        return finish(
-            row,
-            "NEEDS_REVIEW",
-            "INCOMPLETE",
-            "NEEDS_REVIEW",
-            "low",
-            reasons | {"BREAK_CANDLE_NOT_FOUND"},
-        )
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"BREAK_CANDLE_NOT_FOUND"})
 
     wick: tuple[int, SourceCandle] | None = None
     close: tuple[int, SourceCandle] | None = None
@@ -352,27 +275,14 @@ def evaluate_reclaim(
     effective_candle = candles[effective_index]
     wick_at_effective = wick is not None and wick[0] == effective_index
     close_at_effective = close is not None and close[0] == effective_index
-    reclaim_kind = (
-        "WICK_AND_CLOSE"
-        if wick_at_effective and close_at_effective
-        else "WICK"
-        if wick_at_effective
-        else "CLOSE"
-    )
+    kind = "WICK_AND_CLOSE" if wick_at_effective and close_at_effective else "WICK" if wick_at_effective else "CLOSE"
     t2 = effective_candle.time
     if parse_time(t2) < parse_time(t1):
-        return finish(
-            row,
-            "NEEDS_REVIEW",
-            "INCOMPLETE",
-            "NEEDS_REVIEW",
-            "low",
-            reasons | {"RECLAIM_BEFORE_BREAK"},
-        )
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"RECLAIM_BEFORE_BREAK"})
     depth = reclaim_depth(effective_candle, direction, level)
     row.update(
         t2_reclaim_time=t2,
-        t2_reclaim_kind=reclaim_kind,
+        t2_reclaim_kind=kind,
         reclaim_depth_price=depth,
         reclaim_depth_percent_of_range=depth / float(row["range_height"]) * 100.0,
         break_to_reclaim_days=elapsed_days(t1, t2),
@@ -391,42 +301,14 @@ def no_factual_break_state(
     reasons: set[str],
 ) -> dict[str, Any]:
     if raw_status == "UNKNOWN":
-        return finish(
-            row,
-            "NEEDS_REVIEW",
-            "INCOMPLETE",
-            "NEEDS_REVIEW",
-            "low",
-            reasons | {"MISSING_RAW_STATUS"},
-        )
-    if raw_status in INACTIVE_RAW_STATUSES:
-        return finish(
-            row,
-            "NEEDS_REVIEW",
-            "INCOMPLETE",
-            "NEEDS_REVIEW",
-            "low",
-            reasons | {"RAW_BROKEN_WITHOUT_FACTUAL_BREAK"},
-        )
-    if raw_status in ACTIVE_RAW_STATUSES:
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"MISSING_RAW_STATUS"})
+    if raw_status in INACTIVE_RAW:
+        return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"RAW_BROKEN_WITHOUT_FACTUAL_BREAK"})
+    if raw_status in ACTIVE_RAW:
         row["current_daily_phase_start_time"] = t0
         row["current_daily_phase_age_days"] = elapsed_days(t0, cutoff)
-        return finish(
-            row,
-            "ACTIVE_PRE_BREAK",
-            "CENSORED",
-            "PENDING",
-            "medium",
-            reasons | {"NO_FACTUAL_BREAK_YET"},
-        )
-    return finish(
-        row,
-        "NEEDS_REVIEW",
-        "INCOMPLETE",
-        "NEEDS_REVIEW",
-        "low",
-        reasons | {"UNSUPPORTED_RAW_STATUS_WITHOUT_FACTUAL_BREAK"},
-    )
+        return finish(row, "ACTIVE_PRE_BREAK", "CENSORED", "PENDING", "medium", reasons | {"NO_FACTUAL_BREAK_YET"})
+    return finish(row, "NEEDS_REVIEW", "INCOMPLETE", "NEEDS_REVIEW", "low", reasons | {"UNSUPPORTED_RAW_STATUS_WITHOUT_FACTUAL_BREAK"})
 
 
 def load_dailies(connection: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -473,16 +355,11 @@ def latest_relationships(connection: sqlite3.Connection) -> dict[str, sqlite3.Ro
             FROM parent_child_relationships
             WHERE relationship_type = 'weekly_daily'
             GROUP BY child_range_id
-        ) AS latest
-          ON latest.max_id = relationship.id
+        ) AS latest ON latest.max_id = relationship.id
         WHERE relationship.relationship_type = 'weekly_daily'
         """
     ).fetchall()
-    return {
-        str(row["child_range_id"]): row
-        for row in rows
-        if row["child_range_id"] is not None
-    }
+    return {str(row["child_range_id"]): row for row in rows if row["child_range_id"] is not None}
 
 
 def select_dailies(
@@ -517,19 +394,12 @@ def sequence_map(
             continue
         if relationship["parent_range_id"] is None or not daily["high_time"] or not daily["low_time"]:
             continue
-        formation_times = [parse_time(daily["high_time"]), parse_time(daily["low_time"])]
-        if daily["active_time"]:
-            formation_times.append(parse_time(daily["active_time"]))
-        parent_id = str(relationship["parent_range_id"])
-        groups.setdefault(parent_id, []).append(
-            (max(formation_times), source_sort_key(daily["source_id"]), daily["source_id"])
+        groups.setdefault(str(relationship["parent_range_id"]), []).append(
+            (parse_time(formation_time(daily)), source_sort_key(daily["source_id"]), daily["source_id"])
         )
     result: dict[str, int] = {}
     for group in groups.values():
-        for sequence, (_, _, source_id) in enumerate(
-            sorted(group, key=lambda item: (item[0], item[1])),
-            start=1,
-        ):
+        for sequence, (_, _, source_id) in enumerate(sorted(group, key=lambda item: (item[0], item[1])), start=1):
             result[source_id] = sequence
     return result
 
@@ -555,45 +425,29 @@ def attach_parent(
     if status == "VALID":
         row["parent_membership_state"] = "VALID"
         row["daily_sequence_in_weekly"] = sequence_number
-        weekly = latest_weekly_sequence(
-            connection,
-            str(relationship["parent_range_id"]) if relationship["parent_range_id"] else None,
-        )
+        weekly = latest_weekly_sequence(connection, str(relationship["parent_range_id"]) if relationship["parent_range_id"] else None)
         if weekly:
             row["parent_weekly_phase_sequence_id"] = weekly["id"]
         else:
             row["weekly_phase_at_daily_formation"] = "PARENT_NEEDS_REVIEW"
             row["weekly_phase_at_daily_break"] = "PARENT_NEEDS_REVIEW"
             reasons.add("MISSING_PARENT_WEEKLY_PHASE_SEQUENCE")
-        return
-    if status == "ORPHAN":
+    elif status == "ORPHAN":
         row["parent_membership_state"] = "ORPHAN"
-        return
-    row["parent_membership_state"] = "NEEDS_REVIEW"
-    row["weekly_phase_at_daily_formation"] = "PARENT_NEEDS_REVIEW"
-    row["weekly_phase_at_daily_break"] = "PARENT_NEEDS_REVIEW"
-    reasons.add(
-        "PARENT_LINK_NEEDS_REVIEW"
-        if status in PARENT_REVIEW_STATUSES
-        else "UNSUPPORTED_PARENT_LINK_STATUS"
-    )
+    else:
+        row["parent_membership_state"] = "NEEDS_REVIEW"
+        row["weekly_phase_at_daily_formation"] = "PARENT_NEEDS_REVIEW"
+        row["weekly_phase_at_daily_break"] = "PARENT_NEEDS_REVIEW"
+        reasons.add("PARENT_LINK_NEEDS_REVIEW" if status in PARENT_REVIEW else "UNSUPPORTED_PARENT_LINK_STATUS")
 
 
-def parent_phase(
-    connection: sqlite3.Connection,
-    row: dict[str, Any],
-    milestone: str | None,
-) -> str | None:
+def parent_phase(connection: sqlite3.Connection, row: dict[str, Any], milestone: str | None) -> str | None:
     if milestone is None:
         return None
     if row["parent_membership_state"] != "VALID":
         return "PARENT_NEEDS_REVIEW" if row["parent_membership_state"] == "NEEDS_REVIEW" else None
     weekly = latest_weekly_sequence(connection, row["parent_weekly_source_id"])
-    if (
-        not weekly
-        or weekly["current_phase_state"] in UNUSABLE_WEEKLY_STATES
-        or not weekly["t0_formation_time"]
-    ):
+    if not weekly or weekly["current_phase_state"] in BAD_WEEKLY or not weekly["t0_formation_time"]:
         return "PARENT_NEEDS_REVIEW"
     point = parse_time(milestone)
     t0 = parse_time(weekly["t0_formation_time"])
@@ -604,30 +458,17 @@ def parent_phase(
     if t1 is None or point < t1:
         return "WEEKLY_PRE_BREAK"
     if t2 is None:
-        return (
-            "WEEKLY_BREAK_TO_RECLAIM"
-            if weekly["current_phase_state"] == "BREAK_PENDING_RECLAIM"
-            else "PARENT_NEEDS_REVIEW"
-        )
+        return "WEEKLY_BREAK_TO_RECLAIM" if weekly["current_phase_state"] == "BREAK_PENDING_RECLAIM" else "PARENT_NEEDS_REVIEW"
     if t2 < t1:
         return "PARENT_NEEDS_REVIEW"
     return "WEEKLY_BREAK_TO_RECLAIM" if point < t2 else "WEEKLY_POST_RECLAIM"
 
 
-def latest_weekly_sequence(
-    connection: sqlite3.Connection,
-    source_id: str | None,
-) -> sqlite3.Row | None:
+def latest_weekly_sequence(connection: sqlite3.Connection, source_id: str | None) -> sqlite3.Row | None:
     if not source_id:
         return None
     return connection.execute(
-        """
-        SELECT *
-        FROM weekly_phase_sequences
-        WHERE weekly_range_source_id = ?
-        ORDER BY id DESC
-        LIMIT 1
-        """,
+        "SELECT * FROM weekly_phase_sequences WHERE weekly_range_source_id = ? ORDER BY id DESC LIMIT 1",
         (source_id,),
     ).fetchone()
 
@@ -635,12 +476,9 @@ def latest_weekly_sequence(
 def latest_lifecycle(connection: sqlite3.Connection, source_id: str) -> sqlite3.Row | None:
     return connection.execute(
         """
-        SELECT *
-        FROM resolved_range_lifecycles
-        WHERE range_source_id = ?
-          AND structure_layer = 'DAILY'
-        ORDER BY id DESC
-        LIMIT 1
+        SELECT * FROM resolved_range_lifecycles
+        WHERE range_source_id = ? AND structure_layer = 'DAILY'
+        ORDER BY id DESC LIMIT 1
         """,
         (source_id,),
     ).fetchone()
@@ -655,11 +493,8 @@ def supporting_evidence(
         return None
     return connection.execute(
         """
-        SELECT *
-        FROM event_ohlc_evidence
-        WHERE id = ?
-          AND structure_layer = 'DAILY'
-          AND range_source_id = ?
+        SELECT * FROM event_ohlc_evidence
+        WHERE id = ? AND structure_layer = 'DAILY' AND range_source_id = ?
         LIMIT 1
         """,
         (lifecycle["supporting_evidence_id"], source_id),
@@ -674,40 +509,33 @@ def evidence_errors(
     if lifecycle is None:
         return set()
     errors: set[str] = set()
-    lifecycle_claims_break = lifecycle["resolution_status"] in FACTUAL_RESOLUTIONS
-    evidence_reference_present = lifecycle["supporting_evidence_id"] is not None
-    if lifecycle_claims_break and not lifecycle["effective_inactive_from_time"]:
+    claims = lifecycle["resolution_status"] in FACTUAL
+    has_reference = lifecycle["supporting_evidence_id"] is not None
+    if claims and not lifecycle["effective_inactive_from_time"]:
         errors.add("CONTRADICTORY_BREAK_EVIDENCE")
-    if (lifecycle_claims_break or evidence_reference_present) and evidence is None:
-        errors.add("CONTRADICTORY_BREAK_EVIDENCE")
-        return errors
+    if (claims or has_reference) and evidence is None:
+        return errors | {"CONTRADICTORY_BREAK_EVIDENCE"}
     if evidence is None:
         return errors
     if (
         evidence["event_type"] not in {"BOS_UP", "BOS_DOWN"}
-        or evidence["resolution_status"] not in FACTUAL_RESOLUTIONS
+        or evidence["resolution_status"] not in FACTUAL
         or not evidence["effective_break_time"]
         or evidence["boundary_price"] is None
     ):
-        errors.add("CONTRADICTORY_BREAK_EVIDENCE")
-        return errors
-    expected_boundary = daily["high"] if evidence["event_type"] == "BOS_UP" else daily["low"]
-    if expected_boundary is None or prices_differ(float(evidence["boundary_price"]), float(expected_boundary)):
+        return errors | {"CONTRADICTORY_BREAK_EVIDENCE"}
+    expected = daily["high"] if evidence["event_type"] == "BOS_UP" else daily["low"]
+    if expected is None or prices_differ(float(evidence["boundary_price"]), float(expected)):
         errors.add("BREAK_BOUNDARY_MISMATCH")
-    if lifecycle["effective_inactive_from_time"] and canonical_time(
-        lifecycle["effective_inactive_from_time"]
-    ) != canonical_time(evidence["effective_break_time"]):
+    if lifecycle["effective_inactive_from_time"] and canonical_time(lifecycle["effective_inactive_from_time"]) != canonical_time(evidence["effective_break_time"]):
         errors.add("BREAK_TIME_MISMATCH")
     return errors
 
 
-def factual_break_available(
-    lifecycle: sqlite3.Row | None,
-    evidence: sqlite3.Row | None,
-) -> bool:
+def factual_break_available(lifecycle: sqlite3.Row | None, evidence: sqlite3.Row | None) -> bool:
     return bool(
         lifecycle
-        and lifecycle["resolution_status"] in FACTUAL_RESOLUTIONS
+        and lifecycle["resolution_status"] in FACTUAL
         and lifecycle["effective_inactive_from_time"]
         and evidence
         and evidence["event_type"] in {"BOS_UP", "BOS_DOWN"}
@@ -716,10 +544,15 @@ def factual_break_available(
     )
 
 
-def clear_scope(connection: sqlite3.Connection, filters: dict[str, str | None]) -> None:
+def clear_scope(
+    connection: sqlite3.Connection,
+    filters: dict[str, str | None],
+    selected_ids: set[str],
+) -> None:
     if all(value is None for value in filters.values()):
         connection.execute("DELETE FROM daily_range_timelines")
         return
+
     columns = {
         "case_ref": "case_ref",
         "symbol": "symbol",
@@ -732,10 +565,19 @@ def clear_scope(connection: sqlite3.Connection, filters: dict[str, str | None]) 
         if value is not None:
             clauses.append(f"{columns[key]} = ?")
             params.append(value)
-    connection.execute(
-        "DELETE FROM daily_range_timelines WHERE " + " AND ".join(clauses),
-        tuple(params),
-    )
+    if clauses:
+        connection.execute(
+            "DELETE FROM daily_range_timelines WHERE " + " AND ".join(clauses),
+            tuple(params),
+        )
+
+    if selected_ids:
+        ordered = sorted(selected_ids, key=source_sort_key)
+        placeholders = ",".join("?" for _ in ordered)
+        connection.execute(
+            f"DELETE FROM daily_range_timelines WHERE daily_range_source_id IN ({placeholders})",
+            tuple(ordered),
+        )
 
 
 def base_row(daily: dict[str, Any], built_at: str) -> dict[str, Any]:
@@ -817,16 +659,13 @@ def finish(
 def insert_row(connection: sqlite3.Connection, row: dict[str, Any]) -> None:
     keys = tuple(row)
     connection.execute(
-        f"INSERT INTO daily_range_timelines ({','.join(keys)}) "
-        f"VALUES ({','.join('?' for _ in keys)})",
+        f"INSERT INTO daily_range_timelines ({','.join(keys)}) VALUES ({','.join('?' for _ in keys)})",
         tuple(row[key] for key in keys),
     )
 
 
 def build_summary(filters: dict[str, str | None], rows: list[dict[str, Any]]) -> dict[str, Any]:
-    def count(state: str) -> int:
-        return sum(1 for row in rows if row["current_daily_state"] == state)
-
+    count = lambda state: sum(1 for row in rows if row["current_daily_state"] == state)
     return {
         "filters": filters,
         "daily_ranges_selected": len(rows),
@@ -841,12 +680,8 @@ def build_summary(filters: dict[str, str | None], rows: list[dict[str, Any]]) ->
         "orphan_count": sum(row["parent_membership_state"] == "ORPHAN" for row in rows),
         "parent_conflict_count": sum(row["parent_link_status"] == "CONFLICT" for row in rows),
         "parent_needs_review_count": sum(row["parent_link_status"] == "NEEDS_REVIEW" for row in rows),
-        "missing_relationship_count": sum(
-            row["parent_membership_state"] == "MISSING_RELATIONSHIP" for row in rows
-        ),
-        "same_candle_close_reclaim_count": sum(
-            int(row["same_candle_close_reclaim"]) for row in rows
-        ),
+        "missing_relationship_count": sum(row["parent_membership_state"] == "MISSING_RELATIONSHIP" for row in rows),
+        "same_candle_close_reclaim_count": sum(int(row["same_candle_close_reclaim"]) for row in rows),
     }
 
 
@@ -864,10 +699,15 @@ def normalize_filters(
     }
 
 
+def formation_time(daily: dict[str, Any]) -> str:
+    times = [parse_time(daily["high_time"]), parse_time(daily["low_time"])]
+    if daily["active_time"]:
+        times.append(parse_time(daily["active_time"]))
+    return canonical_datetime(max(times))
+
+
 def normalize_status(value: Any) -> str:
-    if value is None or not str(value).strip():
-        return "UNKNOWN"
-    return str(value).strip().upper()
+    return "UNKNOWN" if value is None or not str(value).strip() else str(value).strip().upper()
 
 
 def upper(value: str | None) -> str | None:
@@ -983,8 +823,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = _parser()
-    args = parser.parse_args(argv)
+    args = _parser().parse_args(argv)
     if args.command == "build-daily-range-timelines":
         result = build_daily_range_timelines(
             args.db_path,
