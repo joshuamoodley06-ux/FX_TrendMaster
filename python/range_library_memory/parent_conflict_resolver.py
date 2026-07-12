@@ -68,9 +68,10 @@ def resolve_parent_conflicts(
 ) -> dict[str, Any]:
     """Rebuild Daily to Weekly relationships using derived Weekly lifecycle truth.
 
-    Raw mapping remains untouched. Explicit parent links are only confirmed when
-    case, symbol, formation chronology, price overlap, and the best available
-    Weekly lifecycle agree. An explicit link is never silently replaced.
+    Raw mapping remains untouched. A raw explicit parent or the currently selected
+    relationship is treated as preferred chart context. It is confirmed only when
+    case, symbol, price, range-span chronology, and the best available Weekly
+    lifecycle agree. A preferred parent is never silently replaced.
     """
 
     path = init_schema(db_path)
@@ -83,6 +84,7 @@ def resolve_parent_conflicts(
         dailies = load_latest_ranges(connection, "DAILY")
         weeklies = load_latest_ranges(connection, "WEEKLY")
         lifecycles = load_latest_weekly_lifecycles(connection)
+        existing = load_latest_relationships(connection)
         selected = [
             daily
             for daily in dailies
@@ -90,16 +92,17 @@ def resolve_parent_conflicts(
             and (daily_source_id is None or daily.row.source_record_id == str(daily_source_id))
         ]
         selected_ids = {daily.row.source_record_id for daily in selected}
-        clear_selected_relationships(connection, selected_ids)
         rows = [
             resolve_daily(
                 daily,
                 weeklies,
                 lifecycles,
+                existing.get(daily.row.source_record_id),
                 timestamp=timestamp,
             )
             for daily in selected
         ]
+        clear_selected_relationships(connection, selected_ids)
         for row in rows:
             insert_relationship(connection, row)
         connection.commit()
@@ -165,30 +168,62 @@ def resolve_daily(
     daily: RangeSnapshot,
     weeklies: list[RangeSnapshot],
     lifecycles: dict[str, LifecycleSnapshot],
+    existing: sqlite3.Row | None,
     *,
     timestamp: str,
 ) -> dict[str, Any]:
     compatible: list[CandidateAssessment] = []
     ambiguous: list[CandidateAssessment] = []
-    explicit: CandidateAssessment | None = None
+    assessments: dict[str, CandidateAssessment] = {}
 
     for weekly in weeklies:
         assessment = assess_candidate(daily, weekly, lifecycles.get(weekly.row.source_record_id))
-        if weekly.row.source_record_id == daily.row.explicit_parent_id:
-            explicit = assessment
+        assessments[weekly.row.source_record_id] = assessment
         if assessment.status == COMPATIBLE:
             compatible.append(assessment)
         elif assessment.status == AMBIGUOUS:
             ambiguous.append(assessment)
 
-    if daily.row.explicit_parent_id:
-        return resolve_explicit(
-            daily,
-            explicit,
+    raw_explicit_id = daily.row.explicit_parent_id
+    existing_parent_id = None
+    if (
+        not raw_explicit_id
+        and existing is not None
+        and str(existing["link_status"] or "").upper() in {VALID, NEEDS_REVIEW}
+        and existing["parent_range_id"] is not None
+    ):
+        existing_parent_id = str(existing["parent_range_id"])
+
+    preferred_id = str(raw_explicit_id or existing_parent_id or "")
+    if preferred_id:
+        preferred_daily = daily
+        if not raw_explicit_id:
+            preferred_daily = RangeSnapshot(
+                replace(daily.row, explicit_parent_id=preferred_id),
+                daily.formation_time,
+            )
+        result = resolve_explicit(
+            preferred_daily,
+            assessments.get(preferred_id),
             compatible,
             ambiguous,
             timestamp=timestamp,
         )
+        if existing_parent_id and not raw_explicit_id:
+            source = str(result["link_source"])
+            if source == "resolver_explicit":
+                result["link_source"] = "resolver_existing"
+            elif source == "resolver_explicit_lifecycle":
+                result["link_source"] = "resolver_existing_lifecycle"
+            result["notes"] = str(result["notes"]).replace(
+                "Explicit Weekly parent",
+                "Existing Weekly parent",
+            ).replace(
+                "Explicit parent",
+                "Existing parent",
+            )
+        return result
+
     return resolve_inferred(
         daily,
         compatible,
@@ -333,24 +368,20 @@ def assess_candidate(
     if not prices_overlap(weekly.row, daily.row):
         reasons.append("price does not overlap")
 
-    daily_formation = parse_time(daily.formation_time)
     parent_effective = effective_parent_row(weekly.row, lifecycle)
     parent_start = parse_time(parent_effective.start_time)
     parent_cutoff = parse_time(parent_effective.inactive_from_time)
+    child_start = parse_time(daily.row.start_time or daily.formation_time)
+    child_end = parse_time(daily.row.end_time or daily.formation_time)
 
-    if daily_formation is None:
-        reasons.append("Daily formation time missing")
+    if child_start is None or child_end is None:
+        reasons.append("Daily range span is incomplete")
     if parent_start is None:
         reasons.append("Weekly formation time missing")
-    if daily_formation is not None and parent_start is not None and daily_formation < parent_start:
-        reasons.append("Daily formed before Weekly")
-
-    if (
-        daily_formation is not None
-        and parent_cutoff is not None
-        and daily_formation > parent_cutoff
-    ):
-        reasons.append("Daily formed after Weekly became inactive")
+    if child_end is not None and parent_start is not None and child_end < parent_start:
+        reasons.append("Daily ended before Weekly formed")
+    if child_start is not None and parent_cutoff is not None and child_start > parent_cutoff:
+        reasons.append("Daily started after Weekly became inactive")
 
     if reasons:
         return CandidateAssessment(
@@ -490,18 +521,21 @@ def snapshot_from_row(row: dict[str, Any]) -> RangeSnapshot:
         "chart_timeframe",
     )
     active = first_text(payload, "active_from_time")
-    anchor_times = [
-        first_text(payload, "range_high_time"),
-        first_text(payload, "range_low_time"),
-        active,
+    high_time = first_text(payload, "range_high_time")
+    low_time = first_text(payload, "range_low_time")
+    raw_start = (
         first_text(payload, "range_start_time", "start_time_utc", "start_time", "start")
-        or row.get("start_time_utc"),
-    ]
-    formation = latest_time(anchor_times)
-    start = formation or active or row.get("start_time_utc")
-    end = first_text(payload, "range_end_time", "end_time_utc", "end_time", "end") or row.get(
-        "end_time_utc"
+        or row.get("start_time_utc")
     )
+    raw_end = (
+        first_text(payload, "range_end_time", "end_time_utc", "end_time", "end")
+        or row.get("end_time_utc")
+    )
+    formation = latest_time([high_time, low_time, active, raw_start])
+    span_start = earliest_time([high_time, low_time, active, raw_start])
+    span_end = latest_time([high_time, low_time, active, raw_start, raw_end])
+    effective_start = formation if layer == "WEEKLY" else span_start or formation
+
     raw_range = RangeRow(
         raw_id=int(row["id"]),
         import_run_id=int(row["import_run_id"]),
@@ -510,13 +544,24 @@ def snapshot_from_row(row: dict[str, Any]) -> RangeSnapshot:
         symbol=symbol,
         layer=layer,
         timeframe=str(timeframe) if timeframe else None,
-        start_time=start,
-        end_time=end,
-        high=number(row.get("high"), first_number(payload, "high", "range_high_price", "range_high", "rh")),
-        low=number(row.get("low"), first_number(payload, "low", "range_low_price", "range_low", "rl")),
+        start_time=effective_start or active or raw_start,
+        end_time=span_end or raw_end,
+        high=number(
+            row.get("high"),
+            first_number(payload, "high", "range_high_price", "range_high", "rh"),
+        ),
+        low=number(
+            row.get("low"),
+            first_number(payload, "low", "range_low_price", "range_low", "rl"),
+        ),
         status=(first_text(payload, "status", "range_status") or "ACTIVE").upper(),
         inactive_from_time=first_text(payload, "inactive_from_time"),
-        explicit_parent_id=first_text(payload, "parent_range_id", "parent_id", "parent_source_record_id"),
+        explicit_parent_id=first_text(
+            payload,
+            "parent_range_id",
+            "parent_id",
+            "parent_source_record_id",
+        ),
     )
     return RangeSnapshot(raw_range, formation)
 
@@ -547,6 +592,29 @@ def load_latest_weekly_lifecycles(
             resolution_confidence=str(row["resolution_confidence"] or "low"),
         )
         for row in rows
+    }
+
+def load_latest_relationships(
+    connection: sqlite3.Connection,
+) -> dict[str, sqlite3.Row]:
+    rows = connection.execute(
+        """
+        SELECT relationship.*
+        FROM parent_child_relationships AS relationship
+        JOIN (
+            SELECT child_range_id, MAX(id) AS max_id
+            FROM parent_child_relationships
+            WHERE relationship_type = ?
+            GROUP BY child_range_id
+        ) AS latest ON latest.max_id = relationship.id
+        WHERE relationship.relationship_type = ?
+        """,
+        (RELATIONSHIP_TYPE, RELATIONSHIP_TYPE),
+    ).fetchall()
+    return {
+        str(row["child_range_id"]): row
+        for row in rows
+        if row["child_range_id"] is not None
     }
 
 
@@ -658,6 +726,13 @@ def latest_time(values: list[str | None]) -> str | None:
     if not parsed:
         return None
     return canonical_time(max(parsed))
+
+def earliest_time(values: list[str | None]) -> str | None:
+    parsed = [parse_time(value) for value in values if value]
+    parsed = [value for value in parsed if value is not None]
+    if not parsed:
+        return None
+    return canonical_time(min(parsed))
 
 
 def parse_time(value: str | None) -> datetime | None:
