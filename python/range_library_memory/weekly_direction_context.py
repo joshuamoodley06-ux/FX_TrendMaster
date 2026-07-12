@@ -16,6 +16,7 @@ from .schema import init_schema
 FACTUAL_RESOLUTIONS = {"MAPPED_CONFIRMED", "OHLC_DERIVED"}
 RECLAIMED_STATE = "RECLAIMED"
 PENDING_STATE = "ABANDONED_PENDING_RECLAIM"
+USABLE_CREATION_STATES = {RECLAIMED_STATE, PENDING_STATE}
 
 
 class WeeklyDirectionContextError(RuntimeError):
@@ -149,7 +150,7 @@ def evaluate_weekly(
     cutoff = effective_cutoff(as_of, canonical_time(phase["as_of_time"]), reasons)
     row["as_of_time"] = cutoff
 
-    link = resolve_creation_link(connection, weekly)
+    link = resolve_creation_link(connection, weekly, phase)
     row.update(
         creation_link_source=link["source"],
         creation_old_weekly_source_id=link["old_range_id"],
@@ -224,30 +225,30 @@ def evaluate_weekly(
     )
 
 
-def resolve_creation_link(connection: sqlite3.Connection, weekly: dict[str, Any]) -> dict[str, Any]:
+def resolve_creation_link(
+    connection: sqlite3.Connection,
+    weekly: dict[str, Any],
+    phase: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Resolve the old Weekly and factual BOS that created a new Weekly.
+
+    Explicit raw links win. A direct mapped-new-range evidence link is the next
+    strongest path. Older mappings may omit both links; in that case a candidate
+    is accepted only when one unique Weekly break fits the chart chronology,
+    price overlap, and the already-resolved break/reclaim lifecycle.
+    """
     raw_old = weekly["old_range_id"]
     raw_event = weekly["created_by_event_id"]
-    candidates = connection.execute(
-        """
-        SELECT *
-        FROM event_ohlc_evidence
-        WHERE structure_layer = 'WEEKLY'
-          AND mapped_new_range_id = ?
-        ORDER BY id DESC
-        """,
-        (weekly["source_id"],),
-    ).fetchall()
 
     if raw_old or raw_event:
         if not raw_old or not raw_event:
-            return {
-                "status": "NEEDS_REVIEW",
-                "source": "EXPLICIT_PARTIAL",
-                "old_range_id": raw_old,
-                "event_source_id": raw_event,
-                "evidence": None,
-                "reasons": {"PARTIAL_EXPLICIT_CREATION_LINK"},
-            }
+            return unresolved_link(
+                "NEEDS_REVIEW",
+                "EXPLICIT_PARTIAL",
+                {"PARTIAL_EXPLICIT_CREATION_LINK"},
+                old_range_id=raw_old,
+                event_source_id=raw_event,
+            )
         evidence = connection.execute(
             """
             SELECT *
@@ -269,40 +270,181 @@ def resolve_creation_link(connection: sqlite3.Connection, weekly: dict[str, Any]
             "reasons": set() if evidence else {"EXPLICIT_CREATION_EVIDENCE_NOT_FOUND"},
         }
 
-    factual_candidates = [
-        row
-        for row in candidates
-        if row["resolution_status"] in FACTUAL_RESOLUTIONS
+    direct_candidates = connection.execute(
+        """
+        SELECT *
+        FROM event_ohlc_evidence
+        WHERE structure_layer = 'WEEKLY'
+          AND mapped_new_range_id = ?
+        ORDER BY id DESC
+        """,
+        (weekly["source_id"],),
+    ).fetchall()
+    direct = unique_factual_candidates(direct_candidates)
+    if len(direct) == 1:
+        evidence = direct[0]
+        return {
+            "status": "RESOLVED",
+            "source": "EVIDENCE_DERIVED",
+            "old_range_id": str(evidence["range_source_id"]),
+            "event_source_id": str(evidence["event_source_id"]),
+            "evidence": evidence,
+            "reasons": {"CREATION_LINK_DERIVED_FROM_EVENT_EVIDENCE"},
+        }
+    if len(direct) > 1:
+        return unresolved_link(
+            "NEEDS_REVIEW",
+            "EVIDENCE_DERIVED",
+            {"AMBIGUOUS_CREATION_EVIDENCE"},
+        )
+
+    derived = derive_creation_candidates(connection, weekly, phase)
+    if len(derived) == 1:
+        evidence = derived[0]
+        return {
+            "status": "RESOLVED",
+            "source": "OHLC_DERIVED",
+            "old_range_id": str(evidence["range_source_id"]),
+            "event_source_id": str(evidence["event_source_id"]),
+            "evidence": evidence,
+            "reasons": {"CREATION_LINK_DERIVED_FROM_CHRONOLOGY_AND_OHLC"},
+        }
+    if len(derived) > 1:
+        return unresolved_link(
+            "NEEDS_REVIEW",
+            "OHLC_DERIVED",
+            {"AMBIGUOUS_CREATION_CANDIDATES"},
+        )
+    return unresolved_link("UNRESOLVED", "NONE", {"NO_CREATION_LINK"})
+
+
+def derive_creation_candidates(
+    connection: sqlite3.Connection,
+    weekly: Mapping[str, Any],
+    phase: Mapping[str, Any] | None,
+) -> list[sqlite3.Row]:
+    if phase is None or not phase["t0_formation_time"]:
+        return []
+    if weekly.get("high") is None or weekly.get("low") is None:
+        return []
+
+    rows = connection.execute(
+        """
+        SELECT e.*,
+               p.t0_formation_time AS candidate_old_t0,
+               r.current_state AS candidate_reclaim_state,
+               r.break_direction AS candidate_break_direction,
+               r.break_level AS candidate_break_level,
+               r.break_time AS candidate_break_time,
+               r.effective_reclaim_time AS candidate_reclaim_time
+        FROM event_ohlc_evidence AS e
+        LEFT JOIN weekly_phase_sequences AS p
+          ON p.weekly_range_source_id = e.range_source_id
+        LEFT JOIN weekly_break_reclaim_lifecycles AS r
+          ON r.weekly_range_source_id = e.range_source_id
+        WHERE e.structure_layer = 'WEEKLY'
+          AND e.symbol = ?
+          AND ((e.case_ref = ?) OR (e.case_ref IS NULL AND ? IS NULL))
+          AND e.range_source_id <> ?
+          AND (e.mapped_new_range_id IS NULL OR e.mapped_new_range_id = ?)
+        ORDER BY e.id DESC
+        """,
+        (
+            weekly["symbol"],
+            weekly["case_ref"],
+            weekly["case_ref"],
+            weekly["source_id"],
+            weekly["source_id"],
+        ),
+    ).fetchall()
+    compatible = [row for row in rows if creation_candidate_compatible(row, weekly, phase)]
+    return unique_factual_candidates(compatible)
+
+
+def creation_candidate_compatible(
+    evidence: Mapping[str, Any],
+    weekly: Mapping[str, Any],
+    phase: Mapping[str, Any],
+) -> bool:
+    if not is_factual_bos(evidence):
+        return False
+    old_t0 = evidence["candidate_old_t0"]
+    new_t0 = phase["t0_formation_time"]
+    if not old_t0 or not new_t0:
+        return False
+    break_time = canonical_time(evidence["effective_break_time"])
+    if parse_time(break_time) < parse_time(canonical_time(old_t0)):
+        return False
+    if parse_time(break_time) > parse_time(canonical_time(new_t0)):
+        return False
+
+    direction = "UP" if evidence["event_type"] == "BOS_UP" else "DOWN"
+    if evidence["direction"] and str(evidence["direction"]).upper() != direction:
+        return False
+    if evidence["candidate_reclaim_state"] not in USABLE_CREATION_STATES:
+        return False
+    if evidence["candidate_break_direction"] != direction:
+        return False
+    if not evidence["candidate_break_time"]:
+        return False
+    if canonical_time(evidence["candidate_break_time"]) != break_time:
+        return False
+    if evidence["candidate_break_level"] is None:
+        return False
+    if prices_differ(float(evidence["candidate_break_level"]), float(evidence["boundary_price"])):
+        return False
+
+    boundary = float(evidence["boundary_price"])
+    low = float(weekly["low"])
+    high = float(weekly["high"])
+    if not price_inside_range(boundary, low, high):
+        return False
+    reclaim_time = evidence["candidate_reclaim_time"]
+    if reclaim_time and parse_time(canonical_time(reclaim_time)) < parse_time(break_time):
+        return False
+    return True
+
+
+def unique_factual_candidates(rows: list[sqlite3.Row] | list[Mapping[str, Any]]) -> list[sqlite3.Row]:
+    unique: dict[tuple[str, str, str, float], sqlite3.Row] = {}
+    for row in rows:
+        if not is_factual_bos(row):
+            continue
+        signature = (
+            str(row["range_source_id"]),
+            str(row["event_type"]),
+            canonical_time(row["effective_break_time"]),
+            round(float(row["boundary_price"]), 10),
+        )
+        if signature not in unique:
+            unique[signature] = row
+    return list(unique.values())
+
+
+def is_factual_bos(row: Mapping[str, Any]) -> bool:
+    return bool(
+        row["resolution_status"] in FACTUAL_RESOLUTIONS
         and row["event_type"] in {"BOS_UP", "BOS_DOWN"}
         and row["effective_break_time"]
-    ]
-    if not factual_candidates:
-        return {
-            "status": "UNRESOLVED",
-            "source": "NONE",
-            "old_range_id": None,
-            "event_source_id": None,
-            "evidence": None,
-            "reasons": {"NO_CREATION_LINK"},
-        }
-    unique = {(str(row["range_source_id"]), str(row["event_source_id"])) for row in factual_candidates}
-    if len(unique) != 1:
-        return {
-            "status": "NEEDS_REVIEW",
-            "source": "EVIDENCE_DERIVED",
-            "old_range_id": None,
-            "event_source_id": None,
-            "evidence": None,
-            "reasons": {"AMBIGUOUS_CREATION_EVIDENCE"},
-        }
-    evidence = factual_candidates[0]
+        and row["boundary_price"] is not None
+    )
+
+
+def unresolved_link(
+    status: str,
+    source: str,
+    reasons: set[str],
+    *,
+    old_range_id: str | None = None,
+    event_source_id: str | None = None,
+) -> dict[str, Any]:
     return {
-        "status": "RESOLVED",
-        "source": "EVIDENCE_DERIVED",
-        "old_range_id": str(evidence["range_source_id"]),
-        "event_source_id": str(evidence["event_source_id"]),
-        "evidence": evidence,
-        "reasons": {"CREATION_LINK_DERIVED_FROM_EVENT_EVIDENCE"},
+        "status": status,
+        "source": source,
+        "old_range_id": old_range_id,
+        "event_source_id": event_source_id,
+        "evidence": None,
+        "reasons": reasons,
     }
 
 
@@ -363,6 +505,8 @@ def load_weeklies(connection: sqlite3.Connection) -> list[dict[str, Any]]:
                 "case_ref": payload.get("case_ref"),
                 "symbol": str(row["symbol"] or payload.get("symbol") or "").upper(),
                 "status": normalize_status(payload.get("status")),
+                "high": number(payload.get("range_high_price", row["high"])),
+                "low": number(payload.get("range_low_price", row["low"])),
                 "old_range_id": string_id(payload.get("old_range_id")),
                 "created_by_event_id": string_id(payload.get("created_by_event_id")),
             }
@@ -503,7 +647,9 @@ def build_summary(filters: dict[str, str | None], rows: list[dict[str, Any]]) ->
         "unresolved_count": count("UNRESOLVED"),
         "needs_review_count": count("NEEDS_REVIEW"),
         "explicit_link_count": sum(row["creation_link_source"] == "EXPLICIT" for row in rows),
-        "derived_link_count": sum(row["creation_link_source"] == "EVIDENCE_DERIVED" for row in rows),
+        "derived_link_count": sum(
+            row["creation_link_source"] in {"EVIDENCE_DERIVED", "OHLC_DERIVED"} for row in rows
+        ),
     }
 
 
@@ -527,6 +673,15 @@ def string_id(value: Any) -> str | None:
     return None if value in (None, "") else str(value)
 
 
+def number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def upper(value: str | None) -> str | None:
     return value.upper() if value else None
 
@@ -539,6 +694,12 @@ def effective_cutoff(as_of: str | None, latest: str, reasons: set[str]) -> str:
         reasons.add("AS_OF_CAPPED_TO_WEEKLY_PHASE_DATA")
         return latest
     return requested
+
+
+def price_inside_range(price: float, low: float, high: float) -> bool:
+    bottom, top = sorted((low, high))
+    tolerance = max(abs(price), abs(bottom), abs(top), 1.0) * 1e-9
+    return bottom - tolerance <= price <= top + tolerance
 
 
 def prices_differ(first: float, second: float) -> bool:
