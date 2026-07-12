@@ -3,6 +3,8 @@ name: Temporary Review Queue Duplicate Backlog Patch
 on:
   push:
     branches: [feat/unified-structure-review-queue-v01]
+  pull_request:
+    branches: [main]
 
 permissions:
   contents: write
