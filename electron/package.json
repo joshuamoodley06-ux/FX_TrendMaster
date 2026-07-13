@@ -44,6 +44,17 @@
       "!python_analyst/.pytest_cache/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "../python/range_library_memory",
+        "to": "range_library_memory",
+        "filter": [
+          "**/*",
+          "!**/__pycache__/**",
+          "!tests/**"
+        ]
+      }
+    ],
     "asarUnpack": [
       "python_analyst/**"
     ],

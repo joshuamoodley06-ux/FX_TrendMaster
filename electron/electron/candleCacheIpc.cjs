@@ -11,6 +11,7 @@ const {
   listMappingRangesForRehydration,
 } = require('./candleCache.cjs');
 const { validateFractalRange } = require('./fractalRangeValidation.cjs');
+const { registerLocalMappingBridgeIpc } = require('./localMappingBridge.cjs');
 
 function buildRangeValidationFailure(err, args) {
   return {
@@ -27,6 +28,7 @@ function buildRangeValidationFailure(err, args) {
 
 function registerCandleCacheIpc() {
   initCandleCache();
+  registerLocalMappingBridgeIpc();
 
   ipcMain.handle('candles:fetch', async (_event, args) => {
     try {

@@ -1,6 +1,5 @@
 // Preload bridge for the Python Analyst integration.
-// Exposes a minimal, channel-fixed API as window.analyst.
-// No node APIs leak into the renderer; contextIsolation stays on.
+// Exposes minimal channel-fixed APIs; no Node APIs leak into the renderer.
 
 const { contextBridge, ipcRenderer } = require('electron');
 
@@ -49,6 +48,18 @@ contextBridge.exposeInMainWorld('localResearch', {
   exportDetectionAudit: (args) => ipcRenderer.invoke('local-research:export-detection-audit', args),
   runRandomRangeAudit: (args) => ipcRenderer.invoke('local-research:random-range-audit', args),
   runRecordAuditVerdict: (args) => ipcRenderer.invoke('local-research:record-audit-verdict', args),
+});
+
+contextBridge.exposeInMainWorld('localMappingBridge', {
+  submit: (request) => ipcRenderer.invoke('local-mapping:submit', request),
+  backendSucceeded: (editId, backendResponse, httpStatus) =>
+    ipcRenderer.invoke('local-mapping:backend-succeeded', { editId, backendResponse, httpStatus }),
+  backendFailed: (editId, details) =>
+    ipcRenderer.invoke('local-mapping:backend-failed', { editId, ...(details || {}) }),
+  getStatus: (editId) => ipcRenderer.invoke('local-mapping:get-status', { editId }),
+  retry: (editId) => ipcRenderer.invoke('local-mapping:retry', { editId }),
+  getPaths: () => ipcRenderer.invoke('local-mapping:get-paths'),
+  resumePending: (limit) => ipcRenderer.invoke('local-mapping:resume-pending', { limit }),
 });
 
 contextBridge.exposeInMainWorld('electronAPI', {
