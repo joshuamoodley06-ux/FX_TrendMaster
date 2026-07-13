@@ -1,4 +1,4 @@
-name: Temporary review case isolation patch
+name: Temporary review case isolation verification
 
 on:
   push:
@@ -14,7 +14,7 @@ permissions:
   contents: write
 
 jobs:
-  patch-and-test:
+  verify-and-clean:
     runs-on: ubuntu-latest
     steps:
       - name: Check out branch
@@ -28,8 +28,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Apply deterministic patch
-        run: python .github/temporary/apply_review_case_isolation_patch.py
+      - name: Update legacy review-key assertion
+        run: python .github/temporary/fix_case_isolation_test.py
 
       - name: Install test runner
         run: python -m pip install --disable-pip-version-check pytest
@@ -52,12 +52,14 @@ jobs:
           PYTHONPATH: python
         run: python -m pytest python/range_library_memory/tests -q
 
-      - name: Commit tested source patch
+      - name: Commit verified patch and remove temporary machinery
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add python/range_library_memory/parent_conflict_resolver.py \
-                  python/range_library_memory/structure_review_queue.py \
-                  python/range_library_memory/tests/test_case_isolation_regressions.py
-          git commit -m "fix: isolate parent reviews by case"
+          git add python/range_library_memory/tests/test_structure_review_queue.py
+          git rm .github/temporary/apply_review_case_isolation_patch.py \
+                 .github/temporary/fix_case_isolation_test.py \
+                 .github/temporary/case-isolation-test-output.txt \
+                 .github/workflows/temporary-review-case-isolation.yml
+          git commit -m "test: align review queue history with case-scoped keys"
           git push origin HEAD:fix/review-case-isolation-v01
