@@ -17,6 +17,14 @@ VERSION = "xauusd_master_map_v0.1"
 LAYERS = ("WEEKLY", "DAILY", "INTRADAY")
 PARENT = {"DAILY": "WEEKLY", "INTRADAY": "DAILY"}
 INCLUDED, NEEDS_REVIEW, VALID, ORPHAN = "INCLUDED", "NEEDS_REVIEW", "VALID", "ORPHAN"
+NAV_TRUSTED, NAV_REVIEW, NAV_HIDDEN = "TRUSTED", "REVIEW", "HIDDEN"
+STATS_ELIGIBLE, STATS_EXCLUDED = "ELIGIBLE", "EXCLUDED"
+ANCESTOR_CLEAR = "CLEAR"
+ANCESTOR_SELF_REVIEW = "SELF_NEEDS_REVIEW"
+ANCESTOR_DIRECT_REVIEW = "DIRECT_PARENT_NEEDS_REVIEW"
+ANCESTOR_UPSTREAM_REVIEW = "ANCESTOR_NEEDS_REVIEW"
+ANCESTOR_SELF_AND_UPSTREAM = "SELF_AND_ANCESTOR_NEEDS_REVIEW"
+ROOT_LINK = "ROOT"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS master_map_ranges (
@@ -24,7 +32,11 @@ CREATE TABLE IF NOT EXISTS master_map_ranges (
  structure_layer TEXT NOT NULL, source_timeframe TEXT, processing_status TEXT NOT NULL,
  excluded_from_statistics INTEGER NOT NULL, visible_in_hierarchy INTEGER NOT NULL,
  source_count INTEGER NOT NULL, canonical_payload_json TEXT NOT NULL,
- source_refs_json TEXT NOT NULL, built_at_utc TEXT NOT NULL
+ source_refs_json TEXT NOT NULL, built_at_utc TEXT NOT NULL,
+ navigation_status TEXT NOT NULL DEFAULT 'HIDDEN',
+ statistics_status TEXT NOT NULL DEFAULT 'EXCLUDED',
+ ancestor_review_status TEXT NOT NULL DEFAULT 'CLEAR',
+ direct_parent_link_status TEXT NOT NULL DEFAULT 'ROOT'
 );
 CREATE INDEX IF NOT EXISTS idx_master_ranges_scope
  ON master_map_ranges(symbol, structure_layer, processing_status);
@@ -33,7 +45,11 @@ CREATE TABLE IF NOT EXISTS master_map_events (
  canonical_range_id TEXT, processing_status TEXT NOT NULL,
  excluded_from_statistics INTEGER NOT NULL, source_count INTEGER NOT NULL,
  canonical_payload_json TEXT NOT NULL, source_refs_json TEXT NOT NULL,
- built_at_utc TEXT NOT NULL
+ built_at_utc TEXT NOT NULL,
+ navigation_status TEXT NOT NULL DEFAULT 'HIDDEN',
+ statistics_status TEXT NOT NULL DEFAULT 'EXCLUDED',
+ ancestor_review_status TEXT NOT NULL DEFAULT 'CLEAR',
+ direct_parent_link_status TEXT NOT NULL DEFAULT 'UNRESOLVED'
 );
 CREATE INDEX IF NOT EXISTS idx_master_events_scope
  ON master_map_events(symbol, canonical_range_id, processing_status);
@@ -55,13 +71,34 @@ CREATE INDEX IF NOT EXISTS idx_master_reviews_scope
  ON master_map_review_items(symbol, status, item_type);
 CREATE TABLE IF NOT EXISTS master_map_outputs (
  symbol TEXT PRIMARY KEY, build_id TEXT NOT NULL, schema_version TEXT NOT NULL,
- built_at_utc TEXT NOT NULL, output_json TEXT NOT NULL
+ built_at_utc TEXT NOT NULL, structural_content_hash TEXT NOT NULL DEFAULT '',
+ output_json TEXT NOT NULL
 );
 """
+
+MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
+    "master_map_ranges": {
+        "navigation_status": "TEXT NOT NULL DEFAULT 'HIDDEN'",
+        "statistics_status": "TEXT NOT NULL DEFAULT 'EXCLUDED'",
+        "ancestor_review_status": "TEXT NOT NULL DEFAULT 'CLEAR'",
+        "direct_parent_link_status": "TEXT NOT NULL DEFAULT 'ROOT'",
+    },
+    "master_map_events": {
+        "navigation_status": "TEXT NOT NULL DEFAULT 'HIDDEN'",
+        "statistics_status": "TEXT NOT NULL DEFAULT 'EXCLUDED'",
+        "ancestor_review_status": "TEXT NOT NULL DEFAULT 'CLEAR'",
+        "direct_parent_link_status": "TEXT NOT NULL DEFAULT 'UNRESOLVED'",
+    },
+    "master_map_outputs": {
+        "structural_content_hash": "TEXT NOT NULL DEFAULT ''",
+    },
+}
+
 
 @dataclass(frozen=True)
 class RawRange:
     raw_id: int
+    import_run_id: int | None
     case_ref: str | None
     source_id: str
     payload_hash: str
@@ -78,6 +115,14 @@ class RawRange:
     status: str
     break_direction: str | None
     explicit_parent_id: str | None
+    imported_at: str | None
+    import_started_at: str | None
+    import_finished_at: str | None
+    import_source_path: str | None
+    source_created_at: str | None
+    source_updated_at: str | None
+    source_exported_at: str | None
+
 
 @dataclass(frozen=True)
 class RawEvent:
@@ -94,6 +139,7 @@ class RawEvent:
     break_level: float | None
     range_source_id: str | None
 
+
 @dataclass
 class MasterRange:
     id: str
@@ -103,10 +149,15 @@ class MasterRange:
     excluded: bool = False
     visible: bool = False
     reasons: set[str] = field(default_factory=set)
+    navigation_status: str = NAV_HIDDEN
+    statistics_status: str = STATS_EXCLUDED
+    ancestor_review_status: str = ANCESTOR_CLEAR
+    direct_parent_link_status: str = ROOT_LINK
 
     @property
     def row(self) -> RawRange:
         return self.sources[0]
+
 
 @dataclass
 class MasterEvent:
@@ -117,6 +168,10 @@ class MasterEvent:
     processing_status: str = INCLUDED
     excluded: bool = False
     reasons: set[str] = field(default_factory=set)
+    navigation_status: str = NAV_HIDDEN
+    statistics_status: str = STATS_EXCLUDED
+    ancestor_review_status: str = ANCESTOR_CLEAR
+    direct_parent_link_status: str = "UNRESOLVED"
 
     @property
     def row(self) -> RawEvent:
@@ -129,6 +184,7 @@ def build_master_map(
     symbol: str = "XAUUSD",
     output_path: str | Path | None = None,
     built_at_utc: str | None = None,
+    build_id: str | None = None,
 ) -> dict[str, Any]:
     """Rebuild one XAUUSD hierarchy without changing raw_ranges or raw_events."""
     symbol = symbol.strip().upper()
@@ -138,21 +194,28 @@ def build_master_map(
     if not db.exists():
         raise FileNotFoundError(f"Range Library database does not exist: {db}")
     built_at = iso(built_at_utc or utc_now())
-    build_id = str(uuid.uuid4())
+    runtime_build_id = build_id or str(uuid.uuid4())
 
     with connect(db) as con:
         require_raw_tables(con)
-        con.executescript(SCHEMA_SQL)
+        ensure_master_map_schema(con)
         raw_ranges = load_ranges(con, symbol)
         ranges, source_map, raw_map, range_reviews = canonicalize_ranges(raw_ranges)
         raw_events = load_events(con, symbol, raw_ranges)
         events, event_reviews = canonicalize_events(raw_events, source_map, raw_map, ranges)
         relationships, relationship_reviews = rebuild_relationships(ranges, source_map)
+        apply_event_visibility(events, ranges)
         reviews = dedupe_reviews([*range_reviews, *event_reviews, *relationship_reviews])
-        output = build_output(symbol, built_at, ranges, events, relationships, reviews,
-                              len(raw_ranges), len(raw_events))
-        output["build_id"] = build_id
-        persist(con, symbol, build_id, built_at, ranges, events, relationships, reviews, output)
+        lifecycle_report = build_lifecycle_evidence_report(ranges, reviews)
+        output = build_output(
+            symbol, built_at, ranges, events, relationships, reviews, lifecycle_report,
+            len(raw_ranges), len(raw_events),
+        )
+        output["build_id"] = runtime_build_id
+        persist(
+            con, symbol, runtime_build_id, built_at, ranges, events,
+            relationships, reviews, output,
+        )
         con.commit()
 
     if output_path is not None:
@@ -162,11 +225,21 @@ def build_master_map(
     return output
 
 
+def ensure_master_map_schema(con: sqlite3.Connection) -> None:
+    con.executescript(SCHEMA_SQL)
+    for table, columns in MIGRATION_COLUMNS.items():
+        existing = {str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})")}
+        for name, definition in columns.items():
+            if name not in existing:
+                con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+
 def load_master_map_output(db_path: str | Path, *, symbol: str = "XAUUSD") -> dict[str, Any]:
     with connect(db_path) as con:
-        con.executescript(SCHEMA_SQL)
-        row = con.execute("SELECT output_json FROM master_map_outputs WHERE symbol=?",
-                          (symbol.upper(),)).fetchone()
+        ensure_master_map_schema(con)
+        row = con.execute(
+            "SELECT output_json FROM master_map_outputs WHERE symbol=?", (symbol.upper(),)
+        ).fetchone()
     if row is None:
         raise LookupError(f"No Master Map output exists for {symbol.upper()}.")
     return json.loads(row["output_json"])
@@ -183,14 +256,20 @@ def require_raw_tables(con: sqlite3.Connection) -> None:
 
 def load_ranges(con: sqlite3.Connection, symbol: str) -> list[RawRange]:
     rows = con.execute("""
-      SELECT r.* FROM raw_ranges r
+      SELECT r.*,
+             ir.source_path AS import_source_path,
+             ir.started_at_utc AS import_started_at_utc,
+             ir.finished_at_utc AS import_finished_at_utc
+      FROM raw_ranges r
+      LEFT JOIN import_runs ir ON ir.id=r.import_run_id
       JOIN (
         SELECT MAX(id) max_id FROM raw_ranges
         GROUP BY COALESCE(json_extract(raw_payload_json,'$.case_ref'),
                           json_extract(raw_payload_json,'$.raw_case_id'),
                           json_extract(raw_payload_json,'$.case_id'),''),
                  COALESCE(source_record_id,CAST(id AS TEXT))
-      ) latest ON latest.max_id=r.id ORDER BY r.id
+      ) latest ON latest.max_id=r.id
+      ORDER BY r.id
     """).fetchall()
     result = [parse_range(dict(row)) for row in rows]
     return [row for row in result if row.symbol == symbol and row.layer in LAYERS]
@@ -217,11 +296,14 @@ def load_events(con: sqlite3.Connection, symbol: str, ranges: list[RawRange]) ->
     for sql_row in rows:
         linked = by_raw.get(int(sql_row["raw_range_id"])) if sql_row["raw_range_id"] is not None else None
         event = parse_event(dict(sql_row), linked)
-        payload_symbol = text(payload(event.raw_json), "symbol")
+        event_payload = payload(event.raw_json)
+        payload_symbol = text(event_payload, "symbol")
         identity_link = by_identity.get((event.case_ref, event.range_source_id))
-        resolved_symbol = (payload_symbol.upper() if payload_symbol else
-                           linked.symbol if linked else
-                           identity_link.symbol if identity_link else None)
+        resolved_symbol = (
+            payload_symbol.upper() if payload_symbol else
+            linked.symbol if linked else
+            identity_link.symbol if identity_link else None
+        )
         if resolved_symbol == symbol:
             result.append(event)
     return result
@@ -233,12 +315,13 @@ def parse_range(row: dict[str, Any]) -> RawRange:
     low = number(p, "range_low_price", "range_low", "low", "rl")
     return RawRange(
         raw_id=int(row["id"]),
+        import_run_id=int(row["import_run_id"]) if row.get("import_run_id") is not None else None,
         case_ref=text(p, "case_ref", "raw_case_id", "case_id"),
         source_id=str(row.get("source_record_id") or text(p, "range_id", "id") or row["id"]),
-        payload_hash=str(row["payload_sha256"]), raw_json=str(row["raw_payload_json"]),
+        payload_hash=str(row["payload_sha256"]),
+        raw_json=str(row["raw_payload_json"]),
         symbol=str(row.get("symbol") or text(p, "symbol") or "UNKNOWN").upper(),
-        layer=str(text(p, "structure_layer", "layer", "range_type", "type") or
-                  row.get("range_type") or "").upper(),
+        layer=str(text(p, "structure_layer", "layer", "range_type", "type") or row.get("range_type") or "").upper(),
         timeframe=upper(row.get("timeframe") or text(p, "source_timeframe", "timeframe", "chart_timeframe")),
         high=high if high is not None else float(row["high"]) if row.get("high") is not None else None,
         low=low if low is not None else float(row["low"]) if row.get("low") is not None else None,
@@ -249,6 +332,13 @@ def parse_range(row: dict[str, Any]) -> RawRange:
         status=str(text(p, "status", "range_status") or "UNKNOWN").upper(),
         break_direction=upper(text(p, "direction_of_break", "break_direction")),
         explicit_parent_id=text(p, "parent_range_id", "parent_id", "parent_source_record_id"),
+        imported_at=maybe_iso(row.get("created_at_utc")),
+        import_started_at=maybe_iso(row.get("import_started_at_utc")),
+        import_finished_at=maybe_iso(row.get("import_finished_at_utc")),
+        import_source_path=text_value(row.get("import_source_path")),
+        source_created_at=maybe_iso(text(p, "created_at_utc", "created_at")),
+        source_updated_at=maybe_iso(text(p, "updated_at_utc", "updated_at")),
+        source_exported_at=maybe_iso(text(p, "source_exported_at", "exported_at", "generated_at_utc")),
     )
 
 
@@ -259,10 +349,12 @@ def parse_event(row: dict[str, Any], linked: RawRange | None) -> RawEvent:
     range_id = range_id or (linked.source_id if linked else None)
     event_price = number(p, "price", "event_price")
     return RawEvent(
-        raw_id=int(row["id"]), raw_range_id=int(row["raw_range_id"]) if row.get("raw_range_id") is not None else None,
+        raw_id=int(row["id"]),
+        raw_range_id=int(row["raw_range_id"]) if row.get("raw_range_id") is not None else None,
         case_ref=case_ref,
         source_id=str(row.get("source_record_id") or text(p, "event_id", "id") or row["id"]),
-        payload_hash=str(row["payload_sha256"]), raw_json=str(row["raw_payload_json"]),
+        payload_hash=str(row["payload_sha256"]),
+        raw_json=str(row["raw_payload_json"]),
         event_type=str(row.get("event_type") or text(p, "event_type", "type", "legacy_event_type") or "UNKNOWN").upper(),
         event_time=maybe_iso(text(p, "event_time_utc", "event_time", "time", "timestamp", "candle_time") or row.get("event_time_utc")),
         price=event_price if event_price is not None else float(row["price"]) if row.get("price") is not None else None,
@@ -276,8 +368,7 @@ def canonicalize_ranges(raw: list[RawRange]) -> tuple[list[MasterRange], dict[tu
     groups: dict[tuple[Any, ...], list[RawRange]] = {}
     for row in raw:
         groups.setdefault(range_key(row), []).append(row)
-    ranges = [MasterRange(cid("range", key), key, sorted(rows, key=raw_range_sort))
-              for key, rows in groups.items()]
+    ranges = [MasterRange(cid("range", key), key, sorted(rows, key=raw_range_sort)) for key, rows in groups.items()]
     ranges.sort(key=master_range_sort)
     conflicts: list[tuple[str, list[MasterRange]]] = []
 
@@ -321,18 +412,26 @@ def mark_range_conflicts(conflicts: list[tuple[str, list[MasterRange]]]) -> list
     reviews = []
     for ids, (reasons, items) in sorted(buckets.items()):
         for item in items:
-            item.processing_status, item.excluded = NEEDS_REVIEW, True
+            item.processing_status = NEEDS_REVIEW
+            item.excluded = True
+            item.statistics_status = STATS_EXCLUDED
             item.reasons.update(reasons)
-        reviews.append(review("RANGE_DUPLICATE_CONFLICT", "RANGE", list(ids),
-                              [r.raw_id for i in items for r in i.sources],
-                              [r.case_ref for i in items for r in i.sources],
-                              [r.source_id for i in items for r in i.sources], sorted(reasons),
-                              "Potential duplicate ranges disagree on factual structure; all candidates were excluded."))
+        reviews.append(review(
+            "RANGE_DUPLICATE_CONFLICT", "RANGE", list(ids),
+            [r.raw_id for i in items for r in i.sources],
+            [r.case_ref for i in items for r in i.sources],
+            [r.source_id for i in items for r in i.sources], sorted(reasons),
+            "Potential duplicate ranges disagree on factual structure; all candidates remain reviewed and excluded from statistics.",
+        ))
     return reviews
 
 
-def canonicalize_events(raw: list[RawEvent], source_map: dict[tuple[str | None, str], str],
-                        raw_map: dict[int, str], ranges: list[MasterRange]) -> tuple[list[MasterEvent], list[dict[str, Any]]]:
+def canonicalize_events(
+    raw: list[RawEvent],
+    source_map: dict[tuple[str | None, str], str],
+    raw_map: dict[int, str],
+    ranges: list[MasterRange],
+) -> tuple[list[MasterEvent], list[dict[str, Any]]]:
     range_status = {r.id: r.processing_status for r in ranges}
     resolved: list[tuple[RawEvent, str | None, str | None]] = []
     for row in raw:
@@ -350,12 +449,16 @@ def canonicalize_events(raw: list[RawEvent], source_map: dict[tuple[str | None, 
         item = MasterEvent(cid("event", key), key, group[0][1], sorted([g[0] for g in group], key=raw_event_sort))
         reasons = sorted({g[2] for g in group if g[2]})
         if reasons:
-            item.processing_status, item.excluded = NEEDS_REVIEW, True
+            item.processing_status = NEEDS_REVIEW
+            item.excluded = True
+            item.statistics_status = STATS_EXCLUDED
             item.reasons.update(reasons)
-            reviews.append(review("EVENT_RANGE_UNCERTAIN", "EVENT", [item.id],
-                                  [r.raw_id for r in item.sources], [r.case_ref for r in item.sources],
-                                  [r.source_id for r in item.sources], reasons,
-                                  "Event could not be attached to one comparison-eligible canonical range."))
+            reviews.append(review(
+                "EVENT_RANGE_UNCERTAIN", "EVENT", [item.id],
+                [r.raw_id for r in item.sources], [r.case_ref for r in item.sources],
+                [r.source_id for r in item.sources], reasons,
+                "Event could not be attached to one comparison-eligible canonical range.",
+            ))
         events.append(item)
     events.sort(key=master_event_sort)
 
@@ -390,22 +493,41 @@ def mark_event_conflicts(conflicts: list[tuple[str, list[MasterEvent]]]) -> list
     reviews = []
     for ids, (reasons, items) in sorted(buckets.items()):
         for item in items:
-            item.processing_status, item.excluded = NEEDS_REVIEW, True
+            item.processing_status = NEEDS_REVIEW
+            item.excluded = True
+            item.statistics_status = STATS_EXCLUDED
             item.reasons.update(reasons)
-        reviews.append(review("EVENT_DUPLICATE_CONFLICT", "EVENT", list(ids),
-                              [r.raw_id for i in items for r in i.sources],
-                              [r.case_ref for i in items for r in i.sources],
-                              [r.source_id for i in items for r in i.sources], sorted(reasons),
-                              "Potential duplicate events disagree on factual evidence; all candidates were excluded."))
+        reviews.append(review(
+            "EVENT_DUPLICATE_CONFLICT", "EVENT", list(ids),
+            [r.raw_id for i in items for r in i.sources],
+            [r.case_ref for i in items for r in i.sources],
+            [r.source_id for i in items for r in i.sources], sorted(reasons),
+            "Potential duplicate events disagree on factual evidence; all candidates remain reviewed and excluded from statistics.",
+        ))
     return reviews
 
 
-def rebuild_relationships(ranges: list[MasterRange], source_map: dict[tuple[str | None, str], str]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def rebuild_relationships(
+    ranges: list[MasterRange], source_map: dict[tuple[str | None, str], str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     by_id = {r.id: r for r in ranges}
     relationships: list[dict[str, Any]] = []
     reviews: list[dict[str, Any]] = []
-    for weekly in (r for r in ranges if r.row.layer == "WEEKLY" and r.processing_status == INCLUDED):
-        weekly.visible = True
+
+    for weekly in (r for r in ranges if r.row.layer == "WEEKLY"):
+        weekly.direct_parent_link_status = ROOT_LINK
+        if navigable_range(weekly):
+            weekly.visible = True
+            if weekly.processing_status == INCLUDED:
+                weekly.navigation_status = NAV_TRUSTED
+                weekly.statistics_status = STATS_ELIGIBLE
+                weekly.ancestor_review_status = ANCESTOR_CLEAR
+                weekly.excluded = False
+            else:
+                weekly.navigation_status = NAV_REVIEW
+                weekly.statistics_status = STATS_EXCLUDED
+                weekly.ancestor_review_status = ANCESTOR_SELF_REVIEW
+                weekly.excluded = True
 
     for child_layer in ("DAILY", "INTRADAY"):
         parent_layer = PARENT[child_layer]
@@ -414,65 +536,155 @@ def rebuild_relationships(ranges: list[MasterRange], source_map: dict[tuple[str 
             parent_id: str | None = None
             source, status, confidence, reasons = "inferred", VALID, "medium", []
             notes = "One factual parent candidate matched time and price."
+            explicit, unresolved = explicit_parent_candidates(child, source_map)
+
             if child.processing_status != INCLUDED:
                 status, confidence, reasons = NEEDS_REVIEW, "none", ["CHILD_RANGE_NEEDS_REVIEW"]
-                notes = "Child range identity is unresolved."
-            else:
-                explicit, unresolved = set(), False
-                for raw in child.sources:
-                    if raw.explicit_parent_id:
-                        found = source_map.get((raw.case_ref, raw.explicit_parent_id))
-                        unresolved = unresolved or found is None
-                        if found:
-                            explicit.add(found)
-                if unresolved or len(explicit) > 1:
-                    status, confidence = NEEDS_REVIEW, "low"
-                    reasons = ["EXPLICIT_PARENT_UNRESOLVED" if unresolved else "EXPLICIT_PARENT_CONFLICT"]
-                    notes = "Source evidence does not resolve to one canonical explicit parent."
-                elif explicit:
-                    source, parent_id, confidence = "explicit", next(iter(explicit)), "high"
-                    parent = by_id.get(parent_id)
-                    if not parent or parent.processing_status != INCLUDED or parent.row.layer != parent_layer or not parent_candidate(parent, child):
-                        status, confidence, reasons = NEEDS_REVIEW, "low", ["EXPLICIT_PARENT_FACTS_DISAGREE"]
-                        notes = "Explicit parent failed layer, time, price, or review checks."
-                    else:
-                        notes = "All explicit source references resolve to one factual canonical parent."
+                notes = "Child range identity is unresolved; a unique explicit parent may still be used for review navigation."
+                if not unresolved and len(explicit) == 1:
+                    source, parent_id = "explicit_review", next(iter(explicit))
+                elif unresolved:
+                    reasons.append("EXPLICIT_PARENT_UNRESOLVED")
+                elif len(explicit) > 1:
+                    reasons.append("EXPLICIT_PARENT_CONFLICT")
+            elif unresolved or len(explicit) > 1:
+                status, confidence = NEEDS_REVIEW, "low"
+                reasons = ["EXPLICIT_PARENT_UNRESOLVED" if unresolved else "EXPLICIT_PARENT_CONFLICT"]
+                notes = "Source evidence does not resolve to one canonical explicit parent."
+            elif explicit:
+                source, parent_id, confidence = "explicit", next(iter(explicit)), "high"
+                parent = by_id.get(parent_id)
+                if not parent or parent.row.layer != parent_layer or not parent_candidate(parent, child):
+                    status, confidence, reasons = NEEDS_REVIEW, "low", ["EXPLICIT_PARENT_FACTS_DISAGREE"]
+                    notes = "Explicit parent failed layer, time, or price checks; retained only as a review-navigation link."
+                elif parent.processing_status != INCLUDED:
+                    status, confidence, reasons = VALID, "high", []
+                    notes = "Explicit factual parent is reviewed; the direct link remains valid while the chain is excluded from statistics."
                 else:
-                    candidates = [p for p in parents if p.processing_status == INCLUDED and parent_candidate(p, child)]
-                    if not candidates:
-                        status, confidence, reasons = ORPHAN, "low", ["NO_FACTUAL_PARENT_CANDIDATE"]
-                        notes = "No canonical parent matched factual time and price evidence."
-                    elif len(candidates) > 1:
-                        status, confidence, reasons = NEEDS_REVIEW, "low", ["MULTIPLE_FACTUAL_PARENT_CANDIDATES"]
-                        notes = "More than one parent remains plausible; v0.1 does not guess."
-                    else:
-                        parent_id = candidates[0].id
+                    notes = "All explicit source references resolve to one factual canonical parent."
+            else:
+                candidates = [p for p in parents if p.processing_status == INCLUDED and parent_candidate(p, child)]
+                if not candidates:
+                    status, confidence, reasons = ORPHAN, "low", ["NO_FACTUAL_PARENT_CANDIDATE"]
+                    notes = "No canonical parent matched factual time and price evidence."
+                elif len(candidates) > 1:
+                    status, confidence, reasons = NEEDS_REVIEW, "low", ["MULTIPLE_FACTUAL_PARENT_CANDIDATES"]
+                    notes = "More than one parent remains plausible; v0.1 does not guess."
+                else:
+                    parent_id = candidates[0].id
+
+            child.direct_parent_link_status = status
             relationship = {
                 "relationship_type": f"{parent_layer.lower()}_{child_layer.lower()}",
                 "parent_canonical_range_id": parent_id,
                 "child_canonical_range_id": child.id,
-                "link_source": source, "link_status": status, "link_confidence": confidence,
-                "reason_codes": reasons, "notes": notes,
+                "link_source": source,
+                "link_status": status,
+                "link_confidence": confidence,
+                "reason_codes": sorted(set(reasons)),
+                "notes": notes,
             }
             relationships.append(relationship)
-            parent_visible = bool(parent_id and by_id[parent_id].visible)
-            child.visible = status == VALID and parent_visible
-            if not child.visible:
-                child.excluded = True
-                if child.processing_status == INCLUDED:
-                    reviews.append(review("ORPHAN_RANGE" if status == ORPHAN else "PARENT_RELATIONSHIP_REVIEW",
-                                          "RELATIONSHIP", [child.id] + ([parent_id] if parent_id else []),
-                                          [r.raw_id for r in child.sources], [r.case_ref for r in child.sources],
-                                          [r.source_id for r in child.sources], reasons or [status], notes))
+
+            parent = by_id.get(parent_id) if parent_id else None
+            configure_child_navigation(child, parent, status)
+            if child.statistics_status == STATS_EXCLUDED and child.processing_status == INCLUDED:
+                reviews.append(review(
+                    "ORPHAN_RANGE" if status == ORPHAN else "PARENT_RELATIONSHIP_REVIEW",
+                    "RELATIONSHIP", [child.id] + ([parent_id] if parent_id else []),
+                    [r.raw_id for r in child.sources], [r.case_ref for r in child.sources],
+                    [r.source_id for r in child.sources], reasons or [status], notes,
+                ))
+
     relationships.sort(key=lambda r: (r["relationship_type"], r["child_canonical_range_id"]))
     return relationships, reviews
+
+
+def explicit_parent_candidates(
+    child: MasterRange, source_map: dict[tuple[str | None, str], str]
+) -> tuple[set[str], bool]:
+    explicit: set[str] = set()
+    unresolved = False
+    for raw in child.sources:
+        if raw.explicit_parent_id:
+            found = source_map.get((raw.case_ref, raw.explicit_parent_id))
+            unresolved = unresolved or found is None
+            if found:
+                explicit.add(found)
+    return explicit, unresolved
+
+
+def configure_child_navigation(child: MasterRange, parent: MasterRange | None, link_status: str) -> None:
+    child.statistics_status = STATS_EXCLUDED
+    child.excluded = True
+    child.visible = False
+    child.navigation_status = NAV_HIDDEN
+    child.ancestor_review_status = ANCESTOR_CLEAR
+    if not navigable_range(child):
+        return
+
+    if parent is None:
+        # Factual child evidence may remain navigable as an unlinked review branch.
+        # No parent is guessed, and identity-conflicted children stay hidden.
+        if child.processing_status == INCLUDED and link_status in {ORPHAN, NEEDS_REVIEW}:
+            child.visible = True
+            child.navigation_status = NAV_REVIEW
+            child.ancestor_review_status = ANCESTOR_DIRECT_REVIEW
+        return
+    if parent.navigation_status == NAV_HIDDEN:
+        return
+
+    child.visible = True
+    self_review = child.processing_status != INCLUDED
+    direct_review = link_status != VALID
+    upstream_review = parent.statistics_status != STATS_ELIGIBLE
+    if not self_review and not direct_review and not upstream_review:
+        child.navigation_status = NAV_TRUSTED
+        child.statistics_status = STATS_ELIGIBLE
+        child.ancestor_review_status = ANCESTOR_CLEAR
+        child.excluded = False
+        return
+
+    child.navigation_status = NAV_REVIEW
+    if self_review and upstream_review:
+        child.ancestor_review_status = ANCESTOR_SELF_AND_UPSTREAM
+    elif self_review:
+        child.ancestor_review_status = ANCESTOR_SELF_REVIEW
+    elif direct_review:
+        child.ancestor_review_status = ANCESTOR_DIRECT_REVIEW
+    else:
+        child.ancestor_review_status = ANCESTOR_UPSTREAM_REVIEW
+
+
+def apply_event_visibility(events: list[MasterEvent], ranges: list[MasterRange]) -> None:
+    by_id = {r.id: r for r in ranges}
+    for event in events:
+        parent = by_id.get(event.range_id) if event.range_id else None
+        if parent is None or parent.navigation_status == NAV_HIDDEN:
+            continue
+        if event.processing_status == INCLUDED and parent.statistics_status == STATS_ELIGIBLE:
+            event.navigation_status = NAV_TRUSTED
+            event.statistics_status = STATS_ELIGIBLE
+            event.ancestor_review_status = ANCESTOR_CLEAR
+            event.direct_parent_link_status = VALID
+            event.excluded = False
+        elif event.range_id is not None:
+            event.navigation_status = NAV_REVIEW
+            event.statistics_status = STATS_EXCLUDED
+            event.direct_parent_link_status = parent.direct_parent_link_status
+            event.ancestor_review_status = (
+                ANCESTOR_SELF_REVIEW if event.processing_status != INCLUDED
+                else ANCESTOR_UPSTREAM_REVIEW
+            )
+            event.excluded = True
 
 
 def parent_candidate(parent: MasterRange, child: MasterRange) -> bool:
     p, c = parent.row, child.row
     if p.symbol != c.symbol or None in (p.high, p.low, c.high, c.low):
         return False
-    p_low, p_high = sorted((p.low, p.high)); c_low, c_high = sorted((c.low, c.high))
+    p_low, p_high = sorted((p.low, p.high))
+    c_low, c_high = sorted((c.low, c.high))
     if c_low > p_high or c_high < p_low:
         return False
     p_start, c_start = formation_time(p), formation_time(c)
@@ -485,94 +697,379 @@ def parent_candidate(parent: MasterRange, child: MasterRange) -> bool:
     return True
 
 
-def build_output(symbol: str, built_at: str, ranges: list[MasterRange], events: list[MasterEvent],
-                 relationships: list[dict[str, Any]], reviews: list[dict[str, Any]],
-                 raw_range_count: int, raw_event_count: int) -> dict[str, Any]:
+def navigable_range(item: MasterRange) -> bool:
+    row = item.row
+    return row.layer in LAYERS and row.high is not None and row.low is not None and formation_time(row) is not None
+
+
+def build_output(
+    symbol: str,
+    built_at: str,
+    ranges: list[MasterRange],
+    events: list[MasterEvent],
+    relationships: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+    lifecycle_report: list[dict[str, Any]],
+    raw_range_count: int,
+    raw_event_count: int,
+) -> dict[str, Any]:
     by_id = {r.id: r for r in ranges}
     child_ids: dict[str, list[str]] = {}
+    unlinked_review_ids: list[str] = []
     for rel in relationships:
-        if rel["link_status"] == VALID and rel["parent_canonical_range_id"]:
-            child_ids.setdefault(rel["parent_canonical_range_id"], []).append(rel["child_canonical_range_id"])
+        child = by_id[rel["child_canonical_range_id"]]
+        parent_id = rel["parent_canonical_range_id"]
+        if child.navigation_status != NAV_HIDDEN and parent_id:
+            child_ids.setdefault(parent_id, []).append(child.id)
+        elif child.navigation_status == NAV_REVIEW and parent_id is None:
+            unlinked_review_ids.append(child.id)
+
     events_by_range: dict[str, list[MasterEvent]] = {}
     for event in events:
-        if event.processing_status == INCLUDED and not event.excluded and event.range_id in by_id and by_id[event.range_id].visible:
-            events_by_range.setdefault(event.range_id, []).append(event)
+        if event.navigation_status != NAV_HIDDEN and event.range_id in by_id:
+            events_by_range.setdefault(str(event.range_id), []).append(event)
 
     def event_node(event: MasterEvent) -> dict[str, Any]:
         p = event.row
-        return {"id": event.id, "node_type": "EVENT", "event_type": p.event_type,
-                "event_time_utc": p.event_time, "price": p.price, "direction": p.direction,
-                "break_level": p.break_level, "source_count": len(event.sources),
-                "source_refs": refs(event.sources)}
+        return {
+            "id": event.id,
+            "node_type": "EVENT",
+            "event_type": p.event_type,
+            "event_time_utc": p.event_time,
+            "price": p.price,
+            "direction": p.direction,
+            "break_level": p.break_level,
+            "source_count": len(event.sources),
+            "source_refs": refs(event.sources),
+            "navigation_status": event.navigation_status,
+            "statistics_status": event.statistics_status,
+            "ancestor_review_status": event.ancestor_review_status,
+            "direct_parent_link_status": event.direct_parent_link_status,
+        }
 
-    def range_node(range_id: str) -> dict[str, Any]:
+    def range_node(range_id: str, *, child_filter: str = "all") -> dict[str, Any]:
         item, p = by_id[range_id], by_id[range_id].row
-        children = [range_node(cid_) for cid_ in sorted(child_ids.get(range_id, []),
-                    key=lambda value: master_range_sort(by_id[value])) if by_id[cid_].visible]
-        return {"id": item.id, "node_type": "RANGE", "structure_layer": p.layer,
-                "source_timeframe": p.timeframe, "range_high": p.high, "range_low": p.low,
-                "range_high_time": p.high_time, "range_low_time": p.low_time,
-                "active_from_time": p.active_from, "inactive_from_time": p.inactive_from,
-                "status": p.status, "direction_of_break": p.break_direction,
-                "source_count": len(item.sources), "source_refs": refs(item.sources),
-                "events": [event_node(e) for e in sorted(events_by_range.get(item.id, []), key=master_event_sort)],
-                "children": children}
+        children = []
+        for child_id in sorted(child_ids.get(range_id, []), key=lambda value: master_range_sort(by_id[value])):
+            child = by_id[child_id]
+            if child_filter == "trusted" and child.statistics_status != STATS_ELIGIBLE:
+                continue
+            children.append(range_node(child_id, child_filter=child_filter))
+        event_nodes = []
+        for event in sorted(events_by_range.get(item.id, []), key=master_event_sort):
+            if child_filter == "trusted" and event.statistics_status != STATS_ELIGIBLE:
+                continue
+            event_nodes.append(event_node(event))
+        return {
+            "id": item.id,
+            "node_type": "RANGE",
+            "structure_layer": p.layer,
+            "source_timeframe": p.timeframe,
+            "range_high": p.high,
+            "range_low": p.low,
+            "range_high_time": p.high_time,
+            "range_low_time": p.low_time,
+            "active_from_time": p.active_from,
+            "inactive_from_time": p.inactive_from,
+            "status": p.status,
+            "direction_of_break": p.break_direction,
+            "source_count": len(item.sources),
+            "source_refs": refs(item.sources),
+            "navigation_status": item.navigation_status,
+            "statistics_status": item.statistics_status,
+            "ancestor_review_status": item.ancestor_review_status,
+            "direct_parent_link_status": item.direct_parent_link_status,
+            "events": event_nodes,
+            "children": children,
+        }
 
-    visible_weeklies = sorted([r for r in ranges if r.row.layer == "WEEKLY" and r.visible], key=master_range_sort)
-    counts = {layer: sum(1 for r in ranges if r.row.layer == layer and r.visible and
-                         r.processing_status == INCLUDED and not r.excluded) for layer in LAYERS}
-    eligible_events = sum(1 for e in events if e.processing_status == INCLUDED and not e.excluded and
-                          e.range_id in by_id and by_id[e.range_id].visible)
+    nav_weeklies = sorted(
+        [r for r in ranges if r.row.layer == "WEEKLY" and r.navigation_status != NAV_HIDDEN],
+        key=master_range_sort,
+    )
+    trusted_weeklies = [r for r in nav_weeklies if r.statistics_status == STATS_ELIGIBLE]
+    full_children = [range_node(r.id) for r in nav_weeklies]
+    trusted_children = [range_node(r.id, child_filter="trusted") for r in trusted_weeklies]
+    full_root = {
+        "id": f"symbol:{symbol}", "node_type": "SYMBOL", "label": symbol,
+        "children": full_children,
+        "unlinked_review_children": [range_node(rid) for rid in sorted(unlinked_review_ids, key=lambda value: master_range_sort(by_id[value]))],
+    }
+    trusted_root = {
+        "id": f"symbol:{symbol}:trusted", "node_type": "SYMBOL", "label": symbol,
+        "children": trusted_children,
+    }
+    review_root = build_review_root(symbol, full_root)
+
+    trusted_counts = {layer: sum(1 for r in ranges if r.row.layer == layer and r.statistics_status == STATS_ELIGIBLE) for layer in LAYERS}
+    nav_counts = {layer: sum(1 for r in ranges if r.row.layer == layer and r.navigation_status != NAV_HIDDEN) for layer in LAYERS}
+    review_counts = {layer: sum(1 for r in ranges if r.row.layer == layer and r.navigation_status == NAV_REVIEW) for layer in LAYERS}
+    eligible_events = sum(1 for e in events if e.statistics_status == STATS_ELIGIBLE)
+    review_events = sum(1 for e in events if e.navigation_status == NAV_REVIEW)
+    hidden_ranges = sum(1 for r in ranges if r.navigation_status == NAV_HIDDEN)
+    hidden_events = sum(1 for e in events if e.navigation_status == NAV_HIDDEN)
+
+    statistics = {
+        "raw_range_sources": raw_range_count,
+        "raw_event_sources": raw_event_count,
+        "canonical_ranges_before_review_exclusion": len(ranges),
+        "canonical_events_before_review_exclusion": len(events),
+        "exact_range_duplicates_collapsed": max(0, raw_range_count - len(ranges)),
+        "exact_event_duplicates_collapsed": max(0, raw_event_count - len(events)),
+        "comparison_eligible_ranges": sum(trusted_counts.values()),
+        "comparison_eligible_events": eligible_events,
+        "visible_ranges_by_layer": trusted_counts,
+        "trusted_visible_ranges_by_layer": trusted_counts,
+        "navigation_visible_ranges_by_layer": nav_counts,
+        "review_visible_ranges_by_layer": review_counts,
+        "review_visible_events": review_events,
+        "hidden_range_records": hidden_ranges,
+        "hidden_event_records": hidden_events,
+        "needs_review_items": len(reviews),
+        "excluded_range_records": sum(1 for r in ranges if r.statistics_status == STATS_EXCLUDED),
+        "excluded_event_records": sum(1 for e in events if e.statistics_status == STATS_EXCLUDED),
+    }
+    stable_content = {
+        "schema_version": VERSION,
+        "symbol": symbol,
+        "root": strip_volatile_for_hash(full_root),
+        "trusted_root": strip_volatile_for_hash(trusted_root),
+        "review_root": strip_volatile_for_hash(review_root),
+        "statistics": statistics,
+        "review_items": strip_volatile_for_hash(reviews),
+        "lifecycle_evidence_report": strip_volatile_for_hash(lifecycle_report),
+    }
+    content_hash = hashlib.sha256(dump(stable_content).encode()).hexdigest()
     return {
-        "schema_version": VERSION, "built_at_utc": built_at, "symbol": symbol,
-        "root": {"id": f"symbol:{symbol}", "node_type": "SYMBOL", "label": symbol,
-                 "children": [range_node(r.id) for r in visible_weeklies]},
-        "statistics": {
-            "raw_range_sources": raw_range_count, "raw_event_sources": raw_event_count,
-            "canonical_ranges_before_review_exclusion": len(ranges),
-            "canonical_events_before_review_exclusion": len(events),
-            "exact_range_duplicates_collapsed": max(0, raw_range_count - len(ranges)),
-            "exact_event_duplicates_collapsed": max(0, raw_event_count - len(events)),
-            "comparison_eligible_ranges": sum(counts.values()),
-            "comparison_eligible_events": eligible_events,
-            "visible_ranges_by_layer": counts, "needs_review_items": len(reviews),
-            "excluded_range_records": sum(1 for r in ranges if r.excluded),
-            "excluded_event_records": sum(1 for e in events if e.excluded),
-        },
+        "schema_version": VERSION,
+        "built_at_utc": built_at,
+        "symbol": symbol,
+        "structural_content_hash": content_hash,
+        "root": full_root,
+        "trusted_root": trusted_root,
+        "review_root": review_root,
+        "statistics": statistics,
         "review_items": reviews,
+        "lifecycle_evidence_report": lifecycle_report,
     }
 
 
-def persist(con: sqlite3.Connection, symbol: str, build_id: str, built_at: str,
-            ranges: list[MasterRange], events: list[MasterEvent], relationships: list[dict[str, Any]],
-            reviews: list[dict[str, Any]], output: dict[str, Any]) -> None:
-    for table in ("master_map_relationships", "master_map_review_items", "master_map_events", "master_map_ranges", "master_map_outputs"):
+def build_review_root(symbol: str, full_root: dict[str, Any]) -> dict[str, Any]:
+    def filter_node(node: dict[str, Any]) -> dict[str, Any] | None:
+        children = [filtered for child in node.get("children", []) if (filtered := filter_node(child)) is not None]
+        events = [event for event in node.get("events", []) if event.get("navigation_status") == NAV_REVIEW]
+        own_review = node.get("navigation_status") == NAV_REVIEW
+        if not own_review and not children and not events:
+            return None
+        result = dict(node)
+        result["children"] = children
+        result["events"] = events
+        result["review_context_only"] = not own_review
+        return result
+
+    children = [filtered for child in full_root.get("children", []) if (filtered := filter_node(child)) is not None]
+    return {
+        "id": f"symbol:{symbol}:review",
+        "node_type": "SYMBOL",
+        "label": symbol,
+        "children": children,
+        "unlinked_review_children": full_root.get("unlinked_review_children", []),
+    }
+
+
+def build_lifecycle_evidence_report(
+    ranges: list[MasterRange], reviews: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    by_id = {item.id: item for item in ranges}
+    report: list[dict[str, Any]] = []
+    for review_item in reviews:
+        if review_item.get("item_type") != "RANGE_DUPLICATE_CONFLICT":
+            continue
+        canonical_ids = review_item.get("canonical_ids", [])
+        items = [by_id[item_id] for item_id in canonical_ids if item_id in by_id]
+        if not items:
+            continue
+        candidates = []
+        for item in items:
+            for raw in item.sources:
+                p = payload(raw.raw_json)
+                candidates.append({
+                    "canonical_range_id": item.id,
+                    "case_ref": raw.case_ref,
+                    "source_record_id": raw.source_id,
+                    "raw_id": raw.raw_id,
+                    "import_run_id": raw.import_run_id,
+                    "import_order": raw.raw_id,
+                    "import_source_path": raw.import_source_path,
+                    "import_started_at_utc": raw.import_started_at,
+                    "import_finished_at_utc": raw.import_finished_at,
+                    "imported_at_utc": raw.imported_at,
+                    "source_created_at_utc": raw.source_created_at,
+                    "source_updated_at_utc": raw.source_updated_at,
+                    "source_exported_at_utc": raw.source_exported_at,
+                    "status": raw.status,
+                    "active_from_time": raw.active_from,
+                    "inactive_from_time": raw.inactive_from,
+                    "direction_of_break": raw.break_direction,
+                    "broken_by_event_id": text(p, "broken_by_event_id"),
+                    "old_range_id": text(p, "old_range_id"),
+                    "new_range_id": text(p, "new_range_id"),
+                    "range_high": raw.high,
+                    "range_low": raw.low,
+                    "range_high_time": raw.high_time,
+                    "range_low_time": raw.low_time,
+                })
+        candidates.sort(key=lambda row: (
+            row.get("source_updated_at_utc") or row.get("source_created_at_utc") or "",
+            row.get("import_order") or 0,
+            row.get("case_ref") or "",
+            source_id_sort(str(row.get("source_record_id") or "")),
+        ))
+        chronology = assess_lifecycle_chronology(candidates)
+        anchor = items[0].row
+        report.append({
+            "conflict_group_id": cid("lifecycle", tuple(sorted(canonical_ids))),
+            "canonical_ids": sorted(canonical_ids),
+            "reason_codes": sorted(review_item.get("reason_codes", [])),
+            "anchor": {
+                "symbol": anchor.symbol,
+                "structure_layer": anchor.layer,
+                "source_timeframe": anchor.timeframe,
+                "range_high_time": anchor.high_time,
+                "range_low_time": anchor.low_time,
+                "range_high": anchor.high,
+                "range_low": anchor.low,
+            },
+            "candidates": candidates,
+            "chronology_assessment": chronology,
+            "automatic_reconciliation": "NOT_APPLIED",
+        })
+    return sorted(report, key=lambda item: item["conflict_group_id"])
+
+
+def assess_lifecycle_chronology(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    observations: list[tuple[datetime, str, dict[str, Any]]] = []
+    for candidate in candidates:
+        observed = candidate.get("source_updated_at_utc") or candidate.get("source_created_at_utc") or candidate.get("source_exported_at_utc")
+        parsed = parse_time(observed)
+        if parsed is not None:
+            observations.append((parsed, str(candidate.get("status") or "UNKNOWN").upper(), candidate))
+    observations.sort(key=lambda item: item[0])
+    statuses = [status for _, status, _ in observations]
+    if len(observations) < 2:
+        return {
+            "status": "INSUFFICIENT_CHRONOLOGY",
+            "status_sequence": statuses,
+            "recommendation": "Keep all lifecycle variants in NEEDS_REVIEW until reliable observation chronology is available.",
+        }
+    active_positions = [index for index, status in enumerate(statuses) if status in {"ACTIVE", "FORMING"}]
+    closed_positions = [index for index, status in enumerate(statuses) if status in {"BROKEN", "ABANDONED", "ARCHIVED"}]
+    if active_positions and closed_positions and max(active_positions) < min(closed_positions):
+        closed_rows = [row for _, status, row in observations if status in {"BROKEN", "ABANDONED", "ARCHIVED"}]
+        lifecycle_complete = all(row.get("inactive_from_time") for row in closed_rows)
+        if lifecycle_complete:
+            return {
+                "status": "CHRONOLOGICAL_TRANSITION_CANDIDATE",
+                "status_sequence": statuses,
+                "recommendation": "A monotonic active-to-inactive sequence is present. Review chart evidence before adding an explicit lifecycle reconciliation rule; do not auto-merge yet.",
+            }
+    if active_positions and closed_positions:
+        return {
+            "status": "CONTRADICTORY_LIFECYCLE_OBSERVATIONS",
+            "status_sequence": statuses,
+            "recommendation": "Observed statuses are not monotonic. Keep every variant reviewed and require manual chart confirmation.",
+        }
+    return {
+        "status": "NON_TRANSITIONAL_FACT_DIFFERENCE",
+        "status_sequence": statuses,
+        "recommendation": "The conflict is not a supported active-to-inactive lifecycle sequence. Keep reviewed.",
+    }
+
+
+def persist(
+    con: sqlite3.Connection,
+    symbol: str,
+    build_id: str,
+    built_at: str,
+    ranges: list[MasterRange],
+    events: list[MasterEvent],
+    relationships: list[dict[str, Any]],
+    reviews: list[dict[str, Any]],
+    output: dict[str, Any],
+) -> None:
+    for table in (
+        "master_map_relationships", "master_map_review_items", "master_map_events",
+        "master_map_ranges", "master_map_outputs",
+    ):
         con.execute(f"DELETE FROM {table} WHERE symbol=?", (symbol,))
     for item in ranges:
-        con.execute("""INSERT INTO master_map_ranges VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (item.id, build_id, symbol, item.row.layer, item.row.timeframe,
-                     item.processing_status, int(item.excluded), int(item.visible), len(item.sources),
-                     dump(range_payload(item.row)), dump(refs(item.sources)), built_at))
+        con.execute("""
+            INSERT INTO master_map_ranges (
+              canonical_range_id,build_id,symbol,structure_layer,source_timeframe,
+              processing_status,excluded_from_statistics,visible_in_hierarchy,
+              source_count,canonical_payload_json,source_refs_json,built_at_utc,
+              navigation_status,statistics_status,ancestor_review_status,direct_parent_link_status
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            item.id, build_id, symbol, item.row.layer, item.row.timeframe,
+            item.processing_status, int(item.statistics_status == STATS_EXCLUDED),
+            int(item.navigation_status != NAV_HIDDEN), len(item.sources),
+            dump(range_payload(item.row)), dump(refs(item.sources)), built_at,
+            item.navigation_status, item.statistics_status,
+            item.ancestor_review_status, item.direct_parent_link_status,
+        ))
     for item in events:
-        con.execute("""INSERT INTO master_map_events VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                    (item.id, build_id, symbol, item.range_id, item.processing_status, int(item.excluded),
-                     len(item.sources), dump(event_payload(item.row, item.range_id)), dump(refs(item.sources)), built_at))
+        con.execute("""
+            INSERT INTO master_map_events (
+              canonical_event_id,build_id,symbol,canonical_range_id,processing_status,
+              excluded_from_statistics,source_count,canonical_payload_json,source_refs_json,
+              built_at_utc,navigation_status,statistics_status,ancestor_review_status,
+              direct_parent_link_status
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            item.id, build_id, symbol, item.range_id, item.processing_status,
+            int(item.statistics_status == STATS_EXCLUDED), len(item.sources),
+            dump(event_payload(item.row, item.range_id)), dump(refs(item.sources)), built_at,
+            item.navigation_status, item.statistics_status,
+            item.ancestor_review_status, item.direct_parent_link_status,
+        ))
     for rel in relationships:
-        con.execute("""INSERT INTO master_map_relationships VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (rel["child_canonical_range_id"], build_id, symbol, rel["relationship_type"],
-                     rel["parent_canonical_range_id"], rel["link_source"], rel["link_status"],
-                     rel["link_confidence"], dump(rel["reason_codes"]), rel["notes"], built_at))
+        con.execute("""
+            INSERT INTO master_map_relationships (
+              child_canonical_range_id,build_id,symbol,relationship_type,
+              parent_canonical_range_id,link_source,link_status,link_confidence,
+              reason_codes_json,notes,built_at_utc
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            rel["child_canonical_range_id"], build_id, symbol, rel["relationship_type"],
+            rel["parent_canonical_range_id"], rel["link_source"], rel["link_status"],
+            rel["link_confidence"], dump(rel["reason_codes"]), rel["notes"], built_at,
+        ))
     for item in reviews:
-        con.execute("""INSERT INTO master_map_review_items VALUES (?,?,?,?,?,?,?,?,?)""",
-                    (item["review_key"], build_id, symbol, item["item_type"], item["entity_kind"],
-                     NEEDS_REVIEW, 1, dump(item), built_at))
-    con.execute("INSERT INTO master_map_outputs VALUES (?,?,?,?,?)",
-                (symbol, build_id, VERSION, built_at, dump(output)))
+        con.execute("""
+            INSERT INTO master_map_review_items (
+              review_key,build_id,symbol,item_type,entity_kind,status,
+              excluded_from_statistics,review_json,built_at_utc
+            ) VALUES (?,?,?,?,?,?,?,?,?)
+        """, (
+            item["review_key"], build_id, symbol, item["item_type"], item["entity_kind"],
+            NEEDS_REVIEW, 1, dump(item), built_at,
+        ))
+    con.execute("""
+        INSERT INTO master_map_outputs (
+          symbol,build_id,schema_version,built_at_utc,structural_content_hash,output_json
+        ) VALUES (?,?,?,?,?,?)
+    """, (
+        symbol, build_id, VERSION, built_at, output["structural_content_hash"], dump(output),
+    ))
 
 
 def range_key(r: RawRange) -> tuple[Any, ...]:
-    return (r.symbol, r.layer, r.timeframe, num_key(r.high), num_key(r.low), r.high_time,
-            r.low_time, r.active_from, r.inactive_from, r.status, r.break_direction)
+    return (
+        r.symbol, r.layer, r.timeframe, num_key(r.high), num_key(r.low),
+        r.high_time, r.low_time, r.active_from, r.inactive_from, r.status,
+        r.break_direction,
+    )
 
 
 def anchor_key(r: RawRange) -> tuple[Any, ...] | None:
@@ -585,28 +1082,57 @@ def event_key(e: RawEvent, range_id: str | None) -> tuple[Any, ...]:
 
 
 def range_payload(r: RawRange) -> dict[str, Any]:
-    return {"symbol": r.symbol, "structure_layer": r.layer, "source_timeframe": r.timeframe,
-            "range_high": r.high, "range_low": r.low, "range_high_time": r.high_time,
-            "range_low_time": r.low_time, "active_from_time": r.active_from,
-            "inactive_from_time": r.inactive_from, "status": r.status,
-            "direction_of_break": r.break_direction}
+    return {
+        "symbol": r.symbol,
+        "structure_layer": r.layer,
+        "source_timeframe": r.timeframe,
+        "range_high": r.high,
+        "range_low": r.low,
+        "range_high_time": r.high_time,
+        "range_low_time": r.low_time,
+        "active_from_time": r.active_from,
+        "inactive_from_time": r.inactive_from,
+        "status": r.status,
+        "direction_of_break": r.break_direction,
+    }
 
 
 def event_payload(e: RawEvent, range_id: str | None) -> dict[str, Any]:
-    return {"canonical_range_id": range_id, "event_type": e.event_type,
-            "event_time_utc": e.event_time, "price": e.price, "direction": e.direction,
-            "break_level": e.break_level}
+    return {
+        "canonical_range_id": range_id,
+        "event_type": e.event_type,
+        "event_time_utc": e.event_time,
+        "price": e.price,
+        "direction": e.direction,
+        "break_level": e.break_level,
+    }
 
 
-def review(item_type: str, entity_kind: str, canonical_ids: list[str], raw_ids: list[int],
-           case_refs: list[str | None], source_ids: list[str], reasons: list[str], summary: str) -> dict[str, Any]:
-    canonical_ids = sorted(set(canonical_ids)); raw_ids = sorted(set(raw_ids))
-    return {"review_key": cid("review", (item_type, entity_kind, *canonical_ids, *raw_ids)),
-            "item_type": item_type, "entity_kind": entity_kind, "status": NEEDS_REVIEW,
-            "excluded_from_statistics": True, "canonical_ids": canonical_ids, "raw_ids": raw_ids,
-            "case_refs": sorted({c for c in case_refs if c is not None}),
-            "source_record_ids": sorted(set(source_ids), key=source_id_sort),
-            "reason_codes": sorted(set(reasons)), "summary": summary}
+def review(
+    item_type: str,
+    entity_kind: str,
+    canonical_ids: list[str],
+    raw_ids: list[int],
+    case_refs: list[str | None],
+    source_ids: list[str],
+    reasons: list[str],
+    summary: str,
+) -> dict[str, Any]:
+    canonical_ids = sorted(set(canonical_ids))
+    raw_ids = sorted(set(raw_ids))
+    return {
+        "review_key": cid("review", (item_type, entity_kind, *canonical_ids, *raw_ids)),
+        "item_type": item_type,
+        "entity_kind": entity_kind,
+        "status": NEEDS_REVIEW,
+        "excluded_from_statistics": True,
+        "canonical_ids": canonical_ids,
+        "raw_ids": raw_ids,
+        "case_refs": sorted({c for c in case_refs if c is not None}),
+        "source_record_ids": sorted(set(source_ids), key=source_id_sort),
+        "reason_codes": sorted(set(reasons)),
+        "summary": summary,
+    }
 
 
 def dedupe_reviews(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -621,14 +1147,36 @@ def dedupe_reviews(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def refs(rows: Iterable[RawRange | RawEvent]) -> list[dict[str, Any]]:
-    return [{"raw_id": r.raw_id, "case_ref": r.case_ref, "source_record_id": r.source_id,
-             "payload_sha256": r.payload_hash}
-            for r in sorted(rows, key=lambda r: (r.case_ref or "", source_id_sort(r.source_id), r.raw_id))]
+    return [
+        {
+            "raw_id": r.raw_id,
+            "case_ref": r.case_ref,
+            "source_record_id": r.source_id,
+            "payload_sha256": r.payload_hash,
+        }
+        for r in sorted(rows, key=lambda r: (r.case_ref or "", source_id_sort(r.source_id), r.raw_id))
+    ]
+
+
+def strip_volatile_for_hash(value: Any) -> Any:
+    volatile = {
+        "build_id", "built_at_utc", "raw_id", "raw_ids", "review_key",
+        "import_run_id", "import_order", "import_source_path",
+        "import_started_at_utc", "import_finished_at_utc", "imported_at_utc",
+        "payload_sha256", "source_refs",
+    }
+    if isinstance(value, dict):
+        return {
+            key: strip_volatile_for_hash(item)
+            for key, item in sorted(value.items()) if key not in volatile
+        }
+    if isinstance(value, list):
+        return [strip_volatile_for_hash(item) for item in value]
+    return value
 
 
 def clearly_distinct(items: list[MasterRange]) -> bool:
-    return all(not windows_overlap(left.row, right.row)
-               for i, left in enumerate(items) for right in items[i + 1:])
+    return all(not windows_overlap(left.row, right.row) for i, left in enumerate(items) for right in items[i + 1:])
 
 
 def windows_overlap(left: RawRange, right: RawRange) -> bool:
@@ -645,7 +1193,8 @@ def time_window(r: RawRange) -> tuple[datetime, datetime] | None:
 def prices_overlap(left: RawRange, right: RawRange) -> bool:
     if None in (left.high, left.low, right.high, right.low):
         return True
-    l_low, l_high = sorted((left.low, left.high)); r_low, r_high = sorted((right.low, right.high))
+    l_low, l_high = sorted((left.low, left.high))
+    r_low, r_high = sorted((right.low, right.high))
     return l_low <= r_high and r_low <= l_high
 
 
@@ -705,6 +1254,12 @@ def text(p: dict[str, Any], *keys: str) -> str | None:
     if isinstance(nested, str):
         nested = payload(nested)
     return text(nested, *keys) if isinstance(nested, dict) else None
+
+
+def text_value(value: Any) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    return str(value)
 
 
 def number(p: dict[str, Any], *keys: str) -> float | None:
@@ -779,7 +1334,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"symbol: {result['symbol']}")
         print(f"comparison_eligible_ranges: {stats['comparison_eligible_ranges']}")
         print(f"comparison_eligible_events: {stats['comparison_eligible_events']}")
+        print(f"navigation_visible_ranges_by_layer: {stats['navigation_visible_ranges_by_layer']}")
         print(f"needs_review_items: {stats['needs_review_items']}")
+        print(f"structural_content_hash: {result['structural_content_hash']}")
         print(f"output: {args.output}")
     return 0
 
