@@ -7,7 +7,16 @@ import {
   shouldBlockTradingViewFitContent,
   type CameraViewOwner,
 } from './chartViewportPolicy';
-import type { StructuralJumpSource, StructuralJumpTarget } from './structuralJumpTarget';
+import {
+  normalizeGapTarget,
+  normalizeReviewTarget,
+  normalizeStructuralEventTarget,
+  normalizeStructuralRangeTarget,
+  type StructuralGapLike,
+  type StructuralJumpSource,
+  type StructuralJumpTarget,
+  type StructuralTargetOptions,
+} from './structuralJumpTarget';
 
 export type StructuralNavigationRuntimeState = {
   currentTimeframe: string;
@@ -223,4 +232,49 @@ export async function navigateStructuralTarget(
     chartMode: plan.chartMode,
   });
   return { ok: true, plan };
+}
+
+export async function navigateStructuralRangeRecord(
+  range: unknown,
+  port: StructuralChartNavigationPort,
+  options: StructuralTargetOptions = {},
+): Promise<StructuralJumpExecutionResult> {
+  const target = normalizeStructuralRangeTarget(range, 'HIERARCHY', options);
+  return target
+    ? navigateStructuralTarget(target, port)
+    : { ok: false, error: 'Structural jump blocked: range could not be normalized.' };
+}
+
+export async function navigateStructuralEventRecord(
+  event: unknown,
+  range: unknown,
+  port: StructuralChartNavigationPort,
+  options: StructuralTargetOptions = {},
+): Promise<StructuralJumpExecutionResult> {
+  const target = normalizeStructuralEventTarget(event, range, 'HIERARCHY', options);
+  return target
+    ? navigateStructuralTarget(target, port)
+    : { ok: false, error: 'Structural jump blocked: event could not be normalized.' };
+}
+
+export async function navigateStructuralGap(
+  gap: StructuralGapLike | unknown,
+  port: StructuralChartNavigationPort,
+  options: StructuralTargetOptions = {},
+): Promise<StructuralJumpExecutionResult> {
+  const target = normalizeGapTarget(gap, options);
+  return target
+    ? navigateStructuralTarget(target, port)
+    : { ok: false, error: 'Structural jump blocked: gap could not be normalized.' };
+}
+
+export async function navigateStructuralReview(
+  review: unknown,
+  port: StructuralChartNavigationPort,
+  options: StructuralTargetOptions & { canonicalRange?: unknown } = {},
+): Promise<StructuralJumpExecutionResult> {
+  const target = normalizeReviewTarget(review, options);
+  return target
+    ? navigateStructuralTarget(target, port)
+    : { ok: false, error: 'Structural jump blocked: review item could not be normalized.' };
 }
