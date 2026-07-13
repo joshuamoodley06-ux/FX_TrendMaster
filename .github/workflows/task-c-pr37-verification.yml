@@ -86,9 +86,13 @@ jobs:
           cache: npm
           cache-dependency-path: electron/package-lock.json
 
-      - name: Install Electron dependencies
+      - name: Install Electron dependencies without unused desktop binary
         working-directory: electron
-        run: npm ci
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Prepare esbuild binary
+        working-directory: electron
+        run: npm rebuild esbuild --no-audit --no-fund
 
       - name: Focused structural navigation tests
         working-directory: electron
