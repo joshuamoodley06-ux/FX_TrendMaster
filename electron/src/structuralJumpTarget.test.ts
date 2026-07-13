@@ -124,6 +124,11 @@ describe('structuralJumpTarget', () => {
       canonicalRangeId: '88',
       reason: 'REVIEW',
     });
+    expect(target?.preferredAnchorTime).toBe('2026-04-02T08:00:00.000Z');
+    expect(target?.visibleWindow).toEqual({
+      start: '2026-04-01T12:00:00.000Z',
+      end: '2026-04-02T08:00:00.000Z',
+    });
     expect(target?.sourceRecordProvenance.caseRefs).toEqual(['legacy-case']);
   });
 
