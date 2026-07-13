@@ -6,6 +6,9 @@ on:
       - fix/review-case-isolation-v01
     paths:
       - .github/workflows/temporary-review-case-isolation.yml
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
