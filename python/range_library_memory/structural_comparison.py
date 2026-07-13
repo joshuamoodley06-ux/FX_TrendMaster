@@ -22,7 +22,7 @@ CLOSE_TIER = "close_match"
 MODEL_FAMILY_TIER = "broader_model_family_match"
 MATCH_TIERS = (STRONG_TIER, CLOSE_TIER, MODEL_FAMILY_TIER)
 TRUSTED = "TRUSTED"
-VALID_OUTCOME_PATHS = {"CONTINUATION", "FAILURE", "ALTERNATIVE"}
+VALID_OUTCOME_PATHS = {"CONTINUATION", "FAILURE", "ALTERNATIVE", "NOT_AVAILABLE"}
 
 ALLOWED = {
     "parent_direction": {"UP", "DOWN", "TRANSITION"},
@@ -154,7 +154,7 @@ def normalize_historical_example(raw: Mapping[str, Any]) -> dict[str, Any]:
     if not example_id:
         raise StructuralComparisonError("historical example_id is required")
     snapshot = normalize_snapshot(raw["snapshot"], "historical") if "snapshot" in raw else build_staged_snapshot(raw)
-    outcome = normalize_outcome(raw["outcome"])
+    outcome = normalize_outcome(raw.get("outcome"))
     if outcome["reached_at"] and parse_time(outcome["reached_at"]) < parse_time(snapshot["as_of_time"]):
         raise StructuralComparisonError(f"outcome for {example_id} occurs before snapshot freeze")
     ref = dict(raw.get("example_ref") or {})
@@ -288,11 +288,18 @@ def summarize(matches: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def normalize_outcome(raw: Mapping[str, Any]) -> dict[str, Any]:
-    path = valid(raw.get("path"), VALID_OUTCOME_PATHS, "outcome.path")
-    destination = token(raw.get("destination"))
-    if not destination:
-        raise StructuralComparisonError("outcome.destination is required")
+def normalize_outcome(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    if raw is None:
+        return {
+            "path": "NOT_AVAILABLE",
+            "destination": "NOT_AVAILABLE",
+            "reached_at": None,
+            "time_to_destination": None,
+        }
+    path = valid(raw.get("path", "NOT_AVAILABLE"), VALID_OUTCOME_PATHS, "outcome.path")
+    destination = token(raw.get("destination")) or "NOT_AVAILABLE"
+    if path != "NOT_AVAILABLE" and destination == "NOT_AVAILABLE":
+        raise StructuralComparisonError("outcome.destination is required for factual outcomes")
     value = raw.get("time_to_destination")
     time_value = None
     if value is not None:
