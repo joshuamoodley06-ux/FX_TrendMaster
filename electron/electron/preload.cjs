@@ -51,6 +51,14 @@ contextBridge.exposeInMainWorld('localResearch', {
   runRecordAuditVerdict: (args) => ipcRenderer.invoke('local-research:record-audit-verdict', args),
 });
 
+contextBridge.exposeInMainWorld('localMappingBridge', {
+  submit: (request) => ipcRenderer.invoke('local-mapping:submit', request),
+  getStatus: (editId) => ipcRenderer.invoke('local-mapping:get-status', { editId }),
+  retry: (editId) => ipcRenderer.invoke('local-mapping:retry', { editId }),
+  getPaths: () => ipcRenderer.invoke('local-mapping:get-paths'),
+  resumePending: (limit) => ipcRenderer.invoke('local-mapping:resume-pending', { limit }),
+});
+
 contextBridge.exposeInMainWorld('electronAPI', {
   candles: {
     fetch: (symbolOrArgs, timeframe, range) => {

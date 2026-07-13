@@ -40,6 +40,22 @@ export type InspectorCommitRequest = {
   pathParams?: { eventId?: string; rangeId?: string };
 };
 
+export type LocalMappingProcessingState = {
+  ok: boolean;
+  saved: boolean;
+  state: 'SUCCESS' | 'PENDING' | 'FAILED';
+  editId?: string;
+  duplicate?: boolean;
+  attemptCount?: number;
+  databasePath?: string;
+  electronDatabasePath?: string;
+  pythonDatabasePath?: string | null;
+  sameDatabasePath?: boolean | null;
+  processorVersion?: string | null;
+  result?: unknown;
+  error?: string;
+};
+
 export type InspectorCommitResult<T = unknown> = {
   ok: boolean;
   kind: InspectorCommitKind;
@@ -47,6 +63,16 @@ export type InspectorCommitResult<T = unknown> = {
   data?: T;
   error?: string;
   httpStatus?: number;
+  localProcessing?: LocalMappingProcessingState;
+};
+
+type LocalMappingBridgeApi = {
+  submit: (request: {
+    kind: InspectorCommitKind;
+    source: InspectorCommitSource;
+    payload?: Record<string, unknown>;
+    pathParams?: { eventId?: string; rangeId?: string };
+  }) => Promise<LocalMappingProcessingState>;
 };
 
 function normalizeBaseUrl(base: string): string {
@@ -91,13 +117,64 @@ function resolveCommitTarget(req: InspectorCommitRequest): { url: string; method
   }
 }
 
+function localMappingBridge(): LocalMappingBridgeApi | undefined {
+  return (globalThis as typeof globalThis & { localMappingBridge?: LocalMappingBridgeApi }).localMappingBridge;
+}
+
+function requiresLocalDurability(kind: InspectorCommitKind): boolean {
+  return kind === 'structural_range' || kind === 'structural_event';
+}
+
+async function persistLocallyBeforeBackend(
+  req: InspectorCommitRequest,
+): Promise<LocalMappingProcessingState | undefined> {
+  if (!requiresLocalDurability(req.kind)) return undefined;
+  const bridge = localMappingBridge();
+  if (!bridge) return undefined; // Browser/dev fallback. Electron preload owns the durable path.
+  try {
+    return await bridge.submit({
+      kind: req.kind,
+      source: req.source,
+      payload: req.payload,
+      pathParams: req.pathParams,
+    });
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      saved: false,
+      state: 'FAILED',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function attachLocalProcessing<T>(data: T, localProcessing?: LocalMappingProcessingState): T {
+  if (!localProcessing || !data || typeof data !== 'object' || Array.isArray(data)) return data;
+  return {
+    ...(data as Record<string, unknown>),
+    local_processing: localProcessing,
+  } as T;
+}
+
 export async function inspectorCommit<T = unknown>(
   req: InspectorCommitRequest,
 ): Promise<InspectorCommitResult<T>> {
   let url = '';
   let method: 'POST' | 'PATCH' = 'POST';
+  let localProcessing: LocalMappingProcessingState | undefined;
   try {
     ({ url, method } = resolveCommitTarget(req));
+    localProcessing = await persistLocallyBeforeBackend(req);
+    if (localProcessing && !localProcessing.saved) {
+      return {
+        ok: false,
+        kind: req.kind,
+        source: req.source,
+        error: localProcessing.error || 'Local mapping edit could not be saved.',
+        localProcessing,
+      };
+    }
+
     const res = await fetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
@@ -112,9 +189,10 @@ export async function inspectorCommit<T = unknown>(
       ok,
       kind: req.kind,
       source: req.source,
-      data: ok ? data : undefined,
+      data: ok ? attachLocalProcessing(data, localProcessing) : undefined,
       error: ok ? undefined : (data?.error || data?.detail || `Backend request failed ${res.status}`),
       httpStatus: res.status,
+      localProcessing,
     };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
@@ -123,6 +201,7 @@ export async function inspectorCommit<T = unknown>(
       kind: req.kind,
       source: req.source,
       error: message,
+      localProcessing,
     };
   }
 }
