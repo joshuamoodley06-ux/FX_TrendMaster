@@ -159,15 +159,6 @@ jobs:
           echo "untracked_after_build:" >> "$GITHUB_STEP_SUMMARY"
           git ls-files --others --exclude-standard | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
 
-      - name: Upload verification logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: task-c-pr37-windows-verification-logs
-          path: electron/.task-c-verification
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Enforce verification results
         shell: bash
         run: |
@@ -178,6 +169,28 @@ jobs:
           echo "focused_status=$focused" >> "$GITHUB_STEP_SUMMARY"
           echo "full_suite_status=$full" >> "$GITHUB_STEP_SUMMARY"
           echo "build_status=$build" >> "$GITHUB_STEP_SUMMARY"
+          echo "Focused summary:"
+          grep -E 'Test Files|Tests|Duration' electron/.task-c-verification/focused.log | tail -n 3 || true
+          echo "Full suite summary:"
+          grep -E 'Test Files|Tests|Duration' electron/.task-c-verification/full-suite.log | tail -n 3 || true
+          echo "Build summary:"
+          tail -n 12 electron/.task-c-verification/build.log || true
           test "$focused" = "0"
           test "$full" = "0"
           test "$build" = "0"
+
+      - name: Prepare verification artifact
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p task-c-verification-logs
+          cp -f electron/.task-c-verification/* task-c-verification-logs/ 2>/dev/null || true
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-c-pr37-windows-verification-logs
+          path: task-c-verification-logs
+          if-no-files-found: warn
+          retention-days: 1
