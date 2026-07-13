@@ -281,7 +281,20 @@ export function normalizeReviewTarget(
     canonical_range_id: firstValue(asRecord(range), ['canonical_range_id', 'canonicalRangeId', 'range_id', 'rangeId', 'id'])
       ?? canonicalIds[0],
   };
-  const target = normalizeStructuralRangeTarget(enrichedRange, 'REVIEW', options);
+  const target = normalizeStructuralRangeTarget(enrichedRange, 'REVIEW', {
+    ...options,
+    preferredAnchorTime: options.preferredAnchorTime ?? firstValue(review, [
+      'preferred_anchor_time', 'preferredAnchorTime', 'jump_time', 'jumpTime',
+      'replay_until_time', 'replayUntilTime', 'event_time_utc', 'eventTimeUtc',
+    ]),
+    visibleStart: options.visibleStart ?? firstValue(review, [
+      'visible_start_time', 'visibleStartTime', 'first_time', 'firstTime', 'range_start_time', 'rangeStartTime',
+    ]),
+    visibleEnd: options.visibleEnd ?? firstValue(review, [
+      'visible_end_time', 'visibleEndTime', 'replay_until_time', 'replayUntilTime',
+      'last_time', 'lastTime', 'range_end_time', 'rangeEndTime',
+    ]),
+  });
   if (!target) return null;
   return {
     ...target,
