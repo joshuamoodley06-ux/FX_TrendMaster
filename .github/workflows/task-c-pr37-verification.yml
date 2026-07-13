@@ -15,6 +15,7 @@ jobs:
     env:
       BASE_SHA: a3617684d1e84bec22c8f1689a5619eb6ecb1f06
       TASK_C_SHA: 0112d7486c5cf4d2b2198d2df91c7063ccd52525
+      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - name: Checkout exact Task C head
         uses: actions/checkout@v4
