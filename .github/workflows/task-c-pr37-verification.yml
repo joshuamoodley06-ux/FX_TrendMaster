@@ -5,6 +5,10 @@ on:
     branches:
       - feat/structural-chart-navigation-v01
 
+concurrency:
+  group: task-c-pr37-verification
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -83,16 +87,34 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: electron/package-lock.json
 
-      - name: Install Electron dependencies without unused desktop binary
+      - name: Install exact test and build dependencies
         working-directory: electron
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Prepare esbuild binary
-        working-directory: electron
-        run: npm rebuild esbuild --no-audit --no-fund
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .task-c-deps
+          node <<'NODE'
+          const fs = require('fs');
+          const lock = require('./package-lock.json');
+          const root = lock.packages?.[''] || {};
+          const direct = new Set([
+            ...Object.keys(root.dependencies || {}),
+            ...Object.keys(root.devDependencies || {}),
+          ]);
+          for (const name of ['electron', 'electron-builder', 'concurrently', 'wait-on']) direct.delete(name);
+          const dependencies = {};
+          for (const name of [...direct].sort()) {
+            const entry = lock.packages?.[`node_modules/${name}`];
+            if (!entry?.version) throw new Error(`No locked version for ${name}`);
+            dependencies[name] = entry.version;
+          }
+          fs.writeFileSync('.task-c-deps/package.json', JSON.stringify({ private: true, dependencies }, null, 2));
+          console.log(dependencies);
+          NODE
+          npm install --prefix .task-c-deps --ignore-scripts --no-audit --no-fund --package-lock=false
+          ln -s .task-c-deps/node_modules node_modules
+          npm rebuild --prefix .task-c-deps esbuild --no-audit --no-fund
 
       - name: Focused structural navigation tests
         working-directory: electron
