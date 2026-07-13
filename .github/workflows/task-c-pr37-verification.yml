@@ -118,15 +118,33 @@ jobs:
 
       - name: Focused structural navigation tests
         working-directory: electron
-        run: npx vitest run src/structuralJumpTarget.test.ts src/structuralChartNavigation.test.ts
+        shell: bash
+        run: |
+          set +e
+          npx vitest run src/structuralJumpTarget.test.ts src/structuralChartNavigation.test.ts 2>&1 | tee /tmp/task-c-focused.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > /tmp/task-c-focused.status
+          exit 0
 
       - name: Full Electron test suite
         working-directory: electron
-        run: npm test
+        shell: bash
+        run: |
+          set +e
+          npm test 2>&1 | tee /tmp/task-c-full-suite.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > /tmp/task-c-full-suite.status
+          exit 0
 
       - name: Electron build
         working-directory: electron
-        run: npm run build
+        shell: bash
+        run: |
+          set +e
+          npm run build 2>&1 | tee /tmp/task-c-build.log
+          status=${PIPESTATUS[0]}
+          echo "$status" > /tmp/task-c-build.status
+          exit 0
 
       - name: Post-build repository check
         shell: bash
@@ -138,3 +156,32 @@ jobs:
           echo "post_build_tracked_tree=clean" >> "$GITHUB_STEP_SUMMARY"
           echo "untracked_after_build:" >> "$GITHUB_STEP_SUMMARY"
           git ls-files --others --exclude-standard | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload verification logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: task-c-pr37-verification-logs
+          path: |
+            /tmp/task-c-focused.log
+            /tmp/task-c-focused.status
+            /tmp/task-c-full-suite.log
+            /tmp/task-c-full-suite.status
+            /tmp/task-c-build.log
+            /tmp/task-c-build.status
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Enforce verification results
+        shell: bash
+        run: |
+          set -euo pipefail
+          focused="$(cat /tmp/task-c-focused.status)"
+          full="$(cat /tmp/task-c-full-suite.status)"
+          build="$(cat /tmp/task-c-build.status)"
+          echo "focused_status=$focused" >> "$GITHUB_STEP_SUMMARY"
+          echo "full_suite_status=$full" >> "$GITHUB_STEP_SUMMARY"
+          echo "build_status=$build" >> "$GITHUB_STEP_SUMMARY"
+          test "$focused" = "0"
+          test "$full" = "0"
+          test "$build" = "0"
