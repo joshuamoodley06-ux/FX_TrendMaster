@@ -31,10 +31,11 @@ export type LocalMappingProcessingState = {
   status?: string;
   editId?: string;
   duplicate?: boolean;
-  backendStatus?: 'UNCONFIRMED' | 'REJECTED' | 'CONFIRMED' | string;
+  backendStatus?: 'UNCONFIRMED' | 'REJECTED' | 'RESPONSE_INVALID' | 'CONFIRMED' | string;
   backendAttemptCount?: number;
   backendResponse?: unknown;
   backendConfirmedPayload?: unknown;
+  backendHttpStatus?: number | null;
   backendRangeId?: string | null;
   backendEventId?: string | null;
   backendError?: string;
@@ -115,6 +116,11 @@ function attachLocalProcessing<T>(data: T, localProcessing?: LocalMappingProcess
   if (!localProcessing || !data || typeof data !== 'object' || Array.isArray(data)) return data;
   return { ...(data as Record<string, unknown>), local_processing: localProcessing } as T;
 }
+function unresolvedConfirmationError(localProcessing: LocalMappingProcessingState): string {
+  return localProcessing.error
+    || localProcessing.backendError
+    || 'Backend returned success without a usable final structural identity. Manual reconciliation is required.';
+}
 
 export async function inspectorCommit<T = unknown>(req: InspectorCommitRequest): Promise<InspectorCommitResult<T>> {
   let url = '';
@@ -127,6 +133,17 @@ export async function inspectorCommit<T = unknown>(req: InspectorCommitRequest):
     if (localProcessing && !localProcessing.saved) {
       return { ok: false, kind: req.kind, source: req.source,
         error: localProcessing.error || 'Local mapping edit could not be saved.', localProcessing };
+    }
+
+    if (localProcessing?.backendStatus === 'RESPONSE_INVALID') {
+      return {
+        ok: false,
+        kind: req.kind,
+        source: req.source,
+        error: unresolvedConfirmationError(localProcessing),
+        httpStatus: localProcessing.backendHttpStatus ?? undefined,
+        localProcessing,
+      };
     }
 
     if (localProcessing?.backendStatus === 'CONFIRMED' && localProcessing.editId && bridge) {
@@ -144,7 +161,7 @@ export async function inspectorCommit<T = unknown>(req: InspectorCommitRequest):
       res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.strinfy(req.payload ?? {}),
+        body: JSON.stringify(req.payload ?? {}),
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -171,6 +188,16 @@ export async function inspectorCommit<T = unknown>(req: InspectorCommitRequest):
 
     if (localProcessing?.editId && bridge) {
       localProcessing = await bridge.backendSucceeded(localProcessing.editId, data, res.status);
+      if (localProcessing.backendStatus === 'RESPONSE_INVALID' || localProcessing.status === 'BACKEND_CONFIRMATION_INCOMPLETE') {
+        return {
+          ok: false,
+          kind: req.kind,
+          source: req.source,
+          error: unresolvedConfirmationError(localProcessing),
+          httpStatus: res.status,
+          localProcessing,
+        };
+      }
     }
     return {
       ok: true, kind: req.kind, source: req.source,
