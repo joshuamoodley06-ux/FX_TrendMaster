@@ -14,12 +14,11 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    runs-on: windows-latest
+    timeout-minutes: 40
     env:
       BASE_SHA: a3617684d1e84bec22c8f1689a5619eb6ecb1f06
       TASK_C_SHA: 0112d7486c5cf4d2b2198d2df91c7063ccd52525
-      ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
     steps:
       - name: Checkout exact Task C head
         uses: actions/checkout@v4
@@ -87,64 +86,34 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
 
-      - name: Install exact test and build dependencies
+      - name: Install complete Electron dependencies
         working-directory: electron
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p .task-c-deps
-          node <<'NODE'
-          const fs = require('fs');
-          const lock = require('./package-lock.json');
-          const root = lock.packages?.[''] || {};
-          const direct = new Set([
-            ...Object.keys(root.dependencies || {}),
-            ...Object.keys(root.devDependencies || {}),
-          ]);
-          for (const name of ['electron', 'electron-builder', 'concurrently', 'wait-on']) direct.delete(name);
-          const dependencies = {};
-          for (const name of [...direct].sort()) {
-            const entry = lock.packages?.[`node_modules/${name}`];
-            if (!entry?.version) throw new Error(`No locked version for ${name}`);
-            dependencies[name] = entry.version;
-          }
-          fs.writeFileSync('.task-c-deps/package.json', JSON.stringify({ private: true, dependencies }, null, 2));
-          console.log(dependencies);
-          NODE
-          npm install --prefix .task-c-deps --ignore-scripts --no-audit --no-fund --package-lock=false
-          ln -s .task-c-deps/node_modules node_modules
-          npm rebuild --prefix .task-c-deps esbuild --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
 
       - name: Focused structural navigation tests
         working-directory: electron
         shell: bash
         run: |
-          set +e
-          npx vitest run src/structuralJumpTarget.test.ts src/structuralChartNavigation.test.ts 2>&1 | tee /tmp/task-c-focused.log
-          status=${PIPESTATUS[0]}
-          echo "$status" > /tmp/task-c-focused.status
-          exit 0
+          set -euo pipefail
+          mkdir -p .task-c-verification
+          npx vitest run src/structuralJumpTarget.test.ts src/structuralChartNavigation.test.ts 2>&1 | tee .task-c-verification/focused.log
 
       - name: Full Electron test suite
         working-directory: electron
         shell: bash
         run: |
-          set +e
-          npm test 2>&1 | tee /tmp/task-c-full-suite.log
-          status=${PIPESTATUS[0]}
-          echo "$status" > /tmp/task-c-full-suite.status
-          exit 0
+          set -euo pipefail
+          npm test 2>&1 | tee .task-c-verification/full-suite.log
 
       - name: Electron build
         working-directory: electron
         shell: bash
         run: |
-          set +e
-          npm run build 2>&1 | tee /tmp/task-c-build.log
-          status=${PIPESTATUS[0]}
-          echo "$status" > /tmp/task-c-build.status
-          exit 0
+          set -euo pipefail
+          npm run build 2>&1 | tee .task-c-verification/build.log
 
       - name: Post-build repository check
         shell: bash
@@ -161,27 +130,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: task-c-pr37-verification-logs
-          path: |
-            /tmp/task-c-focused.log
-            /tmp/task-c-focused.status
-            /tmp/task-c-full-suite.log
-            /tmp/task-c-full-suite.status
-            /tmp/task-c-build.log
-            /tmp/task-c-build.status
-          if-no-files-found: error
+          name: task-c-pr37-windows-verification-logs
+          path: electron/.task-c-verification
+          if-no-files-found: warn
           retention-days: 1
-
-      - name: Enforce verification results
-        shell: bash
-        run: |
-          set -euo pipefail
-          focused="$(cat /tmp/task-c-focused.status)"
-          full="$(cat /tmp/task-c-full-suite.status)"
-          build="$(cat /tmp/task-c-build.status)"
-          echo "focused_status=$focused" >> "$GITHUB_STEP_SUMMARY"
-          echo "full_suite_status=$full" >> "$GITHUB_STEP_SUMMARY"
-          echo "build_status=$build" >> "$GITHUB_STEP_SUMMARY"
-          test "$focused" = "0"
-          test "$full" = "0"
-          test "$build" = "0"
