@@ -39,6 +39,7 @@ class RangeSnapshot:
 
 @dataclass(frozen=True)
 class LifecycleSnapshot:
+    case_ref: str | None
     range_source_id: str
     effective_status: str
     effective_active_from_time: str | None
@@ -91,13 +92,16 @@ def resolve_parent_conflicts(
             if (case_ref is None or daily.row.case_ref == case_ref)
             and (daily_source_id is None or daily.row.source_record_id == str(daily_source_id))
         ]
-        selected_ids = {daily.row.source_record_id for daily in selected}
+        selected_ids = {
+            range_identity(daily.row.case_ref, daily.row.source_record_id)
+            for daily in selected
+        }
         rows = [
             resolve_daily(
                 daily,
                 weeklies,
                 lifecycles,
-                existing.get(daily.row.source_record_id),
+                existing.get(range_identity(daily.row.case_ref, daily.row.source_record_id)),
                 timestamp=timestamp,
             )
             for daily in selected
@@ -167,18 +171,19 @@ def format_summary(summary: dict[str, Any], *, as_json: bool = False) -> str:
 def resolve_daily(
     daily: RangeSnapshot,
     weeklies: list[RangeSnapshot],
-    lifecycles: dict[str, LifecycleSnapshot],
+    lifecycles: dict[tuple[str | None, str], LifecycleSnapshot],
     existing: sqlite3.Row | None,
     *,
     timestamp: str,
 ) -> dict[str, Any]:
     compatible: list[CandidateAssessment] = []
     ambiguous: list[CandidateAssessment] = []
-    assessments: dict[str, CandidateAssessment] = {}
+    assessments: dict[tuple[str | None, str], CandidateAssessment] = {}
 
     for weekly in weeklies:
-        assessment = assess_candidate(daily, weekly, lifecycles.get(weekly.row.source_record_id))
-        assessments[weekly.row.source_record_id] = assessment
+        weekly_key = range_identity(weekly.row.case_ref, weekly.row.source_record_id)
+        assessment = assess_candidate(daily, weekly, lifecycles.get(weekly_key))
+        assessments[weekly_key] = assessment
         if assessment.status == COMPATIBLE:
             compatible.append(assessment)
         elif assessment.status == AMBIGUOUS:
@@ -204,7 +209,7 @@ def resolve_daily(
             )
         result = resolve_explicit(
             preferred_daily,
-            assessments.get(preferred_id),
+            assessments.get(range_identity(daily.row.case_ref, preferred_id)),
             compatible,
             ambiguous,
             timestamp=timestamp,
@@ -495,7 +500,14 @@ def load_latest_ranges(
           AND id IN (
               SELECT MAX(id)
               FROM raw_ranges
-              GROUP BY source_record_id
+              GROUP BY
+                  COALESCE(
+                      json_extract(raw_payload_json, '$.case_ref'),
+                      json_extract(raw_payload_json, '$.raw_case_id'),
+                      json_extract(raw_payload_json, '$.case_id'),
+                      ''
+                  ),
+                  source_record_id
           )
         ORDER BY source_record_id
         """,
@@ -568,22 +580,23 @@ def snapshot_from_row(row: dict[str, Any]) -> RangeSnapshot:
 
 def load_latest_weekly_lifecycles(
     connection: sqlite3.Connection,
-) -> dict[str, LifecycleSnapshot]:
+) -> dict[tuple[str | None, str], LifecycleSnapshot]:
     rows = connection.execute(
         """
         SELECT lifecycle.*
         FROM resolved_range_lifecycles AS lifecycle
         JOIN (
-            SELECT range_source_id, MAX(id) AS max_id
+            SELECT case_ref, range_source_id, MAX(id) AS max_id
             FROM resolved_range_lifecycles
             WHERE structure_layer = 'WEEKLY'
-            GROUP BY range_source_id
+            GROUP BY case_ref, range_source_id
         ) AS latest ON latest.max_id = lifecycle.id
         WHERE lifecycle.structure_layer = 'WEEKLY'
         """
     ).fetchall()
     return {
-        str(row["range_source_id"]): LifecycleSnapshot(
+        range_identity(row["case_ref"], str(row["range_source_id"])): LifecycleSnapshot(
+            case_ref=optional_text(row["case_ref"]),
             range_source_id=str(row["range_source_id"]),
             effective_status=str(row["effective_status"] or "UNKNOWN").upper(),
             effective_active_from_time=optional_text(row["effective_active_from_time"]),
@@ -596,23 +609,23 @@ def load_latest_weekly_lifecycles(
 
 def load_latest_relationships(
     connection: sqlite3.Connection,
-) -> dict[str, sqlite3.Row]:
+) -> dict[tuple[str | None, str], sqlite3.Row]:
     rows = connection.execute(
         """
         SELECT relationship.*
         FROM parent_child_relationships AS relationship
         JOIN (
-            SELECT child_range_id, MAX(id) AS max_id
+            SELECT case_ref, child_range_id, MAX(id) AS max_id
             FROM parent_child_relationships
             WHERE relationship_type = ?
-            GROUP BY child_range_id
+            GROUP BY case_ref, child_range_id
         ) AS latest ON latest.max_id = relationship.id
         WHERE relationship.relationship_type = ?
         """,
         (RELATIONSHIP_TYPE, RELATIONSHIP_TYPE),
     ).fetchall()
     return {
-        str(row["child_range_id"]): row
+        range_identity(row["case_ref"], str(row["child_range_id"])): row
         for row in rows
         if row["child_range_id"] is not None
     }
@@ -620,20 +633,32 @@ def load_latest_relationships(
 
 def clear_selected_relationships(
     connection: sqlite3.Connection,
-    child_ids: set[str],
+    child_ids: set[tuple[str | None, str]],
 ) -> None:
-    if not child_ids:
-        return
-    ordered = sorted(child_ids, key=source_sort_key)
-    placeholders = ",".join("?" for _ in ordered)
-    connection.execute(
-        f"""
-        DELETE FROM parent_child_relationships
-        WHERE relationship_type = ?
-          AND child_range_id IN ({placeholders})
-        """,
-        (RELATIONSHIP_TYPE, *ordered),
-    )
+    for case_ref, child_id in sorted(
+        child_ids,
+        key=lambda value: (value[0] or "", source_sort_key(value[1])),
+    ):
+        if case_ref is None:
+            connection.execute(
+                """
+                DELETE FROM parent_child_relationships
+                WHERE relationship_type = ?
+                  AND case_ref IS NULL
+                  AND child_range_id = ?
+                """,
+                (RELATIONSHIP_TYPE, child_id),
+            )
+        else:
+            connection.execute(
+                """
+                DELETE FROM parent_child_relationships
+                WHERE relationship_type = ?
+                  AND case_ref = ?
+                  AND child_range_id = ?
+                """,
+                (RELATIONSHIP_TYPE, case_ref, child_id),
+            )
 
 
 def insert_relationship(
@@ -754,6 +779,10 @@ def canonical_time(value: datetime) -> str:
 
 def utc_now() -> str:
     return canonical_time(datetime.now(UTC))
+
+
+def range_identity(case_ref: Any, source_record_id: Any) -> tuple[str | None, str]:
+    return optional_text(case_ref), str(source_record_id)
 
 
 def source_sort_key(value: str) -> tuple[int, int | str]:
