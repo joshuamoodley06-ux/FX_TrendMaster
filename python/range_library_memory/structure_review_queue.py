@@ -17,6 +17,7 @@ from .parent_conflict_resolver import (
     assess_candidate,
     load_latest_ranges,
     load_latest_weekly_lifecycles,
+    range_identity,
 )
 from .schema import init_schema
 
@@ -275,34 +276,39 @@ def collect_parent_items(
         SELECT relationship.*
         FROM parent_child_relationships AS relationship
         JOIN (
-            SELECT child_range_id, MAX(id) AS max_id
+            SELECT case_ref, child_range_id, MAX(id) AS max_id
             FROM parent_child_relationships
             WHERE relationship_type = 'weekly_daily'
-            GROUP BY child_range_id
+            GROUP BY case_ref, child_range_id
         ) AS latest ON latest.max_id = relationship.id
         WHERE relationship.relationship_type = 'weekly_daily'
           AND relationship.link_status IN ('CONFLICT', 'NEEDS_REVIEW', 'ORPHAN')
         ORDER BY relationship.id
         """
     ).fetchall()
-    dailies = {item.row.source_record_id: item for item in load_latest_ranges(connection, "DAILY")}
+    dailies = {
+        range_identity(item.row.case_ref, item.row.source_record_id): item
+        for item in load_latest_ranges(connection, "DAILY")
+    }
     weeklies = load_latest_ranges(connection, "WEEKLY")
     lifecycles = load_latest_weekly_lifecycles(connection)
 
     items: list[dict[str, Any]] = []
-    covered: set[str] = set()
+    covered: set[tuple[str | None, str]] = set()
     for relationship in rows:
         daily_id = str(relationship["child_range_id"] or "")
         if not daily_id:
             continue
-        daily = dailies.get(daily_id)
+        case_ref = optional_text(relationship["case_ref"])
+        daily_key = range_identity(case_ref, daily_id)
+        daily = dailies.get(daily_key)
         candidates: list[str] = []
         if daily is not None:
             for weekly in weeklies:
                 assessment = assess_candidate(
                     daily,
                     weekly,
-                    lifecycles.get(weekly.row.source_record_id),
+                    lifecycles.get(range_identity(weekly.row.case_ref, weekly.row.source_record_id)),
                 )
                 if assessment.status in {COMPATIBLE, AMBIGUOUS}:
                     candidates.append(weekly.row.source_record_id)
@@ -341,10 +347,10 @@ def collect_parent_items(
             summary = f"Daily {daily_id} has no compatible Weekly parent in the mapped case."
             action = "No action unless this Daily was expected to belong to a mapped Weekly."
 
-        covered.add(daily_id)
+        covered.add(daily_key)
         items.append(
             item_payload(
-                review_key=f"parent:{daily_id}",
+                review_key=scoped_review_key("parent", case_ref, daily_id),
                 now=now,
                 actionability=actionability,
                 priority=priority,
@@ -384,14 +390,19 @@ def collect_weekly_items(
         ORDER BY id
         """
     ).fetchall()
-    weeklies = {item.row.source_record_id: item for item in load_latest_ranges(connection, "WEEKLY")}
+    weeklies = {
+        range_identity(item.row.case_ref, item.row.source_record_id): item
+        for item in load_latest_ranges(connection, "WEEKLY")
+    }
     items: list[dict[str, Any]] = []
-    covered: set[str] = set()
+    covered: set[tuple[str | None, str]] = set()
     for row in rows:
         weekly_id = str(row["weekly_range_source_id"])
+        case_ref = optional_text(row["case_ref"])
+        weekly_key = range_identity(case_ref, weekly_id)
         reasons = parse_codes(row["reason_codes_json"])
-        weekly = weeklies.get(weekly_id)
-        covered.add(weekly_id)
+        weekly = weeklies.get(weekly_key)
+        covered.add(weekly_key)
 
         if str(row["current_direction_state"]).upper() == "UNRESOLVED":
             actionability = REFERENCE_ONLY
@@ -418,7 +429,7 @@ def collect_weekly_items(
 
         items.append(
             item_payload(
-                review_key=f"weekly-creation:{weekly_id}",
+                review_key=scoped_review_key("weekly-creation", case_ref, weekly_id),
                 now=now,
                 actionability=actionability,
                 priority=priority,
@@ -455,9 +466,10 @@ def collect_event_items(connection: sqlite3.Connection, now: str) -> list[dict[s
         SELECT evidence.*
         FROM event_ohlc_evidence AS evidence
         JOIN (
-            SELECT COALESCE(event_source_id, CAST(id AS TEXT)) AS event_key, MAX(id) AS max_id
+            SELECT case_ref, COALESCE(event_source_id, CAST(id AS TEXT)) AS event_key,
+                   MAX(id) AS max_id
             FROM event_ohlc_evidence
-            GROUP BY COALESCE(event_source_id, CAST(id AS TEXT))
+            GROUP BY case_ref, COALESCE(event_source_id, CAST(id AS TEXT))
         ) AS latest ON latest.max_id = evidence.id
         WHERE evidence.resolution_status IN ('NEEDS_REVIEW', 'MISSING_DATA', 'UNRESOLVED')
            OR evidence.transition_status = 'INVALID'
@@ -524,7 +536,7 @@ def collect_event_items(connection: sqlite3.Connection, now: str) -> list[dict[s
 
         items.append(
             item_payload(
-                review_key=f"event-evidence:{event_key}",
+                review_key=scoped_review_key("event-evidence", row["case_ref"], event_key),
                 now=now,
                 actionability=ACTION_REQUIRED,
                 priority=priority,
@@ -601,7 +613,9 @@ def collect_validation_items(connection: sqlite3.Connection, now: str) -> list[d
         )
         items.append(
             item_payload(
-                review_key=f"validation:{row['issue_code']}:{subject_key}",
+                review_key=scoped_review_key(
+                    f"validation:{row['issue_code']}", ref.get("case_ref"), subject_key
+                ),
                 now=now,
                 actionability=ACTION_REQUIRED,
                 priority=8,
@@ -764,8 +778,8 @@ def collect_daily_fallback_items(
     connection: sqlite3.Connection,
     now: str,
     *,
-    covered_daily_ids: set[str],
-    covered_weekly_ids: set[str],
+    covered_daily_ids: set[tuple[str | None, str]],
+    covered_weekly_ids: set[tuple[str | None, str]],
 ) -> list[dict[str, Any]]:
     rows = connection.execute(
         """
@@ -774,6 +788,10 @@ def collect_daily_fallback_items(
         FROM daily_trend_relationships AS relationship
         LEFT JOIN daily_range_timelines AS timeline
           ON timeline.daily_range_source_id = relationship.daily_range_source_id
+         AND (
+             timeline.case_ref = relationship.case_ref
+             OR (timeline.case_ref IS NULL AND relationship.case_ref IS NULL)
+         )
         WHERE relationship.trend_relationship = 'NEEDS_REVIEW'
         ORDER BY relationship.id
         """
@@ -782,12 +800,15 @@ def collect_daily_fallback_items(
     for row in rows:
         daily_id = str(row["daily_range_source_id"])
         weekly_id = str(row["parent_weekly_source_id"] or "")
-        if daily_id in covered_daily_ids or (weekly_id and weekly_id in covered_weekly_ids):
+        case_ref = optional_text(row["case_ref"])
+        daily_key = range_identity(case_ref, daily_id)
+        weekly_key = range_identity(case_ref, weekly_id) if weekly_id else None
+        if daily_key in covered_daily_ids or (weekly_key and weekly_key in covered_weekly_ids):
             continue
         reasons = parse_codes(row["reason_codes_json"])
         items.append(
             item_payload(
-                review_key=f"daily-trend:{daily_id}",
+                review_key=scoped_review_key("daily-trend", case_ref, daily_id),
                 now=now,
                 actionability=ACTION_REQUIRED,
                 priority=45,
@@ -1068,6 +1089,14 @@ def normalize_severity(value: Any) -> str:
 
 def upper_or_none(value: Any) -> str | None:
     return str(value).upper() if value not in (None, "") else None
+
+
+def optional_text(value: Any) -> str | None:
+    return None if value in (None, "") else str(value)
+
+
+def scoped_review_key(prefix: str, case_ref: Any, subject: Any) -> str:
+    return f"{prefix}:{optional_text(case_ref) or 'UNKNOWN_CASE'}:{subject}"
 
 
 def source_sort_key(value: str) -> tuple[int, int | str]:

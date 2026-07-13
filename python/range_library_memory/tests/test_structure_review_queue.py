@@ -441,7 +441,7 @@ def test_rebuild_marks_cleared_items_inactive_without_deleting_history(tmp_path:
     assert list_structure_review_queue(db) == []
     with sqlite3.connect(db) as connection:
         row = connection.execute(
-            "SELECT is_active FROM structure_review_queue WHERE review_key='parent:428'"
+            "SELECT is_active FROM structure_review_queue WHERE review_key='parent:case:one:428'"
         ).fetchone()
     assert row == (0,)
 
