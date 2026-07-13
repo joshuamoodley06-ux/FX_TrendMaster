@@ -1,0 +1,113 @@
+name: Task C PR37 Verification
+
+on:
+  pull_request:
+    branches:
+      - feat/structural-chart-navigation-v01
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      BASE_SHA: a3617684d1e84bec22c8f1689a5619eb6ecb1f06
+      TASK_C_SHA: 0112d7486c5cf4d2b2198d2df91c7063ccd52525
+    steps:
+      - name: Checkout exact Task C head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TASK_C_SHA }}
+          fetch-depth: 0
+
+      - name: Confirm exact checkout and base ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$TASK_C_SHA"
+          git merge-base --is-ancestor "$BASE_SHA" HEAD
+          echo "checkout=$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "base=$BASE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify committed scope and private-data hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected="$(mktemp)"
+          actual="$(mktemp)"
+          cat > "$expected" <<'FILES'
+          electron/src/structuralChartNavigation.test.ts
+          electron/src/structuralChartNavigation.ts
+          electron/src/structuralJumpTarget.test.ts
+          electron/src/structuralJumpTarget.ts
+          FILES
+          git diff --name-only "$BASE_SHA"...HEAD | sort > "$actual"
+          diff -u "$expected" "$actual"
+
+          forbidden='(^|/)(main\.tsx|candleLoadPolicy\.ts|localCandleLibrary\.ts|chartMemory\.ts|chartViewportPolicy\.ts|rawMapping\.ts|inspectorCommit\.ts|structuralRangeLifecycle\.ts)$'
+          if grep -Eq "$forbidden" "$actual"; then
+            echo "Forbidden production path changed" >&2
+            exit 1
+          fi
+
+          if grep -Eqi '\.(env|pem|key|p12|pfx|db|sqlite|sqlite3|csv|zip|7z|tar|gz|exe|dll)$' "$actual"; then
+            echo "Generated/private-looking file committed" >&2
+            exit 1
+          fi
+
+          if git diff "$BASE_SHA"...HEAD -- \
+            electron/src/structuralChartNavigation.ts \
+            electron/src/structuralChartNavigation.test.ts \
+            electron/src/structuralJumpTarget.ts \
+            electron/src/structuralJumpTarget.test.ts \
+            | grep -Eqi 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|AKIA[0-9A-Z]{16}|github_pat_|ghp_[A-Za-z0-9]{20,}|(^|[^A-Za-z])(password|secret|api[_-]?key)[[:space:]]*[:=][[:space:]]*["'"'][^"'"']+["'"']'; then
+            echo "Potential secret/private data detected in committed diff" >&2
+            exit 1
+          fi
+
+          echo "changed_files=4" >> "$GITHUB_STEP_SUMMARY"
+          sed 's/^/- /' "$actual" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Git diff check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check "$BASE_SHA"...HEAD
+          git diff --check
+          echo "git_diff_check=PASS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: npm ci
+
+      - name: Focused structural navigation tests
+        working-directory: electron
+        run: npx vitest run src/structuralJumpTarget.test.ts src/structuralChartNavigation.test.ts
+
+      - name: Full Electron test suite
+        working-directory: electron
+        run: npm test
+
+      - name: Electron build
+        working-directory: electron
+        run: npm run build
+
+      - name: Post-build repository check
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git diff --exit-code
+          git diff --cached --exit-code
+          echo "post_build_tracked_tree=clean" >> "$GITHUB_STEP_SUMMARY"
+          echo "untracked_after_build:" >> "$GITHUB_STEP_SUMMARY"
+          git ls-files --others --exclude-standard | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY" || true
