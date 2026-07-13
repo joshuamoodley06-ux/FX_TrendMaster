@@ -202,6 +202,9 @@ def test_valid_intraday_remains_review_visible_but_statistically_excluded_when_d
     ]
     db = seed_db(tmp_path, ranges, [])
     result = build_master_map(db, built_at_utc="2026-07-13T00:00:00Z")
+    daily = find_source_node(result["review_root"], "200")
+    assert daily is not None
+    assert {ref["source_record_id"] for ref in daily["source_refs"]} == {"200", "201"}
     intraday = find_source_node(result["review_root"], "300")
     assert intraday is not None
     assert intraday["navigation_status"] == "REVIEW"
@@ -209,7 +212,7 @@ def test_valid_intraday_remains_review_visible_but_statistically_excluded_when_d
     assert intraday["ancestor_review_status"] == "ANCESTOR_NEEDS_REVIEW"
     assert intraday["direct_parent_link_status"] == "VALID"
     assert result["statistics"]["comparison_eligible_ranges"] == 1
-    assert result["statistics"]["review_visible_ranges_by_layer"] == {"WEEKLY": 0, "DAILY": 2, "INTRADAY": 1}
+    assert result["statistics"]["review_visible_ranges_by_layer"] == {"WEEKLY": 0, "DAILY": 1, "INTRADAY": 1}
 
 
 def test_structural_content_hash_is_stable_across_runtime_metadata(tmp_path: Path) -> None:
@@ -223,7 +226,7 @@ def test_structural_content_hash_is_stable_across_runtime_metadata(tmp_path: Pat
     assert deterministic_json(first) != deterministic_json(second)
 
 
-def test_lifecycle_variants_remain_reviewed_until_explicit_rule_exists(tmp_path: Path) -> None:
+def test_exact_boundary_lifecycle_disagreement_forms_one_reviewed_identity_without_break_evidence(tmp_path: Path) -> None:
     ranges = [
         range_payload("418", "case:old", "WEEKLY", "W1", 5598.08, 4274.6,
                       "2026-01-25T00:00:00Z", "2025-12-28T00:00:00Z", "2025-12-28T00:00:00Z", status="ACTIVE", updated_at="2026-06-20T00:00:00Z"),
@@ -233,13 +236,20 @@ def test_lifecycle_variants_remain_reviewed_until_explicit_rule_exists(tmp_path:
     db = seed_db(tmp_path, ranges, [])
     result = build_master_map(db, built_at_utc="2026-07-13T00:00:00Z")
     nodes = result["root"]["children"]
-    assert len(nodes) == 2
-    assert {node["navigation_status"] for node in nodes} == {"REVIEW"}
-    assert {node["statistics_status"] for node in nodes} == {"EXCLUDED"}
+    assert len(nodes) == 1
+    node = nodes[0]
+    assert node["source_count"] == 2
+    assert {ref["source_record_id"] for ref in node["source_refs"]} == {"418", "455"}
+    assert node["navigation_status"] == "REVIEW"
+    assert node["statistics_status"] == "EXCLUDED"
     assert result["statistics"]["comparison_eligible_ranges"] == 0
     evidence = result["lifecycle_evidence_report"][0]
     assert evidence["automatic_reconciliation"] == "NOT_APPLIED"
     assert evidence["chronology_assessment"]["status"] == "CHRONOLOGICAL_TRANSITION_CANDIDATE"
+    assert any(
+        "EXACT_BOUNDARY_LIFECYCLE_UNRESOLVED" in item["reason_codes"]
+        for item in result["review_items"]
+    )
 
 
 def deterministic_json(value: object) -> str:
