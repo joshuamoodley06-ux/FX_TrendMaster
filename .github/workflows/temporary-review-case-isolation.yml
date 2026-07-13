@@ -37,35 +37,27 @@ jobs:
       - name: Compile Python package
         run: python -m compileall -q python/range_library_memory
 
-      - name: Run focused tests and capture output
-        id: focused
-        continue-on-error: true
+      - name: Run focused case isolation tests
         env:
           PYTHONPATH: python
-        run: |
-          set -o pipefail
-          python -m pytest \
-            python/range_library_memory/tests/test_case_isolation_regressions.py \
-            python/range_library_memory/tests/test_parent_conflict_resolver.py \
-            python/range_library_memory/tests/test_structure_review_queue.py \
-            -q 2>&1 | tee .github/temporary/case-isolation-test-output.txt
-
-      - name: Commit applied patch and focused test evidence
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add python/range_library_memory/parent_conflict_resolver.py \
-                  python/range_library_memory/structure_review_queue.py \
-                  python/range_library_memory/tests/test_case_isolation_regressions.py \
-                  .github/temporary/case-isolation-test-output.txt
-          git commit -m "test: expose review case isolation patch"
-          git push origin HEAD:fix/review-case-isolation-v01
-
-      - name: Fail when focused tests failed
-        if: steps.focused.outcome != 'success'
-        run: exit 1
+        run: >-
+          python -m pytest
+          python/range_library_memory/tests/test_case_isolation_regressions.py
+          python/range_library_memory/tests/test_parent_conflict_resolver.py
+          python/range_library_memory/tests/test_structure_review_queue.py
+          -q
 
       - name: Run complete Range Library Memory suite
         env:
           PYTHONPATH: python
         run: python -m pytest python/range_library_memory/tests -q
+
+      - name: Commit tested source patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add python/range_library_memory/parent_conflict_resolver.py \
+                  python/range_library_memory/structure_review_queue.py \
+                  python/range_library_memory/tests/test_case_isolation_regressions.py
+          git commit -m "fix: isolate parent reviews by case"
+          git push origin HEAD:fix/review-case-isolation-v01
