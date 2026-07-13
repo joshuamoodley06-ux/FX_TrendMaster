@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { isStructuralNavigationReason } from './chartViewportPolicy';
 import {
   buildStructuralJumpPlan,
+  navigateStructuralGap,
+  navigateStructuralReview,
   navigateStructuralTarget,
   resolveStructuralJumpTimeframe,
   structuralNavigationReason,
@@ -120,6 +122,46 @@ describe('structuralChartNavigation', () => {
       'highlight:mm:range:intraday-1',
       'camera:false:hierarchy',
     ]);
+  });
+
+  it('routes a gap and canonical review item through the same navigation port', async () => {
+    const calls: string[] = [];
+    const port = {
+      getRuntimeState: () => ({ currentTimeframe: 'D1' }),
+      switchStructuralTimeframe: async () => { calls.push('switch'); },
+      loadStructuralCandleHistory: async () => { calls.push('load'); },
+      exposeStructuralHighlight: async (highlight: { reason: string }) => { calls.push(`highlight:${highlight.reason}`); },
+      applyStructuralCameraWindow: async () => { calls.push('camera'); },
+    };
+    const range = {
+      id: 'mm:range:daily-420',
+      symbol: 'XAUUSD',
+      structure_layer: 'DAILY',
+      source_timeframe: 'D1',
+      range_high_time: '2026-06-10T00:00:00Z',
+      range_low_time: '2026-06-12T00:00:00Z',
+      active_from_time: '2026-06-12T00:00:00Z',
+      source_refs: [{ case_ref: 'case-live', source_record_id: '420' }],
+    };
+    const gapResult = await navigateStructuralGap({
+      parentId: range.id,
+      parentRange: range,
+      expectedChildLayer: 'INTRADAY',
+      coverage: {
+        first_gap_start: '2026-06-13T00:00:00Z',
+        first_gap_end: '2026-06-14T00:00:00Z',
+      },
+    }, port);
+    expect(gapResult.ok).toBe(true);
+    const reviewResult = await navigateStructuralReview({
+      review_key: 'mm:review:daily-420',
+      canonical_ids: [range.id],
+      case_refs: ['case-live'],
+      source_record_ids: ['420'],
+    }, port, { canonicalRange: range });
+    expect(reviewResult.ok).toBe(true);
+    expect(calls).toContain('highlight:GAP');
+    expect(calls).toContain('highlight:REVIEW');
   });
 
   it('does not invoke any navigation side effect when replay safety blocks the target', async () => {
