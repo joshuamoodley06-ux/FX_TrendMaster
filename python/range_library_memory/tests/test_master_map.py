@@ -245,7 +245,10 @@ def test_exact_boundary_lifecycle_disagreement_forms_one_reviewed_identity_witho
     assert result["statistics"]["comparison_eligible_ranges"] == 0
     evidence = result["lifecycle_evidence_report"][0]
     assert evidence["automatic_reconciliation"] == "NOT_APPLIED"
-    assert evidence["chronology_assessment"]["status"] == "CHRONOLOGICAL_TRANSITION_CANDIDATE"
+    lifecycle = evidence["canonical_lifecycle"]
+    assert lifecycle["status"] == "BROKEN"
+    assert lifecycle["resolution_source"] == "SOURCE_SNAPSHOT"
+    assert lifecycle["supporting_break_events"] == []
     assert any(
         "EXACT_BOUNDARY_LIFECYCLE_UNRESOLVED" in item["reason_codes"]
         for item in result["review_items"]

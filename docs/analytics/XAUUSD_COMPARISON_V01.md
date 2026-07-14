@@ -2,35 +2,9 @@
 
 ## Scope
 
-Read-only Python Truth Engine logic. It compares trusted structural states and returns every linked historical example. It does not write raw mapping storage, Master Map ingestion tables, Electron state, or VPS data.
+Read-only Python Truth Engine logic. It compares trusted structural states and returns linked historical examples. It does not write raw mapping storage, Master Map ingestion tables, Electron state, or VPS data.
 
 Task B adds a conservative adapter from the merged `xauusd_master_map_v0.1` output to `xauusd_structural_state_v0.1`. The adapter reads canonical output only and does not change Master Map identity, lifecycle, relationship, or review rules.
-
-## State input contract
-
-A comparison state uses `xauusd_structural_state_v0.1`:
-
-```json
-{
-  "schema_version": "xauusd_structural_state_v0.1",
-  "state_id": "canonical-event-id@frozen-time",
-  "symbol": "XAUUSD",
-  "as_of_time": "2026-07-10T12:00:00Z",
-  "trust_status": "TRUSTED",
-  "parent_direction": "UP",
-  "parent_origin": "DEMAND",
-  "parent_range": {"low": 3200.0, "high": 3400.0},
-  "current_price": 3270.0,
-  "child_relationship": "PROTREND",
-  "bos_state": "UP",
-  "reclaim_state": "WICK",
-  "retest_state": "HELD",
-  "ltf_confirmation_state": "CONFIRMED_UP",
-  "event_sequence": ["BOS_UP", "RECLAIM_WICK", "RETEST_HELD", "LTF_CONFIRMED_UP"]
-}
-```
-
-Historical examples also carry a stable example link, source provenance, a frozen snapshot time, and a separate factual outcome. Outcome data is never passed into matching or scoring.
 
 ## Master Map adapter contract
 
@@ -164,3 +138,61 @@ Doctrine annotations and factual outcomes are optional separate files:
   --doctrine-annotations /path/to/approved_annotations.json \
   --outcomes /path/to/factual_outcomes.json
 ```
+
+## Verification status
+
+Completed from a complete isolated checkout on Python 3.12:
+
+```bash
+PYTHONPATH=python python -m compileall -q python/range_library_memory
+PYTHONPATH=python python -m pytest -q python/range_library_memory/tests/test_structural_comparison.py
+PYTHONPATH=python python -m pytest -q python/range_library_memory/tests/test_master_map_comparison_adapter.py
+PYTHONPATH=python python -m pytest -q python/range_library_memory/tests
+```
+
+Results:
+
+- Python compile: passed
+- Comparison Engine: 8 passed
+- Master Map adapter: 12 passed
+- full Range Library suite: 311 passed
+
+The full suite exposed one stale Master Map test expectation. The test now asserts the current lifecycle evidence contract (`canonical_lifecycle`, `SOURCE_SNAPSHOT`, and no supporting break event). Runtime behavior and comparison doctrine were not changed.
+
+## Real current-data run
+
+Status: `BLOCKED_SOURCE_ARTIFACT_UNAVAILABLE`.
+
+The complete repository checkout contains no tracked Electron `market_memory.db`, `analyst_input_v1` export set, Range Library database, or Master Map JSON. The accessible GitHub Actions artifact inventory contains no surviving PR #34 / Master Map source bundle. Therefore the required disposable current-data pipeline could not be executed in this runtime:
+
+```text
+copied Electron market_memory.db
+  -> analyst_input_v1 exports
+  -> fresh disposable Range Library database
+  -> current Master Map JSON
+  -> comparison adapter
+  -> disposable real comparison report
+```
+
+No per-record candidate totals, exclusion reasons, linked canonical IDs, freeze times, source timeframes, or match tiers are inferred from aggregate summary counts.
+
+Previously verified aggregate Master Map evidence remains:
+
+- raw range sources: 203
+- raw event sources: 785
+- canonical ranges before review exclusion: 171
+- canonical events before review exclusion: 578
+- comparison-eligible ranges: 50
+- comparison-eligible events: 93
+- excluded range records: 121
+- excluded event records: 485
+- trusted hierarchy: 19 Weekly / 26 Daily / 5 Intraday
+- structural-content-hash stability: passed
+
+These aggregate figures are not a substitute for the blocked per-record adapter run. The exact current structural hash is unavailable without the per-record JSON or disposable Range Library database.
+
+## QA status
+
+`CONDITIONAL / DO NOT MERGE`
+
+The code and complete Python suite are green. The remaining gate is a real per-record run from a disposable copy of the current Electron source database or an equivalent repository-accessible disposable artifact. The pull request remains draft and unmerged.
