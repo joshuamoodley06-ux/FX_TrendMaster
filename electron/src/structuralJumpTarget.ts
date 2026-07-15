@@ -30,12 +30,17 @@ export type StructuralJumpTarget = {
   sourceTimeframe: string;
   canonicalRangeId: string;
   eventId?: string;
+  rangeHighPrice: number;
+  rangeLowPrice: number;
   rangeHighTime: string;
   rangeLowTime: string;
   activeFromTime: string;
   inactiveOrBreakTime?: string;
   preferredAnchorTime: string;
   visibleWindow?: StructuralVisibleWindow;
+  status?: string;
+  navigationStatus?: string;
+  statisticsStatus?: string;
   sourceRecordProvenance: StructuralSourceRecordProvenance;
   reason: StructuralJumpSource;
 };
@@ -77,6 +82,12 @@ function text(value: unknown): string | undefined {
   if (value === null || value === undefined) return undefined;
   const result = String(value).trim();
   return result || undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined;
+  const result = Number(value);
+  return Number.isFinite(result) ? result : undefined;
 }
 
 function iso(value: unknown): string | undefined {
@@ -174,6 +185,9 @@ export function normalizeStructuralRangeTarget(
   const canonicalRangeId = text(firstValue(merged, ['canonical_range_id', 'canonicalRangeId', 'range_id', 'rangeId', 'id']));
   const symbol = text(firstValue(merged, ['symbol'])) || text(options.fallbackSymbol);
   if (!layer || !canonicalRangeId || !symbol) return null;
+  const rangeHighPrice = finiteNumber(firstValue(merged, ['range_high_price', 'rangeHighPrice', 'range_high', 'rangeHigh', 'rh', 'high']));
+  const rangeLowPrice = finiteNumber(firstValue(merged, ['range_low_price', 'rangeLowPrice', 'range_low', 'rangeLow', 'rl', 'low']));
+  if (rangeHighPrice === undefined || rangeLowPrice === undefined || rangeHighPrice <= rangeLowPrice) return null;
 
   const rangeHighTime = iso(firstValue(merged, ['range_high_time', 'rangeHighTime', 'rh_time', 'high_time']));
   const rangeLowTime = iso(firstValue(merged, ['range_low_time', 'rangeLowTime', 'rl_time', 'low_time']));
@@ -201,12 +215,17 @@ export function normalizeStructuralRangeTarget(
     sourceTimeframe: defaultTimeframe(layer, merged, options.fallbackTimeframe),
     canonicalRangeId,
     eventId,
+    rangeHighPrice,
+    rangeLowPrice,
     rangeHighTime,
     rangeLowTime,
     activeFromTime,
     inactiveOrBreakTime,
     preferredAnchorTime,
     visibleWindow,
+    status: text(firstValue(merged, ['status']))?.toUpperCase(),
+    navigationStatus: text(firstValue(merged, ['navigation_status', 'navigationStatus']))?.toUpperCase(),
+    statisticsStatus: text(firstValue(merged, ['statistics_status', 'statisticsStatus']))?.toUpperCase(),
     sourceRecordProvenance: provenanceFrom(record, payload),
     reason,
   };

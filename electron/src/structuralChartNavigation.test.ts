@@ -16,6 +16,8 @@ const target: StructuralJumpTarget = {
   sourceTimeframe: 'H4',
   canonicalRangeId: 'mm:range:intraday-1',
   eventId: 'mm:event:1',
+  rangeHighPrice: 2650,
+  rangeLowPrice: 2600,
   rangeHighTime: '2026-06-01T08:00:00.000Z',
   rangeLowTime: '2026-06-01T12:00:00.000Z',
   activeFromTime: '2026-06-01T12:00:00.000Z',
@@ -52,10 +54,16 @@ describe('structuralChartNavigation', () => {
     expect(result.plan.dataLoadWindow.start < result.plan.visualWindow.start).toBe(true);
     expect(result.plan.dataLoadWindow.end > result.plan.visualWindow.end).toBe(true);
     expect(result.plan.camera).toMatchObject({
+      canonicalRangeId: 'mm:range:intraday-1',
       explicit: true,
       useFitContent: false,
       ownerBefore: 'USER_PAN_ZOOM',
       ownerAfter: 'FIT_RANGE',
+    });
+    expect(result.plan.highlight).toMatchObject({
+      canonicalRangeId: 'mm:range:intraday-1',
+      rangeHighPrice: 2650,
+      rangeLowPrice: 2600,
     });
     expect(result.plan.preserveRoutineTimeframeMemory).toBe(true);
   });
@@ -138,6 +146,8 @@ describe('structuralChartNavigation', () => {
       symbol: 'XAUUSD',
       structure_layer: 'DAILY',
       source_timeframe: 'D1',
+      range_high: 2638.5,
+      range_low: 2588.25,
       range_high_time: '2026-06-10T00:00:00Z',
       range_low_time: '2026-06-12T00:00:00Z',
       active_from_time: '2026-06-12T00:00:00Z',

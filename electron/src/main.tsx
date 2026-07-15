@@ -130,6 +130,13 @@ import { normalizeChartTf } from './mappingDraftBoundary';
 import { MappingCampaignPanel } from './mappingCampaignPanel';
 import { computeCampaignStatus } from './mappingCampaignManager';
 import {
+  MasterMapHierarchyPanel,
+  type MasterMapNavigationRequest,
+} from './masterMapHierarchy';
+import { masterMapRangeToStructuralRangeRecord } from './masterMapNavigationIntegration';
+import { buildStructuralJumpPlan } from './structuralChartNavigation';
+import { normalizeStructuralRangeTarget } from './structuralJumpTarget';
+import {
   allowedChartTimeframesForStructureLayer,
   anchorsMatchSavedRangeRow,
   buildDiscardStructuralDraftPlan,
@@ -1674,6 +1681,7 @@ type SavedRangeChartLine = {
   structureLayer: StructureLayer;
   rangeScope: RangeScope;
   status: string;
+  customLabelPrefix?: string;
   high: number;
   low: number;
   start?: string | null;
@@ -3228,6 +3236,22 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const [hierarchyShowChildren, setHierarchyShowChildren] = useLocalStorage<boolean>('fx_tm_hierarchy_show_children_v1', false);
   const [hierarchyShowAll, setHierarchyShowAll] = useLocalStorage<boolean>('fx_tm_hierarchy_show_all_v1', false);
   const [hierarchyCollapsedIds, setHierarchyCollapsedIds] = useState<string[]>([]);
+  const [selectedMasterMapCanonicalRangeId, setSelectedMasterMapCanonicalRangeId] = useState<string | null>(null);
+  const selectedMasterMapRangeRef = useRef<MasterMapNavigationRequest['range'] | null>(null);
+  const [selectedCanonicalChartRange, setSelectedCanonicalChartRangeState] = useState<any | null>(null);
+  const selectedCanonicalChartRangeRef = useRef<any | null>(null);
+  const setSelectedCanonicalChartRange = useCallback((range: any | null) => {
+    selectedCanonicalChartRangeRef.current = range;
+    setSelectedCanonicalChartRangeState(range);
+  }, []);
+  const selectedCanonicalContextRangeById = (rangeId?: string | null) => {
+    const current = selectedCanonicalChartRangeRef.current;
+    if (!rangeId || !current) return null;
+    return String(current.range_id || current.id || current.canonical_range_id || '') === String(rangeId)
+      ? current
+      : null;
+  };
+  const masterMapNavigationSeqRef = useRef(0);
   const [eventBrowserOpen, setEventBrowserOpen] = useState(false);
   const chartMapStageRef = useRef<HTMLDivElement>(null);
   const [rangeLineHiddenByCase, setRangeLineHiddenByCase] = useLocalStorage<Record<string, string[]>>('fx_tm_range_line_hidden_v1', {});
@@ -3915,6 +3939,38 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       overlays.push(line);
     }
 
+    const canonicalLayer = normalizeStructureLayer(
+      selectedCanonicalChartRange?.structure_layer || selectedCanonicalChartRange?.layer,
+    );
+    if (canonicalLayer === 'WEEKLY') {
+      const canonicalHigh = Number(
+        selectedCanonicalChartRange?.range_high_price ?? selectedCanonicalChartRange?.range_high,
+      );
+      const canonicalLow = Number(
+        selectedCanonicalChartRange?.range_low_price ?? selectedCanonicalChartRange?.range_low,
+      );
+      const canonicalId = String(
+        selectedCanonicalChartRange?.range_id
+        || selectedCanonicalChartRange?.id
+        || selectedCanonicalChartRange?.canonical_range_id
+        || '',
+      );
+      if (canonicalId && Number.isFinite(canonicalHigh) && Number.isFinite(canonicalLow) && canonicalHigh > canonicalLow) {
+        overlays.push({
+          rangeId: canonicalId,
+          structureLayer: 'WEEKLY',
+          rangeScope: 'MAJOR',
+          status: String(selectedCanonicalChartRange?.status || 'ACTIVE').toUpperCase(),
+          customLabelPrefix: 'CANONICAL WEEKLY',
+          high: canonicalHigh,
+          low: canonicalLow,
+          start: selectedCanonicalChartRange?.range_start_time || selectedCanonicalChartRange?.range_high_time || null,
+          end: selectedCanonicalChartRange?.range_end_time || selectedCanonicalChartRange?.range_low_time || null,
+          isActive: true,
+        });
+      }
+    }
+
     if (!chartMappingFocusMode) return overlays;
 
     const hasDraft = structuralRangeDraftDirty
@@ -3944,6 +4000,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     structuralRangeDraftDirty,
     rhAnchor.price,
     rlAnchor.price,
+    selectedCanonicalChartRange,
   ]);
 
   const chartDraftRangeOverlay = useMemo<DraftRangeChartLine | null>(() => {
@@ -4630,6 +4687,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       const trimContextRangeId = pendingIntent.contextRangeId || activeRangeIdNow;
       const trimContextRange = trimContextRangeId
         ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(trimContextRangeId))
+          || selectedCanonicalContextRangeById(trimContextRangeId)
         : null;
       if (useWindowedLoad && loadWindow && parsed.length) {
         const visualContext = trimContextRange
@@ -4810,6 +4868,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       const contextRangeId = pendingIntent.contextRangeId || activeRangeIdNow;
       const contextRange = contextRangeId
         ? safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(contextRangeId))
+          || selectedCanonicalContextRangeById(contextRangeId)
         : null;
       const shouldRestoreReplay = !quiet
         && (preserveStructuralContext || opts?.structuralNavigation)
@@ -4902,7 +4961,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         && !hasInheritedPrice);
       if (!routineMemorySwitch && contextMiss) {
         if (!fitWindow && contextRangeId) {
-          const contextRange = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(contextRangeId));
+          const contextRange = safeArray<any>(savedStructuralRanges).find((r:any) => String(r.range_id || r.id) === String(contextRangeId))
+            || selectedCanonicalContextRangeById(contextRangeId);
           if (contextRange) fitWindow = structuralRangeFitDomain(contextRange, parsed, targetTf) || fitWindow;
         }
         cameraIntent = fitWindow ? 'FIT_STRUCTURAL_RANGE' : (commandTargetTime ? 'PRESERVE_OR_NEAREST_TIME' : 'LATEST');
@@ -9727,8 +9787,14 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     <div className="structuralExplorerPanel">
       <div className="structuralExplorerHeader">
         <b>Market Memory Navigator</b>
-        <span>{explorerTreeRanges.length} shown · {savedStructuralRanges.length} total</span>
+        <span>XAUUSD canonical hierarchy</span>
       </div>
+      <MasterMapHierarchyPanel
+        selectedCanonicalRangeId={selectedMasterMapCanonicalRangeId}
+        onNavigationRequest={handleMasterMapNavigationRequest}
+      />
+      <details className="legacyCaseHierarchyDiagnostics">
+        <summary>Raw case hierarchy diagnostics · {explorerTreeRanges.length} shown / {savedStructuralRanges.length} total</summary>
       <div className="explorerModeRow">
         <span className="explorerOverlayLabel">Mode</span>
         <button
@@ -9825,6 +9891,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           {renderExplorerOrphanRows()}
         </>}
       </div>
+      </details>
     </div>
   );
 
@@ -10171,6 +10238,47 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       navigationPath: `navigateStructural:${args.reason}`,
       deferCamera: true,
     });
+  };
+
+  const handleMasterMapNavigationRequest = (request: MasterMapNavigationRequest) => {
+    const navigationSeq = masterMapNavigationSeqRef.current + 1;
+    masterMapNavigationSeqRef.current = navigationSeq;
+    selectedMasterMapRangeRef.current = request.range;
+    setSelectedMasterMapCanonicalRangeId(request.canonicalRangeId);
+    const canonicalRange = masterMapRangeToStructuralRangeRecord(request);
+    const target = canonicalRange
+      ? normalizeStructuralRangeTarget(canonicalRange, 'HIERARCHY', {
+        fallbackSymbol: 'XAUUSD',
+        fallbackTimeframe: request.sourceTimeframe || undefined,
+      })
+      : null;
+    const result = target
+      ? buildStructuralJumpPlan(target, {
+        currentTimeframe: activeTimeframeRef.current,
+        replayActive: candleReplayModeRef.current,
+        replayCursorTime: candleReplayCursorTimeRef.current,
+        cameraOwner: cameraViewOwnerRef.current,
+      })
+      : { ok: false as const, error: 'Structural jump blocked: range could not be normalized.' };
+    if (!result.ok) {
+      setSelectedCanonicalChartRange(null);
+      setMessage(result.error);
+      return;
+    }
+    setSelectedCanonicalChartRange(canonicalRange);
+    void navigateStructuralChartContext({
+      targetTf: result.plan.chartTimeframe,
+      range: canonicalRange,
+      reason: result.plan.navigationReason,
+    })
+      .then(() => {
+        if (navigationSeq !== masterMapNavigationSeqRef.current) return;
+        setMessage(`Master Map · ${request.layer} · ${request.canonicalRangeId}`);
+      })
+      .catch((error: unknown) => {
+        if (navigationSeq !== masterMapNavigationSeqRef.current) return;
+        setMessage(`Master Map navigation failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
   };
 
   const switchTimeframePreserveCase = (nextTf:string): Promise<void> => {

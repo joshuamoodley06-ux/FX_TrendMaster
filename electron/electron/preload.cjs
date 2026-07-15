@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('localMappingBridge', {
     ipcRenderer.invoke('local-mapping:backend-failed', { editId, ...(details || {}) }),
   getStatus: (editId) => ipcRenderer.invoke('local-mapping:get-status', { editId }),
   retry: (editId) => ipcRenderer.invoke('local-mapping:retry', { editId }),
+  getMasterMap: (symbol = 'XAUUSD') => ipcRenderer.invoke('local-mapping:get-master-map', { symbol }),
   getPaths: () => ipcRenderer.invoke('local-mapping:get-paths'),
   resumePending: (limit) => ipcRenderer.invoke('local-mapping:resume-pending', { limit }),
 });
