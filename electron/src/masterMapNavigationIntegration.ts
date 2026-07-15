@@ -2,13 +2,14 @@
 
 import type { CandleLoadWindow } from './candleLoadPolicy';
 import {
-  navigateStructuralRangeRecord,
+  navigateStructuralTarget,
   type StructuralChartNavigationPort,
   type StructuralJumpExecutionResult,
   type StructuralJumpHighlight,
   type StructuralJumpPlan,
   type StructuralNavigationRuntimeState,
 } from './structuralChartNavigation';
+import { normalizeStructuralRangeTarget } from './structuralJumpTarget';
 import type { MasterMapNavigationRequest } from './masterMapHierarchy';
 
 export const MASTER_MAP_NAVIGATION_PATH = 'master-map-hierarchy' as const;
@@ -75,6 +76,7 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
     range_id: canonicalRangeId,
     id: canonicalRangeId,
     canonical_range_id: canonicalRangeId,
+    canonical_event_id: request.eventId || undefined,
     symbol: 'XAUUSD',
     structure_layer: request.layer,
     layer: request.layer,
@@ -90,6 +92,9 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
     range_end_time: end,
     active_from_time: range.activeFromTime,
     inactive_from_time: range.inactiveFromTime,
+    preferred_anchor_time: request.preferredAnchorTime || undefined,
+    visible_start_time: request.visibleStart || undefined,
+    visible_end_time: request.visibleEnd || undefined,
     status: range.status,
     direction_of_break: range.directionOfBreak,
     navigation_status: range.navigationStatus,
@@ -101,6 +106,7 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
     source_refs: range.sourceRefs,
     source_count: range.sourceCount,
     read_only_canonical_master_map: true,
+    mapping_assistant_gap: request.reason === 'GAP',
   };
 }
 
@@ -133,13 +139,24 @@ export function createMasterMapStructuralNavigationPort(
   };
 }
 
-/** Route every hierarchy mode, including review, through the same range contract. */
+/** Route hierarchy and Mapping Assistant selections through the same range contract. */
 export function navigateMasterMapHierarchyRequest(
   request: MasterMapNavigationRequest,
   port: StructuralChartNavigationPort,
 ): Promise<StructuralJumpExecutionResult> {
-  return navigateStructuralRangeRecord(request.range, port, {
-    fallbackSymbol: 'XAUUSD',
-    fallbackTimeframe: request.sourceTimeframe || undefined,
-  });
+  const record = masterMapRangeToStructuralRangeRecord(request);
+  const reason = request.reason === 'GAP' ? 'GAP' : 'HIERARCHY';
+  const target = record
+    ? normalizeStructuralRangeTarget(record, reason, {
+        fallbackSymbol: 'XAUUSD',
+        fallbackTimeframe: request.sourceTimeframe || undefined,
+        eventId: request.eventId,
+        preferredAnchorTime: request.preferredAnchorTime,
+        visibleStart: request.visibleStart,
+        visibleEnd: request.visibleEnd,
+      })
+    : null;
+  return target
+    ? navigateStructuralTarget(target, port)
+    : Promise.resolve({ ok: false, error: 'Structural jump blocked: Master Map request could not be normalized.' });
 }
