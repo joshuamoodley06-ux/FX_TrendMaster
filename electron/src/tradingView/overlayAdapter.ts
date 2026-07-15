@@ -7,6 +7,7 @@ type SavedRangeOverlayInput = {
   structureLayer?: string;
   rangeScope?: string;
   status?: string;
+  customLabelPrefix?: string;
   high?: number;
   low?: number;
   start?: string | null;
@@ -142,6 +143,7 @@ function addRangeLines(
   const color = rangeLineColor(layer);
   const lineWidth = role === 'selected' ? 3 : role === 'parent' ? 2 : 1;
   const lineStyle = lineStyleFor(range);
+  const labelPrefix = range.customLabelPrefix || `${role === 'parent' ? 'Parent ' : ''}${layer || 'Range'}`;
 
   if (high !== null) {
     out.push({
@@ -149,7 +151,7 @@ function addRangeLines(
       rangeId: id || null,
       kind: 'RH',
       role,
-      label: `${role === 'parent' ? 'Parent ' : ''}${layer || 'Range'} RH`,
+      label: `${labelPrefix} RH`,
       price: high,
       color,
       lineWidth,
@@ -162,7 +164,7 @@ function addRangeLines(
       rangeId: id || null,
       kind: 'RL',
       role,
-      label: `${role === 'parent' ? 'Parent ' : ''}${layer || 'Range'} RL`,
+      label: `${labelPrefix} RL`,
       price: low,
       color,
       lineWidth,

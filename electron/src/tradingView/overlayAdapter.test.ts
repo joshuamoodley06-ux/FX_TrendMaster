@@ -93,6 +93,34 @@ describe('adaptOverlaysForTradingView', () => {
     expect(result.markers).toHaveLength(0);
   });
 
+  it('uses canonical weekly labels and exact canonical prices when provided by the selected overlay', () => {
+    const result = adaptOverlaysForTradingView({
+      timeframe: 'W1',
+      savedRangeOverlays: [{
+        rangeId: 'mm:range:weekly-455',
+        structureLayer: 'WEEKLY',
+        rangeScope: 'MAJOR',
+        status: 'BROKEN',
+        customLabelPrefix: 'CANONICAL WEEKLY',
+        high: 3418.42,
+        low: 2955.1,
+        isActive: true,
+      }],
+    });
+
+    expect(result.priceLines).toHaveLength(2);
+    expect(result.priceLines.find((line) => line.kind === 'RH')).toMatchObject({
+      label: 'CANONICAL WEEKLY RH',
+      price: 3418.42,
+      role: 'selected',
+    });
+    expect(result.priceLines.find((line) => line.kind === 'RL')).toMatchObject({
+      label: 'CANONICAL WEEKLY RL',
+      price: 2955.1,
+      role: 'selected',
+    });
+  });
+
   it('adds parent range overlays without duplicating identical lines', () => {
     const result = adaptOverlaysForTradingView({
       timeframe: 'H1',

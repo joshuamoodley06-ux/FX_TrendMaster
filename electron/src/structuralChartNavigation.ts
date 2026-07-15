@@ -29,12 +29,17 @@ export type StructuralJumpHighlight = {
   canonicalRangeId: string;
   eventId?: string;
   structureLayer: string;
+  rangeHighPrice: number;
+  rangeLowPrice: number;
   rangeHighTime: string;
   rangeLowTime: string;
   activeFromTime: string;
   inactiveOrBreakTime?: string;
   preferredAnchorTime: string;
   visibleWindow: { start: string; end: string };
+  status?: string;
+  navigationStatus?: string;
+  statisticsStatus?: string;
   reason: StructuralJumpSource;
   sourceRecordProvenance: StructuralJumpTarget['sourceRecordProvenance'];
 };
@@ -49,6 +54,7 @@ export type StructuralJumpPlan = {
   preserveReplayCursor: true;
   preserveRoutineTimeframeMemory: true;
   camera: {
+    canonicalRangeId: string;
     explicit: true;
     useFitContent: false;
     ownerBefore: CameraViewOwner;
@@ -167,6 +173,7 @@ export function buildStructuralJumpPlan(
   };
   const ownerBefore = state.cameraOwner || 'AUTO';
   const camera: StructuralJumpPlan['camera'] = {
+    canonicalRangeId: target.canonicalRangeId,
     explicit: true,
     useFitContent: false,
     ownerBefore,
@@ -191,12 +198,17 @@ export function buildStructuralJumpPlan(
         canonicalRangeId: target.canonicalRangeId,
         eventId: target.eventId,
         structureLayer: target.structureLayer,
+        rangeHighPrice: target.rangeHighPrice,
+        rangeLowPrice: target.rangeLowPrice,
         rangeHighTime: target.rangeHighTime,
         rangeLowTime: target.rangeLowTime,
         activeFromTime: target.activeFromTime,
         inactiveOrBreakTime: target.inactiveOrBreakTime,
         preferredAnchorTime: safe.anchor,
         visibleWindow: safe.window,
+        status: target.status,
+        navigationStatus: target.navigationStatus,
+        statisticsStatus: target.statisticsStatus,
         reason: target.reason,
         sourceRecordProvenance: target.sourceRecordProvenance,
       },

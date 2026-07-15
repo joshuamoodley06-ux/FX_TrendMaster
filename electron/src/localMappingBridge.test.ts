@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { afterEach, describe, expect, it } from 'vitest';
+import { masterMapFixture } from './testFixtures/masterMapFixture';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
@@ -94,6 +95,48 @@ describe('local mapping bridge two-phase durability', () => {
     expect(counter.value).toBe(1);
     const duplicate = await service.prepare({ kind: 'structural_range', source: 'structural_range_save', payload: { case_ref: 'case-A', symbol: 'XAUUSD' } });
     expect(duplicate).toMatchObject({ editId: saved.editId, backendStatus: 'CONFIRMED', state: 'SUCCESS' });
+    service.close();
+  });
+
+  it('reads the current persisted XAUUSD Master Map from the shared Range Library database', () => {
+    const databasePath = tempDb();
+    const service = createLocalMappingBridgeService({ databasePath, processor: async () => ({ ok: true }) });
+    const db = new DatabaseSync(databasePath);
+    db.exec(`CREATE TABLE master_map_outputs (
+      symbol TEXT PRIMARY KEY,
+      build_id TEXT NOT NULL,
+      schema_version TEXT NOT NULL,
+      built_at_utc TEXT NOT NULL,
+      structural_content_hash TEXT NOT NULL,
+      output_json TEXT NOT NULL
+    )`);
+    const fixture = masterMapFixture();
+    db.prepare(`INSERT INTO master_map_outputs (
+      symbol, build_id, schema_version, built_at_utc, structural_content_hash, output_json
+    ) VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(
+        'XAUUSD',
+        fixture.build_id,
+        fixture.schema_version,
+        fixture.built_at_utc,
+        fixture.structural_content_hash,
+        JSON.stringify(fixture),
+      );
+    db.close();
+
+    expect(service.getMasterMap('XAUUSD')).toMatchObject({
+      ok: true,
+      symbol: 'XAUUSD',
+      databasePath: path.resolve(databasePath),
+      masterMap: {
+        schema_version: 'xauusd_master_map_v0.1',
+        trusted_root: { id: 'symbol:XAUUSD:trusted' },
+      },
+    });
+    expect(service.getMasterMap('EURUSD')).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('scoped to XAUUSD only'),
+    });
     service.close();
   });
 });
