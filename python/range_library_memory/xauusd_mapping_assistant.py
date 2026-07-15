@@ -13,6 +13,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -55,9 +56,10 @@ def backup_sqlite_database(source: str | Path, destination: str | Path) -> None:
     if not source_path.exists():
         raise FileNotFoundError(f"Range Library database does not exist: {source_path}")
     destination_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(sqlite_readonly_uri(source_path), uri=True) as source_db:
-        with sqlite3.connect(destination_path) as destination_db:
+    with closing(sqlite3.connect(sqlite_readonly_uri(source_path), uri=True)) as source_db:
+        with closing(sqlite3.connect(destination_path)) as destination_db:
             source_db.backup(destination_db)
+            destination_db.commit()
 
 
 def parse_time(value: Any) -> datetime | None:

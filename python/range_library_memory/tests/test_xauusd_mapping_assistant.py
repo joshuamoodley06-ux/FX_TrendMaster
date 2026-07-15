@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -176,7 +177,7 @@ def test_projection_is_deterministic_when_generated_time_is_fixed() -> None:
 def test_backup_reads_wal_safe_snapshot_without_changing_source(tmp_path: Path) -> None:
     source = tmp_path / "source.sqlite3"
     destination = tmp_path / "snapshot.sqlite3"
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("CREATE TABLE facts(id INTEGER PRIMARY KEY, value TEXT NOT NULL)")
         connection.execute("INSERT INTO facts(value) VALUES ('weekly')")
@@ -185,16 +186,18 @@ def test_backup_reads_wal_safe_snapshot_without_changing_source(tmp_path: Path) 
 
     assistant.backup_sqlite_database(source, destination)
 
-    with sqlite3.connect(destination) as connection:
+    with closing(sqlite3.connect(destination)) as connection:
         assert connection.execute("SELECT value FROM facts").fetchone()[0] == "weekly"
     assert assistant.sha256_file(source) == before
+    destination.unlink()
+    assert not destination.exists()
 
 
 def test_full_snapshot_uses_disposable_database_and_preserves_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source = tmp_path / "range_library.sqlite3"
-    with sqlite3.connect(source) as connection:
+    with closing(sqlite3.connect(source)) as connection:
         connection.execute("CREATE TABLE raw_ranges(id INTEGER PRIMARY KEY)")
         connection.commit()
     before = assistant.sha256_file(source)
