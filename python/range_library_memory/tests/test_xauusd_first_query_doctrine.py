@@ -11,6 +11,7 @@ from range_library_memory.xauusd_first_query_doctrine import (
     ChildRelationship,
     Direction,
     DoctrineError,
+    EntryCandidate,
     LocationZone,
     RangeState,
     StructureLayer,
@@ -36,8 +37,10 @@ def event(
     *,
     direction: str | None = None,
     source_timeframe: str = "D1",
+    high: float | None = None,
+    low: float | None = None,
 ) -> dict:
-    return {
+    payload = {
         "id": event_id,
         "node_type": "EVENT",
         "event_type": event_type,
@@ -49,6 +52,11 @@ def event(
         "statistics_status": "ELIGIBLE",
         "source_refs": [{"source_record_id": event_id}],
     }
+    if high is not None:
+        payload["high"] = high
+    if low is not None:
+        payload["low"] = low
+    return payload
 
 
 def range_node(
@@ -94,7 +102,7 @@ def master_map(*, parent_direction: str | None = "UP", daily_direction: str = "U
         event("e-choch-close", "CHOCH_CLOSE", "2026-01-11T00:00:00Z", 145, source_timeframe="M15"),
         event("e-choch-retest", "CHOCH_RETEST", "2026-01-12T00:00:00Z", 148, source_timeframe="M15"),
         event("e-freeze", f"BOS_{daily_direction}", "2026-01-13T00:00:00Z", 150, direction=daily_direction),
-        event("e-future", "BOS_UP", "2026-01-14T00:00:00Z", 205, direction="UP"),
+        event("e-future", "SWEEP_HIGH", "2026-01-14T00:00:00Z", 205, direction="UP"),
     ]
     daily = range_node("daily-a", "DAILY", 120, 180, events=daily_events)
     weekly = range_node(
@@ -208,6 +216,24 @@ def test_candidate_status_totals_sum_to_frozen_candidate_count() -> None:
     assert "master_map_review_item_count" in summary
 
 
+def test_missing_factual_outcome_blocks_outcome_readiness_only() -> None:
+    source = master_map()
+    trusted_daily(source)["events"][-1]["event_type"] = "BOS_UP"
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    report = build_first_query_doctrine_report(source)
+    state = first_state(report)
+    summary = report["summary"]
+    assert state["factual_outcome_status"] == "NOT_AVAILABLE"
+    assert state["structure_query_ready"] is True
+    assert state["confirmation_query_ready"] is True
+    assert state["outcome_query_ready"] is False
+    assert state["overall_first_query_ready"] is False
+    assert summary["structure_query_ready_count"] == summary["frozen_candidate_count"]
+    assert summary["confirmation_query_ready_count"] == summary["frozen_candidate_count"]
+    assert summary["outcome_query_ready_count"] == 0
+    assert summary["overall_first_query_ready_count"] == 0
+
+
 def test_approved_wick_break_phase_advance() -> None:
     assert phase_advance_allowed(layer="WEEKLY", break_kind="WICK")
     assert phase_advance_allowed(layer="DAILY", break_kind="WICK")
@@ -308,7 +334,7 @@ def test_first_wick_outside_parent_marks_external_objective() -> None:
         200,
         [
             event("inside", "BOS_UP", "2026-01-01T00:00:00Z", 199),
-            event("outside", "BOS_UP", "2026-01-02T00:00:00Z", 201),
+            event("outside", "SWEEP_HIGH", "2026-01-02T00:00:00Z", 201),
         ],
     )
     assert reached == "2026-01-02T00:00:00Z"
@@ -324,7 +350,7 @@ def test_future_sibling_daily_event_cannot_satisfy_candidate_target() -> None:
         "DAILY",
         130,
         170,
-        events=[event("sibling-target", "BOS_UP", "2026-01-14T00:00:00Z", 205, direction="UP")],
+        events=[event("sibling-target", "SWEEP_HIGH", "2026-01-14T00:00:00Z", 205, direction="UP")],
     )
     trusted_weekly(source)["children"].append(sibling)
     source["root"] = copy.deepcopy(source["trusted_root"])
@@ -339,7 +365,7 @@ def test_unrelated_later_weekly_event_cannot_satisfy_candidate_outcome() -> None
         item for item in trusted_daily(source)["events"] if item["id"] != "e-future"
     ]
     trusted_weekly(source)["events"].append(
-        event("weekly-target", "BOS_UP", "2026-01-14T00:00:00Z", 205, direction="UP")
+        event("weekly-target", "SWEEP_HIGH", "2026-01-14T00:00:00Z", 205, direction="UP")
     )
     source["root"] = copy.deepcopy(source["trusted_root"])
     state = first_state(build_first_query_doctrine_report(source))
@@ -372,9 +398,9 @@ def test_first_planned_target_defines_success() -> None:
     outcome = evaluate_outcome(
         child_direction="BULLISH",
         first_target=200,
-        parent_low=100,
-        parent_high=200,
-        future_events=[event("target", "BOS_UP", "2026-01-02T00:00:00Z", 201)],
+        invalidation_price=100,
+        entry_candidates=[],
+        future_events=[event("target", "SWEEP_HIGH", "2026-01-02T00:00:00Z", 201)],
     )
     assert outcome["first_planned_target_reached"] is True
     assert outcome["factual_outcome_status"] == "FIRST_TARGET_REACHED"
@@ -388,9 +414,128 @@ def test_continuation_tracked_separately() -> None:
 
 def test_three_r_breakeven_baseline() -> None:
     state = first_state(build_first_query_doctrine_report(master_map()))
-    assert state["three_r_reached"] is True
-    assert state["breakeven_rule_activated"] is True
+    assert state["three_r_reached"] is None
+    assert state["breakeven_rule_activated"] is None
     assert state["first_target_partial_applicable"] is True
+
+
+def test_first_target_reached_below_three_r_does_not_set_three_r() -> None:
+    outcome = evaluate_outcome(
+        child_direction="BULLISH",
+        first_target=120,
+        invalidation_price=90,
+        entry_candidates=[
+            EntryCandidate("CHOCH_CLOSE", "2026-01-01T00:00:00Z", 100, "M15", "VALID")
+        ],
+        future_events=[event("target", "SWEEP_HIGH", "2026-01-02T00:00:00Z", 121)],
+    )
+    assert outcome["first_planned_target_reached"] is True
+    assert outcome["first_target_partial_applicable"] is True
+    assert outcome["three_r_reached"] is None
+    assert outcome["breakeven_rule_activated"] is None
+
+
+def test_three_r_reached_activates_breakeven() -> None:
+    outcome = evaluate_outcome(
+        child_direction="BULLISH",
+        first_target=120,
+        invalidation_price=90,
+        entry_candidates=[
+            EntryCandidate("CHOCH_CLOSE", "2026-01-01T00:00:00Z", 100, "M15", "VALID")
+        ],
+        future_events=[event("three-r", "SWEEP_HIGH", "2026-01-02T00:00:00Z", 130)],
+    )
+    assert outcome["three_r_reached"] is True
+    assert outcome["breakeven_rule_activated"] is True
+
+
+def test_bullish_and_bearish_three_r_calculations_are_correct() -> None:
+    bullish = evaluate_outcome(
+        child_direction="BULLISH",
+        first_target=120,
+        invalidation_price=90,
+        entry_candidates=[
+            EntryCandidate("CHOCH_CLOSE", "2026-01-01T00:00:00Z", 100, "M15", "VALID")
+        ],
+        future_events=[event("three-r-up", "SWEEP_HIGH", "2026-01-02T00:00:00Z", 130)],
+    )
+    bearish = evaluate_outcome(
+        child_direction="BEARISH",
+        first_target=80,
+        invalidation_price=110,
+        entry_candidates=[
+            EntryCandidate("CHOCH_CLOSE", "2026-01-01T00:00:00Z", 100, "M15", "VALID")
+        ],
+        future_events=[event("three-r-down", "SWEEP_LOW", "2026-01-02T00:00:00Z", 70)],
+    )
+    assert bullish["entry_risk_assessments"][0].three_r_price == 130
+    assert bearish["entry_risk_assessments"][0].three_r_price == 70
+    assert bullish["three_r_reached"] is True
+    assert bearish["three_r_reached"] is True
+
+
+def test_choch_close_and_retest_can_have_different_r_outcomes() -> None:
+    outcome = evaluate_outcome(
+        child_direction="BULLISH",
+        first_target=120,
+        invalidation_price=90,
+        entry_candidates=[
+            EntryCandidate("CHOCH_CLOSE", "2026-01-01T00:00:00Z", 100, "M15", "VALID"),
+            EntryCandidate("CHOCH_RETEST", "2026-01-01T01:00:00Z", 105, "M15", "VALID"),
+        ],
+        future_events=[event("three-r-close-only", "SWEEP_HIGH", "2026-01-02T00:00:00Z", 130)],
+    )
+    close, retest = outcome["entry_risk_assessments"]
+    assert close.three_r_price == 130
+    assert close.three_r_reached is True
+    assert retest.three_r_price == 150
+    assert retest.three_r_reached is None
+
+
+def test_arbitrary_bos_or_choch_event_price_cannot_prove_wick_outside_parent() -> None:
+    assert first_wick_outside_parent_time(
+        "BULLISH",
+        100,
+        200,
+        [
+            event("bos", "BOS_UP", "2026-01-02T00:00:00Z", 250),
+            event("choch", "CHOCH_CLOSE", "2026-01-03T00:00:00Z", 260),
+        ],
+    ) is None
+
+
+def test_approved_ohlc_or_breach_evidence_can_prove_objective_reach() -> None:
+    candle = first_wick_outside_parent_time(
+        "BULLISH",
+        100,
+        200,
+        [event("candle", "CANDLE_OHLC", "2026-01-02T00:00:00Z", 0, high=201)],
+    )
+    breach = first_wick_outside_parent_time(
+        "BEARISH",
+        100,
+        200,
+        [event("breach", "BOUNDARY_BREACH_DOWN", "2026-01-03T00:00:00Z", 99)],
+    )
+    assert candle == "2026-01-02T00:00:00Z"
+    assert breach == "2026-01-03T00:00:00Z"
+
+
+def test_mfe_mae_remain_unavailable_without_sufficient_path_evidence() -> None:
+    outcome = evaluate_outcome(
+        child_direction="BULLISH",
+        first_target=120,
+        invalidation_price=90,
+        entry_candidates=[
+            EntryCandidate("CHOCH_CLOSE", "2026-01-01T00:00:00Z", 100, "M15", "VALID")
+        ],
+        future_events=[event("target", "SWEEP_HIGH", "2026-01-02T00:00:00Z", 130)],
+    )
+    risk = outcome["entry_risk_assessments"][0]
+    assert outcome["maximum_favourable_excursion"] is None
+    assert outcome["maximum_adverse_excursion"] is None
+    assert risk.maximum_favourable_excursion is None
+    assert risk.maximum_adverse_excursion is None
 
 
 def test_qualifying_pullback_remains_test_required() -> None:
@@ -461,5 +606,5 @@ def test_cli_writes_disposable_report(tmp_path: Path, capsys: pytest.CaptureFixt
     assert main(["--master-map", str(source), "--output", str(output), "--compact"]) == 0
     summary = json.loads(capsys.readouterr().out)
     report = json.loads(output.read_text(encoding="utf-8"))
-    assert summary["query_ready_count"] == 2
+    assert summary["query_ready_count"] == 1
     assert report["schema_version"] == "xauusd_first_query_doctrine_report_v0.1"

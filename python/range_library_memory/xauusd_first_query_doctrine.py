@@ -100,6 +100,22 @@ class EntryCandidate:
 
 
 @dataclass(frozen=True)
+class EntryRiskAssessment:
+    candidate_type: str
+    entry_price: float | None
+    invalidation_price: float | None
+    initial_risk: float | None
+    three_r_price: float | None
+    three_r_reached: bool | None
+    three_r_reach_time: str | None
+    maximum_favourable_excursion: float | None
+    maximum_adverse_excursion: float | None
+    maximum_favourable_r: float | None
+    maximum_adverse_r: float | None
+    status: str
+
+
+@dataclass(frozen=True)
 class EnrichedDoctrineState:
     schema_version: str
     candidate_state_id: str
@@ -147,6 +163,7 @@ class EnrichedDoctrineState:
     first_objective_reach_time: str | None
     first_wick_outside_parent_time: str | None
     continuation_beyond_first_target: str
+    entry_risk_assessments: tuple[EntryRiskAssessment, ...]
     first_planned_target_reached: bool | None
     target_reach_time: str | None
     stopped_before_target: bool | None
@@ -158,6 +175,10 @@ class EnrichedDoctrineState:
     first_target_partial_applicable: bool | None
     continuation_outcome: str
     factual_outcome_status: str
+    structure_query_ready: bool
+    confirmation_query_ready: bool
+    outcome_query_ready: bool
+    overall_first_query_ready: bool
     blocker_reasons: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -210,6 +231,7 @@ def build_first_query_doctrine_report(
     status_counts = Counter(row["status"] for row in rows)
     blocker_counts = Counter(reason for row in rows for reason in row["blocker_reasons"])
     test_required_counts = Counter(reason for row in rows for reason in row["test_required_reasons"])
+    factual_outcome_counts = Counter(row["factual_outcome_status"] for row in rows)
 
     stats = dict(master_map.get("statistics") or {})
     canonical_ranges = int(stats.get("canonical_ranges_before_review_exclusion") or len(full_ranges))
@@ -272,7 +294,21 @@ def build_first_query_doctrine_report(
             "retest_entry_candidate_totals": count_entry_type(rows, "CHOCH_RETEST"),
             "destination_totals": count_field(rows, "destination_zone"),
             "first_target_outcomes": count_field(rows, "factual_outcome_status"),
+            "factual_outcome_totals": dict(sorted(factual_outcome_counts.items())),
             "continuation_outcomes": count_field(rows, "continuation_outcome"),
+            "structure_query_ready_count": sum(1 for row in rows if row["structure_query_ready"]),
+            "confirmation_query_ready_count": sum(1 for row in rows if row["confirmation_query_ready"]),
+            "outcome_query_ready_count": sum(1 for row in rows if row["outcome_query_ready"]),
+            "overall_first_query_ready_count": sum(1 for row in rows if row["overall_first_query_ready"]),
+            "calculable_3r_state_count": sum(
+                1 for row in rows
+                if any(item["initial_risk"] is not None for item in row["entry_risk_assessments"])
+            ),
+            "calculable_mfe_mae_state_count": sum(
+                1 for row in rows
+                if row["maximum_favourable_excursion"] is not None
+                or row["maximum_adverse_excursion"] is not None
+            ),
             "test_required_field_totals": dict(sorted(test_required_counts.items())),
         },
         "states": rows,
@@ -323,6 +359,7 @@ def enrich_state(
         "RUNNER_MANAGEMENT",
     )
     first_target = planned_target(child_direction, parent_low, parent_high)
+    invalidation = invalidation_price(child_direction, parent_low, parent_high)
     future = [
         item for item in lineage_events
         if item.get("event_time_utc")
@@ -334,8 +371,8 @@ def enrich_state(
     outcome = evaluate_outcome(
         child_direction=child_direction,
         first_target=first_target,
-        parent_low=parent_low,
-        parent_high=parent_high,
+        invalidation_price=invalidation,
+        entry_candidates=entry_candidates,
         future_events=future,
     )
     status = readiness_status(blockers, review_reasons)
@@ -379,7 +416,7 @@ def enrich_state(
         confirming_candle_time=freeze,
         confirming_price=price,
         entry_candidates=entry_candidates,
-        structural_invalidation_price=invalidation_price(child_direction, parent_low, parent_high),
+        structural_invalidation_price=invalidation,
         structural_invalidation_time=None,
         invalidation_source="PARENT_BOUNDARY",
         inducement_classification="UNKNOWN",
@@ -390,6 +427,7 @@ def enrich_state(
         first_objective_reach_time=outcome["target_reach_time"],
         first_wick_outside_parent_time=outcome["first_wick_outside_parent_time"],
         continuation_beyond_first_target=outcome["continuation_outcome"],
+        entry_risk_assessments=tuple(outcome["entry_risk_assessments"]),
         first_planned_target_reached=outcome["first_planned_target_reached"],
         target_reach_time=outcome["target_reach_time"],
         stopped_before_target=outcome["stopped_before_target"],
@@ -401,6 +439,15 @@ def enrich_state(
         first_target_partial_applicable=outcome["first_target_partial_applicable"],
         continuation_outcome=outcome["continuation_outcome"],
         factual_outcome_status=outcome["factual_outcome_status"],
+        structure_query_ready=not blockers and not review_reasons,
+        confirmation_query_ready=choch_confirmation_type(frozen_events) != "UNKNOWN",
+        outcome_query_ready=outcome["factual_outcome_status"] not in {"NOT_AVAILABLE", "UNKNOWN"},
+        overall_first_query_ready=(
+            not blockers
+            and not review_reasons
+            and choch_confirmation_type(frozen_events) != "UNKNOWN"
+            and outcome["factual_outcome_status"] not in {"NOT_AVAILABLE", "UNKNOWN"}
+        ),
         blocker_reasons=tuple([*review_reasons, *blockers]),
         parent_direction_evidence=parent_evidence,
     )
@@ -611,29 +658,111 @@ def evaluate_outcome(
     *,
     child_direction: str,
     first_target: float | None,
-    parent_low: float | None,
-    parent_high: float | None,
+    invalidation_price: float | None,
+    entry_candidates: Sequence[EntryCandidate],
     future_events: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    reached_at = first_wick_outside_parent_time(child_direction, parent_low, parent_high, future_events)
-    reached = bool(reached_at and first_target is not None)
+    reached_at = objective_reach_time(child_direction, first_target, future_events)
+    reached = None if first_target is None else reached_at is not None
     continuation = "TEST_REQUIRED" if reached else "NOT_AVAILABLE"
-    mfe = max((event_price(item) for item in future_events if event_price(item) is not None), default=None)
-    mae = min((event_price(item) for item in future_events if event_price(item) is not None), default=None)
+    risk_assessments = tuple(
+        assess_entry_risk(
+            candidate,
+            child_direction=child_direction,
+            invalidation_price=invalidation_price,
+            events=future_events,
+        )
+        for candidate in entry_candidates
+    )
+    calculable = [item for item in risk_assessments if item.initial_risk is not None]
+    reached_3r = [item for item in calculable if item.three_r_reached is True]
+    three_r_reached = True if reached_3r else None
     return {
         "first_planned_target_reached": reached,
         "target_reach_time": reached_at,
         "stopped_before_target": None,
         "invalidated": None,
-        "maximum_favourable_excursion": mfe,
-        "maximum_adverse_excursion": mae,
-        "three_r_reached": reached,
-        "breakeven_rule_activated": reached,
+        "maximum_favourable_excursion": None,
+        "maximum_adverse_excursion": None,
+        "entry_risk_assessments": risk_assessments,
+        "three_r_reached": three_r_reached,
+        "breakeven_rule_activated": True if three_r_reached is True else None,
         "first_target_partial_applicable": reached,
         "continuation_outcome": continuation,
-        "factual_outcome_status": "FIRST_TARGET_REACHED" if reached else "UNKNOWN",
+        "factual_outcome_status": "FIRST_TARGET_REACHED" if reached else "NOT_AVAILABLE",
         "first_wick_outside_parent_time": reached_at,
     }
+
+
+def assess_entry_risk(
+    candidate: EntryCandidate,
+    *,
+    child_direction: str,
+    invalidation_price: float | None,
+    events: Sequence[Mapping[str, Any]],
+) -> EntryRiskAssessment:
+    entry_price = candidate.entry_price if candidate.status == "VALID" else None
+    risk = initial_risk(child_direction, entry_price, invalidation_price)
+    if risk is None:
+        return EntryRiskAssessment(
+            candidate_type=candidate.candidate_type,
+            entry_price=entry_price,
+            invalidation_price=invalidation_price,
+            initial_risk=None,
+            three_r_price=None,
+            three_r_reached=None,
+            three_r_reach_time=None,
+            maximum_favourable_excursion=None,
+            maximum_adverse_excursion=None,
+            maximum_favourable_r=None,
+            maximum_adverse_r=None,
+            status="RISK_NOT_AVAILABLE",
+        )
+    three_r = entry_price + 3 * risk if child_direction == Direction.BULLISH else entry_price - 3 * risk
+    reached_at = objective_reach_time(child_direction, three_r, events)
+    return EntryRiskAssessment(
+        candidate_type=candidate.candidate_type,
+        entry_price=entry_price,
+        invalidation_price=invalidation_price,
+        initial_risk=risk,
+        three_r_price=three_r,
+        three_r_reached=True if reached_at else None,
+        three_r_reach_time=reached_at,
+        maximum_favourable_excursion=None,
+        maximum_adverse_excursion=None,
+        maximum_favourable_r=None,
+        maximum_adverse_r=None,
+        status="THREE_R_REACHED" if reached_at else "THREE_R_NOT_AVAILABLE",
+    )
+
+
+def initial_risk(child_direction: str, entry_price: float | None, invalidation_price: float | None) -> float | None:
+    if entry_price is None or invalidation_price is None:
+        return None
+    risk = entry_price - invalidation_price if child_direction == Direction.BULLISH else invalidation_price - entry_price
+    return risk if risk > 0 else None
+
+
+def objective_reach_time(
+    child_direction: str,
+    objective: float | None,
+    events: Sequence[Mapping[str, Any]],
+) -> str | None:
+    if objective is None:
+        return None
+    ordered = sorted(
+        [item for item in events if item.get("event_time_utc")],
+        key=lambda item: (parse_time(item["event_time_utc"]), str(item.get("id") or "")),
+    )
+    for event in ordered:
+        price = objective_evidence_price(event, child_direction)
+        if price is None:
+            continue
+        if child_direction == Direction.BULLISH and price >= objective:
+            return canonical_time(event["event_time_utc"])
+        if child_direction == Direction.BEARISH and price <= objective:
+            return canonical_time(event["event_time_utc"])
+    return None
 
 
 def first_wick_outside_parent_time(
@@ -642,18 +771,23 @@ def first_wick_outside_parent_time(
     parent_high: float | None,
     events: Sequence[Mapping[str, Any]],
 ) -> str | None:
-    ordered = sorted(
-        [item for item in events if item.get("event_time_utc")],
-        key=lambda item: (parse_time(item["event_time_utc"]), str(item.get("id") or "")),
-    )
-    for event in ordered:
-        price = event_price(event)
-        if price is None:
-            continue
-        if child_direction == Direction.BULLISH and parent_high is not None and price > parent_high:
-            return canonical_time(event["event_time_utc"])
-        if child_direction == Direction.BEARISH and parent_low is not None and price < parent_low:
-            return canonical_time(event["event_time_utc"])
+    target = parent_high if child_direction == Direction.BULLISH else parent_low
+    return objective_reach_time(child_direction, target, events)
+
+
+def objective_evidence_price(event: Mapping[str, Any], child_direction: str) -> float | None:
+    if child_direction == Direction.BULLISH:
+        high = finite(event.get("high"))
+        if high is not None:
+            return high
+        if token(event.get("event_type")) in {"SWEEP_HIGH", "OBJECTIVE_BREACH_UP", "BOUNDARY_BREACH_UP"}:
+            return event_price(event)
+        return None
+    low = finite(event.get("low"))
+    if low is not None:
+        return low
+    if token(event.get("event_type")) in {"SWEEP_LOW", "OBJECTIVE_BREACH_DOWN", "BOUNDARY_BREACH_DOWN"}:
+        return event_price(event)
     return None
 
 
