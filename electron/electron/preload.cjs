@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('localResearch', {
   exportDetectionAudit: (args) => ipcRenderer.invoke('local-research:export-detection-audit', args),
   runRandomRangeAudit: (args) => ipcRenderer.invoke('local-research:random-range-audit', args),
   runRecordAuditVerdict: (args) => ipcRenderer.invoke('local-research:record-audit-verdict', args),
+  runMappingAssistant: (args) => ipcRenderer.invoke('local-research:mapping-assistant', args),
 });
 
 contextBridge.exposeInMainWorld('localMappingBridge', {
