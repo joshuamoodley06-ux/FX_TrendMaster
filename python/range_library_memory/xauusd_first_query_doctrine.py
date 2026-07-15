@@ -26,6 +26,23 @@ REPORT_SCHEMA_VERSION = "xauusd_first_query_doctrine_report_v0.1"
 STATE_SCHEMA_VERSION = "xauusd_first_query_state_v0.1"
 MASTER_MAP_SCHEMA_VERSION = "xauusd_master_map_v0.1"
 SUPPORTED_FREEZE_EVENTS = {"BOS_UP", "BOS_DOWN"}
+RESOLVED_DIRECTION_METHODS = {
+    "PREFREEZE_WEEKLY_BOS",
+    "WEEKLY_RANGE_FORMATION",
+    "WEEKLY_ORIGIN_EVIDENCE",
+    "PREFREEZE_LIFECYCLE_BREAK",
+    "ACTIVE_WEEKLY_LEG_EVIDENCE",
+}
+UNRESOLVED_DIRECTION_METHOD = "UNCONFIRMED"
+MAPPING_ACTIONS = {
+    "CONFIRM_WEEKLY_ORIGIN",
+    "MAP_WEEKLY_FORMATION_BOS",
+    "MAP_WEEKLY_DIRECTION_EVENT",
+    "CONFIRM_WEEKLY_LIFECYCLE",
+    "REVIEW_PARENT_LINK",
+    "NO_MAPPING_REQUIRED",
+    "TECHNICAL_REVIEW_REQUIRED",
+}
 TECHNICAL_EXCLUSION_REASONS = {
     "MISSING_PARENT_RANGE",
     "MISSING_PARENT_BOUNDS",
@@ -132,6 +149,10 @@ class EnrichedDoctrineState:
     parent_origin: str
     parent_location_context: str
     parent_active_range_boundaries: Mapping[str, float | None]
+    parent_range_high_time: str | None
+    parent_range_low_time: str | None
+    parent_active_from_time: str | None
+    parent_inactive_from_time: str | None
     parent_external_objectives: Mapping[str, float | None]
     child_range_id: str
     child_direction: str
@@ -179,6 +200,7 @@ class EnrichedDoctrineState:
     confirmation_query_ready: bool
     outcome_query_ready: bool
     overall_first_query_ready: bool
+    pre_resolution_blocker_reasons: tuple[str, ...] = field(default_factory=tuple)
     blocker_reasons: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -230,8 +252,16 @@ def build_first_query_doctrine_report(
     rows = [serialize_state(row) for row in states]
     status_counts = Counter(row["status"] for row in rows)
     blocker_counts = Counter(reason for row in rows for reason in row["blocker_reasons"])
+    pre_resolution_blocker_counts = Counter(reason for row in rows for reason in row["pre_resolution_blocker_reasons"])
     test_required_counts = Counter(reason for row in rows for reason in row["test_required_reasons"])
     factual_outcome_counts = Counter(row["factual_outcome_status"] for row in rows)
+    unique_weekly_parent_count = len({row["parent_range_id"] for row in rows if row.get("parent_range_id")})
+    unlocked = sum(
+        1 for row in rows
+        if "MISSING_PARENT_DIRECTION" in row["pre_resolution_blocker_reasons"]
+        and "MISSING_PARENT_DIRECTION" not in row["blocker_reasons"]
+    )
+    priority_queue = weekly_parent_priority_queue(rows)
 
     stats = dict(master_map.get("statistics") or {})
     canonical_ranges = int(stats.get("canonical_ranges_before_review_exclusion") or len(full_ranges))
@@ -270,6 +300,7 @@ def build_first_query_doctrine_report(
             "frozen_candidate_count": len(states),
             "enriched_candidate_count": len(states),
             "task_b_frozen_candidate_count": len(adapted["states"]),
+            "unique_weekly_parent_count": unique_weekly_parent_count,
             "candidate_query_ready_count": status_counts[AnalysisStatus.QUERY_READY],
             "candidate_needs_review_count": status_counts[AnalysisStatus.NEEDS_REVIEW],
             "candidate_low_confidence_count": status_counts[AnalysisStatus.LOW_CONFIDENCE],
@@ -285,6 +316,21 @@ def build_first_query_doctrine_report(
             "unknown_count": status_counts[AnalysisStatus.UNKNOWN],
             "excluded_count": status_counts[AnalysisStatus.EXCLUDED],
             "field_level_blockers_by_reason": dict(sorted(blocker_counts.items())),
+            "blockers_before_improved_direction_resolution": dict(sorted(pre_resolution_blocker_counts.items())),
+            "blockers_after_improved_direction_resolution": dict(sorted(blocker_counts.items())),
+            "candidates_unlocked_by_existing_weekly_evidence": unlocked,
+            "candidates_still_requiring_mapping": sum(
+                1 for row in rows
+                if "MISSING_PARENT_DIRECTION" in row["blocker_reasons"]
+                or "TRANSITION_PARENT_CONTEXT" in row["blocker_reasons"]
+            ),
+            "candidates_requiring_technical_review": sum(
+                1 for row in rows
+                if any(reason in TECHNICAL_EXCLUSION_REASONS for reason in row["blocker_reasons"])
+            ),
+            "parent_direction_resolution_totals_by_method": count_nested_field(
+                rows, "parent_direction_evidence", "resolution_method"
+            ),
             "classifications_by_parent_direction": count_field(rows, "parent_direction"),
             "classifications_by_child_relationship": count_field(rows, "child_relationship"),
             "classifications_by_location_zone": count_field(rows, "child_location_zone"),
@@ -313,6 +359,7 @@ def build_first_query_doctrine_report(
         },
         "states": rows,
         "anonymised_state_table": anonymised_table(rows),
+        "weekly_parent_priority_queue": priority_queue,
     }
     report["determinism_hash"] = report_hash(report)
     return report
@@ -335,8 +382,10 @@ def enrich_state(
         key=lambda item: (parse_time(item["event_time_utc"]), str(item.get("id") or "")),
     )
     child_direction = direction_from_event(event)
+    old_parent_direction, old_parent_evidence = legacy_parent_direction_at_freeze(parent, freeze)
     parent_direction, parent_evidence = parent_direction_at_freeze(parent, freeze)
     relationship = classify_child_relationship(parent_direction, child_direction)
+    old_relationship = classify_child_relationship(old_parent_direction, child_direction)
     parent_low = finite(parent.get("range_low")) if parent else None
     parent_high = finite(parent.get("range_high")) if parent else None
     price = event_price(event)
@@ -352,6 +401,15 @@ def enrich_state(
         freeze=freeze,
         parent_direction=parent_direction,
         relationship=relationship,
+    )
+    pre_resolution_blockers = readiness_blockers(
+        parent=parent,
+        parent_low=parent_low,
+        parent_high=parent_high,
+        price=price,
+        freeze=freeze,
+        parent_direction=old_parent_direction,
+        relationship=old_relationship,
     )
     review_reasons = trust_review_reasons(child, parent)
     test_required = (
@@ -396,6 +454,10 @@ def enrich_state(
         parent_origin="STRUCTURAL_RANGE" if parent else "UNKNOWN",
         parent_location_context=location_zone,
         parent_active_range_boundaries={"low": parent_low, "high": parent_high},
+        parent_range_high_time=canonical_time(parent.get("range_high_time")) if parent and parent.get("range_high_time") else None,
+        parent_range_low_time=canonical_time(parent.get("range_low_time")) if parent and parent.get("range_low_time") else None,
+        parent_active_from_time=canonical_time(parent.get("active_from_time")) if parent and parent.get("active_from_time") else None,
+        parent_inactive_from_time=canonical_time(parent.get("inactive_from_time")) if parent and parent.get("inactive_from_time") else None,
         parent_external_objectives={"bullish": parent_high, "bearish": parent_low},
         child_range_id=str(child["id"]),
         child_direction=child_direction,
@@ -448,8 +510,9 @@ def enrich_state(
             and choch_confirmation_type(frozen_events) != "UNKNOWN"
             and outcome["factual_outcome_status"] not in {"NOT_AVAILABLE", "UNKNOWN"}
         ),
+        pre_resolution_blocker_reasons=tuple([*review_reasons, *pre_resolution_blockers]),
         blocker_reasons=tuple([*review_reasons, *blockers]),
-        parent_direction_evidence=parent_evidence,
+        parent_direction_evidence={**parent_evidence, "legacy_resolution": old_parent_evidence},
     )
 
 
@@ -551,7 +614,7 @@ def event_within_lifecycle_horizon(event: Mapping[str, Any], child: Mapping[str,
     return parse_time(event["event_time_utc"]) <= parse_time(inactive)
 
 
-def parent_direction_at_freeze(parent: Mapping[str, Any] | None, freeze: str) -> tuple[str, dict[str, Any]]:
+def legacy_parent_direction_at_freeze(parent: Mapping[str, Any] | None, freeze: str) -> tuple[str, dict[str, Any]]:
     if parent is None:
         return Direction.UNCONFIRMED, {"status": "NO_PARENT", "event_ids": [], "event_times": []}
     freeze_dt = parse_time(freeze)
@@ -571,6 +634,194 @@ def parent_direction_at_freeze(parent: Mapping[str, Any] | None, freeze: str) ->
         "event_ids": [str(latest.get("id"))],
         "event_times": [canonical_time(latest.get("event_time_utc"))],
     }
+
+
+def parent_direction_at_freeze(parent: Mapping[str, Any] | None, freeze: str) -> tuple[str, dict[str, Any]]:
+    resolution = resolve_weekly_direction_at_freeze(parent, freeze)
+    return resolution["direction"], resolution
+
+
+def resolve_weekly_direction_at_freeze(parent: Mapping[str, Any] | None, freeze: str) -> dict[str, Any]:
+    if parent is None:
+        return unresolved_weekly_direction("NO_PARENT_RANGE")
+    freeze_dt = parse_time(freeze)
+    for resolver in (
+        prefreeze_weekly_bos_resolution,
+        weekly_formation_resolution,
+        active_leg_resolution,
+        prefreeze_lifecycle_break_resolution,
+    ):
+        resolution = resolver(parent, freeze_dt)
+        if resolution:
+            return resolution
+    evidence_present = weekly_direction_evidence_present(parent)
+    return unresolved_weekly_direction(
+        "NO_APPROVED_PREFREEZE_WEEKLY_DIRECTION_EVIDENCE",
+        evidence_present=evidence_present,
+        source_refs=copy.deepcopy(parent.get("source_refs") or []),
+    )
+
+
+def prefreeze_weekly_bos_resolution(parent: Mapping[str, Any], freeze_dt: datetime) -> dict[str, Any] | None:
+    candidates = [
+        item for item in parent.get("events", [])
+        if token(item.get("event_type")) in SUPPORTED_FREEZE_EVENTS
+        and item.get("event_time_utc")
+        and parse_time(item["event_time_utc"]) <= freeze_dt
+    ]
+    candidates.sort(key=lambda item: (parse_time(item["event_time_utc"]), str(item.get("id") or "")))
+    if not candidates:
+        return None
+    latest = candidates[-1]
+    direction = direction_from_event(latest)
+    if direction == Direction.UNCONFIRMED:
+        return None
+    return resolved_weekly_direction(
+        direction=direction,
+        method="PREFREEZE_WEEKLY_BOS",
+        status="RESOLVED",
+        confidence="high",
+        evidence=[latest],
+        source_refs=copy.deepcopy(latest.get("source_refs") or []),
+    )
+
+
+def weekly_formation_resolution(parent: Mapping[str, Any], freeze_dt: datetime) -> dict[str, Any] | None:
+    for direction_key in ("formation_direction", "origin_direction", "weekly_formation_direction"):
+        direction = direction_from_token(parent.get(direction_key))
+        if direction == Direction.UNCONFIRMED:
+            continue
+        timestamp = first_time_value(
+            parent,
+            "formation_time",
+            "origin_time",
+            "weekly_formation_time",
+            "created_by_event_time",
+            "created_at_time",
+        )
+        if timestamp and parse_time(timestamp) <= freeze_dt:
+            method = "WEEKLY_ORIGIN_EVIDENCE" if "origin" in direction_key else "WEEKLY_RANGE_FORMATION"
+            return resolved_weekly_direction(
+                direction=direction,
+                method=method,
+                status="RESOLVED",
+                confidence="medium",
+                evidence=[{"id": direction_key, "event_time_utc": timestamp}],
+                source_refs=copy.deepcopy(parent.get("source_refs") or []),
+            )
+    return None
+
+
+def active_leg_resolution(parent: Mapping[str, Any], freeze_dt: datetime) -> dict[str, Any] | None:
+    direction = direction_from_token(parent.get("active_leg_direction") or parent.get("established_direction"))
+    timestamp = first_time_value(parent, "active_leg_established_time", "established_direction_time")
+    if direction != Direction.UNCONFIRMED and timestamp and parse_time(timestamp) <= freeze_dt:
+        return resolved_weekly_direction(
+            direction=direction,
+            method="ACTIVE_WEEKLY_LEG_EVIDENCE",
+            status="RESOLVED",
+            confidence="medium",
+            evidence=[{"id": "active_leg_direction", "event_time_utc": timestamp}],
+            source_refs=copy.deepcopy(parent.get("source_refs") or []),
+        )
+    return None
+
+
+def prefreeze_lifecycle_break_resolution(parent: Mapping[str, Any], freeze_dt: datetime) -> dict[str, Any] | None:
+    inactive = parent.get("inactive_from_time")
+    direction = direction_from_token(parent.get("direction_of_break"))
+    if inactive and direction != Direction.UNCONFIRMED and parse_time(inactive) <= freeze_dt:
+        evidence = list(parent.get("supporting_break_events") or [])
+        if not evidence:
+            evidence = [{"id": "direction_of_break", "event_time_utc": inactive, "direction": parent.get("direction_of_break")}]
+        return resolved_weekly_direction(
+            direction=direction,
+            method="PREFREEZE_LIFECYCLE_BREAK",
+            status="RESOLVED",
+            confidence="medium",
+            evidence=evidence,
+            source_refs=copy.deepcopy(parent.get("source_refs") or []),
+        )
+    return None
+
+
+def resolved_weekly_direction(
+    *,
+    direction: str,
+    method: str,
+    status: str,
+    confidence: str,
+    evidence: Sequence[Mapping[str, Any]],
+    source_refs: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    if method not in RESOLVED_DIRECTION_METHODS:
+        raise DoctrineError(f"unsupported Weekly direction resolution method: {method}")
+    return {
+        "direction": direction,
+        "resolution_method": method,
+        "status": status,
+        "confidence": confidence,
+        "event_ids": [str(item.get("id") or item.get("event_id") or item.get("source_record_id") or "") for item in evidence],
+        "event_times": [
+            canonical_time(item.get("event_time_utc") or item.get("effective_break_time") or item.get("break_time"))
+            for item in evidence
+            if item.get("event_time_utc") or item.get("effective_break_time") or item.get("break_time")
+        ],
+        "source_refs": list(source_refs),
+        "unresolved_reason": None,
+    }
+
+
+def unresolved_weekly_direction(
+    reason: str,
+    *,
+    evidence_present: Sequence[str] | None = None,
+    source_refs: Sequence[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "direction": Direction.UNCONFIRMED,
+        "resolution_method": UNRESOLVED_DIRECTION_METHOD,
+        "status": "UNRESOLVED",
+        "confidence": "low",
+        "event_ids": [],
+        "event_times": [],
+        "source_refs": list(source_refs or []),
+        "unresolved_reason": reason,
+        "evidence_present": list(evidence_present or []),
+    }
+
+
+def weekly_direction_evidence_present(parent: Mapping[str, Any]) -> list[str]:
+    present: list[str] = []
+    if any(token(item.get("event_type")) in SUPPORTED_FREEZE_EVENTS for item in parent.get("events", [])):
+        present.append("WEEKLY_BOS_EVENT")
+    if parent.get("supporting_break_events"):
+        present.append("SUPPORTING_BREAK_EVENTS")
+    if parent.get("direction_of_break") and parent.get("inactive_from_time"):
+        present.append("DATED_LIFECYCLE_BREAK")
+    for key in ("formation_direction", "origin_direction", "weekly_formation_direction"):
+        if parent.get(key):
+            present.append(key.upper())
+    for key in ("active_leg_direction", "established_direction"):
+        if parent.get(key):
+            present.append(key.upper())
+    return sorted(set(present))
+
+
+def first_time_value(node: Mapping[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        if node.get(key):
+            return canonical_time(node[key])
+    return None
+
+
+def direction_from_token(value: Any) -> str:
+    direction = token(value)
+    if direction in {"UP", "BULLISH", "CONFIRMED_UP", "PENDING_RECLAIM_UP"}:
+        return Direction.BULLISH
+    if direction in {"DOWN", "BEARISH", "CONFIRMED_DOWN", "PENDING_RECLAIM_DOWN"}:
+        return Direction.BEARISH
+    return Direction.UNCONFIRMED
 
 
 def classify_child_relationship(parent_direction: str, child_direction: str) -> str:
@@ -941,8 +1192,14 @@ def anonymised_table(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     return [
         {
             "candidate_state_id": row["candidate_state_id"],
-            "weekly_direction": row["parent_direction"],
-            "daily_relationship": row["child_relationship"],
+            "weekly_parent_range_id": row["parent_range_id"],
+            "freeze_at": row["freeze_at"],
+            "parent_direction": row["parent_direction"],
+            "resolution_method": row["parent_direction_evidence"].get("resolution_method"),
+            "child_direction": row["child_direction"],
+            "relationship": row["child_relationship"],
+            "structure_readiness": row["structure_query_ready"],
+            "unresolved_reason": row["parent_direction_evidence"].get("unresolved_reason"),
             "daily_location": row["child_location_zone"],
             "reclaim_profile": f"{row['reclaim_classification']}|{row['profile_classification']}",
             "confirmation": row["choch_confirmation_type"],
@@ -958,8 +1215,107 @@ def anonymised_table(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def weekly_parent_priority_queue(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if not row.get("parent_range_id"):
+            continue
+        if row.get("structure_query_ready"):
+            continue
+        grouped.setdefault(str(row["parent_range_id"]), []).append(row)
+
+    items: list[dict[str, Any]] = []
+    for parent_id, candidates in grouped.items():
+        parent_refs = candidates[0]["source_provenance"].get("parent_source_refs") or []
+        direction_evidence = candidates[0]["parent_direction_evidence"]
+        missing = missing_weekly_evidence(direction_evidence, candidates)
+        action = recommended_mapping_action(direction_evidence, candidates)
+        if action not in MAPPING_ACTIONS:
+            raise DoctrineError(f"unsupported Weekly mapping action: {action}")
+        item = {
+            "weekly_parent_range_id": parent_id,
+            "weekly_range_high": candidates[0]["parent_active_range_boundaries"].get("high"),
+            "weekly_range_low": candidates[0]["parent_active_range_boundaries"].get("low"),
+            "weekly_range_high_time": candidates[0].get("parent_range_high_time"),
+            "weekly_range_low_time": candidates[0].get("parent_range_low_time"),
+            "parent_active_from_time": candidates[0].get("parent_active_from_time"),
+            "parent_inactive_or_break_time": candidates[0].get("parent_inactive_from_time")
+            or latest_or_none(direction_evidence.get("event_times") or []),
+            "blocked_candidate_count": len(candidates),
+            "candidate_state_ids": sorted(str(row["candidate_state_id"]) for row in candidates),
+            "earliest_candidate_freeze": min(row["freeze_at"] for row in candidates),
+            "latest_candidate_freeze": max(row["freeze_at"] for row in candidates),
+            "current_direction_resolution": {
+                "direction": candidates[0]["parent_direction"],
+                "resolution_method": direction_evidence.get("resolution_method"),
+                "status": direction_evidence.get("status"),
+                "confidence": direction_evidence.get("confidence"),
+                "unresolved_reason": direction_evidence.get("unresolved_reason"),
+            },
+            "evidence_already_present": direction_evidence.get("evidence_present") or direction_evidence.get("event_ids") or [],
+            "exact_missing_evidence": missing,
+            "recommended_mapping_action": action,
+            "priority_rank": 0,
+            "trusted_parent": not any("PARENT_NEEDS_REVIEW" in row["blocker_reasons"] for row in candidates),
+            "parent_source_refs": parent_refs,
+        }
+        items.append(item)
+
+    items.sort(
+        key=lambda item: (
+            -int(item["blocked_candidate_count"]),
+            0 if item["trusted_parent"] else 1,
+            item["earliest_candidate_freeze"],
+            item["weekly_parent_range_id"],
+        )
+    )
+    for index, item in enumerate(items, start=1):
+        item["priority_rank"] = index
+    return items
+
+
+def missing_weekly_evidence(
+    direction_evidence: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    blockers = {reason for row in candidates for reason in row["blocker_reasons"]}
+    if "MISSING_PARENT_RANGE" in blockers:
+        return ["VALID_WEEKLY_PARENT_LINK"]
+    if direction_evidence.get("resolution_method") == UNRESOLVED_DIRECTION_METHOD:
+        return ["APPROVED_PREFREEZE_WEEKLY_DIRECTION_EVIDENCE"]
+    if "TRANSITION_PARENT_CONTEXT" in blockers:
+        return ["RESOLVED_PARENT_AND_CHILD_DIRECTION_PAIR"]
+    return []
+
+
+def recommended_mapping_action(direction_evidence: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]]) -> str:
+    blockers = {reason for row in candidates for reason in row["blocker_reasons"]}
+    if any(reason in TECHNICAL_EXCLUSION_REASONS for reason in blockers):
+        return "TECHNICAL_REVIEW_REQUIRED"
+    if "PARENT_NEEDS_REVIEW" in blockers or "MISSING_PARENT_RANGE" in blockers:
+        return "REVIEW_PARENT_LINK"
+    if direction_evidence.get("resolution_method") != UNRESOLVED_DIRECTION_METHOD:
+        return "NO_MAPPING_REQUIRED"
+    present = set(direction_evidence.get("evidence_present") or [])
+    if "DATED_LIFECYCLE_BREAK" in present or "SUPPORTING_BREAK_EVENTS" in present:
+        return "CONFIRM_WEEKLY_LIFECYCLE"
+    if any(item in present for item in {"FORMATION_DIRECTION", "ORIGIN_DIRECTION", "WEEKLY_FORMATION_DIRECTION"}):
+        return "CONFIRM_WEEKLY_ORIGIN"
+    if "WEEKLY_BOS_EVENT" in present:
+        return "MAP_WEEKLY_DIRECTION_EVENT"
+    return "MAP_WEEKLY_FORMATION_BOS"
+
+
+def latest_or_none(values: Sequence[str]) -> str | None:
+    return max(values) if values else None
+
+
 def count_field(rows: Sequence[Mapping[str, Any]], field_name: str) -> dict[str, int]:
     return dict(sorted(Counter(str(row.get(field_name) or "UNKNOWN") for row in rows).items()))
+
+
+def count_nested_field(rows: Sequence[Mapping[str, Any]], field_name: str, nested_name: str) -> dict[str, int]:
+    return dict(sorted(Counter(str((row.get(field_name) or {}).get(nested_name) or "UNKNOWN") for row in rows).items()))
 
 
 def count_pairs(rows: Sequence[Mapping[str, Any]], left: str, right: str) -> dict[str, int]:

@@ -25,6 +25,7 @@ from range_library_memory.xauusd_first_query_doctrine import (
     first_wick_outside_parent_time,
     main,
     phase_advance_allowed,
+    resolve_weekly_direction_at_freeze,
 )
 from range_library_memory.master_map_comparison_adapter import adapt_master_map
 
@@ -255,13 +256,15 @@ def test_parent_breaks_bullish_after_freeze_does_not_rewrite_parent_direction() 
     source["root"] = copy.deepcopy(source["trusted_root"])
     state = first_state(build_first_query_doctrine_report(source))
     assert state["parent_direction"] == "UNCONFIRMED"
-    assert state["parent_direction_evidence"]["status"] == "NO_PREFREEZE_PARENT_DIRECTION"
+    assert state["parent_direction_evidence"]["resolution_method"] == "UNCONFIRMED"
+    assert state["parent_direction_evidence"]["unresolved_reason"] == "NO_APPROVED_PREFREEZE_WEEKLY_DIRECTION_EVIDENCE"
 
 
 def test_parent_breaks_bearish_before_freeze_sets_bearish_parent_direction() -> None:
     state = first_state(build_first_query_doctrine_report(master_map(parent_direction="DOWN", daily_direction="DOWN")))
     assert state["parent_direction"] == "BEARISH"
     assert state["parent_direction_evidence"]["event_ids"] == ["e-weekly-direction"]
+    assert state["parent_direction_evidence"]["resolution_method"] == "PREFREEZE_WEEKLY_BOS"
 
 
 def test_post_freeze_parent_events_do_not_change_classification_or_readiness() -> None:
@@ -280,6 +283,143 @@ def test_post_freeze_parent_events_do_not_change_classification_or_readiness() -
         break_kind="WICK",
         protected_swing_broken=True,
     ) == "RANGE_FAILURE_CONFIRMED"
+
+
+def test_post_freeze_weekly_bos_is_ignored() -> None:
+    weekly = range_node(
+        "weekly-post",
+        "WEEKLY",
+        100,
+        200,
+        events=[event("future-bos", "BOS_UP", "2026-02-01T00:00:00Z", 201, direction="UP")],
+    )
+    resolution = resolve_weekly_direction_at_freeze(weekly, "2026-01-13T00:00:00Z")
+    assert resolution["direction"] == "UNCONFIRMED"
+    assert resolution["resolution_method"] == "UNCONFIRMED"
+
+
+def test_prefreeze_weekly_formation_evidence_resolves_direction() -> None:
+    weekly = range_node("weekly-formation", "WEEKLY", 100, 200)
+    weekly["formation_direction"] = "UP"
+    weekly["formation_time"] = "2026-01-01T00:00:00Z"
+    resolution = resolve_weekly_direction_at_freeze(weekly, "2026-01-13T00:00:00Z")
+    assert resolution["direction"] == "BULLISH"
+    assert resolution["resolution_method"] == "WEEKLY_RANGE_FORMATION"
+
+
+def test_later_final_direction_cannot_rewrite_earlier_state() -> None:
+    weekly = range_node("weekly-final-only", "WEEKLY", 100, 200, direction_of_break="DOWN")
+    weekly["inactive_from_time"] = "2026-02-01T00:00:00Z"
+    resolution = resolve_weekly_direction_at_freeze(weekly, "2026-01-13T00:00:00Z")
+    assert resolution["direction"] == "UNCONFIRMED"
+    assert resolution["resolution_method"] == "UNCONFIRMED"
+
+
+def test_prefreeze_lifecycle_break_can_resolve_direction() -> None:
+    weekly = range_node("weekly-lifecycle", "WEEKLY", 100, 200, direction_of_break="DOWN")
+    weekly["inactive_from_time"] = "2026-01-10T00:00:00Z"
+    weekly["supporting_break_events"] = [
+        {"id": "weekly-break", "event_time_utc": "2026-01-10T00:00:00Z", "direction": "DOWN"}
+    ]
+    resolution = resolve_weekly_direction_at_freeze(weekly, "2026-01-13T00:00:00Z")
+    assert resolution["direction"] == "BEARISH"
+    assert resolution["resolution_method"] == "PREFREEZE_LIFECYCLE_BREAK"
+
+
+def test_final_direction_without_valid_prefreeze_timestamp_remains_unconfirmed() -> None:
+    weekly = range_node("weekly-no-time", "WEEKLY", 100, 200, direction_of_break="UP")
+    weekly["inactive_from_time"] = None
+    resolution = resolve_weekly_direction_at_freeze(weekly, "2026-01-13T00:00:00Z")
+    assert resolution["direction"] == "UNCONFIRMED"
+
+
+def test_midpoint_location_cannot_determine_weekly_direction() -> None:
+    weekly = range_node("weekly-midpoint", "WEEKLY", 100, 200)
+    resolution = resolve_weekly_direction_at_freeze(weekly, "2026-01-13T00:00:00Z")
+    assert resolution["direction"] == "UNCONFIRMED"
+    assert classify_location_zone(190, 100, 200) == "EXTREME_PREMIUM"
+
+
+def test_parent_direction_and_child_relationship_remain_separate() -> None:
+    source = master_map(parent_direction="DOWN", daily_direction="UP")
+    state = first_state(build_first_query_doctrine_report(source))
+    assert state["parent_direction"] == "BEARISH"
+    assert state["child_direction"] == "BULLISH"
+    assert state["child_relationship"] == "COUNTER_TREND"
+
+
+def test_transition_only_when_parent_direction_unresolved() -> None:
+    unresolved = first_state(build_first_query_doctrine_report(master_map(parent_direction=None, daily_direction="UP")))
+    resolved = first_state(build_first_query_doctrine_report(master_map(parent_direction="UP", daily_direction="UP")))
+    assert unresolved["child_relationship"] == "TRANSITION"
+    assert resolved["child_relationship"] == "PRO_TREND"
+
+
+def test_multiple_candidates_sharing_one_weekly_parent_produce_one_queue_item() -> None:
+    source = master_map(parent_direction=None, daily_direction="UP")
+    second = range_node(
+        "daily-b",
+        "DAILY",
+        130,
+        180,
+        events=[event("e-freeze-b", "BOS_UP", "2026-01-15T00:00:00Z", 155, direction="UP")],
+    )
+    trusted_weekly(source)["children"].append(second)
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    report = build_first_query_doctrine_report(source)
+    queue = report["weekly_parent_priority_queue"]
+    assert len(queue) == 1
+    assert queue[0]["weekly_parent_range_id"] == "weekly-a"
+    assert queue[0]["blocked_candidate_count"] == 2
+
+
+def test_queue_priority_uses_blocked_candidate_count() -> None:
+    source = master_map(parent_direction=None, daily_direction="UP")
+    second = range_node(
+        "daily-b",
+        "DAILY",
+        130,
+        180,
+        events=[event("e-freeze-b", "BOS_UP", "2026-01-15T00:00:00Z", 155, direction="UP")],
+    )
+    trusted_weekly(source)["children"].append(second)
+    weekly_b = range_node(
+        "weekly-b",
+        "WEEKLY",
+        200,
+        300,
+        children=[range_node("daily-c", "DAILY", 220, 280, events=[event("e-freeze-c", "BOS_UP", "2026-01-16T00:00:00Z", 250, direction="UP")])],
+    )
+    source["trusted_root"]["children"].append(weekly_b)
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    queue = build_first_query_doctrine_report(source)["weekly_parent_priority_queue"]
+    assert [item["weekly_parent_range_id"] for item in queue[:2]] == ["weekly-a", "weekly-b"]
+
+
+def test_queue_priority_tie_uses_trusted_status_and_oldest_freeze() -> None:
+    source = master_map(parent_direction=None, daily_direction="UP")
+    trusted_weekly(source)["id"] = "weekly-trusted"
+    review_weekly = range_node(
+        "weekly-review",
+        "WEEKLY",
+        200,
+        300,
+        navigation_status="REVIEW",
+        children=[range_node("daily-review", "DAILY", 220, 280, events=[event("e-review", "BOS_UP", "2026-01-12T00:00:00Z", 250, direction="UP")])],
+    )
+    trusted_weekly(source)["children"][0]["events"] = [event("e-trusted", "BOS_UP", "2026-01-20T00:00:00Z", 150, direction="UP")]
+    source["trusted_root"]["children"].append(review_weekly)
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    queue = build_first_query_doctrine_report(source)["weekly_parent_priority_queue"]
+    assert queue[0]["weekly_parent_range_id"] == "weekly-trusted"
+
+
+def test_queue_emits_exact_missing_evidence_and_controlled_action() -> None:
+    source = master_map(parent_direction=None, daily_direction="UP")
+    report = build_first_query_doctrine_report(source)
+    queue_item = report["weekly_parent_priority_queue"][0]
+    assert queue_item["exact_missing_evidence"] == ["APPROVED_PREFREEZE_WEEKLY_DIRECTION_EVIDENCE"]
+    assert queue_item["recommended_mapping_action"] == "MAP_WEEKLY_FORMATION_BOS"
 
 
 def test_m15_support_not_jointly_mandatory_for_daily_failure() -> None:
