@@ -11,10 +11,10 @@ const {
   buildMappingAssistantSpec,
 } = requireCjs('../electron/localResearchIpc.cjs');
 
-const BACKEND = 'C:\\FXTM\\backend';
-const PYTHON_ROOT = 'C:\\FXTM\\python';
-const DB = 'C:\\Users\\test\\Documents\\FXTM_Research\\raw_mapping_v159.db';
-const RANGE_LIBRARY_DB = 'C:\\Users\\test\\Documents\\FXTM_Research\\range_library_memory.sqlite3';
+const BACKEND = path.resolve(__dirname, '../../backend');
+const PYTHON_ROOT = path.resolve(__dirname, '../../python');
+const DB = path.resolve(__dirname, '../test-fixtures/raw_mapping_v159.db');
+const RANGE_LIBRARY_DB = path.resolve(__dirname, '../test-fixtures/range_library_memory.sqlite3');
 
 describe('localResearchIpc safety', () => {
   it('blocks confirm promote without userConfirmed', () => {
@@ -115,15 +115,15 @@ describe('localResearchIpc runner args', () => {
       pythonRoot: PYTHON_ROOT,
       pythonPath: 'python',
     });
-    expect(spec.cwd).toBe(path.resolve(PYTHON_ROOT));
+    expect(spec.cwd).toBe(PYTHON_ROOT);
     expect(spec.args).toEqual([
       '-m',
       'range_library_memory.xauusd_mapping_assistant',
-      '--db-path', path.resolve(RANGE_LIBRARY_DB),
+      '--db-path', RANGE_LIBRARY_DB,
       '--symbol', 'XAUUSD',
       '--json',
     ]);
-    expect(spec.env.FXTM_RANGE_LIBRARY_MEMORY_DB).toBe(path.resolve(RANGE_LIBRARY_DB));
+    expect(spec.env.FXTM_RANGE_LIBRARY_MEMORY_DB).toBe(RANGE_LIBRARY_DB);
   });
 
   it('Mapping Assistant rejects an implicit database target', () => {
