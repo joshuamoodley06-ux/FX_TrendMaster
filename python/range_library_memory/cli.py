@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from .bulk_import import bulk_import_source_dir, format_bulk_import_summary
@@ -73,6 +74,12 @@ from .weekly_direction_context import (
     build_weekly_direction_contexts,
     format_summary as format_weekly_direction_summary,
     summarize_weekly_direction_contexts,
+)
+from .xauusd_first_query_doctrine import (
+    DoctrineError,
+    build_first_query_doctrine_report,
+    load_json as load_doctrine_json,
+    load_master_map_output_readonly,
 )
 
 
@@ -283,6 +290,16 @@ def build_parser() -> argparse.ArgumentParser:
     daily_trend_summary_parser.add_argument("--trend-relationship")
     daily_trend_summary_parser.add_argument("--observation-status")
     daily_trend_summary_parser.add_argument("--json", action="store_true")
+
+    first_query_parser = subparsers.add_parser(
+        "first-query-doctrine",
+        help="Build a disposable XAUUSD first-query doctrine report.",
+    )
+    first_query_source = first_query_parser.add_mutually_exclusive_group(required=True)
+    first_query_source.add_argument("--master-map")
+    first_query_source.add_argument("--range-library-db")
+    first_query_parser.add_argument("--output", required=True)
+    first_query_parser.add_argument("--compact", action="store_true")
 
     return parser
 
@@ -590,6 +607,34 @@ def main(argv: list[str] | None = None) -> int:
         except (InspectionError, DailyTrendRelationshipError, ValueError) as exc:
             parser.error(str(exc))
         print(format_daily_trend_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "first-query-doctrine":
+        try:
+            master_map = (
+                load_doctrine_json(args.master_map)
+                if args.master_map
+                else load_master_map_output_readonly(args.range_library_db, symbol="XAUUSD")
+            )
+            report = build_first_query_doctrine_report(master_map)
+        except DoctrineError as exc:
+            parser.error(str(exc))
+        output = Path(args.output)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(report, indent=None if args.compact else 2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps({
+            "output": str(output),
+            "structural_content_hash": report["summary"]["structural_content_hash"],
+            "frozen_candidate_count": report["summary"]["frozen_candidate_count"],
+            "enriched_candidate_count": report["summary"]["enriched_candidate_count"],
+            "query_ready_count": report["summary"]["query_ready_count"],
+            "needs_review_count": report["summary"]["needs_review_count"],
+            "excluded_count": report["summary"]["excluded_count"],
+            "determinism_hash": report["determinism_hash"],
+        }, sort_keys=True))
         return 0
 
     if args.command == "show-run":
