@@ -18,6 +18,7 @@ import {
   sanitizeRoutineMemoryCameraAfterLoad,
   shouldPersistChartMemory,
   snapshotMemoryFromVisibleDomain,
+  upsertChartMemoryDomains,
 } from './chartMemory';
 
 function makeDailyCandles(count: number, startYear = 2024): { time: string; high?: number; low?: number }[] {
@@ -83,6 +84,73 @@ describe('chartMemory', () => {
     const store = { '42_W1': { start: '2024-01-01T00:00:00.000Z', end: '2024-06-01T00:00:00.000Z' } };
     const mem = readChartMemoryFromStore(store, '42', 'XAUUSD', 'W1');
     expect(mem?.start).toBe('2024-01-01T00:00:00.000Z');
+  });
+
+  describe('upsertChartMemoryDomains', () => {
+    const key = chartMemoryKey('42', 'XAUUSD', 'W1');
+    const legacy = legacyChartMemoryKey('42', 'W1');
+    const domain = {
+      start: '2024-01-01T00:00:00.000Z',
+      end: '2024-06-01T00:00:00.000Z',
+      visibleBars: 80,
+    };
+
+    it('returns a new state for the first camera domain', () => {
+      const previous = {};
+      const next = upsertChartMemoryDomains(previous, key, legacy, domain);
+      expect(next).not.toBe(previous);
+      expect(next[key]).toEqual(domain);
+    });
+
+    it('returns the exact previous state object for an identical repeated domain', () => {
+      const previous = upsertChartMemoryDomains({}, key, legacy, domain);
+      const next = upsertChartMemoryDomains(previous, key, legacy, domain);
+      expect(next).toBe(previous);
+    });
+
+    it('returns a new state when the start changes', () => {
+      const previous = upsertChartMemoryDomains({}, key, legacy, domain);
+      const next = upsertChartMemoryDomains(previous, key, legacy, {
+        ...domain,
+        start: '2024-01-08T00:00:00.000Z',
+      });
+      expect(next).not.toBe(previous);
+    });
+
+    it('returns a new state when the end changes', () => {
+      const previous = upsertChartMemoryDomains({}, key, legacy, domain);
+      const next = upsertChartMemoryDomains(previous, key, legacy, {
+        ...domain,
+        end: '2024-06-08T00:00:00.000Z',
+      });
+      expect(next).not.toBe(previous);
+    });
+
+    it('returns a new state when visibleBars changes', () => {
+      const previous = upsertChartMemoryDomains({}, key, legacy, domain);
+      const next = upsertChartMemoryDomains(previous, key, legacy, {
+        ...domain,
+        visibleBars: 81,
+      });
+      expect(next).not.toBe(previous);
+    });
+
+    it('keeps canonical and legacy memory keys synchronized', () => {
+      const next = upsertChartMemoryDomains({}, key, legacy, domain);
+      expect(next[key]).toEqual(domain);
+      expect(next[legacy]).toEqual(domain);
+    });
+
+    it('performs one effective update for 100 identical notifications', () => {
+      let state = {};
+      let effectiveUpdates = 0;
+      for (let i = 0; i < 100; i += 1) {
+        const next = upsertChartMemoryDomains(state, key, legacy, domain);
+        if (next !== state) effectiveUpdates += 1;
+        state = next;
+      }
+      expect(effectiveUpdates).toBe(1);
+    });
   });
 
   describe('pickRoutineAnchorTime priority', () => {

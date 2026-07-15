@@ -235,6 +235,7 @@ import {
   shouldPersistChartMemory,
   shouldPersistH1ChartMemory,
   snapshotMemoryFromVisibleDomain,
+  upsertChartMemoryDomains,
   type MemoryFitWindow,
   type RoutineAnchorSource,
 } from './chartMemory';
@@ -2811,11 +2812,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       }
       const key = cameraKeyRef.current;
       const legacy = legacyChartMemoryKey(activeCaseDisplayIdRef.current || 'global', activeTimeframeRef.current);
-      setCameraDomainByCaseTf(prev => ({
-        ...prev,
-        [key]: { start: dom.start, end: dom.end },
-        [legacy]: { start: dom.start, end: dom.end },
-      }));
+      setCameraDomainByCaseTf(prev => upsertChartMemoryDomains(prev, key, legacy, dom));
       if (Number.isFinite(dom.priceLow) && Number.isFinite(dom.priceHigh) && dom.priceHigh > dom.priceLow) {
         setCameraPriceDomainByCaseTf(prev => ({
           ...prev,
@@ -2845,11 +2842,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     const key = cameraKeyRef.current;
     const legacy = legacyChartMemoryKey(activeCaseDisplayIdRef.current || 'global', activeTimeframeRef.current);
-    setCameraDomainByCaseTf((prev) => ({
-      ...prev,
-      [key]: { start: dom.start, end: dom.end, visibleBars: dom.visibleBars },
-      [legacy]: { start: dom.start, end: dom.end, visibleBars: dom.visibleBars },
-    }));
+    setCameraDomainByCaseTf((prev) => upsertChartMemoryDomains(prev, key, legacy, dom));
   }, [cameraMode, timeframe]);
   const handleTradingViewFitApplied = useCallback((detail: TradingViewFitAppliedDetail) => {
     const awaitingTvFit = pendingCameraIntentAwaitingTvFitRef.current;
@@ -10312,11 +10305,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (validDomTime && sourceDomPersistable) {
       const snap = sourceDomSnap!;
       if (shouldPersistChartMemory(snap, sourceTf)) {
-        setCameraDomainByCaseTf((prev) => ({
-          ...prev,
-          [sourceMemoryKey]: { start: snap.start, end: snap.end },
-          [sourceLegacyKey]: { start: snap.start, end: snap.end },
-        }));
+        setCameraDomainByCaseTf((prev) => upsertChartMemoryDomains(prev, sourceMemoryKey, sourceLegacyKey, snap));
         if (Number.isFinite(dom!.priceLow) && Number.isFinite(dom!.priceHigh) && dom!.priceHigh > dom!.priceLow) {
           setCameraPriceDomainByCaseTf((prev) => ({
             ...prev,
