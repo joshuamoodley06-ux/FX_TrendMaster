@@ -1,3 +1,5 @@
+const fs = require('fs');
+const path = require('path');
 const { ipcMain, app, dialog, shell } = require('electron');
 const {
   runHistoricalRangeScan,
@@ -14,6 +16,7 @@ const {
   runPullVpsCandles,
   runLocalResearchSeed,
   resolveBackendDir,
+  spawnLocalPythonScript,
 } = require('./localPythonRunner.cjs');
 const {
   defaultDatabasePath,
@@ -79,6 +82,58 @@ async function runExclusive(taskName, runner) {
   } finally {
     localResearchBusy = false;
   }
+}
+
+function resolveRangeLibraryPythonRoot(explicit) {
+  const candidates = [
+    explicit,
+    process.env.FXTM_RANGE_LIBRARY_PYTHON_ROOT,
+    path.resolve(process.cwd(), '../python'),
+    path.resolve(process.cwd(), 'python'),
+    path.resolve(__dirname, '../../python'),
+    path.resolve(__dirname, '../../../python'),
+    process.resourcesPath,
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const root = path.resolve(String(candidate));
+    if (fs.existsSync(path.join(root, 'range_library_memory', 'xauusd_mapping_assistant.py'))) {
+      return root;
+    }
+  }
+  return path.resolve(String(candidates[0] || path.resolve(process.cwd(), '../python')));
+}
+
+function buildMappingAssistantSpec(args = {}) {
+  const databasePath = String(args.databasePath || '').trim();
+  if (!databasePath) throw new Error('Mapping Assistant requires an explicit Range Library database path.');
+  const absoluteDatabasePath = path.resolve(databasePath);
+  const pythonRoot = resolveRangeLibraryPythonRoot(args.pythonRoot);
+  const pythonPath = args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python';
+  return {
+    script: 'range_library_memory.xauusd_mapping_assistant',
+    pythonPath,
+    args: [
+      '-m',
+      'range_library_memory.xauusd_mapping_assistant',
+      '--db-path', absoluteDatabasePath,
+      '--symbol', 'XAUUSD',
+      '--json',
+    ],
+    cwd: pythonRoot,
+    env: {
+      ...process.env,
+      PYTHONPATH: pythonRoot,
+      PYTHONUNBUFFERED: '1',
+      FXTM_RANGE_LIBRARY_MEMORY_DB: absoluteDatabasePath,
+    },
+  };
+}
+
+function runMappingAssistant(args = {}) {
+  const spec = buildMappingAssistantSpec(args);
+  return spawnLocalPythonScript(spec, {
+    timeoutMs: args.timeoutMs || 120_000,
+  });
 }
 
 function registerLocalResearchIpc() {
@@ -285,6 +340,25 @@ function registerLocalResearchIpc() {
     return runExclusive('record-audit-verdict', () => runRecordAuditVerdict(payload));
   });
 
+  ipcMain.handle('local-research:mapping-assistant', async (_event, args) => {
+    const databasePath = String(args?.databasePath || '').trim();
+    if (!databasePath) {
+      return {
+        ok: false,
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        error: 'Mapping Assistant requires an explicit Range Library database path.',
+      };
+    }
+    return runExclusive('mapping-assistant', () => runMappingAssistant({
+      databasePath,
+      pythonPath: args?.pythonPath,
+      pythonRoot: args?.pythonRoot,
+      timeoutMs: args?.timeoutMs,
+    }));
+  });
+
   ipcMain.handle('local-research:getPaths', () => {
     const databasePath = resolveActiveDatabasePath();
     return {
@@ -293,13 +367,18 @@ function registerLocalResearchIpc() {
       databasePath,
       researchFolder: researchFolder(),
       scripts: {
-        historicalRangeScan: require('path').join(resolveBackendDir(), 'historical_range_scan.py'),
-        batchRangePromote: require('path').join(resolveBackendDir(), 'batch_range_promote.py'),
-        detectorPerformance: require('path').join(resolveBackendDir(), 'detector_performance.py'),
-        randomRangeAudit: require('path').join(resolveBackendDir(), 'random_range_audit.py'),
-        recordAuditVerdict: require('path').join(resolveBackendDir(), 'record_audit_verdict.py'),
-        pullVpsCandles: require('path').join(resolveBackendDir(), 'pull_vps_candles.py'),
-        localResearchSeed: require('path').join(resolveBackendDir(), 'local_research_seed.py'),
+        historicalRangeScan: path.join(resolveBackendDir(), 'historical_range_scan.py'),
+        batchRangePromote: path.join(resolveBackendDir(), 'batch_range_promote.py'),
+        detectorPerformance: path.join(resolveBackendDir(), 'detector_performance.py'),
+        randomRangeAudit: path.join(resolveBackendDir(), 'random_range_audit.py'),
+        recordAuditVerdict: path.join(resolveBackendDir(), 'record_audit_verdict.py'),
+        pullVpsCandles: path.join(resolveBackendDir(), 'pull_vps_candles.py'),
+        localResearchSeed: path.join(resolveBackendDir(), 'local_research_seed.py'),
+        mappingAssistant: path.join(
+          resolveRangeLibraryPythonRoot(),
+          'range_library_memory',
+          'xauusd_mapping_assistant.py',
+        ),
       },
     };
   });
@@ -311,4 +390,7 @@ module.exports = {
   normalizeRunnerArgs,
   defaultDatabasePath,
   buildDatabaseStatus,
+  resolveRangeLibraryPythonRoot,
+  buildMappingAssistantSpec,
+  runMappingAssistant,
 };
