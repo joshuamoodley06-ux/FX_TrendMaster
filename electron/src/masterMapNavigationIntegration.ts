@@ -82,6 +82,7 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
     range_id: canonicalRangeId,
     id: canonicalRangeId,
     canonical_range_id: canonicalRangeId,
+    canonical_structure_layer: range.layer,
     canonical_event_id: request.eventId || undefined,
     symbol: 'XAUUSD',
     structure_layer: request.layer,
