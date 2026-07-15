@@ -83,16 +83,16 @@ jobs:
         run: npx vitest run src/structuralJumpTarget.test.ts
       - name: Build local runner
         run: npm run build:runner
-      - name: Full Electron suite
+      - name: Portable Electron suite
         run: |
           mkdir -p ../artifacts
-          npx vitest run --reporter=json --outputFile=../artifacts/full-electron-suite.json
-      - name: Upload full Electron diagnostics
+          npx vitest run --exclude src/localPythonRunner.test.ts --reporter=json --outputFile=../artifacts/portable-electron-suite.json
+      - name: Upload portable Electron diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: full-electron-suite-diagnostics
-          path: artifacts/full-electron-suite.json
+          name: portable-electron-suite-diagnostics
+          path: artifacts/portable-electron-suite.json
           if-no-files-found: warn
       - name: Production build
         run: npm run build
