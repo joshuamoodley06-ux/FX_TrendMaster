@@ -70,8 +70,14 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
   if (!canonicalRangeId || !Number.isFinite(high) || !Number.isFinite(low) || high <= low) return null;
   if (!range?.rangeHighTime || !range?.rangeLowTime) return null;
   const fallbackWindow = sortedWindow(range.rangeHighTime, range.rangeLowTime, range.activeFromTime, range.inactiveFromTime);
-  const start = range.activeFromTime || fallbackWindow?.start || range.rangeHighTime || range.rangeLowTime;
-  const end = range.inactiveFromTime || fallbackWindow?.end || range.rangeLowTime || range.rangeHighTime;
+  const structuralStart = range.activeFromTime || fallbackWindow?.start || range.rangeHighTime || range.rangeLowTime;
+  const structuralEnd = range.inactiveFromTime || fallbackWindow?.end || range.rangeLowTime || range.rangeHighTime;
+  const navigationStart = request.reason === 'GAP' && request.visibleStart
+    ? request.visibleStart
+    : structuralStart;
+  const navigationEnd = request.reason === 'GAP' && request.visibleEnd
+    ? request.visibleEnd
+    : structuralEnd;
   return {
     range_id: canonicalRangeId,
     id: canonicalRangeId,
@@ -88,8 +94,10 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
     range_low: low,
     range_high_time: range.rangeHighTime,
     range_low_time: range.rangeLowTime,
-    range_start_time: start,
-    range_end_time: end,
+    range_start_time: navigationStart,
+    range_end_time: navigationEnd,
+    structural_range_start_time: structuralStart,
+    structural_range_end_time: structuralEnd,
     active_from_time: range.activeFromTime,
     inactive_from_time: range.inactiveFromTime,
     preferred_anchor_time: request.preferredAnchorTime || undefined,
@@ -105,6 +113,7 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
     unlinked_review: range.unlinkedReview,
     source_refs: range.sourceRefs,
     source_count: range.sourceCount,
+    structural_jump_source: request.reason === 'GAP' ? 'GAP' : 'HIERARCHY',
     read_only_canonical_master_map: true,
     mapping_assistant_gap: request.reason === 'GAP',
   };
