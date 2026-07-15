@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .inspection import deterministic_json
+from .master_map_comparison_adapter import adapt_master_map
 
 REPORT_SCHEMA_VERSION = "xauusd_first_query_doctrine_report_v0.1"
 STATE_SCHEMA_VERSION = "xauusd_first_query_state_v0.1"
@@ -111,6 +112,7 @@ class EnrichedDoctrineState:
     structural_content_hash: str
     parent_range_id: str | None
     parent_direction: str
+    parent_direction_evidence: Mapping[str, Any]
     parent_origin: str
     parent_location_context: str
     parent_active_range_boundaries: Mapping[str, float | None]
@@ -167,41 +169,41 @@ def build_first_query_doctrine_report(
     source = validate_master_map(master_map)
     full_ranges, full_events, full_parent_by_child = flatten_root(master_map["root"])
     trusted_ranges, trusted_events, trusted_parent_by_child = flatten_root(master_map["trusted_root"])
-    trusted_range_ids = {str(item["id"]) for item in trusted_ranges}
-    trusted_event_ids = {str(item["id"]) for item in trusted_events}
     range_by_id = {str(item["id"]): item for item in trusted_ranges}
     full_range_by_id = {str(item["id"]): item for item in full_ranges}
     events_by_range = events_grouped_by_range(trusted_events)
+    descendants_by_range = descendant_range_ids(trusted_ranges)
+    adapted = adapt_master_map(master_map)
 
     states: list[EnrichedDoctrineState] = []
-    review_states = 0
-    for event in trusted_events:
-        if token(event.get("event_type")) not in SUPPORTED_FREEZE_EVENTS:
+    for candidate in adapted["states"]:
+        provenance = candidate["provenance"]
+        freeze_event_id = str(provenance["freeze_event_id"])
+        child_id = str(provenance["canonical_range_id"])
+        child = range_by_id.get(child_id) or full_range_by_id.get(child_id)
+        event = next((item for item in trusted_events if str(item.get("id")) == freeze_event_id), None)
+        if child is None or event is None:
             continue
-        child_id = str(event.get("canonical_range_id") or "")
-        child = range_by_id.get(child_id)
-        if not child or token(child.get("structure_layer")) != StructureLayer.DAILY:
-            continue
-        parent_id = trusted_parent_by_child.get(child_id) or full_parent_by_child.get(child_id)
+        parent_id = (
+            str(provenance.get("parent_canonical_range_id") or "")
+            or trusted_parent_by_child.get(child_id)
+            or full_parent_by_child.get(child_id)
+        )
         parent = range_by_id.get(parent_id or "") or full_range_by_id.get(parent_id or "")
         state = enrich_state(
             source=source,
+            candidate_state_id=candidate["state"]["state_id"],
             event=event,
             child=child,
             parent=parent,
             range_events=events_by_range.get(child_id, []),
-            all_events=trusted_events,
+            lineage_events=lineage_events(
+                candidate_range_id=child_id,
+                descendants_by_range=descendants_by_range,
+                events_by_range=events_by_range,
+            ),
         )
         states.append(state)
-
-    for item in full_ranges:
-        item_id = str(item.get("id") or "")
-        if item_id not in trusted_range_ids and token(item.get("navigation_status")) == "REVIEW":
-            review_states += 1
-    for item in full_events:
-        item_id = str(item.get("id") or "")
-        if item_id not in trusted_event_ids and token(item.get("navigation_status")) == "REVIEW":
-            review_states += 1
 
     states.sort(key=lambda row: (parse_time(row.freeze_at), row.candidate_state_id))
     rows = [serialize_state(row) for row in states]
@@ -214,6 +216,17 @@ def build_first_query_doctrine_report(
     canonical_events = int(stats.get("canonical_events_before_review_exclusion") or len(full_events))
     trusted_ranges_count = int(stats.get("comparison_eligible_ranges") or len(trusted_ranges))
     trusted_events_count = int(stats.get("comparison_eligible_events") or len(trusted_events))
+    review_range_count = count_review_records(full_ranges)
+    review_event_count = count_review_records(full_events)
+    candidate_status_total = sum(
+        status_counts[key] for key in (
+            AnalysisStatus.QUERY_READY,
+            AnalysisStatus.NEEDS_REVIEW,
+            AnalysisStatus.LOW_CONFIDENCE,
+            AnalysisStatus.UNKNOWN,
+            AnalysisStatus.EXCLUDED,
+        )
+    )
 
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -234,8 +247,18 @@ def build_first_query_doctrine_report(
             "trusted_event_count": trusted_events_count,
             "frozen_candidate_count": len(states),
             "enriched_candidate_count": len(states),
+            "task_b_frozen_candidate_count": len(adapted["states"]),
+            "candidate_query_ready_count": status_counts[AnalysisStatus.QUERY_READY],
+            "candidate_needs_review_count": status_counts[AnalysisStatus.NEEDS_REVIEW],
+            "candidate_low_confidence_count": status_counts[AnalysisStatus.LOW_CONFIDENCE],
+            "candidate_unknown_count": status_counts[AnalysisStatus.UNKNOWN],
+            "candidate_excluded_count": status_counts[AnalysisStatus.EXCLUDED],
+            "candidate_status_total": candidate_status_total,
+            "master_map_review_range_count": review_range_count,
+            "master_map_review_event_count": review_event_count,
+            "master_map_review_item_count": len(master_map.get("review_items") or []),
             "query_ready_count": status_counts[AnalysisStatus.QUERY_READY],
-            "needs_review_count": status_counts[AnalysisStatus.NEEDS_REVIEW] + review_states,
+            "needs_review_count": status_counts[AnalysisStatus.NEEDS_REVIEW],
             "low_confidence_count": status_counts[AnalysisStatus.LOW_CONFIDENCE],
             "unknown_count": status_counts[AnalysisStatus.UNKNOWN],
             "excluded_count": status_counts[AnalysisStatus.EXCLUDED],
@@ -262,11 +285,12 @@ def build_first_query_doctrine_report(
 def enrich_state(
     *,
     source: Mapping[str, Any],
+    candidate_state_id: str,
     event: Mapping[str, Any],
     child: Mapping[str, Any],
     parent: Mapping[str, Any] | None,
     range_events: Sequence[Mapping[str, Any]],
-    all_events: Sequence[Mapping[str, Any]],
+    lineage_events: Sequence[Mapping[str, Any]],
 ) -> EnrichedDoctrineState:
     freeze = canonical_time(event.get("event_time_utc"))
     freeze_dt = parse_time(freeze)
@@ -275,7 +299,7 @@ def enrich_state(
         key=lambda item: (parse_time(item["event_time_utc"]), str(item.get("id") or "")),
     )
     child_direction = direction_from_event(event)
-    parent_direction = direction_from_range(parent)
+    parent_direction, parent_evidence = parent_direction_at_freeze(parent, freeze)
     relationship = classify_child_relationship(parent_direction, child_direction)
     parent_low = finite(parent.get("range_low")) if parent else None
     parent_high = finite(parent.get("range_high")) if parent else None
@@ -299,7 +323,14 @@ def enrich_state(
         "RUNNER_MANAGEMENT",
     )
     first_target = planned_target(child_direction, parent_low, parent_high)
-    future = [item for item in all_events if item.get("event_time_utc") and parse_time(item["event_time_utc"]) > freeze_dt]
+    future = [
+        item for item in lineage_events
+        if item.get("event_time_utc")
+        and parse_time(item["event_time_utc"]) > freeze_dt
+        and event_within_lifecycle_horizon(item, child)
+        and token(item.get("navigation_status")) != "REVIEW"
+        and token(item.get("statistics_status")) != "EXCLUDED"
+    ]
     outcome = evaluate_outcome(
         child_direction=child_direction,
         first_target=first_target,
@@ -309,10 +340,9 @@ def enrich_state(
     )
     status = readiness_status(blockers, review_reasons)
     confidence = "high" if status == AnalysisStatus.QUERY_READY else "medium" if status == AnalysisStatus.NEEDS_REVIEW else "low"
-    candidate_id = stable_state_id(str(event["id"]), freeze, source["structural_content_hash"])
     return EnrichedDoctrineState(
         schema_version=STATE_SCHEMA_VERSION,
-        candidate_state_id=candidate_id,
+        candidate_state_id=candidate_state_id,
         symbol="XAUUSD",
         freeze_at=freeze,
         source_timeframe=child.get("source_timeframe"),
@@ -372,6 +402,7 @@ def enrich_state(
         continuation_outcome=outcome["continuation_outcome"],
         factual_outcome_status=outcome["factual_outcome_status"],
         blocker_reasons=tuple([*review_reasons, *blockers]),
+        parent_direction_evidence=parent_evidence,
     )
 
 
@@ -426,6 +457,73 @@ def events_grouped_by_range(events: Sequence[Mapping[str, Any]]) -> dict[str, li
     for event in events:
         grouped.setdefault(str(event.get("canonical_range_id") or ""), []).append(copy.deepcopy(dict(event)))
     return grouped
+
+
+def descendant_range_ids(ranges: Sequence[Mapping[str, Any]]) -> dict[str, set[str]]:
+    children_by_parent: dict[str, list[str]] = {}
+    for item in ranges:
+        parent_id = item.get("parent_canonical_range_id")
+        if parent_id:
+            children_by_parent.setdefault(str(parent_id), []).append(str(item["id"]))
+    result: dict[str, set[str]] = {}
+    for item in ranges:
+        root_id = str(item["id"])
+        seen: set[str] = set()
+        stack = list(children_by_parent.get(root_id, []))
+        while stack:
+            child_id = stack.pop()
+            if child_id in seen:
+                continue
+            seen.add(child_id)
+            stack.extend(children_by_parent.get(child_id, []))
+        result[root_id] = seen
+    return result
+
+
+def lineage_events(
+    *,
+    candidate_range_id: str,
+    descendants_by_range: Mapping[str, set[str]],
+    events_by_range: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> list[dict[str, Any]]:
+    allowed_range_ids = {candidate_range_id, *descendants_by_range.get(candidate_range_id, set())}
+    result: list[dict[str, Any]] = []
+    for range_id in sorted(allowed_range_ids):
+        result.extend(copy.deepcopy(dict(item)) for item in events_by_range.get(range_id, []))
+    return result
+
+
+def count_review_records(rows: Sequence[Mapping[str, Any]]) -> int:
+    return sum(1 for row in rows if token(row.get("navigation_status")) == "REVIEW")
+
+
+def event_within_lifecycle_horizon(event: Mapping[str, Any], child: Mapping[str, Any]) -> bool:
+    inactive = child.get("inactive_from_time")
+    if not inactive:
+        return True
+    return parse_time(event["event_time_utc"]) <= parse_time(inactive)
+
+
+def parent_direction_at_freeze(parent: Mapping[str, Any] | None, freeze: str) -> tuple[str, dict[str, Any]]:
+    if parent is None:
+        return Direction.UNCONFIRMED, {"status": "NO_PARENT", "event_ids": [], "event_times": []}
+    freeze_dt = parse_time(freeze)
+    candidates = [
+        item for item in parent.get("events", [])
+        if token(item.get("event_type")) in SUPPORTED_FREEZE_EVENTS
+        and item.get("event_time_utc")
+        and parse_time(item["event_time_utc"]) <= freeze_dt
+    ]
+    candidates.sort(key=lambda item: (parse_time(item["event_time_utc"]), str(item.get("id") or "")))
+    if not candidates:
+        return Direction.UNCONFIRMED, {"status": "NO_PREFREEZE_PARENT_DIRECTION", "event_ids": [], "event_times": []}
+    latest = candidates[-1]
+    direction = direction_from_event(latest)
+    return direction, {
+        "status": "RESOLVED_FROM_PREFREEZE_PARENT_EVENT",
+        "event_ids": [str(latest.get("id"))],
+        "event_times": [canonical_time(latest.get("event_time_utc"))],
+    }
 
 
 def classify_child_relationship(parent_direction: str, child_direction: str) -> str:

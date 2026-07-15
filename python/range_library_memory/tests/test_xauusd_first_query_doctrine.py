@@ -25,6 +25,7 @@ from range_library_memory.xauusd_first_query_doctrine import (
     main,
     phase_advance_allowed,
 )
+from range_library_memory.master_map_comparison_adapter import adapt_master_map
 
 
 def event(
@@ -85,6 +86,10 @@ def range_node(
 
 
 def master_map(*, parent_direction: str | None = "UP", daily_direction: str = "UP") -> dict:
+    parent_event_type = f"BOS_{parent_direction}" if parent_direction in {"UP", "DOWN"} else "CUSTOM_EVENT"
+    weekly_events = [
+        event("e-weekly-direction", parent_event_type, "2026-01-05T00:00:00Z", 180, direction=parent_direction),
+    ] if parent_direction else []
     daily_events = [
         event("e-choch-close", "CHOCH_CLOSE", "2026-01-11T00:00:00Z", 145, source_timeframe="M15"),
         event("e-choch-retest", "CHOCH_RETEST", "2026-01-12T00:00:00Z", 148, source_timeframe="M15"),
@@ -98,6 +103,7 @@ def master_map(*, parent_direction: str | None = "UP", daily_direction: str = "U
         100,
         200,
         direction_of_break=parent_direction,
+        events=weekly_events,
         children=[daily],
     )
     root = {"id": "symbol:XAUUSD", "node_type": "SYMBOL", "children": [weekly]}
@@ -120,6 +126,14 @@ def master_map(*, parent_direction: str | None = "UP", daily_direction: str = "U
 
 def first_state(report: dict) -> dict:
     return report["states"][0]
+
+
+def trusted_weekly(source: dict) -> dict:
+    return source["trusted_root"]["children"][0]
+
+
+def trusted_daily(source: dict) -> dict:
+    return trusted_weekly(source)["children"][0]
 
 
 def test_enum_validation() -> None:
@@ -165,6 +179,35 @@ def test_active_leg_without_reclaim_is_query_ready() -> None:
     assert state["status"] == "QUERY_READY"
 
 
+def test_task_b_frozen_state_contract_is_preserved() -> None:
+    source = master_map()
+    task_b = adapt_master_map(source)
+    report = build_first_query_doctrine_report(source)
+    task_b_ids = [item["state"]["state_id"] for item in task_b["states"]]
+    doctrine_ids = [item["candidate_state_id"] for item in report["states"]]
+    assert report["summary"]["task_b_frozen_candidate_count"] == len(task_b_ids)
+    assert report["summary"]["frozen_candidate_count"] == len(task_b_ids)
+    assert sorted(doctrine_ids) == sorted(task_b_ids)
+    assert len(doctrine_ids) == len(set(doctrine_ids))
+
+
+def test_candidate_status_totals_sum_to_frozen_candidate_count() -> None:
+    report = build_first_query_doctrine_report(master_map())
+    summary = report["summary"]
+    total = (
+        summary["candidate_query_ready_count"]
+        + summary["candidate_needs_review_count"]
+        + summary["candidate_low_confidence_count"]
+        + summary["candidate_unknown_count"]
+        + summary["candidate_excluded_count"]
+    )
+    assert total == summary["frozen_candidate_count"]
+    assert summary["candidate_status_total"] == summary["frozen_candidate_count"]
+    assert "master_map_review_range_count" in summary
+    assert "master_map_review_event_count" in summary
+    assert "master_map_review_item_count" in summary
+
+
 def test_approved_wick_break_phase_advance() -> None:
     assert phase_advance_allowed(layer="WEEKLY", break_kind="WICK")
     assert phase_advance_allowed(layer="DAILY", break_kind="WICK")
@@ -176,6 +219,36 @@ def test_h1_h4_protected_swing_daily_failure() -> None:
         break_kind="WICK",
         protected_swing_broken=True,
     ) == "RANGE_FAILURE_CONFIRMED"
+
+
+def test_parent_breaks_bullish_after_freeze_does_not_rewrite_parent_direction() -> None:
+    source = master_map(parent_direction=None, daily_direction="UP")
+    trusted_weekly(source)["events"].append(
+        event("future-weekly-up", "BOS_UP", "2026-01-20T00:00:00Z", 205, direction="UP")
+    )
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    state = first_state(build_first_query_doctrine_report(source))
+    assert state["parent_direction"] == "UNCONFIRMED"
+    assert state["parent_direction_evidence"]["status"] == "NO_PREFREEZE_PARENT_DIRECTION"
+
+
+def test_parent_breaks_bearish_before_freeze_sets_bearish_parent_direction() -> None:
+    state = first_state(build_first_query_doctrine_report(master_map(parent_direction="DOWN", daily_direction="DOWN")))
+    assert state["parent_direction"] == "BEARISH"
+    assert state["parent_direction_evidence"]["event_ids"] == ["e-weekly-direction"]
+
+
+def test_post_freeze_parent_events_do_not_change_classification_or_readiness() -> None:
+    base = master_map(parent_direction=None, daily_direction="UP")
+    changed = copy.deepcopy(base)
+    trusted_weekly(changed)["events"].append(
+        event("future-weekly-down", "BOS_DOWN", "2026-02-01T00:00:00Z", 90, direction="DOWN")
+    )
+    changed["root"] = copy.deepcopy(changed["trusted_root"])
+    base_state = first_state(build_first_query_doctrine_report(base))
+    changed_state = first_state(build_first_query_doctrine_report(changed))
+    for key in ("parent_direction", "child_relationship", "status", "blocker_reasons"):
+        assert changed_state[key] == base_state[key]
     assert classify_daily_failure(
         break_timeframe="H4",
         break_kind="WICK",
@@ -239,6 +312,54 @@ def test_first_wick_outside_parent_marks_external_objective() -> None:
         ],
     )
     assert reached == "2026-01-02T00:00:00Z"
+
+
+def test_future_sibling_daily_event_cannot_satisfy_candidate_target() -> None:
+    source = master_map()
+    trusted_daily(source)["events"] = [
+        item for item in trusted_daily(source)["events"] if item["id"] != "e-future"
+    ]
+    sibling = range_node(
+        "daily-b",
+        "DAILY",
+        130,
+        170,
+        events=[event("sibling-target", "BOS_UP", "2026-01-14T00:00:00Z", 205, direction="UP")],
+    )
+    trusted_weekly(source)["children"].append(sibling)
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    state = first_state(build_first_query_doctrine_report(source))
+    assert state["first_planned_target_reached"] is False
+    assert state["target_reach_time"] is None
+
+
+def test_unrelated_later_weekly_event_cannot_satisfy_candidate_outcome() -> None:
+    source = master_map()
+    trusted_daily(source)["events"] = [
+        item for item in trusted_daily(source)["events"] if item["id"] != "e-future"
+    ]
+    trusted_weekly(source)["events"].append(
+        event("weekly-target", "BOS_UP", "2026-01-14T00:00:00Z", 205, direction="UP")
+    )
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    state = first_state(build_first_query_doctrine_report(source))
+    assert state["first_planned_target_reached"] is False
+    assert state["target_reach_time"] is None
+
+
+def test_inlineage_target_event_can_satisfy_target() -> None:
+    state = first_state(build_first_query_doctrine_report(master_map()))
+    assert state["first_planned_target_reached"] is True
+    assert state["target_reach_time"] == "2026-01-14T00:00:00Z"
+
+
+def test_post_invalidation_target_event_does_not_convert_failure_to_success() -> None:
+    source = master_map()
+    trusted_daily(source)["inactive_from_time"] = "2026-01-13T12:00:00Z"
+    source["root"] = copy.deepcopy(source["trusted_root"])
+    state = first_state(build_first_query_doctrine_report(source))
+    assert state["first_planned_target_reached"] is False
+    assert state["target_reach_time"] is None
 
 
 def test_external_objective_does_not_create_new_active_leg() -> None:
