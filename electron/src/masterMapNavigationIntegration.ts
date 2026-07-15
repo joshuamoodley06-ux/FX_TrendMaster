@@ -70,7 +70,7 @@ export function masterMapRangeToStructuralRangeRecord(request: MasterMapNavigati
   if (!canonicalRangeId || !Number.isFinite(high) || !Number.isFinite(low) || high <= low) return null;
   if (!range?.rangeHighTime || !range?.rangeLowTime) return null;
   const fallbackWindow = sortedWindow(range.rangeHighTime, range.rangeLowTime, range.activeFromTime, range.inactiveFromTime);
-  const structuralStart = range.activeFromTime || fallbackWindow?.start || range.rangeHighTime || range.rangeLowTime;
+  const structuralStart = fallbackWindow?.start || range.activeFromTime || range.rangeHighTime || range.rangeLowTime;
   const structuralEnd = range.inactiveFromTime || fallbackWindow?.end || range.rangeLowTime || range.rangeHighTime;
   const navigationStart = request.reason === 'GAP' && request.visibleStart
     ? request.visibleStart
