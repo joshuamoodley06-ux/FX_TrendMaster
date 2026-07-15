@@ -158,6 +158,35 @@ describe('MappingAssistantPanel', () => {
     }));
   });
 
+  it('keeps one load across parent rerenders and exposes an internal scroll surface', async () => {
+    const snapshot = snapshotFixture();
+    const baseLoader = vi.fn().mockResolvedValue({
+      ok: true,
+      snapshot,
+      databasePath: snapshot.sourceIntegrity.databasePath,
+    });
+    const renderWithFreshLoader = (selectedCanonicalRangeId: string | null) => {
+      act(() => {
+        root.render(createElement(MappingAssistantPanel, {
+          fallbackDocument: snapshot.masterMap,
+          selectedCanonicalRangeId,
+          loader: () => baseLoader(),
+        }));
+      });
+    };
+
+    renderWithFreshLoader(null);
+    await flush();
+    renderWithFreshLoader('mm:range:weekly-trusted');
+    await flush();
+
+    expect(baseLoader).toHaveBeenCalledTimes(1);
+    const scrollSurface = container.querySelector('[data-mapping-assistant-scroll="true"]') as HTMLElement;
+    expect(scrollSurface).not.toBeNull();
+    expect(scrollSurface.style.overflowY).toBe('auto');
+    expect(scrollSurface.style.maxHeight).toContain('100vh');
+  });
+
   it('rebuilds the disposable snapshot when Refresh is clicked', async () => {
     const snapshot = snapshotFixture();
     const loader = vi.fn().mockResolvedValue({
