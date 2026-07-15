@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   loadMappingAssistant,
@@ -146,16 +146,31 @@ export function MappingAssistantPanel({
 }: Props) {
   const [loadState, setLoadState] = useState<MappingAssistantLoadResult | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const loaderRef = useRef<MappingAssistantLoader>(loader);
   const refresh = useCallback(() => setReloadToken((value) => value + 1), []);
+
+  useEffect(() => {
+    loaderRef.current = loader;
+  }, [loader]);
 
   useEffect(() => {
     let active = true;
     setLoadState(null);
-    void loader().then((result) => {
-      if (active) setLoadState(result);
-    });
+    void loaderRef.current()
+      .then((result) => {
+        if (active) setLoadState(result);
+      })
+      .catch((error: unknown) => {
+        if (!active) return;
+        setLoadState({
+          ok: false,
+          snapshot: null,
+          databasePath: '',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     return () => { active = false; };
-  }, [loader, reloadToken]);
+  }, [reloadToken]);
 
   const document = loadState?.ok ? loadState.snapshot.masterMap : fallbackDocument;
   const coverageGaps = useMemo(() => {
@@ -187,7 +202,20 @@ export function MappingAssistantPanel({
 
   const { snapshot } = loadState;
   return (
-    <section aria-label="XAUUSD Mapping Assistant" style={{ display: 'grid', gap: 12 }}>
+    <section
+      aria-label="XAUUSD Mapping Assistant"
+      data-mapping-assistant-scroll="true"
+      style={{
+        display: 'grid',
+        gap: 12,
+        minHeight: 0,
+        maxHeight: 'calc(100vh - 220px)',
+        overflowY: 'auto',
+        overscrollBehavior: 'contain',
+        alignContent: 'start',
+        paddingRight: 6,
+      }}
+    >
       <header style={{ display: 'grid', gap: 6 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
           <div>
