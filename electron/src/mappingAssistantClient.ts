@@ -29,22 +29,24 @@ export type MappingAssistantLoadResult =
   | { ok: true; snapshot: MappingAssistantSnapshot; databasePath: string }
   | { ok: false; snapshot: null; databasePath: string; error: string };
 
-declare global {
-  interface Window {
-    localResearch?: Partial<MappingAssistantBridge>;
-    localMappingBridge?: Partial<MappingAssistantPathBridge>;
-  }
+type MappingAssistantGlobalScope = typeof globalThis & {
+  localResearch?: Partial<MappingAssistantBridge>;
+  localMappingBridge?: Partial<MappingAssistantPathBridge>;
+};
+
+function globalScope(): MappingAssistantGlobalScope {
+  return globalThis as MappingAssistantGlobalScope;
 }
 
 export function getMappingAssistantBridge(): MappingAssistantBridge | null {
-  const bridge = globalThis.localResearch;
+  const bridge = globalScope().localResearch;
   return bridge?.runMappingAssistant && bridge?.getPaths
     ? bridge as MappingAssistantBridge
     : null;
 }
 
 export function getMappingAssistantPathBridge(): MappingAssistantPathBridge | null {
-  const bridge = globalThis.localMappingBridge;
+  const bridge = globalScope().localMappingBridge;
   return bridge?.getPaths ? bridge as MappingAssistantPathBridge : null;
 }
 
@@ -67,11 +69,12 @@ export async function loadMappingAssistant(
       error: 'Mapping Assistant bridge unavailable. Start the Electron desktop app.',
     };
   }
+  let databasePath = '';
   try {
     const pathResult = pathBridge
       ? await pathBridge.getPaths()
       : await bridge.getPaths();
-    const databasePath = String(pathResult.databasePath || '').trim();
+    databasePath = String(pathResult.databasePath || '').trim();
     if (!pathResult.ok || !databasePath) {
       return {
         ok: false,
@@ -98,7 +101,7 @@ export async function loadMappingAssistant(
     return {
       ok: false,
       snapshot: null,
-      databasePath: '',
+      databasePath,
       error: error instanceof Error ? error.message : String(error),
     };
   }
