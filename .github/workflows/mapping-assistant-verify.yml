@@ -1,0 +1,74 @@
+name: Mapping Assistant Verify
+
+on:
+  push:
+    branches:
+      - feat/mapping-assistant-gap-bridge-v01
+  workflow_dispatch:
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install test runner
+        run: python -m pip install --upgrade pip pytest
+      - name: Compile Python
+        run: python -m compileall python
+      - name: Focused Mapping Assistant tests
+        env:
+          PYTHONPATH: python
+        run: python -m pytest python/range_library_memory/tests/test_xauusd_mapping_assistant.py python/range_library_memory/tests/test_xauusd_first_query_doctrine.py -q
+      - name: Full Python suite
+        env:
+          PYTHONPATH: python
+        run: python -m pytest python -q
+
+  electron:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: electron
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: electron/package-lock.json
+      - name: Install Electron dependencies
+        run: npm ci
+      - name: Focused Mapping Assistant tests
+        run: >-
+          npx vitest run
+          src/mappingAssistantModel.test.ts
+          src/mappingAssistantPanel.test.ts
+          src/mappingAssistantLegacyNavigation.test.ts
+          src/mappingAssistantNavigationIntegration.test.ts
+          src/hierarchyWorkspace.test.ts
+          src/masterMapHierarchy.test.ts
+          src/masterMapNavigationIntegration.test.ts
+          src/localResearchIpc.test.ts
+          src/structuralJumpTarget.test.ts
+      - name: Full Electron suite
+        run: npm test
+      - name: Production build
+        run: npm run build
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Diff whitespace check
+        run: git diff --check origin/main...HEAD
+      - name: Private path scan
+        run: |
+          if git diff --unified=0 origin/main...HEAD -- electron python | grep -E 'C:\\Users\\|/Users/|/home/|OneDrive\\Documents' ; then
+            echo 'Private path found in product diff.' >&2
+            exit 1
+          fi
