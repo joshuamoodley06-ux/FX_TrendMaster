@@ -45,18 +45,24 @@ jobs:
           ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
           npm_config_registry: https://registry.npmjs.org/
         run: npm install --no-package-lock
-      - name: Focused Mapping Assistant tests
-        run: >-
-          npx vitest run
-          src/mappingAssistantModel.test.ts
-          src/mappingAssistantPanel.test.ts
-          src/mappingAssistantLegacyNavigation.test.ts
-          src/mappingAssistantNavigationIntegration.test.ts
-          src/hierarchyWorkspace.test.ts
-          src/masterMapHierarchy.test.ts
-          src/masterMapNavigationIntegration.test.ts
-          src/localResearchIpc.test.ts
-          src/structuralJumpTarget.test.ts
+      - name: Mapping Assistant model tests
+        run: npx vitest run src/mappingAssistantModel.test.ts
+      - name: Mapping Assistant panel tests
+        run: npx vitest run src/mappingAssistantPanel.test.ts
+      - name: Mapping Assistant legacy navigation tests
+        run: npx vitest run src/mappingAssistantLegacyNavigation.test.ts
+      - name: Mapping Assistant navigation integration tests
+        run: npx vitest run src/mappingAssistantNavigationIntegration.test.ts
+      - name: Hierarchy workspace tests
+        run: npx vitest run src/hierarchyWorkspace.test.ts
+      - name: Existing Master Map hierarchy tests
+        run: npx vitest run src/masterMapHierarchy.test.ts
+      - name: Existing Master Map navigation tests
+        run: npx vitest run src/masterMapNavigationIntegration.test.ts
+      - name: IPC tests
+        run: npx vitest run src/localResearchIpc.test.ts
+      - name: Structural target tests
+        run: npx vitest run src/structuralJumpTarget.test.ts
       - name: Full Electron suite
         run: npm test
       - name: Production build
