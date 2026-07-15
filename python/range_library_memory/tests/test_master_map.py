@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import tempfile
+from contextlib import closing
 from pathlib import Path
 
+from range_library_memory import xauusd_mapping_assistant as assistant
 from range_library_memory.master_map import build_master_map, load_master_map_output
 from range_library_memory.schema import init_schema
 
@@ -61,7 +64,7 @@ def event_payload(event_id: str, event_type: str, event_time: str, price: float,
 def seed_db(tmp_path: Path, ranges: list[dict], events: list[tuple[dict, int]]) -> Path:
     db = tmp_path / "range-library.sqlite3"
     init_schema(db)
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection:
         connection.execute(
             """
             INSERT INTO import_runs (
@@ -106,8 +109,95 @@ def seed_db(tmp_path: Path, ranges: list[dict], events: list[tuple[dict, int]]) 
     return db
 
 
+def seed_minimal_raw_db(tmp_path: Path, ranges: list[dict], events: list[tuple[dict, int]]) -> Path:
+    db = tmp_path / "range-library-handle.sqlite3"
+    with closing(sqlite3.connect(db)) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE import_runs (
+                id INTEGER PRIMARY KEY,
+                run_uuid TEXT NOT NULL UNIQUE,
+                source_path TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                started_at_utc TEXT NOT NULL,
+                finished_at_utc TEXT,
+                status TEXT NOT NULL
+            );
+            CREATE TABLE raw_ranges (
+                id INTEGER PRIMARY KEY,
+                import_run_id INTEGER NOT NULL,
+                source_record_id TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                range_type TEXT,
+                start_time_utc TEXT,
+                end_time_utc TEXT,
+                high REAL,
+                low REAL,
+                raw_payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL
+            );
+            CREATE TABLE raw_events (
+                id INTEGER PRIMARY KEY,
+                import_run_id INTEGER NOT NULL,
+                raw_range_id INTEGER,
+                source_record_id TEXT,
+                event_type TEXT,
+                event_time_utc TEXT,
+                price REAL,
+                raw_payload_json TEXT NOT NULL,
+                payload_sha256 TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL
+            );
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO import_runs (
+                id, run_uuid, source_path, source_kind, started_at_utc, finished_at_utc, status
+            ) VALUES (1, 'fixture-run', 'fixture.json', 'fixture',
+                      '2026-07-13T00:00:00Z', '2026-07-13T00:01:00Z', 'completed')
+            """
+        )
+        for payload in ranges:
+            raw_json = deterministic_json(payload)
+            connection.execute(
+                """
+                INSERT INTO raw_ranges (
+                    import_run_id, source_record_id, symbol, timeframe, range_type,
+                    start_time_utc, end_time_utc, high, low, raw_payload_json,
+                    payload_sha256, created_at_utc
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '2026-07-13T00:00:00Z')
+                """,
+                (
+                    str(payload["range_id"]), payload["symbol"], payload["source_timeframe"],
+                    payload["structure_layer"], payload["active_from_time"],
+                    payload.get("inactive_from_time"), payload["range_high_price"],
+                    payload["range_low_price"], raw_json, sha256(raw_json),
+                ),
+            )
+        for payload, raw_range_id in events:
+            raw_json = deterministic_json(payload)
+            connection.execute(
+                """
+                INSERT INTO raw_events (
+                    import_run_id, raw_range_id, source_record_id, event_type,
+                    event_time_utc, price, raw_payload_json, payload_sha256,
+                    created_at_utc
+                ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, '2026-07-13T00:00:00Z')
+                """,
+                (
+                    raw_range_id, str(payload["event_id"]), payload["event_type"],
+                    payload["event_time_utc"], payload["price"], raw_json, sha256(raw_json),
+                ),
+            )
+        connection.commit()
+    return db
+
+
 def raw_digest(db: Path) -> tuple[int, int, str]:
-    with sqlite3.connect(db) as connection:
+    with closing(sqlite3.connect(db)) as connection:
         range_rows = connection.execute("SELECT id,raw_payload_json,payload_sha256 FROM raw_ranges ORDER BY id").fetchall()
         event_rows = connection.execute("SELECT id,raw_payload_json,payload_sha256 FROM raw_events ORDER BY id").fetchall()
     return len(range_rows), len(event_rows), sha256(deterministic_json([range_rows, event_rows]))
@@ -152,6 +242,36 @@ def test_exact_cross_case_duplicates_build_one_xauusd_hierarchy(tmp_path: Path) 
     intraday = daily["children"][0]
     assert [weekly["navigation_status"], daily["navigation_status"], intraday["navigation_status"]] == ["TRUSTED"] * 3
     assert load_master_map_output(db)["structural_content_hash"] == result["structural_content_hash"]
+
+
+def test_build_master_map_closes_sqlite_handle_before_return(tmp_path: Path) -> None:
+    db = seed_minimal_raw_db(tmp_path, [range_payload("1", "case:a", "WEEKLY", "W1", 2600, 2200,
+                                                      "2026-01-25T00:00:00Z", "2025-12-28T00:00:00Z", "2026-01-25T00:00:00Z")], [])
+
+    result = build_master_map(db, built_at_utc="2026-07-13T00:00:00Z")
+
+    assert result["symbol"] == "XAUUSD"
+    assert result["statistics"]["comparison_eligible_ranges"] == 1
+    db.unlink()
+    assert not db.exists()
+
+
+def test_mapping_assistant_real_builder_disposable_snapshot_cleans_up(tmp_path: Path, monkeypatch) -> None:
+    db = seed_minimal_raw_db(tmp_path, [range_payload("1", "case:a", "WEEKLY", "W1", 2600, 2200,
+                                                      "2026-01-25T00:00:00Z", "2025-12-28T00:00:00Z", "2026-01-25T00:00:00Z")], [])
+    before = assistant.sha256_file(db)
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    result = assistant.build_mapping_assistant_snapshot(db, generated_at_utc="2026-07-15T00:00:00Z")
+
+    assert result["schema_version"] == assistant.SNAPSHOT_SCHEMA_VERSION
+    assert result["source_integrity"]["unchanged"] is True
+    assert result["source_integrity"]["sha256_before"] == before
+    assert result["source_integrity"]["sha256_after"] == before
+    assert assistant.sha256_file(db) == before
+    assert not list(tmp_path.glob("fxtm-mapping-assistant-*/range_library_snapshot.sqlite3"))
+    second = assistant.build_mapping_assistant_snapshot(db, generated_at_utc="2026-07-15T00:00:00Z")
+    assert second["determinism_hash"] == result["determinism_hash"]
 
 
 def test_june_2026_duplicate_id_conflict_is_reviewable_and_excluded(tmp_path: Path) -> None:

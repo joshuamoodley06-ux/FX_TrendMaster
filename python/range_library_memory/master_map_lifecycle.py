@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import uuid
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,7 @@ def build_master_map(
         raise FileNotFoundError(f"Range Library database does not exist: {db}")
     built_at = C.iso(built_at_utc or C.utc_now())
     run_id = build_id or str(uuid.uuid4())
-    with C.connect(db) as con:
+    with closing(C.connect(db)) as con:
         C.require_raw_tables(con)
         C.ensure_master_map_schema(con)
         raw_ranges = C.load_ranges(con, symbol)
