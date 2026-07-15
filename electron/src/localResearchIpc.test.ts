@@ -8,10 +8,13 @@ const requireCjs = createRequire(import.meta.url);
 const {
   validateBatchPromoteArgs,
   normalizeRunnerArgs,
+  buildMappingAssistantSpec,
 } = requireCjs('../electron/localResearchIpc.cjs');
 
 const BACKEND = 'C:\\FXTM\\backend';
+const PYTHON_ROOT = 'C:\\FXTM\\python';
 const DB = 'C:\\Users\\test\\Documents\\FXTM_Research\\raw_mapping_v159.db';
+const RANGE_LIBRARY_DB = 'C:\\Users\\test\\Documents\\FXTM_Research\\range_library_memory.sqlite3';
 
 describe('localResearchIpc safety', () => {
   it('blocks confirm promote without userConfirmed', () => {
@@ -105,6 +108,27 @@ describe('localResearchIpc runner args', () => {
     expect(spec.args).toContain('2500');
     expect(spec.args).toContain('--json');
   });
+
+  it('Mapping Assistant runs the range library module against an explicit database', () => {
+    const spec = buildMappingAssistantSpec({
+      databasePath: RANGE_LIBRARY_DB,
+      pythonRoot: PYTHON_ROOT,
+      pythonPath: 'python',
+    });
+    expect(spec.cwd).toBe(path.resolve(PYTHON_ROOT));
+    expect(spec.args).toEqual([
+      '-m',
+      'range_library_memory.xauusd_mapping_assistant',
+      '--db-path', path.resolve(RANGE_LIBRARY_DB),
+      '--symbol', 'XAUUSD',
+      '--json',
+    ]);
+    expect(spec.env.FXTM_RANGE_LIBRARY_MEMORY_DB).toBe(path.resolve(RANGE_LIBRARY_DB));
+  });
+
+  it('Mapping Assistant rejects an implicit database target', () => {
+    expect(() => buildMappingAssistantSpec({ pythonRoot: PYTHON_ROOT })).toThrow(/explicit Range Library/);
+  });
 });
 
 describe('preload localResearch API', () => {
@@ -122,6 +146,8 @@ describe('preload localResearch API', () => {
     expect(src).toContain('runRecordAuditVerdict');
     expect(src).toContain('pullVpsCandles');
     expect(src).toContain('runLocalResearchSeed');
+    expect(src).toContain('runMappingAssistant');
+    expect(src).toContain('local-research:mapping-assistant');
     expect(src).toContain('local-research:seed');
     expect(src).toContain('local-research:historical-range-scan');
     expect(src).toContain('local-research:batch-range-promote');
