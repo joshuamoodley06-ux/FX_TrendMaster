@@ -11,6 +11,10 @@ import {
   type MasterMapBridge,
   type PersistedMasterMapLoadResult,
 } from './masterMapClient';
+import {
+  MappingAssistantPanel,
+  type MappingAssistantLoader,
+} from './mappingAssistantPanel';
 
 export type MasterMapNavigationRequest = {
   canonicalRangeId: string;
@@ -18,6 +22,11 @@ export type MasterMapNavigationRequest = {
   sourceTimeframe: string | null;
   mode: MasterMapHierarchyMode;
   range: MasterMapRangeNode;
+  reason?: 'HIERARCHY' | 'GAP';
+  eventId?: string | null;
+  preferredAnchorTime?: string | null;
+  visibleStart?: string | null;
+  visibleEnd?: string | null;
 };
 
 export type MasterMapNavigationHandler = (request: MasterMapNavigationRequest) => void;
@@ -29,6 +38,7 @@ type MasterMapHierarchyViewProps = {
   initialMode?: MasterMapHierarchyMode;
   onReload?: () => void;
   databasePath?: string;
+  mappingAssistantLoader?: MappingAssistantLoader;
 };
 
 type MasterMapHierarchyPanelProps = {
@@ -36,6 +46,7 @@ type MasterMapHierarchyPanelProps = {
   bridge?: MasterMapBridge | null;
   selectedCanonicalRangeId?: string | null;
   onNavigationRequest?: MasterMapNavigationHandler;
+  mappingAssistantLoader?: MappingAssistantLoader;
 };
 
 function formatTimestamp(value: string | null): string {
@@ -56,8 +67,6 @@ function sourceRefLabel(node: MasterMapRangeNode): string {
 }
 
 type RangeTreeNodeProps = {
-  // Included explicitly because this project does not load React's ambient JSX
-  // types during its repository-wide TypeScript diagnostic pass.
   key?: string;
   node: MasterMapRangeNode;
   depth: number;
@@ -173,7 +182,9 @@ export function MasterMapHierarchyView({
   initialMode = 'trusted',
   onReload,
   databasePath = '',
+  mappingAssistantLoader,
 }: MasterMapHierarchyViewProps) {
+  const [workspace, setWorkspace] = useState<'master-map' | 'assistant'>('master-map');
   const [mode, setMode] = useState<MasterMapHierarchyMode>(initialMode);
   const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
   const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
@@ -209,6 +220,7 @@ export function MasterMapHierarchyView({
       sourceTimeframe: node.sourceTimeframe,
       mode,
       range: node,
+      reason: 'HIERARCHY',
     });
   };
   const builtDate = formatTimestamp(document.builtAtUtc);
@@ -216,76 +228,91 @@ export function MasterMapHierarchyView({
   return (
     <section
       className="masterMapHierarchy"
-      aria-label="XAUUSD Master Map hierarchy"
-      data-hierarchy-mode={mode}
+      aria-label="XAUUSD hierarchy workspace"
+      data-hierarchy-mode={workspace === 'assistant' ? 'assistant' : mode}
       data-selected-canonical-range-id={visibleSelectedId || ''}
     >
       <div className="masterMapHeader">
         <div>
-          <b>XAUUSD Master Map</b>
+          <b>XAUUSD Hierarchy</b>
           <span>Persisted {builtDate} · {document.structuralContentHash.slice(0, 10)}</span>
         </div>
-        {onReload && <button type="button" onClick={onReload}>Refresh</button>}
+        {workspace === 'master-map' && onReload && <button type="button" onClick={onReload}>Refresh</button>}
       </div>
-      <div className="masterMapModeSwitch" role="group" aria-label="Master Map hierarchy mode">
+      <div
+        className="masterMapModeSwitch masterMapWorkspaceSwitch"
+        role="group"
+        aria-label="Hierarchy workspace"
+      >
         <button
           type="button"
-          className={mode === 'trusted' ? 'active' : ''}
-          aria-pressed={mode === 'trusted'}
-          onClick={() => changeMode('trusted')}
+          className={workspace === 'master-map' ? 'active' : ''}
+          aria-pressed={workspace === 'master-map'}
+          onClick={() => setWorkspace('master-map')}
         >
-          Normal
+          Master Map
         </button>
         <button
           type="button"
-          className={mode === 'review' ? 'active review' : ''}
-          aria-pressed={mode === 'review'}
-          onClick={() => changeMode('review')}
+          className={workspace === 'assistant' ? 'active' : ''}
+          aria-pressed={workspace === 'assistant'}
+          onClick={() => setWorkspace('assistant')}
         >
-          Review
-        </button>
-        <button
-          type="button"
-          className={mode === 'all' ? 'active diagnostic' : ''}
-          aria-pressed={mode === 'all'}
-          onClick={() => changeMode('all')}
-          title="Explicit diagnostic view using the complete navigation root"
-        >
-          All navigation
+          Mapping Assistant
         </button>
       </div>
-      <p className="masterMapModeHint">
-        {mode === 'trusted' && 'Normal hierarchy · trusted_root · statistics-eligible structure only.'}
-        {mode === 'review' && 'Review hierarchy · review_root · reviewed structure remains statistics-excluded.'}
-        {mode === 'all' && 'Diagnostic hierarchy · root · trusted and reviewed navigation together.'}
-      </p>
-      <div className="masterMapSelectedId" aria-live="polite">
-        Selected canonical ID: <code>{visibleSelectedId || '—'}</code>
-      </div>
-      <div className="masterMapTree" role="tree" aria-label={`${root.symbol} ${mode} hierarchy`}>
-        <div className="masterMapSymbolRow" role="treeitem" aria-level={1} aria-expanded="true">
-          <b>{root.symbol}</b>
-          <span>{root.children.length} Weekly</span>
-        </div>
-        <div role="group">
-          {root.children.map((node) => (
-            <RangeTreeNode
-              key={node.canonicalRangeId}
-              node={node}
-              depth={0}
-              mode={mode}
-              expandedIds={expandedIds}
-              selectedCanonicalRangeId={visibleSelectedId}
-              onToggle={toggleNode}
-              onSelect={selectNode}
-            />
-          ))}
-        </div>
-        {!!root.unlinkedReviewChildren.length && (
-          <div className="masterMapUnlinkedGroup">
-            <b>Unlinked review</b>
+
+      {workspace === 'assistant' ? (
+        <MappingAssistantPanel
+          fallbackDocument={document}
+          selectedCanonicalRangeId={selectedCanonicalRangeId}
+          onNavigationRequest={onNavigationRequest}
+          loader={mappingAssistantLoader}
+        />
+      ) : (
+        <>
+          <div className="masterMapModeSwitch" role="group" aria-label="Master Map hierarchy mode">
+            <button
+              type="button"
+              className={mode === 'trusted' ? 'active' : ''}
+              aria-pressed={mode === 'trusted'}
+              onClick={() => changeMode('trusted')}
+            >
+              Normal
+            </button>
+            <button
+              type="button"
+              className={mode === 'review' ? 'active review' : ''}
+              aria-pressed={mode === 'review'}
+              onClick={() => changeMode('review')}
+            >
+              Review
+            </button>
+            <button
+              type="button"
+              className={mode === 'all' ? 'active diagnostic' : ''}
+              aria-pressed={mode === 'all'}
+              onClick={() => changeMode('all')}
+              title="Explicit diagnostic view using the complete navigation root"
+            >
+              All navigation
+            </button>
+          </div>
+          <p className="masterMapModeHint">
+            {mode === 'trusted' && 'Normal hierarchy · trusted_root · statistics-eligible structure only.'}
+            {mode === 'review' && 'Review hierarchy · review_root · reviewed structure remains statistics-excluded.'}
+            {mode === 'all' && 'Diagnostic hierarchy · root · trusted and reviewed navigation together.'}
+          </p>
+          <div className="masterMapSelectedId" aria-live="polite">
+            Selected canonical ID: <code>{visibleSelectedId || '—'}</code>
+          </div>
+          <div className="masterMapTree" role="tree" aria-label={`${root.symbol} ${mode} hierarchy`}>
+            <div className="masterMapSymbolRow" role="treeitem" aria-level={1} aria-expanded="true">
+              <b>{root.symbol}</b>
+              <span>{root.children.length} Weekly</span>
+            </div>
             <div role="group">
-              {root.unlinkedReviewChildren.map((node) => (
+              {root.children.map((node) => (
                 <RangeTreeNode
                   key={node.canonicalRangeId}
                   node={node}
@@ -298,10 +325,29 @@ export function MasterMapHierarchyView({
                 />
               ))}
             </div>
+            {!!root.unlinkedReviewChildren.length && (
+              <div className="masterMapUnlinkedGroup">
+                <b>Unlinked review</b>
+                <div role="group">
+                  {root.unlinkedReviewChildren.map((node) => (
+                    <RangeTreeNode
+                      key={node.canonicalRangeId}
+                      node={node}
+                      depth={0}
+                      mode={mode}
+                      expandedIds={expandedIds}
+                      selectedCanonicalRangeId={visibleSelectedId}
+                      onToggle={toggleNode}
+                      onSelect={selectNode}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        )}
-      </div>
-      {databasePath && <span className="masterMapDatabasePath" title={databasePath}>Local Master Map ready</span>}
+          {databasePath && <span className="masterMapDatabasePath" title={databasePath}>Local Master Map ready</span>}
+        </>
+      )}
     </section>
   );
 }
@@ -311,6 +357,7 @@ export function MasterMapHierarchyPanel({
   bridge,
   selectedCanonicalRangeId,
   onNavigationRequest,
+  mappingAssistantLoader,
 }: MasterMapHierarchyPanelProps) {
   const [loadState, setLoadState] = useState<PersistedMasterMapLoadResult | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
@@ -344,6 +391,7 @@ export function MasterMapHierarchyPanel({
       onNavigationRequest={onNavigationRequest}
       onReload={reload}
       databasePath={loadState.databasePath}
+      mappingAssistantLoader={mappingAssistantLoader}
     />
   );
 }
