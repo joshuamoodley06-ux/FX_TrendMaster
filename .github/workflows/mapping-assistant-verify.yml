@@ -69,7 +69,16 @@ jobs:
           path: artifacts/master-map-navigation.json
           if-no-files-found: warn
       - name: IPC tests
-        run: npx vitest run src/localResearchIpc.test.ts
+        run: |
+          mkdir -p ../artifacts
+          npx vitest run src/localResearchIpc.test.ts --reporter=json --outputFile=../artifacts/local-research-ipc.json
+      - name: Upload IPC diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-research-ipc-diagnostics
+          path: artifacts/local-research-ipc.json
+          if-no-files-found: warn
       - name: Structural target tests
         run: npx vitest run src/structuralJumpTarget.test.ts
       - name: Full Electron suite
