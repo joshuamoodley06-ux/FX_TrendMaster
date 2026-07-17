@@ -173,6 +173,13 @@ function derivedWindow(record: LooseRecord, options: StructuralTargetOptions, ti
   return sorted.length ? { start: sorted[0], end: sorted[sorted.length - 1] } : undefined;
 }
 
+function effectiveReason(record: LooseRecord, requested: StructuralJumpSource): StructuralJumpSource {
+  if (requested !== 'HIERARCHY') return requested;
+  const embedded = text(firstValue(record, ['structural_jump_source', 'structuralJumpSource']))?.toUpperCase();
+  if (record.mapping_assistant_gap === true || embedded === 'GAP') return 'GAP';
+  return requested;
+}
+
 export function normalizeStructuralRangeTarget(
   input: unknown,
   reason: StructuralJumpSource = 'HIERARCHY',
@@ -227,7 +234,7 @@ export function normalizeStructuralRangeTarget(
     navigationStatus: text(firstValue(merged, ['navigation_status', 'navigationStatus']))?.toUpperCase(),
     statisticsStatus: text(firstValue(merged, ['statistics_status', 'statisticsStatus']))?.toUpperCase(),
     sourceRecordProvenance: provenanceFrom(record, payload),
-    reason,
+    reason: effectiveReason(merged, reason),
   };
 }
 

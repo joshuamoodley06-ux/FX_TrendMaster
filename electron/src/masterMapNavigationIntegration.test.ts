@@ -50,7 +50,6 @@ describe('Master Map structural chart-navigation integration', () => {
       applyExplicitStructuralCameraWindow: vi.fn(async (camera: { useFitContent: false }) => {
         calls.push(`camera:${camera.useFitContent}`);
       }),
-      // Deliberately present as a tripwire: the navigation adapter has no write route.
       mappingWrite,
     };
     return {
@@ -115,7 +114,7 @@ describe('Master Map structural chart-navigation integration', () => {
     act(() => element?.click());
   }
 
-  it('routes a hierarchy click through navigateStructuralRangeRecord in strict production order', async () => {
+  it('routes a hierarchy click through the shared structural navigation contract in strict production order', async () => {
     const harness = createHarness({
       currentTimeframe: 'D1',
       replayActive: false,
@@ -192,6 +191,7 @@ describe('Master Map structural chart-navigation integration', () => {
       navigation_status: 'TRUSTED',
       statistics_status: 'ELIGIBLE',
       read_only_canonical_master_map: true,
+      mapping_assistant_gap: false,
     });
     expect(record?.source_refs).toEqual(range.sourceRefs);
   });
@@ -203,7 +203,7 @@ describe('Master Map structural chart-navigation integration', () => {
       execution = navigateMasterMapHierarchyRequest(request, harness.port);
     });
 
-    click('.masterMapModeSwitch button:nth-child(2)');
+    click('[aria-label="Master Map hierarchy mode"] button:nth-child(2)');
     click('[aria-label="Expand WEEKLY mm:range:weekly-trusted"]');
     const reviewRow = container.querySelector('[data-canonical-range-id="mm:range:daily-review"]');
     expect(reviewRow?.getAttribute('data-statistics-status')).toBe('EXCLUDED');

@@ -58,7 +58,7 @@ describe('MasterMapHierarchyView', () => {
 
   it('uses review_root only in Review mode and keeps reviewed rows statistics-excluded', () => {
     renderView();
-    click('.masterMapModeSwitch button:nth-child(2)');
+    click('[aria-label="Master Map hierarchy mode"] button:nth-child(2)');
     click('[aria-label="Expand WEEKLY mm:range:weekly-trusted"]');
 
     expect(container.querySelector('[data-hierarchy-mode="review"]')).not.toBeNull();
@@ -81,6 +81,7 @@ describe('MasterMapHierarchyView', () => {
       canonicalRangeId: 'mm:range:weekly-trusted',
       layer: 'WEEKLY',
       mode: 'trusted',
+      reason: 'HIERARCHY',
     });
     expect(container.querySelector('.masterMapHierarchy')?.getAttribute('data-selected-canonical-range-id'))
       .toBe('mm:range:weekly-trusted');
@@ -91,7 +92,7 @@ describe('MasterMapHierarchyView', () => {
 
   it('uses root only after the explicit All navigation action', () => {
     renderView();
-    click('.masterMapModeSwitch button:nth-child(3)');
+    click('[aria-label="Master Map hierarchy mode"] button:nth-child(3)');
     click('[aria-label="Expand WEEKLY mm:range:weekly-trusted"]');
 
     expect(container.querySelector('[data-hierarchy-mode="all"]')).not.toBeNull();

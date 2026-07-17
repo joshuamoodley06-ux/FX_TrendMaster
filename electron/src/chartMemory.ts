@@ -97,6 +97,41 @@ export function snapshotMemoryFromVisibleDomain(dom: VisibleDomainSnapshot): Cha
   };
 }
 
+function normalizeVisibleBars(value: unknown): number {
+  const n = Number(value || 0);
+  return Number.isFinite(n) ? n : 0;
+}
+
+export function sameChartMemoryDomain(
+  current: { start?: string | null; end?: string | null; visibleBars?: number | null } | null | undefined,
+  next: VisibleDomainSnapshot,
+): boolean {
+  return current?.start === next.start
+    && current?.end === next.end
+    && normalizeVisibleBars(current?.visibleBars) === normalizeVisibleBars(next.visibleBars);
+}
+
+export function upsertChartMemoryDomains<T extends Record<string, { start: string; end: string; visibleBars?: number }>>(
+  previous: T,
+  key: string,
+  legacyKey: string,
+  domain: VisibleDomainSnapshot,
+): T {
+  const nextDomain: ChartTimeframeMemory = {
+    start: domain.start,
+    end: domain.end,
+    visibleBars: normalizeVisibleBars(domain.visibleBars),
+  };
+  if (sameChartMemoryDomain(previous[key], nextDomain) && sameChartMemoryDomain(previous[legacyKey], nextDomain)) {
+    return previous;
+  }
+  return {
+    ...previous,
+    [key]: nextDomain,
+    [legacyKey]: nextDomain,
+  } as T;
+}
+
 export function memoryFitWindowFromChartMemory(
   memory: ChartTimeframeMemory | null | undefined,
   priceDomain?: { low: number; high: number } | null,

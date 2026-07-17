@@ -79,6 +79,7 @@ import {
   writeInspectorFormCache,
 } from './inspectorFormCache';
 import { draftRangeLineStyle, savedRangeLineStyle } from './rangeLineStyle';
+import { buildCanonicalChartOverlay } from './canonicalChartOverlay';
 import { CockpitOverviewProvider } from './cockpitOverviewContext';
 import { InspectorOverviewDashboard } from './inspectorOverviewDashboard';
 import { ReviewCandidatePanel } from './reviewCandidatePanel';
@@ -235,6 +236,7 @@ import {
   shouldPersistChartMemory,
   shouldPersistH1ChartMemory,
   snapshotMemoryFromVisibleDomain,
+  upsertChartMemoryDomains,
   type MemoryFitWindow,
   type RoutineAnchorSource,
 } from './chartMemory';
@@ -2811,11 +2813,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       }
       const key = cameraKeyRef.current;
       const legacy = legacyChartMemoryKey(activeCaseDisplayIdRef.current || 'global', activeTimeframeRef.current);
-      setCameraDomainByCaseTf(prev => ({
-        ...prev,
-        [key]: { start: dom.start, end: dom.end },
-        [legacy]: { start: dom.start, end: dom.end },
-      }));
+      setCameraDomainByCaseTf(prev => upsertChartMemoryDomains(prev, key, legacy, dom));
       if (Number.isFinite(dom.priceLow) && Number.isFinite(dom.priceHigh) && dom.priceHigh > dom.priceLow) {
         setCameraPriceDomainByCaseTf(prev => ({
           ...prev,
@@ -2845,11 +2843,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
     const key = cameraKeyRef.current;
     const legacy = legacyChartMemoryKey(activeCaseDisplayIdRef.current || 'global', activeTimeframeRef.current);
-    setCameraDomainByCaseTf((prev) => ({
-      ...prev,
-      [key]: { start: dom.start, end: dom.end, visibleBars: dom.visibleBars },
-      [legacy]: { start: dom.start, end: dom.end, visibleBars: dom.visibleBars },
-    }));
+    setCameraDomainByCaseTf((prev) => upsertChartMemoryDomains(prev, key, legacy, dom));
   }, [cameraMode, timeframe]);
   const handleTradingViewFitApplied = useCallback((detail: TradingViewFitAppliedDetail) => {
     const awaitingTvFit = pendingCameraIntentAwaitingTvFitRef.current;
@@ -3939,37 +3933,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       overlays.push(line);
     }
 
-    const canonicalLayer = normalizeStructureLayer(
-      selectedCanonicalChartRange?.structure_layer || selectedCanonicalChartRange?.layer,
+    const canonicalOverlay = buildCanonicalChartOverlay(
+      selectedCanonicalChartRange,
+      overlays.map((line) => line.rangeId),
     );
-    if (canonicalLayer === 'WEEKLY') {
-      const canonicalHigh = Number(
-        selectedCanonicalChartRange?.range_high_price ?? selectedCanonicalChartRange?.range_high,
-      );
-      const canonicalLow = Number(
-        selectedCanonicalChartRange?.range_low_price ?? selectedCanonicalChartRange?.range_low,
-      );
-      const canonicalId = String(
-        selectedCanonicalChartRange?.range_id
-        || selectedCanonicalChartRange?.id
-        || selectedCanonicalChartRange?.canonical_range_id
-        || '',
-      );
-      if (canonicalId && Number.isFinite(canonicalHigh) && Number.isFinite(canonicalLow) && canonicalHigh > canonicalLow) {
-        overlays.push({
-          rangeId: canonicalId,
-          structureLayer: 'WEEKLY',
-          rangeScope: 'MAJOR',
-          status: String(selectedCanonicalChartRange?.status || 'ACTIVE').toUpperCase(),
-          customLabelPrefix: 'CANONICAL WEEKLY',
-          high: canonicalHigh,
-          low: canonicalLow,
-          start: selectedCanonicalChartRange?.range_start_time || selectedCanonicalChartRange?.range_high_time || null,
-          end: selectedCanonicalChartRange?.range_end_time || selectedCanonicalChartRange?.range_low_time || null,
-          isActive: true,
-        });
-      }
-    }
+    if (canonicalOverlay) overlays.push(canonicalOverlay);
 
     if (!chartMappingFocusMode) return overlays;
 
@@ -10312,11 +10280,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (validDomTime && sourceDomPersistable) {
       const snap = sourceDomSnap!;
       if (shouldPersistChartMemory(snap, sourceTf)) {
-        setCameraDomainByCaseTf((prev) => ({
-          ...prev,
-          [sourceMemoryKey]: { start: snap.start, end: snap.end },
-          [sourceLegacyKey]: { start: snap.start, end: snap.end },
-        }));
+        setCameraDomainByCaseTf((prev) => upsertChartMemoryDomains(prev, sourceMemoryKey, sourceLegacyKey, snap));
         if (Number.isFinite(dom!.priceLow) && Number.isFinite(dom!.priceHigh) && dom!.priceHigh > dom!.priceLow) {
           setCameraPriceDomainByCaseTf((prev) => ({
             ...prev,

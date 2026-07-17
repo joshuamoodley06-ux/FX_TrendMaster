@@ -6,6 +6,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -196,7 +197,7 @@ def build_master_map(
     built_at = iso(built_at_utc or utc_now())
     runtime_build_id = build_id or str(uuid.uuid4())
 
-    with connect(db) as con:
+    with closing(connect(db)) as con:
         require_raw_tables(con)
         ensure_master_map_schema(con)
         raw_ranges = load_ranges(con, symbol)
