@@ -36,6 +36,8 @@ def write_source_db(path: Path) -> None:
             ("XAUUSD", "W1", "2026-01-26T00:00:00Z", 1990, 2012, 1970, 2005, 1, "test"),
             ("XAUUSD", "W1", "2026-02-02T00:00:00Z", 2005, 2020, 1940, 1955, 1, "test"),
             ("XAUUSD", "W1", "2026-02-09T00:00:00Z", 1955, 1980, 1900, 1920, 1, "test"),
+            # Candle exists after the ending RL anchor but does not breach it.
+            ("XAUUSD", "W1", "2026-02-16T00:00:00Z", 1920, 1970, 1905, 1950, 1, "test"),
         ],
     )
     connection.commit()
