@@ -52,6 +52,7 @@ def range_node(
     high_time: str,
     low_time: str,
     direction: str | None = None,
+    parent_id: str | None = None,
 ) -> dict:
     return {
         "node_type": "RANGE",
@@ -66,6 +67,7 @@ def range_node(
         "active_from_time": max(high_time, low_time),
         "inactive_from_time": None,
         "direction_of_break": direction,
+        "parent_range_id": parent_id,
         "status": "ACTIVE",
         "children": [],
         "source_refs": [],
@@ -227,4 +229,120 @@ def test_direction_conflict_is_reviewable_and_does_not_overwrite_master_map(tmp_
         connection.execute("SELECT output_json FROM master_map_outputs WHERE symbol = 'XAUUSD'").fetchone()[0]
     )
     assert stored_output["trusted_root"]["children"][0]["direction_of_break"] == "DOWN"
+    connection.close()
+
+
+def test_bos_direction_alias_conflict_is_reviewable(tmp_path: Path) -> None:
+    range_db = tmp_path / "range_library.sqlite3"
+    source_db = tmp_path / "market_memory.db"
+    write_range_db(range_db)
+    write_source_db(source_db)
+
+    connection = sqlite3.connect(range_db)
+    output = json.loads(
+        connection.execute("SELECT output_json FROM master_map_outputs WHERE symbol = 'XAUUSD'").fetchone()[0]
+    )
+    for root_key in ("root", "trusted_root"):
+        output[root_key]["children"][0]["direction_of_break"] = "BOS_DOWN"
+    connection.execute(
+        "UPDATE master_map_outputs SET output_json = ? WHERE symbol = 'XAUUSD'",
+        (json.dumps(output),),
+    )
+    connection.commit()
+    connection.close()
+
+    summary = build_weekly_chronology_bos(range_db, source_db=source_db, year=2026)
+    bullish = next(row for row in summary["rows"] if row["canonical_range_id"] == "mm:range:weekly-up")
+    assert bullish["analysis_status"] == "NEEDS_REVIEW"
+
+
+def test_missing_candles_is_explicit_missing_data(tmp_path: Path) -> None:
+    range_db = tmp_path / "range_library.sqlite3"
+    source_db = tmp_path / "market_memory.db"
+    write_range_db(range_db)
+    write_source_db(source_db)
+    connection = sqlite3.connect(source_db)
+    connection.execute("DELETE FROM candles")
+    connection.commit()
+    connection.close()
+
+    summary = build_weekly_chronology_bos(range_db, source_db=source_db, year=2026)
+
+    assert summary["total"] == 2
+    assert {row["analysis_status"] for row in summary["rows"]} == {"MISSING_DATA"}
+    assert all("MISSING_W1_CANDLES" in row["reason_codes"] for row in summary["rows"])
+
+
+def test_rerun_is_idempotent_preserves_identity_links_and_structural_hash(tmp_path: Path) -> None:
+    range_db = tmp_path / "range_library.sqlite3"
+    source_db = tmp_path / "market_memory.db"
+    write_range_db(range_db)
+    write_source_db(source_db)
+
+    connection = sqlite3.connect(range_db)
+    output = json.loads(
+        connection.execute("SELECT output_json FROM master_map_outputs WHERE symbol = 'XAUUSD'").fetchone()[0]
+    )
+    for root_key in ("root", "trusted_root"):
+        output[root_key]["children"][0]["parent_range_id"] = "mm:parent:stable"
+    connection.execute(
+        "UPDATE master_map_outputs SET output_json = ? WHERE symbol = 'XAUUSD'",
+        (json.dumps(output),),
+    )
+    connection.commit()
+    connection.close()
+
+    first = build_weekly_chronology_bos(range_db, source_db=source_db, year=2026)
+    second = build_weekly_chronology_bos(range_db, source_db=source_db, year=2026)
+
+    assert {
+        row["canonical_range_id"]: row["result_hash"] for row in first["rows"]
+    } == {
+        row["canonical_range_id"]: row["result_hash"] for row in second["rows"]
+    }
+    connection = sqlite3.connect(range_db)
+    connection.row_factory = sqlite3.Row
+    assert connection.execute("SELECT COUNT(*) FROM weekly_chronology_bos").fetchone()[0] == 2
+    persisted = connection.execute(
+        "SELECT structural_content_hash, output_json FROM master_map_outputs WHERE symbol = 'XAUUSD'"
+    ).fetchone()
+    assert persisted["structural_content_hash"] == "structural-hash"
+    saved = json.loads(persisted["output_json"])
+    assert saved["structural_content_hash"] == "structural-hash"
+    assert saved["trusted_root"]["children"][0]["id"] == "mm:range:weekly-up"
+    assert saved["trusted_root"]["children"][0]["parent_range_id"] == "mm:parent:stable"
+    connection.execute("BEGIN EXCLUSIVE")
+    connection.rollback()
+    connection.close()
+
+    source = sqlite3.connect(source_db)
+    source.execute("BEGIN EXCLUSIVE")
+    source.rollback()
+    source.close()
+
+
+def test_unselected_derived_rows_are_not_deleted(tmp_path: Path) -> None:
+    range_db = tmp_path / "range_library.sqlite3"
+    source_db = tmp_path / "market_memory.db"
+    write_range_db(range_db)
+    write_source_db(source_db)
+
+    build_weekly_chronology_bos(range_db, source_db=source_db, year=2026)
+    connection = sqlite3.connect(range_db)
+    connection.execute(
+        "INSERT INTO weekly_chronology_bos "
+        "(canonical_range_id,analysis_version,symbol,structure_layer,source_timeframe,analysis_status,"
+        "candles_scanned,reason_codes_json,result_hash,built_at_utc) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        ("mm:range:older", "v0", "XAUUSD", "WEEKLY", "W1", "COMPLETE", 0, "[]", "stable", "2025-01-01T00:00:00Z"),
+    )
+    connection.commit()
+    connection.close()
+
+    build_weekly_chronology_bos(range_db, source_db=source_db, year=2026)
+
+    connection = sqlite3.connect(range_db)
+    assert connection.execute(
+        "SELECT result_hash FROM weekly_chronology_bos WHERE canonical_range_id = ?",
+        ("mm:range:older",),
+    ).fetchone()[0] == "stable"
     connection.close()

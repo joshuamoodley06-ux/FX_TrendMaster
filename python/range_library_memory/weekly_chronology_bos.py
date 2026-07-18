@@ -219,6 +219,15 @@ def candle_breaches(candle: SourceCandle, end_side: str, boundary: float) -> boo
     return False
 
 
+def normalized_break_direction(value: Any) -> str | None:
+    direction = str(value or "").strip().upper()
+    if direction in {"UP", "BOS_UP"}:
+        return "UP"
+    if direction in {"DOWN", "BOS_DOWN"}:
+        return "DOWN"
+    return None
+
+
 def evaluate_weekly(
     source: sqlite3.Connection,
     node: Mapping[str, Any],
@@ -307,8 +316,8 @@ def evaluate_weekly(
         "bos_breach_price": breach_price,
     })
 
-    existing = str(node.get("direction_of_break") or "").strip().upper()
-    if existing in {"UP", "DOWN"} and existing != direction:
+    existing = normalized_break_direction(node.get("direction_of_break"))
+    if existing is not None and existing != direction:
         return finish(row, "NEEDS_REVIEW", reasons | {"SCRIPT1_DIRECTION_CONFLICTS_WITH_MASTER_MAP"})
     return finish(row, "COMPLETE", reasons)
 
@@ -329,8 +338,11 @@ def insert_result(connection: sqlite3.Connection, row: Mapping[str, Any]) -> Non
     values = dict(row)
     values["reason_codes_json"] = canonical_json(values.pop("reason_codes"))
     placeholders = ",".join("?" for _ in columns)
+    update_columns = [column for column in columns if column != "canonical_range_id"]
+    assignments = ",".join(f"{column}=excluded.{column}" for column in update_columns)
     connection.execute(
-        f"INSERT OR REPLACE INTO weekly_chronology_bos ({','.join(columns)}) VALUES ({placeholders})",
+        f"INSERT INTO weekly_chronology_bos ({','.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT(canonical_range_id) DO UPDATE SET {assignments}",
         tuple(values[column] for column in columns),
     )
 
@@ -348,8 +360,8 @@ def project_result_into_node(node: dict[str, Any], result: Mapping[str, Any]) ->
     node["script1_analysis_version"] = VERSION
     node["script1_reason_codes"] = list(result.get("reason_codes") or [])
     if result.get("analysis_status") == "COMPLETE":
-        existing = str(node.get("direction_of_break") or "").strip().upper()
-        if existing:
+        existing = normalized_break_direction(node.get("direction_of_break"))
+        if existing is not None:
             node["lifecycle_direction_of_break"] = existing
         node["direction_of_break"] = result.get("bos_direction")
         node["direction_of_break_source"] = "WEEKLY_SCRIPT_1"
@@ -437,16 +449,6 @@ def build_weekly_chronology_bos(
             master_map = load_master_map(connection, symbol)
             weeklies = unique_weeklies(master_map, year)
             results = [evaluate_weekly(source, node, built_at=built_at) for node in weeklies]
-            if year is None:
-                connection.execute("DELETE FROM weekly_chronology_bos WHERE symbol = ?", (symbol,))
-            else:
-                ids = [row["canonical_range_id"] for row in results]
-                if ids:
-                    placeholders = ",".join("?" for _ in ids)
-                    connection.execute(
-                        f"DELETE FROM weekly_chronology_bos WHERE symbol = ? AND canonical_range_id IN ({placeholders})",
-                        (symbol, *ids),
-                    )
             for result in results:
                 insert_result(connection, result)
             update_persisted_master_map(

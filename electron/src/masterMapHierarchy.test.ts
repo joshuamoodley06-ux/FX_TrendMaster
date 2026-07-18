@@ -63,9 +63,9 @@ describe('MasterMapHierarchyView', () => {
     const row = container.querySelector('[data-canonical-range-id="mm:range:weekly-trusted"]');
     expect(row?.getAttribute('data-chronology-start-side')).toBe('RL');
     expect(row?.getAttribute('data-chronology-end-side')).toBe('RH');
-    expect(row?.getAttribute('data-bos-direction')).toBe('UP');
+    expect(row?.getAttribute('data-bos-direction')).toBe('DOWN');
     expect(row?.textContent).toContain('RL → RH');
-    expect(row?.textContent).toContain('BOS ▲');
+    expect(row?.textContent).toContain('BOS ▼');
     expect(row?.textContent).not.toContain('NAV TRUSTED');
     expect(row?.textContent).not.toContain('STATS ELIGIBLE');
   });
@@ -86,6 +86,24 @@ describe('MasterMapHierarchyView', () => {
       direction: 'DOWN',
       directionArrow: '▼',
     });
+  });
+
+  it('shows a compact pending indicator when no BOS direction is stored', () => {
+    const fixture = masterMapFixture();
+    for (const rootKey of ['root', 'trusted_root'] as const) {
+      const rootNode = fixture[rootKey] as { children: Array<Record<string, unknown>> };
+      rootNode.children[0].direction_of_break = null;
+    }
+    act(() => {
+      root.render(createElement(MasterMapHierarchyView, {
+        document: adaptMasterMapOutput(fixture),
+      }));
+    });
+
+    const row = container.querySelector('[data-canonical-range-id="mm:range:weekly-trusted"]');
+    expect(row?.getAttribute('data-bos-direction')).toBe('');
+    expect(row?.textContent).toContain('BOS ·');
+    expect(row?.querySelector('[aria-label="BOS pending"]')).not.toBeNull();
   });
 
   it('uses review_root only in Review mode and keeps reviewed rows statistics-excluded', () => {
