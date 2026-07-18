@@ -6324,3 +6324,29 @@ body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell:has(
 .mappingSessionModalActions button.secondary{
   border-color:rgba(148,163,184,.25);
 }
+
+.hierarchyWorkspace{display:flex;flex:1 1 auto;min-height:0;flex-direction:column;gap:6px;overflow:hidden;}
+.hierarchyWorkspaceModes{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;padding:0 8px;}
+.hierarchyWorkspaceModes button,.hierarchyCoverageFilters button{border:1px solid rgba(148,163,184,.2);border-radius:7px;background:rgba(15,23,42,.72);color:#94a3b8;font-size:9px;font-weight:800;padding:5px 6px;cursor:pointer;}
+.hierarchyWorkspaceModes button.active,.hierarchyCoverageFilters button.active{border-color:#60a5fa;background:rgba(30,58,138,.35);color:#dbeafe;}
+.hierarchyWorkspaceBody{display:flex;flex:1 1 auto;min-height:0;flex-direction:column;overflow:hidden;}
+.hierarchyWorkspaceBody.structureMode{overflow:visible;}
+.hierarchyCoverageFilters{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:0 8px;}
+.hierarchyCoverageFilters button{font-size:9px;padding:5px 2px;}
+.hierarchyCoverageYears{display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:end;gap:6px;padding:0 8px;color:#94a3b8;font-size:9px;}
+.hierarchyCoverageYears label{display:flex;min-width:0;flex-direction:column;gap:3px;font-weight:700;}
+.hierarchyCoverageYears select{width:100%;min-width:0;border:1px solid rgba(148,163,184,.28);border-radius:6px;background:#0f172a;color:#e2e8f0;font-size:11px;padding:5px 6px;}
+.hierarchyCoverageYears>span{padding-bottom:6px;color:#60a5fa;font-size:12px;}
+.hierarchyCoverageScroll{display:flex;flex:1 1 auto;min-height:0;flex-direction:column;gap:6px;overflow-y:auto;padding:2px 8px 10px;scrollbar-gutter:stable;}
+.hierarchyCoverageRow{flex:0 0 auto;border:1px solid rgba(148,163,184,.22);border-radius:7px;background:rgba(15,23,42,.72);overflow:hidden;}
+.hierarchyCoverageLine{display:flex;align-items:stretch;min-width:0;min-height:38px;}
+.hierarchyCoverageExpand{flex:0 0 28px;border:0;background:transparent;color:#cbd5e1;font-size:10px;cursor:pointer;}
+.hierarchyCoverageJump{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;flex:1;border:0;background:transparent;color:#e2e8f0;padding:8px 8px 8px 0;text-align:left;cursor:pointer;}
+.hierarchyCoveragePrimary{display:flex;min-width:0;align-items:center;gap:4px;white-space:nowrap;font-size:11px;}
+.hierarchyCoveragePrimary b{flex:0 0 auto;color:#93c5fd;font-size:10px;letter-spacing:.02em;}
+.hierarchyCoveragePrimary span{flex:0 0 auto;}
+.hierarchyCoverageJump strong{flex:0 0 auto;color:#f8fafc;font-size:11px;}
+.hierarchyCoverageGaps{display:flex;flex-direction:column;gap:5px;border-top:1px solid rgba(148,163,184,.16);padding:7px 8px 8px 28px;color:#94a3b8;font-size:10px;}
+.hierarchyCoverageGaps button{border:0;background:transparent;color:#fcd34d;padding:4px 0;text-align:left;font-size:10px;cursor:pointer;white-space:nowrap;}
+.hierarchyWorkspaceBody.pythonMode{gap:4px;margin:2px 8px;padding:10px;border:1px dashed rgba(148,163,184,.22);border-radius:8px;color:#64748b;font-size:9px;}
+.hierarchyWorkspaceBody.pythonMode b{color:#cbd5e1;font-size:10px;}

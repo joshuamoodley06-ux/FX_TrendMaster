@@ -131,9 +131,9 @@ import { normalizeChartTf } from './mappingDraftBoundary';
 import { MappingCampaignPanel } from './mappingCampaignPanel';
 import { computeCampaignStatus } from './mappingCampaignManager';
 import {
-  MasterMapHierarchyPanel,
   type MasterMapNavigationRequest,
 } from './masterMapHierarchy';
+import { HierarchyWorkspace } from './hierarchyWorkspace';
 import { masterMapRangeToStructuralRangeRecord } from './masterMapNavigationIntegration';
 import { buildStructuralJumpPlan } from './structuralChartNavigation';
 import { normalizeStructuralRangeTarget } from './structuralJumpTarget';
@@ -169,6 +169,8 @@ import {
 import {
   isTypingInEditableField,
   resolveMapStudioKeyAction,
+  runRangeSaveShortcut,
+  shouldHandleRangeSaveShortcut,
 } from './mapStudioKeyboard';
 import { MappingViewContextSwitcher } from './mappingViewContextSwitcher';
 import {
@@ -3050,6 +3052,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   useEffect(() => { structureLayerRef.current = structureLayer; }, [structureLayer]);
   useEffect(() => { sourceTimeframeRef.current = sourceTimeframe; }, [sourceTimeframe]);
   const [structuralSaving, setStructuralSaving] = useState(false);
+  const rangeSaveShortcutGateRef = useRef({ inFlight: false });
   const [inspectorCommitFlash, setInspectorCommitFlash] = useState<'idle' | 'success'>('idle');
   const inspectorCommitFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [structuralRanges, setStructuralRanges] = useState<StructuralRange[]>([]);
@@ -9757,12 +9760,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         <b>Market Memory Navigator</b>
         <span>XAUUSD canonical hierarchy</span>
       </div>
-      <MasterMapHierarchyPanel
-        selectedCanonicalRangeId={selectedMasterMapCanonicalRangeId}
-        onNavigationRequest={handleMasterMapNavigationRequest}
-      />
-      <details className="legacyCaseHierarchyDiagnostics">
-        <summary>Raw case hierarchy diagnostics · {explorerTreeRanges.length} shown / {savedStructuralRanges.length} total</summary>
+      <HierarchyWorkspace
+        ranges={savedStructuralRanges}
+        onNavigateRange={jumpToStructuralRange}
+        structure={<>
       <div className="explorerModeRow">
         <span className="explorerOverlayLabel">Mode</span>
         <button
@@ -9859,7 +9860,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
           {renderExplorerOrphanRows()}
         </>}
       </div>
-      </details>
+        </>}
+      />
     </div>
   );
 
@@ -10669,6 +10671,23 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       if (isTypingInEditableField(evt.target)) return;
       const action = resolveMapStudioKeyAction(evt.key);
       if (!action) return;
+      if (action === 'save-range') {
+        const draftHigh = parseNum(rhAnchor.price);
+        const draftLow = parseNum(rlAnchor.price);
+        const hasValidDraft = !!(
+          rhAnchor.price && rhAnchor.time && rlAnchor.price && rlAnchor.time
+          && Number.isFinite(draftHigh) && Number.isFinite(draftLow) && draftHigh > draftLow
+          && getCurrentMappingCaseRef().hasCase && !structuralCommitBlockReason
+        );
+        const modalOpen = !!document.querySelector('dialog[open], [role="dialog"], [aria-modal="true"]');
+        if (!shouldHandleRangeSaveShortcut(evt, {
+          hasValidDraft,
+          saveInFlight: structuralSaving || rangeSaveShortcutGateRef.current.inFlight,
+          modalOpen,
+        })) return;
+        void runRangeSaveShortcut(evt, { hasValidDraft, modalOpen }, rangeSaveShortcutGateRef.current, handleQuickRangeSave);
+        return;
+      }
       if (chartRenderer === 'tradingview' && !tradingViewMappingInputEnabled && ['set-rh', 'set-rl', 'bos-up', 'bos-down'].includes(action)) {
         evt.preventDefault();
         const warning = 'TradingView mapping input disabled.';
@@ -10701,6 +10720,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     chartRenderer,
     tradingViewMappingInputEnabled,
     tradingViewSelectedCandle,
+    rhAnchor.price,
+    rhAnchor.time,
+    rlAnchor.price,
+    rlAnchor.time,
+    structuralCommitBlockReason,
   ]);
 
   const updateChartDrawings = (updater: ChartDrawing[] | ((prev: ChartDrawing[]) => ChartDrawing[])) => {
@@ -11523,12 +11547,12 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         .replace('Update Selected Range', 'Update')
         .replace('Save New Range', 'Save');
 
-  const handleQuickRangeSave = () => {
-    if (confirmChildRange.eligible && confirmChildRange.useSaveNextPath) void saveNextStructuralRange();
-    else if (confirmChildRange.eligible) void saveStructuralRange();
-    else if (chainDraftMode && saveNextRangeEligible.eligible) void saveNextStructuralRange();
-    else void saveStructuralRange();
-  };
+  async function handleQuickRangeSave(): Promise<boolean> {
+    if (confirmChildRange.eligible && confirmChildRange.useSaveNextPath) return saveNextStructuralRange();
+    if (confirmChildRange.eligible) return saveStructuralRange();
+    if (chainDraftMode && saveNextRangeEligible.eligible) return saveNextStructuralRange();
+    return saveStructuralRange();
+  }
   const tvMappingVisibleFeedReady = chartRenderer === 'tradingview'
     && tradingViewMappingInputEnabled
     && candles.length > 0;
@@ -11634,7 +11658,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BH')} title="Break Up">↑</button>
       <button type="button" className="structuralMarkBtn" disabled={structuralQuickAnchorDisabled} onClick={() => setStructuralPoint('BL')} title="Break Down">↓</button>
       <span className="structuralMarkDivider" />
-      <button type="button" className={`structuralMarkBtn primary ${confirmChildRange.eligible || chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason} title={saveBlockReason || (confirmChildRange.eligible ? confirmChildRange.label : chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)}>{structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : compactQuickSaveLabel)}</button>
+      <button type="button" className={`structuralMarkBtn primary ${confirmChildRange.eligible || chainDraftMode ? 'emph' : savePreview.selectedIsBroken ? '' : 'emph'}`} onClick={() => void handleQuickRangeSave()} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !getCurrentMappingCaseRef().hasCase || !!structuralCommitBlockReason} title={`${saveBlockReason || (confirmChildRange.eligible ? confirmChildRange.label : chainDraftMode ? 'Save next range in chain' : savePreview.actionLabel)} · Enter`}>{structuralSaving ? '…' : (confirmChildRange.eligible ? confirmChildRange.label : compactQuickSaveLabel)}</button>
       <button type="button" className="structuralMarkBtn" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!structuralCommitBlockReason} title={scopeTimeframeBlockReason || saveNextRangeEligible.reason || 'Save next range'}>Next</button>
       <button type="button" className="structuralMarkBtn" onClick={refreshHierarchyAudit} title="Refresh audit">Audit</button>
       <button type="button" className="structuralMarkBtn" onClick={exportCurrentMappingJson} title="Export mapping JSON">Export</button>
@@ -11868,7 +11892,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             <div className="toolsCorrectionPane">
               <p className="mutedSmall">Manual save/correction — primary path is candle + keyboard (H/L/↑/↓).</p>
               <div className="caseActionRow compactActionRow">
-                <button type="button" className="gpsSaveBtn" onClick={handleQuickRangeSave} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!structuralCommitBlockReason}>{structuralSaving ? '…' : compactQuickSaveLabel}</button>
+                <button type="button" className="gpsSaveBtn" onClick={() => void handleQuickRangeSave()} disabled={structuralSaving || !rhAnchor.price || !rlAnchor.price || !!structuralCommitBlockReason} title="Save plotted range · Enter">{structuralSaving ? '…' : compactQuickSaveLabel}</button>
                 <button type="button" className="gpsSaveBtn secondary" onClick={saveNextStructuralRange} disabled={structuralSaving || !saveNextRangeEligible.eligible || !!structuralCommitBlockReason}>Save Next Range</button>
                 <button type="button" className="gpsSaveBtn secondary" onClick={() => void handleInspectorStructuralCommit()} disabled={inspectorCommitDisabled}>Force Commit</button>
               </div>
