@@ -267,7 +267,8 @@ def evaluate_weekly(
     if latest is None:
         return finish(row, "MISSING_DATA", reasons | {"MISSING_W1_CANDLES"})
     latest_dt = parse_time(latest)
-    if latest_dt is None or latest_dt <= parse_time(end_time):
+    parsed_end = parse_time(end_time)
+    if latest_dt is None or parsed_end is None or latest_dt <= parsed_end:
         return finish(row, "MISSING_DATA", reasons | {"NO_CANDLES_AFTER_ENDING_ANCHOR"})
 
     candles = load_candles(
@@ -277,7 +278,11 @@ def evaluate_weekly(
         start_time=str(end_time),
         end_time=latest,
     )
-    candidates = [candle for candle in candles if parse_time(candle.time) and parse_time(candle.time) > parse_time(end_time)]
+    candidates: list[SourceCandle] = []
+    for candle in candles:
+        candle_time = parse_time(candle.time)
+        if candle_time is not None and candle_time > parsed_end:
+            candidates.append(candle)
     row["candles_scanned"] = len(candidates)
     if not candidates:
         return finish(row, "MISSING_DATA", reasons | {"NO_CANDLES_AFTER_ENDING_ANCHOR"})
