@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { adaptMasterMapOutput } from './masterMapAdapter';
 import {
   MasterMapHierarchyView,
+  masterMapChronologyFacts,
   type MasterMapNavigationRequest,
 } from './masterMapHierarchy';
 import { masterMapFixture } from './testFixtures/masterMapFixture';
@@ -56,6 +57,55 @@ describe('MasterMapHierarchyView', () => {
     expect(container.querySelector('[data-canonical-range-id="mm:range:intraday-trusted"]')).not.toBeNull();
   });
 
+  it('shows compact chronological anchor order and BOS direction on the range row', () => {
+    renderView();
+
+    const row = container.querySelector('[data-canonical-range-id="mm:range:weekly-trusted"]');
+    expect(row?.getAttribute('data-chronology-start-side')).toBe('RL');
+    expect(row?.getAttribute('data-chronology-end-side')).toBe('RH');
+    expect(row?.getAttribute('data-bos-direction')).toBe('DOWN');
+    expect(row?.textContent).toContain('RL → RH');
+    expect(row?.textContent).toContain('BOS ▼');
+    expect(row?.textContent).not.toContain('NAV TRUSTED');
+    expect(row?.textContent).not.toContain('STATS ELIGIBLE');
+  });
+
+  it('derives RH to RL chronology and down direction without changing raw range truth', () => {
+    const document = adaptMasterMapOutput(masterMapFixture());
+    const node = document.trustedRoot.children[0];
+    const facts = masterMapChronologyFacts({
+      ...node,
+      rangeHighTime: '2026-02-01T00:00:00Z',
+      rangeLowTime: '2026-03-01T00:00:00Z',
+      directionOfBreak: 'BOS_DOWN',
+    });
+
+    expect(facts).toMatchObject({
+      startSide: 'RH',
+      endSide: 'RL',
+      direction: 'DOWN',
+      directionArrow: '▼',
+    });
+  });
+
+  it('shows a compact pending indicator when no BOS direction is stored', () => {
+    const fixture = masterMapFixture();
+    for (const rootKey of ['root', 'trusted_root'] as const) {
+      const rootNode = fixture[rootKey] as { children: Array<Record<string, unknown>> };
+      rootNode.children[0].direction_of_break = null;
+    }
+    act(() => {
+      root.render(createElement(MasterMapHierarchyView, {
+        document: adaptMasterMapOutput(fixture),
+      }));
+    });
+
+    const row = container.querySelector('[data-canonical-range-id="mm:range:weekly-trusted"]');
+    expect(row?.getAttribute('data-bos-direction')).toBe('');
+    expect(row?.textContent).toContain('BOS ·');
+    expect(row?.querySelector('[aria-label="BOS pending"]')).not.toBeNull();
+  });
+
   it('uses review_root only in Review mode and keeps reviewed rows statistics-excluded', () => {
     renderView();
     click('[aria-label="Master Map hierarchy mode"] button:nth-child(2)');
@@ -87,7 +137,7 @@ describe('MasterMapHierarchyView', () => {
       .toBe('mm:range:weekly-trusted');
     expect(container.querySelector('.masterMapSelectedId')?.textContent)
       .toContain('mm:range:weekly-trusted');
-    expect(container.querySelector('.masterMapProvenance')?.textContent).toContain('Source provenance');
+    expect(container.querySelector('.masterMapProvenance')?.textContent).toContain('Range details');
   });
 
   it('uses root only after the explicit All navigation action', () => {
