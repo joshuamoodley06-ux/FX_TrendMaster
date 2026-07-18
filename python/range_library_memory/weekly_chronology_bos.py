@@ -4,6 +4,12 @@ This derived analysis reads the persisted XAUUSD Master Map plus read-only W1
 candles. It never mutates raw_ranges, raw_events, mapping identity, parent links,
 or candle truth. Results are stored separately and projected into the persisted
 Master Map output so Electron can display one verified hierarchy.
+
+Projection rule:
+- chronology always comes from RH/RL timestamps;
+- BOS requires a strict wick breach after the ending anchor candle;
+- exact touch is not a breach;
+- conflicting pre-existing Master Map direction is reviewable and is not replaced.
 """
 
 from __future__ import annotations
