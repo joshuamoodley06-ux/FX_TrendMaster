@@ -70,19 +70,19 @@ describe('MasterMapHierarchyView', () => {
     expect(row?.textContent).not.toContain('STATS ELIGIBLE');
   });
 
-  it('derives reverse chronology and down direction without changing raw range truth', () => {
+  it('derives RH to RL chronology and down direction without changing raw range truth', () => {
     const document = adaptMasterMapOutput(masterMapFixture());
     const node = document.trustedRoot.children[0];
     const facts = masterMapChronologyFacts({
       ...node,
-      rangeHighTime: '2026-03-01T00:00:00Z',
-      rangeLowTime: '2026-02-01T00:00:00Z',
+      rangeHighTime: '2026-02-01T00:00:00Z',
+      rangeLowTime: '2026-03-01T00:00:00Z',
       directionOfBreak: 'BOS_DOWN',
     });
 
     expect(facts).toMatchObject({
-      startSide: 'RL',
-      endSide: 'RH',
+      startSide: 'RH',
+      endSide: 'RL',
       direction: 'DOWN',
       directionArrow: '▼',
     });
