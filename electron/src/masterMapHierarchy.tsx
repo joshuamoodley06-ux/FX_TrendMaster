@@ -59,6 +59,60 @@ function formatPrice(value: number | null): string {
   return value === null ? '—' : value.toFixed(2);
 }
 
+function timestampMs(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export type MasterMapChronologyFacts = {
+  startSide: 'RH' | 'RL' | '—';
+  endSide: 'RH' | 'RL' | '—';
+  startTime: string | null;
+  endTime: string | null;
+  direction: 'UP' | 'DOWN' | null;
+  directionArrow: '▲' | '▼' | '·';
+};
+
+export function masterMapChronologyFacts(node: MasterMapRangeNode): MasterMapChronologyFacts {
+  const highMs = timestampMs(node.rangeHighTime);
+  const lowMs = timestampMs(node.rangeLowTime);
+  let startSide: MasterMapChronologyFacts['startSide'] = '—';
+  let endSide: MasterMapChronologyFacts['endSide'] = '—';
+  let startTime: string | null = null;
+  let endTime: string | null = null;
+
+  if (highMs !== null && lowMs !== null) {
+    if (lowMs <= highMs) {
+      startSide = 'RL';
+      endSide = 'RH';
+      startTime = node.rangeLowTime;
+      endTime = node.rangeHighTime;
+    } else {
+      startSide = 'RH';
+      endSide = 'RL';
+      startTime = node.rangeHighTime;
+      endTime = node.rangeLowTime;
+    }
+  }
+
+  const breakDirection = String(node.directionOfBreak || '').trim().toUpperCase();
+  const direction = breakDirection === 'UP' || breakDirection === 'BOS_UP'
+    ? 'UP'
+    : breakDirection === 'DOWN' || breakDirection === 'BOS_DOWN'
+      ? 'DOWN'
+      : null;
+
+  return {
+    startSide,
+    endSide,
+    startTime,
+    endTime,
+    direction,
+    directionArrow: direction === 'UP' ? '▲' : direction === 'DOWN' ? '▼' : '·',
+  };
+}
+
 function sourceRefLabel(node: MasterMapRangeNode): string {
   if (!node.sourceRefs.length) return 'No source provenance recorded.';
   return node.sourceRefs
@@ -89,9 +143,9 @@ function RangeTreeNode({
   const hasChildren = node.children.length > 0;
   const expanded = hasChildren && expandedIds.has(node.canonicalRangeId);
   const selected = selectedCanonicalRangeId === node.canonicalRangeId;
-  const statusWithDirection = node.directionOfBreak
-    ? `${node.status} ${node.directionOfBreak}`
-    : node.status;
+  const chronology = masterMapChronologyFacts(node);
+  const bosLabel = chronology.direction ? `BOS ${chronology.directionArrow}` : 'BOS ·';
+  const chronologyLabel = `${chronology.startSide} → ${chronology.endSide}`;
   return (
     <>
       <div
@@ -108,6 +162,9 @@ function RangeTreeNode({
         data-canonical-range-id={node.canonicalRangeId}
         data-navigation-status={node.navigationStatus}
         data-statistics-status={node.statisticsStatus}
+        data-chronology-start-side={chronology.startSide}
+        data-chronology-end-side={chronology.endSide}
+        data-bos-direction={chronology.direction || ''}
         style={{ ['--master-map-depth' as string]: depth }}
       >
         {hasChildren ? (
@@ -128,21 +185,20 @@ function RangeTreeNode({
         >
           <span className="masterMapRangeIdentity">
             <b>{node.layer}</b>
-            <code>{node.canonicalRangeId}</code>
+            <strong aria-label={chronology.direction ? `BOS ${chronology.direction}` : 'BOS pending'}>
+              {chronology.directionArrow}
+            </strong>
+            <span>{chronologyLabel}</span>
             {node.sourceTimeframe && <em>{node.sourceTimeframe}</em>}
           </span>
           <span className="masterMapRangeFacts">
-            <span>{statusWithDirection}</span>
+            <span>{bosLabel}</span>
+            <span>{formatTimestamp(chronology.startTime)} → {formatTimestamp(chronology.endTime)}</span>
             <span>RH {formatPrice(node.rangeHigh)} / RL {formatPrice(node.rangeLow)}</span>
-            <span>{formatTimestamp(node.activeFromTime)} → {formatTimestamp(node.inactiveFromTime)}</span>
           </span>
           <span className="masterMapRangeStatuses">
-            <span className={`masterMapStatusBadge nav-${node.navigationStatus.toLowerCase()}`}>
-              NAV {node.navigationStatus}
-            </span>
-            <span className={`masterMapStatusBadge stats-${node.statisticsStatus.toLowerCase()}`}>
-              STATS {node.statisticsStatus}
-            </span>
+            {node.navigationStatus === 'REVIEW' && <span className="masterMapStatusBadge nav-review">REVIEW</span>}
+            {node.statisticsStatus === 'EXCLUDED' && <span className="masterMapStatusBadge stats-excluded">STATS EXCLUDED</span>}
             {node.reviewContextOnly && <span className="masterMapStatusBadge">CONTEXT ONLY</span>}
             {node.unlinkedReview && <span className="masterMapStatusBadge">UNLINKED</span>}
           </span>
@@ -150,7 +206,10 @@ function RangeTreeNode({
       </div>
       {selected && (
         <details className="masterMapProvenance" data-mode={mode}>
-          <summary>Source provenance · {node.sourceCount} record{node.sourceCount === 1 ? '' : 's'}</summary>
+          <summary>Range details · {node.canonicalRangeId}</summary>
+          <span>{chronologyLabel} · {bosLabel}</span>
+          <span>{formatTimestamp(chronology.startTime)} → {formatTimestamp(chronology.endTime)}</span>
+          <span>Source provenance · {node.sourceCount} record{node.sourceCount === 1 ? '' : 's'}</span>
           <pre>{sourceRefLabel(node)}</pre>
           <span>Parent link {node.directParentLinkStatus} · ancestor {node.ancestorReviewStatus}</span>
         </details>
