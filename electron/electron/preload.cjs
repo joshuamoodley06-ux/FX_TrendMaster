@@ -49,6 +49,9 @@ contextBridge.exposeInMainWorld('localResearch', {
   runRandomRangeAudit: (args) => ipcRenderer.invoke('local-research:random-range-audit', args),
   runRecordAuditVerdict: (args) => ipcRenderer.invoke('local-research:record-audit-verdict', args),
   runMappingAssistant: (args) => ipcRenderer.invoke('local-research:mapping-assistant', args),
+  runWeeklyScript1: (args) => ipcRenderer.invoke('local-research:weekly-script1', args),
+  getWeeklyScript1State: (args) => ipcRenderer.invoke('local-research:weekly-script1-state', args),
+  reviewWeeklyScript1: (args) => ipcRenderer.invoke('local-research:weekly-script1-review', args),
 });
 
 contextBridge.exposeInMainWorld('localMappingBridge', {

@@ -217,6 +217,11 @@ def build_master_map(
             con, symbol, runtime_build_id, built_at, ranges, events,
             relationships, reviews, output,
         )
+        # Re-apply rebuildable Weekly Script 1 analysis after canonical rows are
+        # rebuilt. This projection never participates in structural hashing.
+        from .weekly_chronology_bos import project_stored_results
+
+        project_stored_results(con, output, symbol=symbol)
         con.commit()
 
     if output_path is not None:

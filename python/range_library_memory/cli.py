@@ -75,6 +75,12 @@ from .weekly_direction_context import (
     format_summary as format_weekly_direction_summary,
     summarize_weekly_direction_contexts,
 )
+from .weekly_chronology_bos import (
+    WeeklyChronologyBosError,
+    build_weekly_chronology_bos,
+    concise_summary as concise_weekly_script1_summary,
+    review_weekly_script1_run,
+)
 from .xauusd_first_query_doctrine import (
     DoctrineError,
     build_first_query_doctrine_report,
@@ -290,6 +296,32 @@ def build_parser() -> argparse.ArgumentParser:
     daily_trend_summary_parser.add_argument("--trend-relationship")
     daily_trend_summary_parser.add_argument("--observation-status")
     daily_trend_summary_parser.add_argument("--json", action="store_true")
+
+    weekly_script1_parser = subparsers.add_parser(
+        "build-weekly-script1",
+        help="Build trusted Weekly chronology and first strict BOS derived rows.",
+    )
+    weekly_script1_parser.add_argument(
+        "--db-path", type=Path, required=True, help="Explicit Range Library SQLite path."
+    )
+    weekly_script1_parser.add_argument(
+        "--source-db", type=Path, required=True, help="Explicit read-only candle SQLite path."
+    )
+    weekly_script1_parser.add_argument("--symbol", default="XAUUSD", choices=("XAUUSD",))
+    weekly_script1_parser.add_argument("--case-ref", required=True)
+    weekly_script1_parser.add_argument("--year", type=int, default=None)
+    weekly_script1_parser.add_argument("--json", action="store_true")
+
+    weekly_script1_review_parser = subparsers.add_parser(
+        "review-weekly-script1", help="Persist one trader review on a disposable Script 1 result."
+    )
+    weekly_script1_review_parser.add_argument("--db-path", type=Path, required=True)
+    weekly_script1_review_parser.add_argument("--run-id", required=True)
+    weekly_script1_review_parser.add_argument("--case-ref", required=True)
+    weekly_script1_review_parser.add_argument("--symbol", default="XAUUSD", choices=("XAUUSD",))
+    weekly_script1_review_parser.add_argument("--canonical-range-id", required=True)
+    weekly_script1_review_parser.add_argument("--decision", required=True, choices=("APPROVED", "REJECTED"))
+    weekly_script1_review_parser.add_argument("--json", action="store_true")
 
     first_query_parser = subparsers.add_parser(
         "first-query-doctrine",
@@ -607,6 +639,40 @@ def main(argv: list[str] | None = None) -> int:
         except (InspectionError, DailyTrendRelationshipError, ValueError) as exc:
             parser.error(str(exc))
         print(format_daily_trend_summary(summary, as_json=args.json))
+        return 0
+
+    if args.command == "build-weekly-script1":
+        try:
+            summary = build_weekly_chronology_bos(
+                args.db_path,
+                source_db=args.source_db,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                year=args.year,
+            )
+        except (InspectionError, WeeklyChronologyBosError, ValueError) as exc:
+            parser.error(str(exc))
+        concise = concise_weekly_script1_summary(summary)
+        if args.json:
+            print(json.dumps(concise, sort_keys=True, separators=(",", ":")))
+        else:
+            for key, value in concise.items():
+                print(f"{key}: {value}")
+        return 0
+
+    if args.command == "review-weekly-script1":
+        try:
+            result = review_weekly_script1_run(
+                args.db_path,
+                run_id=args.run_id,
+                case_ref=args.case_ref,
+                symbol=args.symbol,
+                canonical_range_id=args.canonical_range_id,
+                decision=args.decision,
+            )
+        except (InspectionError, WeeklyChronologyBosError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")) if args.json else result)
         return 0
 
     if args.command == "first-query-doctrine":

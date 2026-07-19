@@ -6,6 +6,13 @@ type NodeOptions = {
   direction?: 'UP' | 'DOWN' | null;
   status?: string;
   caseRef?: string;
+  script1?: {
+    chronology: 'RL_TO_RH' | 'RH_TO_RL' | 'PENDING';
+    direction: 'BOS_UP' | 'BOS_DOWN' | 'PENDING';
+    time?: string | null;
+    status: 'COMPLETE' | 'PENDING' | 'NEEDS_REVIEW';
+    reasons?: string[];
+  };
 };
 
 function sourceRef(sourceRecordId: string, caseRef = 'case:live') {
@@ -26,7 +33,7 @@ function rangeNode(
   const statistics = options.statistics || (navigation === 'TRUSTED' ? 'ELIGIBLE' : 'EXCLUDED');
   const sourceTimeframe = layer === 'WEEKLY' ? 'W1' : layer === 'DAILY' ? 'D1' : 'H4';
   const priceOffset = layer === 'WEEKLY' ? 300 : layer === 'DAILY' ? 200 : 100;
-  return {
+  const result: Record<string, unknown> = {
     id,
     node_type: 'RANGE',
     structure_layer: layer,
@@ -49,6 +56,14 @@ function rangeNode(
     events: [],
     children: options.children || [],
   };
+  if (options.script1) {
+    result.script1_chronology = options.script1.chronology;
+    result.script1_bos_direction = options.script1.direction;
+    result.script1_bos_time = options.script1.time ?? null;
+    result.script1_processing_status = options.script1.status;
+    result.script1_reason_codes = options.script1.reasons || [];
+  }
+  return result;
 }
 
 export function masterMapFixture(): Record<string, unknown> {
@@ -60,6 +75,12 @@ export function masterMapFixture(): Record<string, unknown> {
     status: 'BROKEN',
     direction: 'DOWN',
     children: [trustedDaily],
+    script1: {
+      chronology: 'RL_TO_RH',
+      direction: 'BOS_UP',
+      time: '2026-02-01T00:00:00Z',
+      status: 'COMPLETE',
+    },
   });
 
   const reviewIntraday = rangeNode('mm:range:intraday-review', 'INTRADAY', {

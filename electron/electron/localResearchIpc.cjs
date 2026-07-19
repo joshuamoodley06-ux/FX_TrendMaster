@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const fsp = fs.promises;
 const { ipcMain, app, dialog, shell } = require('electron');
 const {
   runHistoricalRangeScan,
@@ -26,8 +27,10 @@ const {
   writeResearchSettings,
 } = require('./localResearchSettings.cjs');
 const { inspectDatabaseFile } = require('./localResearchDatabase.cjs');
+const { cacheDbPath } = require('./candleCache.cjs');
 
 let localResearchBusy = false;
+const weeklyAnalysisCopies = new Set();
 
 function buildDatabaseStatus(options = {}) {
   const databasePath = resolveActiveDatabasePath(options.databasePath);
@@ -134,6 +137,220 @@ function runMappingAssistant(args = {}) {
   return spawnLocalPythonScript(spec, {
     timeoutMs: args.timeoutMs || 120_000,
   });
+}
+
+function buildWeeklyScript1Spec(args = {}) {
+  const candleDatabasePath = path.resolve(String(args.candleDatabasePath || ''));
+  const analysisDatabasePath = path.resolve(String(args.analysisDatabasePath || ''));
+  const caseRef = String(args.caseRef || '').trim();
+  const symbol = String(args.symbol || '').trim().toUpperCase();
+  if (!args.candleDatabasePath || !args.analysisDatabasePath || !caseRef || !symbol) {
+    throw new Error('Weekly Script 1 requires explicit candle, disposable database, case, and symbol inputs.');
+  }
+  if (candleDatabasePath === analysisDatabasePath) {
+    throw new Error('Weekly Script 1 refuses to use the candle database as its write target.');
+  }
+  const pythonRoot = resolveRangeLibraryPythonRoot(args.pythonRoot);
+  return {
+    script: 'range_library_memory.cli',
+    pythonPath: args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python',
+    args: ['-m', 'range_library_memory.cli', 'build-weekly-script1',
+      '--db-path', analysisDatabasePath, '--source-db', candleDatabasePath,
+      '--case-ref', caseRef, '--symbol', symbol, '--json'],
+    cwd: pythonRoot,
+    env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1',
+      FXTM_RANGE_LIBRARY_MEMORY_DB: analysisDatabasePath },
+  };
+}
+
+function buildWeeklyMasterMapSpec(args = {}) {
+  const analysisDatabasePath = path.resolve(String(args.analysisDatabasePath || ''));
+  const outputPath = path.resolve(String(args.outputPath || ''));
+  if (!args.analysisDatabasePath || !args.outputPath) {
+    throw new Error('Weekly Script 1 Master Map refresh requires disposable database and output paths.');
+  }
+  const pythonRoot = resolveRangeLibraryPythonRoot(args.pythonRoot);
+  return {
+    script: 'range_library_memory.master_map',
+    pythonPath: args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python',
+    args: ['-m', 'range_library_memory.master_map', '--db-path', analysisDatabasePath,
+      '--symbol', String(args.symbol || 'XAUUSD').toUpperCase(), '--output', outputPath, '--json'],
+    cwd: pythonRoot,
+    env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1',
+      FXTM_RANGE_LIBRARY_MEMORY_DB: analysisDatabasePath },
+  };
+}
+
+function buildWeeklyScript1ReviewSpec(args = {}) {
+  const analysisDatabasePath = path.resolve(String(args.analysisDatabasePath || ''));
+  const runId = String(args.runId || '').trim();
+  const caseRef = String(args.caseRef || '').trim();
+  const symbol = String(args.symbol || '').trim().toUpperCase();
+  const canonicalRangeId = String(args.canonicalRangeId || '').trim();
+  const decision = String(args.decision || '').trim().toUpperCase();
+  if (!args.analysisDatabasePath || !runId || !caseRef || !symbol) {
+    throw new Error('Weekly Script 1 review requires the analysis copy, run identity, case, and symbol.');
+  }
+  if (!canonicalRangeId || !['APPROVED', 'REJECTED'].includes(decision)) {
+    throw new Error('Weekly Script 1 sample decision is invalid.');
+  }
+  const pythonRoot = resolveRangeLibraryPythonRoot(args.pythonRoot);
+  return {
+    script: 'range_library_memory.cli',
+    pythonPath: args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python',
+    args: ['-m', 'range_library_memory.cli', 'review-weekly-script1',
+      '--db-path', analysisDatabasePath, '--run-id', runId,
+      '--case-ref', caseRef, '--symbol', symbol, '--canonical-range-id', canonicalRangeId,
+      '--decision', decision, '--json'],
+    cwd: pythonRoot,
+    env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1',
+      FXTM_RANGE_LIBRARY_MEMORY_DB: analysisDatabasePath },
+  };
+}
+
+function tableNames(database) {
+  return new Set(database.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => String(row.name)));
+}
+
+function preflightWeeklyAnalysis({ candleDatabasePath, analysisDatabasePath, caseRef, symbol }) {
+  const { DatabaseSync } = require('node:sqlite');
+  const candle = new DatabaseSync(candleDatabasePath, { readOnly: true });
+  try {
+    if (!tableNames(candle).has('candles')) throw new Error('CANDLE_SOURCE_INVALID');
+    const candleCount = Number(candle.prepare(
+      'SELECT COUNT(*) AS count FROM candles WHERE UPPER(symbol)=? AND UPPER(timeframe)=?'
+    ).get(symbol, 'W1')?.count || 0);
+    if (candleCount < 1) throw new Error('CANDLE_SCOPE_EMPTY');
+  } finally { candle.close(); }
+
+  const rangeLibrary = new DatabaseSync(analysisDatabasePath, { readOnly: true });
+  try {
+    const names = tableNames(rangeLibrary);
+    for (const required of ['raw_ranges', 'raw_events', 'master_map_ranges', 'master_map_outputs']) {
+      if (!names.has(required)) throw new Error(`RANGE_LIBRARY_CONTRACT_MISSING:${required}`);
+    }
+    const row = rangeLibrary.prepare('SELECT output_json FROM master_map_outputs WHERE UPPER(symbol)=?').get(symbol);
+    if (!row) throw new Error('MASTER_MAP_SCOPE_MISSING');
+    const output = JSON.parse(String(row.output_json));
+    const roots = [output.trusted_root, output.review_root].filter(Boolean);
+    const stack = [...roots];
+    let weeklyCount = 0;
+    while (stack.length) {
+      const node = stack.pop();
+      if (!node || typeof node !== 'object') continue;
+      if (String(node.structure_layer || '').toUpperCase() === 'WEEKLY'
+        && Array.isArray(node.source_refs)
+        && node.source_refs.some((ref) => String(ref?.case_ref || '') === caseRef)) weeklyCount += 1;
+      if (Array.isArray(node.children)) stack.push(...node.children);
+    }
+    if (!weeklyCount) throw new Error('SELECTED_CASE_HAS_NO_WEEKLY_RANGES');
+  } finally { rangeLibrary.close(); }
+}
+
+async function createDisposableAnalysisCopy(sourcePath, targetPath) {
+  const source = path.resolve(sourcePath);
+  const target = path.resolve(targetPath);
+  if (source === target) throw new Error('Disposable analysis copy cannot be the live database.');
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  const { DatabaseSync, backup } = require('node:sqlite');
+  const database = new DatabaseSync(source, { readOnly: true });
+  try {
+    await backup(database, target);
+  } finally {
+    database.close();
+  }
+  return target;
+}
+
+function weeklyAnalysisPaths(liveDatabasePath, caseRef, symbol, analysisRoot) {
+  const root = analysisRoot || path.join(researchFolder(), 'analysis-copies', 'weekly-script1');
+  const scopeId = require('node:crypto').createHash('sha256')
+    .update(`${path.resolve(liveDatabasePath)}|${caseRef}|${symbol}`).digest('hex').slice(0, 20);
+  return { analysisDatabasePath: path.join(root, `${scopeId}.sqlite3`),
+    outputPath: path.join(root, `${scopeId}.master-map.json`) };
+}
+
+async function runWeeklyScript1Activation(args = {}, dependencies = {}) {
+  const liveDatabasePath = path.resolve(String(args.databasePath || ''));
+  const candleDatabasePath = path.resolve(String(args.candleDatabasePath || cacheDbPath()));
+  const caseRef = String(args.caseRef || '').trim();
+  const symbol = String(args.symbol || '').trim().toUpperCase();
+  if (!args.databasePath || !fs.existsSync(liveDatabasePath)) {
+    throw new Error(`Range Library database does not exist: ${liveDatabasePath}`);
+  }
+  if (!caseRef || !symbol) throw new Error('Selected case and symbol are required.');
+  if (!fs.existsSync(candleDatabasePath)) throw new Error('CANDLE_SOURCE_UNRESOLVED');
+  if (candleDatabasePath === liveDatabasePath) throw new Error('CANDLE_AND_RANGE_LIBRARY_MUST_BE_SEPARATE');
+  const analysisRoot = args.analysisRoot
+    ? path.resolve(String(args.analysisRoot))
+    : path.join(researchFolder(), 'analysis-copies', 'weekly-script1');
+  const { analysisDatabasePath, outputPath } = weeklyAnalysisPaths(liveDatabasePath, caseRef, symbol, analysisRoot);
+  const copyDatabase = dependencies.copyDatabase || createDisposableAnalysisCopy;
+  const runScript = dependencies.runScript || spawnLocalPythonScript;
+  const preflight = dependencies.preflight || preflightWeeklyAnalysis;
+  if (!fs.existsSync(analysisDatabasePath)) await copyDatabase(liveDatabasePath, analysisDatabasePath);
+  preflight({ candleDatabasePath, analysisDatabasePath, caseRef, symbol });
+  const common = { candleDatabasePath, analysisDatabasePath, caseRef, symbol, pythonPath: args.pythonPath, pythonRoot: args.pythonRoot };
+  const scriptResult = await runScript(buildWeeklyScript1Spec(common), {
+    timeoutMs: args.timeoutMs || 180_000,
+  });
+  if (!scriptResult?.ok) throw new Error(scriptResult?.error || scriptResult?.stderr || 'Weekly Script 1 failed.');
+  const mapResult = await runScript(buildWeeklyMasterMapSpec({ ...common, outputPath }), {
+    timeoutMs: args.timeoutMs || 180_000,
+    parse: (stdout) => JSON.parse(String(stdout).trim()),
+  });
+  if (!mapResult?.ok || !mapResult?.parsed) {
+    throw new Error(mapResult?.error || mapResult?.stderr || 'Disposable Master Map refresh failed.');
+  }
+  weeklyAnalysisCopies.add(path.resolve(analysisDatabasePath));
+  return { ok: true, source: 'DISPOSABLE_ANALYSIS_COPY', liveDatabasePath, candleDatabasePath,
+    analysisDatabasePath, masterMap: mapResult.parsed };
+}
+
+async function loadWeeklyScript1State(args = {}, dependencies = {}) {
+  const liveDatabasePath = path.resolve(String(args.databasePath || ''));
+  const caseRef = String(args.caseRef || '').trim();
+  const symbol = String(args.symbol || '').trim().toUpperCase();
+  if (!liveDatabasePath || !caseRef || !symbol) return { ok: false, source: 'LIVE' };
+  const analysisRoot = args.analysisRoot ? path.resolve(String(args.analysisRoot))
+    : path.join(researchFolder(), 'analysis-copies', 'weekly-script1');
+  const { analysisDatabasePath, outputPath } = weeklyAnalysisPaths(liveDatabasePath, caseRef, symbol, analysisRoot);
+  if (!fs.existsSync(analysisDatabasePath)) return { ok: false, source: 'LIVE' };
+  const runScript = dependencies.runScript || spawnLocalPythonScript;
+  const mapResult = await runScript(buildWeeklyMasterMapSpec({ analysisDatabasePath, outputPath, symbol,
+    pythonPath: args.pythonPath, pythonRoot: args.pythonRoot }), {
+    timeoutMs: args.timeoutMs || 180_000, parse: (stdout) => JSON.parse(String(stdout).trim()),
+  });
+  if (!mapResult?.ok || !mapResult?.parsed) return { ok: false, source: 'LIVE' };
+  weeklyAnalysisCopies.add(path.resolve(analysisDatabasePath));
+  return { ok: true, source: 'DISPOSABLE_ANALYSIS_COPY', liveDatabasePath,
+    analysisDatabasePath, masterMap: mapResult.parsed };
+}
+
+async function runWeeklyScript1Review(args = {}, dependencies = {}) {
+  const analysisDatabasePath = path.resolve(String(args.analysisDatabasePath || ''));
+  const liveDatabasePath = path.resolve(String(args.liveDatabasePath || ''));
+  const allowedCopies = dependencies.allowedCopies || weeklyAnalysisCopies;
+  if (!args.analysisDatabasePath || !allowedCopies.has(analysisDatabasePath)) {
+    throw new Error('ANALYSIS_COPY_UNAVAILABLE');
+  }
+  if (args.liveDatabasePath && analysisDatabasePath === liveDatabasePath) {
+    throw new Error('LIVE_RANGE_LIBRARY_WRITE_BLOCKED');
+  }
+  const runScript = dependencies.runScript || spawnLocalPythonScript;
+  const common = { ...args, analysisDatabasePath };
+  const reviewResult = await runScript(buildWeeklyScript1ReviewSpec(common), {
+    timeoutMs: args.timeoutMs || 120_000,
+  });
+  if (!reviewResult?.ok) throw new Error(reviewResult?.error || reviewResult?.stderr || 'SCRIPT1_REVIEW_FAILED');
+  const outputPath = path.join(path.dirname(analysisDatabasePath), `${path.basename(analysisDatabasePath, path.extname(analysisDatabasePath))}.master-map.json`);
+  const mapResult = await runScript(buildWeeklyMasterMapSpec({ ...common, outputPath }), {
+    timeoutMs: args.timeoutMs || 180_000,
+    parse: (stdout) => JSON.parse(String(stdout).trim()),
+  });
+  if (!mapResult?.ok || !mapResult?.parsed) throw new Error('SCRIPT1_REVIEW_REFRESH_FAILED');
+  return { ok: true, source: 'DISPOSABLE_ANALYSIS_COPY', analysisDatabasePath,
+    decision: String(args.decision || '').toUpperCase(), masterMap: mapResult.parsed };
 }
 
 function registerLocalResearchIpc() {
@@ -359,6 +576,39 @@ function registerLocalResearchIpc() {
     }));
   });
 
+  ipcMain.handle('local-research:weekly-script1', async (_event, args) => {
+    try {
+      return await runExclusive('weekly-script1', () => runWeeklyScript1Activation(args || {}));
+    } catch (err) {
+      console.error(`[weekly-script1] ${err?.stack || err?.message || String(err)}`);
+      const detail = String(err?.message || err || '');
+      const error = detail.includes('CANDLE') || /candles table/i.test(detail)
+        ? 'Weekly analysis could not start because the candle source database was not resolved.'
+        : detail.includes('SELECTED_CASE') ? 'The selected case has no Weekly records available for analysis.'
+        : detail.includes('case and symbol') ? 'Select a case before running Weekly analysis.'
+        : 'Weekly analysis could not start. Technical details were written to the Electron log.';
+      return { ok: false, source: 'LIVE', error };
+    }
+  });
+
+  ipcMain.handle('local-research:weekly-script1-state', async (_event, args) => {
+    try { return await loadWeeklyScript1State(args || {}); }
+    catch (err) {
+      console.error(`[weekly-script1-state] ${err?.stack || err?.message || String(err)}`);
+      return { ok: false, source: 'LIVE' };
+    }
+  });
+
+  ipcMain.handle('local-research:weekly-script1-review', async (_event, args) => {
+    try {
+      return await runExclusive('weekly-script1-review', () => runWeeklyScript1Review(args || {}));
+    } catch (err) {
+      console.error(`[weekly-script1-review] ${err?.stack || err?.message || String(err)}`);
+      return { ok: false, source: 'DISPOSABLE_ANALYSIS_COPY',
+        error: 'The Weekly analysis review could not be saved safely.' };
+    }
+  });
+
   ipcMain.handle('local-research:getPaths', () => {
     const databasePath = resolveActiveDatabasePath();
     return {
@@ -393,4 +643,13 @@ module.exports = {
   resolveRangeLibraryPythonRoot,
   buildMappingAssistantSpec,
   runMappingAssistant,
+  buildWeeklyScript1Spec,
+  buildWeeklyMasterMapSpec,
+  buildWeeklyScript1ReviewSpec,
+  createDisposableAnalysisCopy,
+  preflightWeeklyAnalysis,
+  runWeeklyScript1Activation,
+  runWeeklyScript1Review,
+  loadWeeklyScript1State,
+  weeklyAnalysisPaths,
 };

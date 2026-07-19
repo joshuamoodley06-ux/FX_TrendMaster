@@ -25,6 +25,10 @@ describe('masterMapAdapter', () => {
     expect(weekly.directionOfBreak).toBe('DOWN');
     expect(weekly.navigationStatus).toBe('TRUSTED');
     expect(weekly.statisticsStatus).toBe('ELIGIBLE');
+    expect(weekly.script1Chronology).toBe('RL_TO_RH');
+    expect(weekly.script1BosDirection).toBe('BOS_UP');
+    expect(weekly.script1BosTime).toBe('2026-02-01T00:00:00Z');
+    expect(weekly.script1ProcessingStatus).toBe('COMPLETE');
     expect(weekly.sourceRefs[0]).toMatchObject({
       caseRef: 'case:live',
       sourceRecordId: 'mm:range:weekly-trusted',

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { describe, expect, it } from 'vitest';
+import os from 'os';
+import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import { buildBatchRangePromoteCommand, buildHistoricalRangeScanCommand, buildLocalResearchSeedCommand } from './localPythonRunner';
 
@@ -9,6 +10,12 @@ const {
   validateBatchPromoteArgs,
   normalizeRunnerArgs,
   buildMappingAssistantSpec,
+  buildWeeklyScript1Spec,
+  buildWeeklyMasterMapSpec,
+  buildWeeklyScript1ReviewSpec,
+  preflightWeeklyAnalysis,
+  runWeeklyScript1Activation,
+  runWeeklyScript1Review,
 } = requireCjs('../electron/localResearchIpc.cjs');
 
 const BACKEND = path.resolve(__dirname, '../../backend');
@@ -49,6 +56,26 @@ describe('localResearchIpc safety', () => {
 });
 
 describe('localResearchIpc runner args', () => {
+  it('preflights separate candle and Range Library databases for the selected case', () => {
+    const { DatabaseSync } = requireCjs('node:sqlite');
+    const folder = fs.mkdtempSync(path.join(os.tmpdir(), 'fxtm-weekly-preflight-'));
+    const candlePath = path.join(folder, 'candles.sqlite3');
+    const rangePath = path.join(folder, 'range.sqlite3');
+    const candle = new DatabaseSync(candlePath);
+    candle.exec("CREATE TABLE candles(symbol TEXT,timeframe TEXT,time TEXT); INSERT INTO candles VALUES ('XAUUSD','W1','2026-01-01')");
+    candle.close();
+    const range = new DatabaseSync(rangePath);
+    range.exec('CREATE TABLE raw_ranges(id INTEGER); CREATE TABLE raw_events(id INTEGER); CREATE TABLE master_map_ranges(canonical_range_id TEXT); CREATE TABLE master_map_outputs(symbol TEXT, output_json TEXT)');
+    const output = JSON.stringify({ trusted_root: { children: [{ structure_layer: 'WEEKLY', source_refs: [{ case_ref: 'case:live' }], children: [] }] } });
+    range.prepare('INSERT INTO master_map_outputs VALUES (?,?)').run('XAUUSD', output);
+    range.close();
+
+    expect(() => preflightWeeklyAnalysis({ candleDatabasePath: candlePath,
+      analysisDatabasePath: rangePath, caseRef: 'case:live', symbol: 'XAUUSD' })).not.toThrow();
+    expect(() => preflightWeeklyAnalysis({ candleDatabasePath: rangePath,
+      analysisDatabasePath: rangePath, caseRef: 'case:live', symbol: 'XAUUSD' })).toThrow(/CANDLE_SOURCE_INVALID/);
+  });
+
   it('batch promote IPC args omit --confirm unless confirm is true', () => {
     const dry = buildBatchRangePromoteCommand({
       backendDir: BACKEND,
@@ -129,6 +156,75 @@ describe('localResearchIpc runner args', () => {
   it('Mapping Assistant rejects an implicit database target', () => {
     expect(() => buildMappingAssistantSpec({ pythonRoot: PYTHON_ROOT })).toThrow(/explicit Range Library/);
   });
+
+  it('routes Weekly Script 1 writes only to the disposable copy', () => {
+    const candle = path.resolve('C:/research/candles.sqlite3');
+    const copy = path.resolve('C:/research/analysis/copy.sqlite3');
+    const spec = buildWeeklyScript1Spec({ candleDatabasePath: candle, analysisDatabasePath: copy,
+      caseRef: 'case:live', symbol: 'XAUUSD', pythonRoot: PYTHON_ROOT });
+    expect(spec.args).toEqual(expect.arrayContaining([
+      '--db-path', copy, '--source-db', candle, '--case-ref', 'case:live', '--symbol', 'XAUUSD',
+    ]));
+    expect(spec.env.FXTM_RANGE_LIBRARY_MEMORY_DB).toBe(copy);
+    expect(() => buildWeeklyScript1Spec({ candleDatabasePath: copy, analysisDatabasePath: copy,
+      caseRef: 'case:live', symbol: 'XAUUSD', pythonRoot: PYTHON_ROOT })).toThrow(/refuses/);
+  });
+
+  it('rebuilds Master Map against the same disposable copy', () => {
+    const copy = path.resolve('C:/research/analysis/copy.sqlite3');
+    const output = path.resolve('C:/research/analysis/copy.json');
+    const spec = buildWeeklyMasterMapSpec({ analysisDatabasePath: copy, outputPath: output, pythonRoot: PYTHON_ROOT });
+    expect(spec.args).toEqual(expect.arrayContaining(['--db-path', copy, '--output', output]));
+    expect(spec.env.FXTM_RANGE_LIBRARY_MEMORY_DB).toBe(copy);
+  });
+
+  it('persists review only to an allow-listed disposable copy and refreshes its Master Map', async () => {
+    const copy = path.resolve('C:/research/analysis/copy.sqlite3');
+    const live = path.resolve('C:/research/live.sqlite3');
+    const calls: any[] = [];
+    const runScript = vi.fn(async (spec: any) => {
+      calls.push(spec);
+      return spec.args.includes('review-weekly-script1')
+        ? { ok: true }
+        : { ok: true, parsed: { schema_version: 'xauusd_master_map_v0.1' } };
+    });
+    const result = await runWeeklyScript1Review({ analysisDatabasePath: copy, liveDatabasePath: live,
+      runId: 'run-1', caseRef: 'case:live', symbol: 'XAUUSD', canonicalRangeId: 'weekly-1', decision: 'APPROVED',
+      pythonRoot: PYTHON_ROOT }, { allowedCopies: new Set([copy]), runScript });
+    expect(result.ok).toBe(true);
+    expect(calls[0].args).toEqual(expect.arrayContaining([
+      'review-weekly-script1', '--db-path', copy, '--run-id', 'run-1', '--canonical-range-id', 'weekly-1', '--decision', 'APPROVED',
+    ]));
+    expect(calls[0].args).not.toContain(live);
+    await expect(runWeeklyScript1Review({ analysisDatabasePath: live, liveDatabasePath: live,
+      runId: 'run-1', caseRef: 'case:live', symbol: 'XAUUSD', canonicalRangeId: 'weekly-1', decision: 'APPROVED' },
+    { allowedCopies: new Set([live]), runScript })).rejects.toThrow(/LIVE_RANGE_LIBRARY_WRITE_BLOCKED/);
+  });
+
+  it('activation copies first, then runs Script 1 and Master Map on that copy', async () => {
+    const calls: string[] = [];
+    const analysisRoot = path.resolve(__dirname, '../work/weekly-script1-test');
+    const copyDatabase = vi.fn(async (_live: string, copy: string) => { calls.push(`copy:${copy}`); return copy; });
+    const runScript = vi.fn(async (spec: { script: string }) => {
+      calls.push(spec.script);
+      return spec.script === 'range_library_memory.master_map'
+        ? { ok: true, parsed: { schema_version: 'xauusd_master_map_v0.1' } }
+        : { ok: true };
+    });
+    const existingSource = path.resolve(__dirname, '../package.json');
+    const existingCandleSource = path.resolve(__dirname, '../package-lock.json');
+    const preflight = vi.fn();
+    const result = await runWeeklyScript1Activation({ databasePath: existingSource,
+      candleDatabasePath: existingCandleSource, caseRef: 'case:live', symbol: 'XAUUSD',
+      analysisRoot, runId: 'test' }, { copyDatabase, runScript, preflight });
+    expect(result.source).toBe('DISPOSABLE_ANALYSIS_COPY');
+    expect(result.analysisDatabasePath).not.toBe(existingSource);
+    expect(calls.slice(1)).toEqual(['range_library_memory.cli', 'range_library_memory.master_map']);
+    expect(calls[0]).toBe(`copy:${result.analysisDatabasePath}`);
+    expect(preflight).toHaveBeenCalledWith(expect.objectContaining({
+      caseRef: 'case:live', symbol: 'XAUUSD', analysisDatabasePath: result.analysisDatabasePath,
+    }));
+  });
 });
 
 describe('preload localResearch API', () => {
@@ -147,6 +243,9 @@ describe('preload localResearch API', () => {
     expect(src).toContain('pullVpsCandles');
     expect(src).toContain('runLocalResearchSeed');
     expect(src).toContain('runMappingAssistant');
+    expect(src).toContain('runWeeklyScript1');
+    expect(src).toContain('reviewWeeklyScript1');
+    expect(src).toContain('local-research:weekly-script1');
     expect(src).toContain('local-research:mapping-assistant');
     expect(src).toContain('local-research:seed');
     expect(src).toContain('local-research:historical-range-scan');

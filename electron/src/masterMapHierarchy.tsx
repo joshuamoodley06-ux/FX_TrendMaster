@@ -59,6 +59,26 @@ function formatPrice(value: number | null): string {
   return value === null ? '—' : value.toFixed(2);
 }
 
+export function weeklyScript1Facts(node: MasterMapRangeNode) {
+  const chronology = node.script1Chronology === 'RL_TO_RH'
+    ? 'RL → RH'
+    : node.script1Chronology === 'RH_TO_RL'
+      ? 'RH → RL'
+      : '—';
+  const direction = node.script1BosDirection === 'BOS_UP'
+    ? 'UP'
+    : node.script1BosDirection === 'BOS_DOWN'
+      ? 'DOWN'
+      : null;
+  return {
+    chronology,
+    direction,
+    arrow: direction === 'UP' ? '▲' : direction === 'DOWN' ? '▼' : '·',
+    status: node.script1ProcessingStatus || 'PENDING',
+    reason: node.script1ReasonCodes.join(', '),
+  } as const;
+}
+
 function sourceRefLabel(node: MasterMapRangeNode): string {
   if (!node.sourceRefs.length) return 'No source provenance recorded.';
   return node.sourceRefs
@@ -92,6 +112,8 @@ function RangeTreeNode({
   const statusWithDirection = node.directionOfBreak
     ? `${node.status} ${node.directionOfBreak}`
     : node.status;
+  const script1 = weeklyScript1Facts(node);
+  const weeklyScript1 = node.layer === 'WEEKLY';
   return (
     <>
       <div
@@ -108,6 +130,9 @@ function RangeTreeNode({
         data-canonical-range-id={node.canonicalRangeId}
         data-navigation-status={node.navigationStatus}
         data-statistics-status={node.statisticsStatus}
+        data-script1-chronology={weeklyScript1 ? script1.chronology : undefined}
+        data-script1-bos-direction={weeklyScript1 ? script1.direction || '' : undefined}
+        data-script1-status={weeklyScript1 ? script1.status : undefined}
         style={{ ['--master-map-depth' as string]: depth }}
       >
         {hasChildren ? (
@@ -128,11 +153,13 @@ function RangeTreeNode({
         >
           <span className="masterMapRangeIdentity">
             <b>{node.layer}</b>
+            {weeklyScript1 && <strong aria-label={script1.direction ? `BOS ${script1.direction}` : 'BOS pending'}>{script1.arrow}</strong>}
             <code>{node.canonicalRangeId}</code>
             {node.sourceTimeframe && <em>{node.sourceTimeframe}</em>}
           </span>
           <span className="masterMapRangeFacts">
-            <span>{statusWithDirection}</span>
+            <span>{weeklyScript1 ? script1.chronology : statusWithDirection}</span>
+            {weeklyScript1 && <span>{script1.direction ? `BOS ${script1.arrow}` : 'BOS pending'} · {formatTimestamp(node.script1BosTime)}</span>}
             <span>RH {formatPrice(node.rangeHigh)} / RL {formatPrice(node.rangeLow)}</span>
             <span>{formatTimestamp(node.activeFromTime)} → {formatTimestamp(node.inactiveFromTime)}</span>
           </span>
@@ -143,6 +170,7 @@ function RangeTreeNode({
             <span className={`masterMapStatusBadge stats-${node.statisticsStatus.toLowerCase()}`}>
               STATS {node.statisticsStatus}
             </span>
+            {weeklyScript1 && script1.status === 'NEEDS_REVIEW' && <span className="masterMapStatusBadge nav-review">SCRIPT 1 REVIEW</span>}
             {node.reviewContextOnly && <span className="masterMapStatusBadge">CONTEXT ONLY</span>}
             {node.unlinkedReview && <span className="masterMapStatusBadge">UNLINKED</span>}
           </span>
@@ -151,6 +179,8 @@ function RangeTreeNode({
       {selected && (
         <details className="masterMapProvenance" data-mode={mode}>
           <summary>Source provenance · {node.sourceCount} record{node.sourceCount === 1 ? '' : 's'}</summary>
+          {weeklyScript1 && <span>Script 1 · {script1.chronology} · {script1.direction ? `BOS ${script1.arrow}` : 'BOS pending'} · {formatTimestamp(node.script1BosTime)}</span>}
+          {weeklyScript1 && script1.reason && <span>{script1.reason}</span>}
           <pre>{sourceRefLabel(node)}</pre>
           <span>Parent link {node.directParentLinkStatus} · ancestor {node.ancestorReviewStatus}</span>
         </details>

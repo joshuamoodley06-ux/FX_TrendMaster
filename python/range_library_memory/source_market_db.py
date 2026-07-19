@@ -26,7 +26,11 @@ class SourceCandle:
     source: str | None
 
 
-def open_source_market_db(source_db: str | Path) -> sqlite3.Connection:
+def open_source_market_db(
+    source_db: str | Path,
+    *,
+    required_tables: tuple[str, ...] = ("candles", "map_ranges"),
+) -> sqlite3.Connection:
     path = Path(source_db)
     if not path.is_file():
         raise SourceMarketDbError(f"Source database does not exist: {path}")
@@ -38,21 +42,25 @@ def open_source_market_db(source_db: str | Path) -> sqlite3.Connection:
             connection.execute("PRAGMA query_only = ON")
         except sqlite3.DatabaseError:
             pass
-        require_source_tables(connection)
+        require_source_tables(connection, required_tables=required_tables)
         return connection
     except Exception:
         connection.close()
         raise
 
 
-def require_source_tables(connection: sqlite3.Connection) -> None:
+def require_source_tables(
+    connection: sqlite3.Connection,
+    *,
+    required_tables: tuple[str, ...] = ("candles", "map_ranges"),
+) -> None:
     existing = {
         row["name"]
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'",
         ).fetchall()
     }
-    for table in ("candles", "map_ranges"):
+    for table in required_tables:
         if table not in existing:
             raise SourceMarketDbError(f"Source database is missing required table: {table}")
 

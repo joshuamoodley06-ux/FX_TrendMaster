@@ -32,6 +32,14 @@ export type MasterMapRangeNode = {
   inactiveFromTime: string | null;
   status: string;
   directionOfBreak: string | null;
+  script1Chronology: string | null;
+  script1BosDirection: string | null;
+  script1BosTime: string | null;
+  script1ProcessingStatus: string | null;
+  script1ProcessingVersion: string | null;
+  script1RunId: string | null;
+  script1ReviewStatus: string | null;
+  script1ReasonCodes: string[];
   navigationStatus: MasterMapNavigationStatus;
   statisticsStatus: MasterMapStatisticsStatus;
   ancestorReviewStatus: string;
@@ -60,6 +68,14 @@ export type MasterMapDocument = {
   reviewRoot: MasterMapSymbolNode;
   allNavigationRoot: MasterMapSymbolNode;
   statistics: Record<string, unknown>;
+  weeklyAnalysis: {
+    pipelineName: string; version: string; runId: string; executedAt: string | null;
+    inputStructuralContentHash: string | null; approvalState: string; approvedAt: string | null;
+    eligible: number; analysed: number; pending: number; needsReview: number;
+    scriptContentHash: string; sampleCount: number; approvalCount: number;
+    publicationStatus: string; publicationVersion: string | null; publishedAt: string | null;
+    validationSamples: { canonicalRangeId: string; sampleOrder: number; decision: string; decidedAt: string | null }[];
+  } | null;
 };
 
 export class MasterMapAdapterError extends Error {
@@ -105,6 +121,10 @@ function optionalNumber(value: unknown, path: string): number | null {
     throw new MasterMapAdapterError(`${path} must be a finite number or null.`);
   }
   return result;
+}
+
+function optionalStringArray(value: unknown, path: string): string[] {
+  return asArray(value, path).map((item, index) => requiredString(item, `${path}[${index}]`));
 }
 
 function enumValue<T extends string>(value: unknown, allowed: readonly T[], path: string): T {
@@ -170,6 +190,14 @@ function adaptRangeNode(value: unknown, path: string, unlinkedReview = false): M
     inactiveFromTime: optionalString(row.inactive_from_time),
     status: requiredString(row.status, `${path}.status`).toUpperCase(),
     directionOfBreak: optionalString(row.direction_of_break)?.toUpperCase() ?? null,
+    script1Chronology: optionalString(row.script1_chronology)?.toUpperCase() ?? null,
+    script1BosDirection: optionalString(row.script1_bos_direction)?.toUpperCase() ?? null,
+    script1BosTime: optionalString(row.script1_bos_time),
+    script1ProcessingStatus: optionalString(row.script1_processing_status)?.toUpperCase() ?? null,
+    script1ProcessingVersion: optionalString(row.script1_processing_version),
+    script1RunId: optionalString(row.script1_run_id),
+    script1ReviewStatus: optionalString(row.script1_review_status)?.toUpperCase() ?? null,
+    script1ReasonCodes: optionalStringArray(row.script1_reason_codes, `${path}.script1_reason_codes`),
     navigationStatus,
     statisticsStatus,
     ancestorReviewStatus: requiredString(
@@ -269,6 +297,9 @@ export function adaptMasterMapOutput(value: unknown): MasterMapDocument {
     throw new MasterMapAdapterError('Master Map v0.1 is scoped to XAUUSD only.');
   }
   const statistics = asRecord(row.statistics, 'master_map.statistics');
+  const analysis = row.analysis && typeof row.analysis === 'object' ? row.analysis as Record<string, unknown> : {};
+  const weekly = analysis.weekly_script1 && typeof analysis.weekly_script1 === 'object'
+    ? analysis.weekly_script1 as Record<string, unknown> : null;
   const document: MasterMapDocument = {
     schemaVersion: MASTER_MAP_SCHEMA_VERSION,
     buildId: requiredString(row.build_id, 'master_map.build_id'),
@@ -282,6 +313,31 @@ export function adaptMasterMapOutput(value: unknown): MasterMapDocument {
     reviewRoot: adaptSymbolRoot(row.review_root, 'master_map.review_root'),
     allNavigationRoot: adaptSymbolRoot(row.root, 'master_map.root'),
     statistics: { ...statistics },
+    weeklyAnalysis: weekly && optionalString(weekly.run_id) ? {
+      pipelineName: optionalString(weekly.pipeline_name) || 'Weekly analysis',
+      version: optionalString(weekly.processing_version) || '',
+      runId: optionalString(weekly.run_id) || '',
+      executedAt: optionalString(weekly.executed_at),
+      inputStructuralContentHash: optionalString(weekly.input_structural_content_hash),
+      approvalState: optionalString(weekly.approval_state)?.toUpperCase() || 'PENDING',
+      approvedAt: optionalString(weekly.approved_at),
+      eligible: optionalNumber(weekly.eligible, 'master_map.analysis.weekly_script1.eligible') || 0,
+      analysed: optionalNumber(weekly.analysed, 'master_map.analysis.weekly_script1.analysed') || 0,
+      pending: optionalNumber(weekly.pending, 'master_map.analysis.weekly_script1.pending') || 0,
+      needsReview: optionalNumber(weekly.needs_review, 'master_map.analysis.weekly_script1.needs_review') || 0,
+      scriptContentHash: optionalString(weekly.script_content_hash) || '',
+      sampleCount: optionalNumber(weekly.sample_count, 'master_map.analysis.weekly_script1.sample_count') || 0,
+      approvalCount: optionalNumber(weekly.approval_count, 'master_map.analysis.weekly_script1.approval_count') || 0,
+      publicationStatus: optionalString(weekly.publication_status)?.toUpperCase() || 'UNPUBLISHED',
+      publicationVersion: optionalString(weekly.publication_version),
+      publishedAt: optionalString(weekly.published_at),
+      validationSamples: asArray(weekly.validation_samples, 'master_map.analysis.weekly_script1.validation_samples').map((value, index) => {
+        const sample = asRecord(value, `master_map.analysis.weekly_script1.validation_samples[${index}]`);
+        return { canonicalRangeId: requiredString(sample.canonical_range_id, 'sample.canonical_range_id'),
+          sampleOrder: optionalNumber(sample.sample_order, 'sample.sample_order') || 0,
+          decision: optionalString(sample.decision)?.toUpperCase() || 'PENDING', decidedAt: optionalString(sample.decided_at) };
+      }),
+    } : null,
   };
   assertRootContracts(document);
   return document;

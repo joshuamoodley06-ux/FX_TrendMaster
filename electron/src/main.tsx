@@ -9696,6 +9696,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     return [
       <div
         key={id}
+        data-range-id={id}
         className={`explorerTreeRow ${isActive ? 'active' : ''} ${isParentContext ? 'parentContext' : ''} ${node.depth > 0 ? 'isChild' : ''}`}
         style={{ ['--tree-depth' as string]: node.depth }}
       >
@@ -9730,7 +9731,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const lines = formatExplorerCompactRowLabel(range, 0);
     const lineVisible = isRangeLineVisible(id);
     return (
-      <div key={`orphan-${id}`} className={`explorerTreeRow orphan ${isActive ? 'active' : ''}`}>
+      <div key={`orphan-${id}`} data-range-id={id} className={`explorerTreeRow orphan ${isActive ? 'active' : ''}`}>
         <span className="explorerTreeToggle spacer" />
         <button
           type="button"
@@ -9762,6 +9763,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       </div>
       <HierarchyWorkspace
         ranges={savedStructuralRanges}
+        caseRef={String(getCurrentMappingCaseRef().case_ref || '')}
+        symbol={String(symbol || 'XAUUSD').toUpperCase()}
         onNavigateRange={jumpToStructuralRange}
         structure={<>
       <div className="explorerModeRow">
