@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fix/python-doctrine-workspace-v2
+  pull_request:
+    branches:
+      - feat/weekly-script1-activation-v01
   workflow_dispatch:
 
 jobs:
