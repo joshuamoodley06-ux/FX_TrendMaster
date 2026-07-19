@@ -80,6 +80,15 @@ import {
 } from './inspectorFormCache';
 import { draftRangeLineStyle, savedRangeLineStyle } from './rangeLineStyle';
 import { buildCanonicalChartOverlay } from './canonicalChartOverlay';
+import {
+  DEFAULT_STRUCTURAL_LINE_VISIBILITY,
+  setAllStructuralLines,
+  setNoStructuralLines,
+  structuralLineId,
+  toggleStructuralLine,
+  visibleStructuralLineIds,
+  type StructuralLineVisibility,
+} from './structuralLineVisibility';
 import { CockpitOverviewProvider } from './cockpitOverviewContext';
 import { InspectorOverviewDashboard } from './inspectorOverviewDashboard';
 import { ReviewCandidatePanel } from './reviewCandidatePanel';
@@ -1757,8 +1766,8 @@ function structuralRangeToChartLine(
     status: String(r.status || 'ACTIVE').toUpperCase(),
     high: hi,
     low: lo,
-    start: r.range_start_time || r.range_high_time || null,
-    end: r.range_end_time || r.range_low_time || null,
+    start: r.range_high_time || null,
+    end: r.range_low_time || null,
     isActive: rangeId === String(activeStructuralRangeId),
     isParentContext: !!opts?.isParentContext,
   };
@@ -3251,10 +3260,23 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const masterMapNavigationSeqRef = useRef(0);
   const [eventBrowserOpen, setEventBrowserOpen] = useState(false);
   const chartMapStageRef = useRef<HTMLDivElement>(null);
-  const [rangeLineHiddenByCase, setRangeLineHiddenByCase] = useLocalStorage<Record<string, string[]>>('fx_tm_range_line_hidden_v1', {});
-  const [allRangeGuideLinesHiddenByCase, setAllRangeGuideLinesHiddenByCase] = useLocalStorage<Record<string, boolean>>('fx_tm_all_range_guide_lines_hidden_v1', {});
+  const [structuralLineVisibilityByCase, setStructuralLineVisibilityByCase] = useLocalStorage<Record<string, StructuralLineVisibility>>('fx_tm_structural_line_visibility_v2', {});
   const caseLineHiddenKey = activeCaseDisplayId || 'global';
-  const allRangeGuideLinesHidden = !!allRangeGuideLinesHiddenByCase[caseLineHiddenKey];
+  const structuralLineVisibility = structuralLineVisibilityByCase[caseLineHiddenKey] || DEFAULT_STRUCTURAL_LINE_VISIBILITY;
+  const availableStructuralLineIds = useMemo(() => {
+    const ids = safeArray<any>(savedStructuralRanges).flatMap((range) => {
+      const id = String(range?.range_id || range?.id || '');
+      return id ? [structuralLineId(id, 'RH'), structuralLineId(id, 'RL')] : [];
+    });
+    const canonicalId = String(selectedCanonicalChartRange?.range_id || selectedCanonicalChartRange?.id || selectedCanonicalChartRange?.canonical_range_id || '');
+    if (canonicalId) ids.push(structuralLineId(canonicalId, 'RH'), structuralLineId(canonicalId, 'RL'));
+    return Array.from(new Set(ids));
+  }, [savedStructuralRanges, selectedCanonicalChartRange]);
+  const visibleStructuralLineIdSet = useMemo(
+    () => visibleStructuralLineIds(structuralLineVisibility, availableStructuralLineIds, String(activeStructuralRangeId || '')),
+    [structuralLineVisibility, availableStructuralLineIds, activeStructuralRangeId],
+  );
+  const allRangeGuideLinesHidden = structuralLineVisibility.globalMode === 'NONE';
   const [chartMappingFocusMode, setChartMappingFocusMode] = useLocalStorage<boolean>('fx_tm_chart_mapping_focus_v1', false);
   const [chartFocusShowAllRanges, setChartFocusShowAllRanges] = useLocalStorage<boolean>('fx_tm_chart_focus_show_all_v1', false);
   const prevStructureLayerForFocusRef = useRef<StructureLayer | null>(null);
@@ -3636,8 +3658,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     if (parentRange) {
       hi = Number(parentRange.range_high_price ?? parentRange.range_high);
       lo = Number(parentRange.range_low_price ?? parentRange.range_low);
-      start = String(parentRange.range_start_time || parentRange.range_high_time || '');
-      end = String(parentRange.range_end_time || parentRange.range_low_time || '');
+      start = String(parentRange.range_high_time || '');
+      end = String(parentRange.range_low_time || '');
       parentTf = String(parentRange.chart_timeframe || parentRange.source_timeframe || parentTf).toUpperCase();
     } else {
       const anchors = structuralAnchorsByLayer[parentLayer];
@@ -3662,10 +3684,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       .map((e:any)=>String(e?.event_type || e?.derived_event_code || '').toUpperCase())
       .find((x:string)=>x.includes('BOS_UP') || x.includes('BOS_DOWN') || x === 'BOS_UP' || x === 'BOS_DOWN') || '';
     const out:ParentRangeOverlayLine[] = [];
-    if (Number.isFinite(hi)) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'high', price:Number(hi), label:`${parentLayer} RH`, direction, start, end, rangeId: parentRange ? (parentRange.range_id || parentRange.id) : null });
-    if (Number.isFinite(lo)) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'low', price:Number(lo), label:`${parentLayer} RL`, direction, start, end, rangeId: parentRange ? (parentRange.range_id || parentRange.id) : null });
+    const parentRangeId = parentRange ? String(parentRange.range_id || parentRange.id || '') : '';
+    if (Number.isFinite(hi) && (!parentRangeId || visibleStructuralLineIdSet.has(structuralLineId(parentRangeId, 'RH')))) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'high', price:Number(hi), label:`${parentLayer} RH`, direction, start, end, rangeId: parentRangeId || null });
+    if (Number.isFinite(lo) && (!parentRangeId || visibleStructuralLineIdSet.has(structuralLineId(parentRangeId, 'RL')))) out.push({ timeframe:parentTf, structureLayer:parentLayer, kind:'low', price:Number(lo), label:`${parentLayer} RL`, direction, start, end, rangeId: parentRangeId || null });
     return out;
-  }, [allRangeGuideLinesHidden, structureLayer, selectedParentRangeId, savedStructuralRanges, structuralAnchorsByLayer, timeframe, rangeByTf, rangeWindowByTf, seedAnchors.case_high, seedAnchors.case_low, seedAnchors.weekly_high, seedAnchors.weekly_low, eventsByTf]);
+  }, [allRangeGuideLinesHidden, visibleStructuralLineIdSet, structureLayer, selectedParentRangeId, savedStructuralRanges, structuralAnchorsByLayer, timeframe, rangeByTf, rangeWindowByTf, seedAnchors.case_high, seedAnchors.case_low, seedAnchors.weekly_high, seedAnchors.weekly_low, eventsByTf]);
 
   const jumpToParentRangeStart = () => {
     const parentTf = parentTimeframeFor(timeframe);
@@ -3910,7 +3933,6 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const chartSavedRangeOverlays = useMemo<SavedRangeChartLine[]>(() => {
     if (allRangeGuideLinesHidden) return [];
     const allRanges = safeArray<any>(savedStructuralRanges);
-    const hiddenIds = new Set(rangeLineHiddenByCase[caseLineHiddenKey] || []);
     const overlays: SavedRangeChartLine[] = [];
     const selectedId = String(activeStructuralRangeId || '');
     const parentId = String(selectedParentRangeId || '');
@@ -3920,19 +3942,16 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       ? parentId
       : chainParentId;
     const ancestorIds = chain.slice(2);
-    const visibleIds = chartMappingFocusMode
-      ? null
-      : chartVisibleRangeIds(allRanges, selectedId, resolvedParentId);
-
     for (const r of allRanges) {
       const id = String(r?.range_id || r?.id || '');
       if (!id) continue;
-      if (hiddenIds.has(id)) continue;
-      if (visibleIds && !visibleIds.has(id)) continue;
       const isParentContext = id === resolvedParentId && id !== selectedId;
       const line = structuralRangeToChartLine(r, activeStructuralRangeId, { isParentContext });
       if (!line) continue;
       line.isActive = id === selectedId;
+      if (!visibleStructuralLineIdSet.has(structuralLineId(id, 'RH'))) line.high = Number.NaN;
+      if (!visibleStructuralLineIdSet.has(structuralLineId(id, 'RL'))) line.low = Number.NaN;
+      if (!Number.isFinite(line.high) && !Number.isFinite(line.low)) continue;
       overlays.push(line);
     }
 
@@ -3940,7 +3959,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       selectedCanonicalChartRange,
       overlays.map((line) => line.rangeId),
     );
-    if (canonicalOverlay) overlays.push(canonicalOverlay);
+    if (canonicalOverlay) {
+      if (!visibleStructuralLineIdSet.has(structuralLineId(canonicalOverlay.rangeId, 'RH'))) canonicalOverlay.high = Number.NaN;
+      if (!visibleStructuralLineIdSet.has(structuralLineId(canonicalOverlay.rangeId, 'RL'))) canonicalOverlay.low = Number.NaN;
+      if (Number.isFinite(canonicalOverlay.high) || Number.isFinite(canonicalOverlay.low)) overlays.push(canonicalOverlay);
+    }
 
     if (!chartMappingFocusMode) return overlays;
 
@@ -3964,7 +3987,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     activeStructuralRangeId,
     selectedParentRangeId,
     activeCaseDisplayId,
-    rangeLineHiddenByCase,
+    visibleStructuralLineIdSet,
     chartMappingFocusMode,
     chartFocusShowAllRanges,
     structureLayer,
@@ -9630,33 +9653,20 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
   };
 
-  const hiddenRangeLineIdSet = useMemo(
-    () => new Set(rangeLineHiddenByCase[caseLineHiddenKey] || []),
-    [rangeLineHiddenByCase, caseLineHiddenKey],
-  );
-  const isRangeLineVisible = (rangeId: string) => !allRangeGuideLinesHidden && !hiddenRangeLineIdSet.has(String(rangeId));
-  const toggleRangeLineVisibility = (rangeId: string, e?: React.MouseEvent) => {
+  const isRangeLineVisible = (rangeId: string, kind: 'RH' | 'RL') => visibleStructuralLineIdSet.has(structuralLineId(rangeId, kind));
+  const toggleRangeLineVisibility = (rangeId: string, kind: 'RH' | 'RL', e?: React.MouseEvent) => {
     e?.stopPropagation();
-    const id = String(rangeId);
-    setRangeLineHiddenByCase((prev) => {
-      const current = new Set(prev[caseLineHiddenKey] || []);
-      if (current.has(id)) {
-        current.delete(id);
-        setAllRangeGuideLinesHiddenByCase((gate) => ({ ...gate, [caseLineHiddenKey]: false }));
-      } else {
-        current.add(id);
-      }
-      return { ...prev, [caseLineHiddenKey]: Array.from(current) };
-    });
+    const id = structuralLineId(rangeId, kind);
+    setStructuralLineVisibilityByCase((prev) => ({
+      ...prev,
+      [caseLineHiddenKey]: toggleStructuralLine(prev[caseLineHiddenKey] || DEFAULT_STRUCTURAL_LINE_VISIBILITY, id, availableStructuralLineIds, String(activeStructuralRangeId || '')),
+    }));
   };
   const showAllRangeLines = () => {
-    setAllRangeGuideLinesHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: false }));
-    setRangeLineHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: [] }));
+    setStructuralLineVisibilityByCase((prev) => ({ ...prev, [caseLineHiddenKey]: setAllStructuralLines(availableStructuralLineIds) }));
   };
   const hideAllRangeLines = () => {
-    const ids = savedStructuralRanges.map((r:any) => String(r.range_id || r.id)).filter(Boolean);
-    setAllRangeGuideLinesHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: true }));
-    setRangeLineHiddenByCase((prev) => ({ ...prev, [caseLineHiddenKey]: ids }));
+    setStructuralLineVisibilityByCase((prev) => ({ ...prev, [caseLineHiddenKey]: setNoStructuralLines(availableStructuralLineIds) }));
   };
 
   const renderExplorerActiveActions = (range: any) => (
@@ -9688,7 +9698,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const lines = formatExplorerCompactRowLabel(range, node.children.length, node.childCountLabel);
     const hasChildren = node.children.length > 0;
     const collapsed = hierarchyCollapsedIds.includes(id);
-    const lineVisible = isRangeLineVisible(id);
+    const rhVisible = isRangeLineVisible(id, 'RH');
+    const rlVisible = isRangeLineVisible(id, 'RL');
     const toggleCollapsed = (e: React.MouseEvent) => {
       e.stopPropagation();
       setHierarchyCollapsedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -9704,14 +9715,8 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
             {collapsed ? '▶' : '▼'}
           </button>
         ) : <span className="explorerTreeToggle spacer" />}
-        <button
-          type="button"
-          className={`explorerLineToggle${lineVisible ? ' on' : ' off'}`}
-          title={lineVisible ? 'Hide RH/RL guide lines on chart' : 'Show RH/RL guide lines on chart'}
-          onClick={(e) => toggleRangeLineVisibility(id, e)}
-        >
-          {lineVisible ? 'Lines' : 'Hide'}
-        </button>
+        <button type="button" className={`explorerLineToggle${rhVisible ? ' on' : ' off'}`} title={`${rhVisible ? 'Hide' : 'Show'} RH segment`} onClick={(e) => toggleRangeLineVisibility(id, 'RH', e)}>RH</button>
+        <button type="button" className={`explorerLineToggle${rlVisible ? ' on' : ' off'}`} title={`${rlVisible ? 'Hide' : 'Show'} RL segment`} onClick={(e) => toggleRangeLineVisibility(id, 'RL', e)}>RL</button>
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
         <button type="button" className="explorerTreeRowMain" title={lines.title} onClick={() => jumpToStructuralRange(range)}>
           <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.label}</span>
@@ -9728,18 +9733,13 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const layerKey = layer.toLowerCase();
     const isActive = id === String(activeStructuralRangeId);
     const lines = formatExplorerCompactRowLabel(range, 0);
-    const lineVisible = isRangeLineVisible(id);
+    const rhVisible = isRangeLineVisible(id, 'RH');
+    const rlVisible = isRangeLineVisible(id, 'RL');
     return (
       <div key={`orphan-${id}`} className={`explorerTreeRow orphan ${isActive ? 'active' : ''}`}>
         <span className="explorerTreeToggle spacer" />
-        <button
-          type="button"
-          className={`explorerLineToggle${lineVisible ? ' on' : ' off'}`}
-          title={lineVisible ? 'Hide RH/RL guide lines on chart' : 'Show RH/RL guide lines on chart'}
-          onClick={(e) => toggleRangeLineVisibility(id, e)}
-        >
-          {lineVisible ? 'Lines' : 'Hide'}
-        </button>
+        <button type="button" className={`explorerLineToggle${rhVisible ? ' on' : ' off'}`} title={`${rhVisible ? 'Hide' : 'Show'} RH segment`} onClick={(e) => toggleRangeLineVisibility(id, 'RH', e)}>RH</button>
+        <button type="button" className={`explorerLineToggle${rlVisible ? ' on' : ' off'}`} title={`${rlVisible ? 'Hide' : 'Show'} RL segment`} onClick={(e) => toggleRangeLineVisibility(id, 'RL', e)}>RL</button>
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
         <button type="button" className="explorerTreeRowMain" title={lines.title} onClick={() => jumpToStructuralRange(range)}>
           <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.label}</span>
@@ -11267,6 +11267,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       draftRhAnchor: rhAnchor,
       draftRlAnchor: rlAnchor,
       suppressRangeGuideLines: allRangeGuideLinesHidden,
+      suppressSelectedRangeFallback: true,
     });
   }, [
     chartRenderer,

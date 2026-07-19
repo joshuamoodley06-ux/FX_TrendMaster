@@ -63,7 +63,7 @@ describe('buildCanonicalChartOverlay', () => {
     });
   });
 
-  it('falls back to ordinary range window fields when structural fields are absent', () => {
+  it('does not substitute ordinary range window fields for missing factual anchors', () => {
     expect(buildCanonicalChartOverlay({
       canonical_range_id: 'mm:range:daily-fallback',
       structure_layer: 'DAILY',
@@ -71,10 +71,7 @@ describe('buildCanonicalChartOverlay', () => {
       range_low: 2350,
       range_start_time: '2026-02-01T00:00:00Z',
       range_end_time: '2026-02-10T00:00:00Z',
-    })).toMatchObject({
-      start: '2026-02-01T00:00:00Z',
-      end: '2026-02-10T00:00:00Z',
-    });
+    })).toMatchObject({ start: null, end: null });
   });
 
   it('replaces selection naturally because each call contains only the current canonical range', () => {

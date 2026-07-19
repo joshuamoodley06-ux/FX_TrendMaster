@@ -10,6 +10,28 @@ const ROLES = [
 ] as const;
 
 describe('adaptOverlaysForTradingView', () => {
+  it.each([
+    ['RL first', '2024.11.04 12:00', '2024.11.04 08:00'],
+    ['RH first', '2024.11.04 08:00', '2024.11.04 12:00'],
+  ])('bounds both RH/RL to the ordered factual anchors when %s', (_name, rhTime, rlTime) => {
+    const result = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      savedRangeOverlays: [{ rangeId: 'r1', high: 2500, low: 2400, start: rhTime, end: rlTime }],
+    });
+    expect(result.priceLines).toHaveLength(2);
+    expect(result.priceLines.every((line) => line.renderMode === 'SEGMENT')).toBe(true);
+    expect(new Set(result.priceLines.map((line) => line.startTime))).toEqual(new Set([Date.UTC(2024, 10, 4, 8) / 1000]));
+    expect(new Set(result.priceLines.map((line) => line.endTime))).toEqual(new Set([Date.UTC(2024, 10, 4, 12) / 1000]));
+  });
+
+  it('keeps invalid anchor levels as explicit fallbacks with debug IDs', () => {
+    const result = adaptOverlaysForTradingView({
+      timeframe: 'H1',
+      savedRangeOverlays: [{ rangeId: 'bad', high: 2500, low: 2400, start: 'bad', end: null }],
+    });
+    expect(result.priceLines.every((line) => line.renderMode === 'PRICE_LINE_FALLBACK')).toBe(true);
+    expect(result.debug?.priceLineFallbackIds).toEqual(['bad:RH', 'bad:RL']);
+  });
   it.each(LAYERS.flatMap((layer) => ROLES.map((role) => ({ layer, role }))))(
     'uses layer hue for $layer $role.name lines',
     ({ layer, role }) => {
@@ -249,6 +271,7 @@ describe('adaptOverlaysForTradingView', () => {
       color: LAYER_COLORS.DAILY,
       lineStyle: 'dashed',
       label: 'Draft DAILY RH',
+      renderMode: 'PRICE_LINE_FALLBACK',
     });
 
     const complete = adaptOverlaysForTradingView({
@@ -266,6 +289,7 @@ describe('adaptOverlaysForTradingView', () => {
     });
     expect(complete.priceLines.map((line) => line.id).sort()).toEqual(['draft:RH', 'draft:RL']);
     expect(complete.priceLines.every((line) => line.lineStyle === 'solid')).toBe(true);
+    expect(complete.priceLines.every((line) => line.renderMode === 'SEGMENT')).toBe(true);
   });
 });
 

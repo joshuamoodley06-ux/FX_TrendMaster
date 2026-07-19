@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CandlestickSeries,
+  LineSeries,
   createSeriesMarkers,
   createChart,
   LineStyle,
@@ -135,6 +136,7 @@ export function TradingViewChart({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick', Time> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const structuralSeriesRef = useRef<ISeriesApi<'Line', Time>[]>([]);
   const markersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const adaptedRef = useRef<ReturnType<typeof adaptCandlesForTradingView>>({ bars: [], dropped: 0 });
   const fitRequestRef = useRef<TradingViewFitRequest | null>(fitRequest || null);
@@ -538,6 +540,8 @@ export function TradingViewChart({
       resizeObserver.disconnect();
       for (const line of priceLinesRef.current) series.removePriceLine(line);
       priceLinesRef.current = [];
+      for (const structuralSeries of structuralSeriesRef.current) chart.removeSeries(structuralSeries);
+      structuralSeriesRef.current = [];
       markersRef.current?.detach();
       markersRef.current = null;
       chart.remove();
@@ -589,7 +593,26 @@ export function TradingViewChart({
       seriesRef.current.removePriceLine(line);
     }
     priceLinesRef.current = [];
+    for (const structuralSeries of structuralSeriesRef.current) chartRef.current?.removeSeries(structuralSeries);
+    structuralSeriesRef.current = [];
     for (const line of overlays?.priceLines || []) {
+      if (line.renderMode === 'SEGMENT' && line.startTime && line.endTime && chartRef.current) {
+        const structuralSeries = chartRef.current.addSeries(LineSeries, {
+          color: line.color,
+          lineWidth: line.lineWidth as any,
+          lineStyle: lineStyleValue(line.lineStyle),
+          crosshairMarkerVisible: false,
+          lastValueVisible: false,
+          priceLineVisible: false,
+          pointMarkersVisible: false,
+        });
+        structuralSeries.setData([
+          { time: line.startTime, value: line.price },
+          { time: line.endTime, value: line.price },
+        ]);
+        structuralSeriesRef.current.push(structuralSeries);
+        continue;
+      }
       priceLinesRef.current.push(seriesRef.current.createPriceLine({
         price: line.price,
         color: line.color,

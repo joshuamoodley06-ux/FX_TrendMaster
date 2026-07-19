@@ -22,6 +22,8 @@ type ParentRangeOverlayInput = {
   kind?: 'high' | 'low' | string;
   price?: number;
   label?: string;
+  start?: string | null;
+  end?: string | null;
 };
 
 type EventOverlayInput = {
@@ -57,6 +59,7 @@ export type TradingViewOverlayAdapterInput = {
   draftRhAnchor?: DraftAnchorInput | null;
   draftRlAnchor?: DraftAnchorInput | null;
   suppressRangeGuideLines?: boolean;
+  suppressSelectedRangeFallback?: boolean;
 };
 
 export type TradingViewFitAdapterInput = {
@@ -106,8 +109,8 @@ function selectedRangeFallback(selectedRange: unknown | null | undefined): Saved
     status: range?.status,
     high: high ?? undefined,
     low: low ?? undefined,
-    start: range?.start ?? range?.range_start_time ?? range?.range_high_time ?? null,
-    end: range?.end ?? range?.range_end_time ?? range?.range_low_time ?? null,
+    start: range?.range_high_time ?? range?.start ?? null,
+    end: range?.range_low_time ?? range?.end ?? null,
     isActive: true,
   };
 }
@@ -130,10 +133,20 @@ function rangeLineColor(layer: string | undefined): string {
   return LAYER_COLORS[String(layer || '').toUpperCase()] || '#94a3b8';
 }
 
+function structuralWindow(start: unknown, end: unknown, timeframe: string) {
+  const first = fxtmTimeToTradingViewTime(start, timeframe);
+  const second = fxtmTimeToTradingViewTime(end, timeframe);
+  if (!first || !second) return null;
+  return timeSortKey(first) <= timeSortKey(second)
+    ? { startTime: first, endTime: second }
+    : { startTime: second, endTime: first };
+}
+
 function addRangeLines(
   out: TradingViewRangeLine[],
   range: SavedRangeOverlayInput,
   selectedIds: Set<string>,
+  timeframe: string,
 ) {
   const high = finitePrice(range.high);
   const low = finitePrice(range.low);
@@ -144,6 +157,10 @@ function addRangeLines(
   const lineWidth = role === 'selected' ? 3 : role === 'parent' ? 2 : 1;
   const lineStyle = lineStyleFor(range);
   const labelPrefix = range.customLabelPrefix || `${role === 'parent' ? 'Parent ' : ''}${layer || 'Range'}`;
+  const window = structuralWindow(range.start, range.end, timeframe);
+  const render = window
+    ? { ...window, renderMode: 'SEGMENT' as const }
+    : { renderMode: 'PRICE_LINE_FALLBACK' as const };
 
   if (high !== null) {
     out.push({
@@ -156,6 +173,7 @@ function addRangeLines(
       color,
       lineWidth,
       lineStyle,
+      ...render,
     });
   }
   if (low !== null) {
@@ -169,6 +187,7 @@ function addRangeLines(
       color,
       lineWidth,
       lineStyle,
+      ...render,
     });
   }
 }
@@ -194,7 +213,7 @@ function resolveDraftRangeOverlay(input: TradingViewOverlayAdapterInput): DraftR
   };
 }
 
-function addDraftRangeLines(out: TradingViewRangeLine[], draft: DraftRangeOverlayInput | null) {
+function addDraftRangeLines(out: TradingViewRangeLine[], draft: DraftRangeOverlayInput | null, timeframe: string) {
   if (!draft?.visible) return;
   const high = draftPrice(draft.high);
   const low = draftPrice(draft.low);
@@ -204,6 +223,10 @@ function addDraftRangeLines(out: TradingViewRangeLine[], draft: DraftRangeOverla
   const anchorsComplete = high !== null && low !== null;
   const lineStyle: TradingViewRangeLine['lineStyle'] = anchorsComplete ? 'solid' : 'dashed';
   const lineWidth = 2;
+  const window = anchorsComplete ? structuralWindow(draft.start, draft.end, timeframe) : null;
+  const render = window
+    ? { ...window, renderMode: 'SEGMENT' as const }
+    : { renderMode: 'PRICE_LINE_FALLBACK' as const };
   if (high !== null) {
     out.push({
       id: 'draft:RH',
@@ -215,6 +238,7 @@ function addDraftRangeLines(out: TradingViewRangeLine[], draft: DraftRangeOverla
       color,
       lineWidth,
       lineStyle,
+      ...render,
     });
   }
   if (low !== null) {
@@ -228,15 +252,17 @@ function addDraftRangeLines(out: TradingViewRangeLine[], draft: DraftRangeOverla
       color,
       lineWidth,
       lineStyle,
+      ...render,
     });
   }
 }
 
-function addParentLine(out: TradingViewRangeLine[], overlay: ParentRangeOverlayInput, index: number) {
+function addParentLine(out: TradingViewRangeLine[], overlay: ParentRangeOverlayInput, index: number, timeframe: string) {
   const price = finitePrice(overlay.price);
   if (price === null) return;
   const kind = String(overlay.kind || '').toLowerCase() === 'low' ? 'RL' : 'RH';
   const layer = String(overlay.structureLayer || '').toUpperCase();
+  const window = structuralWindow(overlay.start, overlay.end, timeframe);
   out.push({
     id: `parent:${rangeIdOf(overlay) || index}:${kind}`,
     rangeId: overlay.rangeId ?? null,
@@ -247,6 +273,7 @@ function addParentLine(out: TradingViewRangeLine[], overlay: ParentRangeOverlayI
     color: rangeLineColor(layer),
     lineWidth: 2,
     lineStyle: 'dashed',
+    ...(window ? { ...window, renderMode: 'SEGMENT' as const } : { renderMode: 'PRICE_LINE_FALLBACK' as const }),
   });
 }
 
@@ -291,6 +318,7 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
         rhRlLineCount: 0,
         bosMarkerCount: markers.length,
         selectedRangeFallbackUsed: false,
+        priceLineFallbackIds: [],
       },
     };
   }
@@ -300,20 +328,20 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
   const lineIds = new Set<string>();
 
   for (const range of input.savedRangeOverlays || []) {
-    addRangeLines(priceLines, range, selectedIds);
+    addRangeLines(priceLines, range, selectedIds, input.timeframe);
   }
   for (const [index, overlay] of (input.parentRangeOverlays || []).entries()) {
-    addParentLine(priceLines, overlay, index);
+    addParentLine(priceLines, overlay, index, input.timeframe);
   }
-  addDraftRangeLines(priceLines, resolveDraftRangeOverlay(input));
+  addDraftRangeLines(priceLines, resolveDraftRangeOverlay(input), input.timeframe);
   const fallbackSelectedRange = selectedRangeFallback(input.selectedRange);
   let selectedRangeFallbackUsed = false;
-  if (fallbackSelectedRange) {
+  if (fallbackSelectedRange && !input.suppressSelectedRangeFallback) {
     const selectedId = rangeIdOf(fallbackSelectedRange);
     const hasSelectedLine = priceLines.some((line) => String(line.rangeId || '') === selectedId);
     if (!hasSelectedLine) {
       selectedRangeFallbackUsed = true;
-      addRangeLines(priceLines, fallbackSelectedRange, selectedIds);
+      addRangeLines(priceLines, fallbackSelectedRange, selectedIds, input.timeframe);
     }
   }
 
@@ -332,6 +360,7 @@ export function adaptOverlaysForTradingView(input: TradingViewOverlayAdapterInpu
       rhRlLineCount: dedupedLines.filter((line) => line.kind === 'RH' || line.kind === 'RL').length,
       bosMarkerCount: markers.length,
       selectedRangeFallbackUsed,
+      priceLineFallbackIds: dedupedLines.filter((line) => line.renderMode === 'PRICE_LINE_FALLBACK').map((line) => line.id),
     },
   };
 }

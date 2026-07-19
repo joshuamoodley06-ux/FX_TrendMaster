@@ -75,6 +75,9 @@ export type TradingViewRangeLine = {
   color: string;
   lineWidth: number;
   lineStyle: 'solid' | 'dashed' | 'dotted';
+  startTime?: Time;
+  endTime?: Time;
+  renderMode: 'SEGMENT' | 'PRICE_LINE_FALLBACK';
 };
 
 export type TradingViewBosMarker = SeriesMarker<Time> & {
@@ -89,6 +92,7 @@ export type TradingViewOverlaySet = {
     rhRlLineCount: number;
     bosMarkerCount: number;
     selectedRangeFallbackUsed: boolean;
+    priceLineFallbackIds: string[];
   };
 };
 

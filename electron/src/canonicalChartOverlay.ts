@@ -67,6 +67,16 @@ function canonicalId(range: CanonicalRangeOverlayInput): string | null {
   ]);
 }
 
+function factualAnchorWindow(range: CanonicalRangeOverlayInput): { start: string | null; end: string | null } {
+  const highTime = text(range.range_high_time);
+  const lowTime = text(range.range_low_time);
+  if (!highTime || !lowTime) return { start: null, end: null };
+  const highMs = Date.parse(highTime);
+  const lowMs = Date.parse(lowTime);
+  if (!Number.isFinite(highMs) || !Number.isFinite(lowMs)) return { start: null, end: null };
+  return highMs <= lowMs ? { start: highTime, end: lowTime } : { start: lowTime, end: highTime };
+}
+
 export function buildCanonicalChartOverlay(
   range: CanonicalRangeOverlayInput | null | undefined,
   existingRangeIds: Iterable<unknown> = [],
@@ -87,6 +97,7 @@ export function buildCanonicalChartOverlay(
   );
   if (existing.has(rangeId)) return null;
 
+  const anchorWindow = factualAnchorWindow(range);
   return {
     rangeId,
     structureLayer: layer,
@@ -95,20 +106,7 @@ export function buildCanonicalChartOverlay(
     customLabelPrefix: `CANONICAL ${layer}`,
     high,
     low,
-    start: firstText([
-      range.structural_range_start_time,
-      range.range_start_time,
-      range.active_from_time,
-      range.range_high_time,
-      range.range_low_time,
-    ]),
-    end: firstText([
-      range.structural_range_end_time,
-      range.range_end_time,
-      range.inactive_from_time,
-      range.range_low_time,
-      range.range_high_time,
-    ]),
+    ...anchorWindow,
     isActive: true,
   };
 }
