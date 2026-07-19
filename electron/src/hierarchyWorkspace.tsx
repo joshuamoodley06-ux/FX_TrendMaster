@@ -169,7 +169,8 @@ function elementRangeId(node: React.ReactElement): string {
   const explicit = String(props['data-range-id'] || '').trim();
   if (explicit) return explicit;
   const rawKey = String(node.key || '').trim();
-  const normalized = rawKey.includes('$') ? rawKey.split('$').at(-1) || '' : rawKey;
+  const keyParts = rawKey.split('$');
+  const normalized = keyParts[keyParts.length - 1] || '';
   return normalized.startsWith('orphan-') ? normalized.slice('orphan-'.length) : normalized;
 }
 
@@ -392,13 +393,20 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
   ) || [], [analysisDocument, caseRef]);
 
   const doctrineRuns = Array.isArray(doctrineState?.runs) ? doctrineState.runs : [];
-  const doctrineRunState = doctrineState?.run
+  const directRunMatchesCase = doctrineState?.run
+    && doctrineState.run.case_ref === caseRef
+    && String(doctrineState.run.symbol || '').toUpperCase() === String(symbol || '').toUpperCase();
+  const doctrineRunState = directRunMatchesCase
     ? doctrineState
     : doctrineRuns.find((entry: any) => entry?.run?.case_ref === caseRef
-      && String(entry?.run?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase())
-      || doctrineRuns[0] || null;
+      && String(entry?.run?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase()) || null;
   const doctrineRun = doctrineRunState?.run || null;
   const doctrineSamples = doctrineRunState?.samples || [];
+  const approvedVersion = Array.isArray(doctrineState?.versions)
+    ? doctrineState.versions.find((version: any) => version.version_id === doctrineState?.current_approved_version_id)
+    : null;
+  const globalApprovalReady = doctrineState?.status === 'APPROVED'
+    && !!doctrineState?.current_approved_version_id;
   const pipeline: PipelineView | null = doctrineRun ? {
     pipelineName: 'Weekly analysis',
     version: doctrineState?.versions?.find((version: any) => version.version_id === doctrineRun.version_id)?.version_label || '1',
@@ -415,10 +423,21 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
       decision: sample.decision,
       decidedAt: sample.decided_at || null,
     })),
+  } : globalApprovalReady ? {
+    pipelineName: 'Weekly analysis',
+    version: approvedVersion?.version_label || '1',
+    runId: '',
+    approvalState: 'APPROVED',
+    eligible: 0,
+    analysed: 0,
+    approvalCount: 0,
+    sampleCount: 0,
+    publicationStatus: 'READY_FOR_CASE',
+    validationSamples: [],
   } : legacyPipelineView(analysisDocument);
 
   const validationSample = useMemo(() => {
-    if (!pipeline) return [];
+    if (!pipeline?.runId) return [];
     const ids = new Set(pipeline.validationSamples.map((sample) => sample.canonicalRangeId));
     return caseAnalysisNodes.filter((node) => ids.has(node.canonicalRangeId)).sort((a, b) =>
       (pipeline.validationSamples.find((sample) => sample.canonicalRangeId === a.canonicalRangeId)?.sampleOrder || 0)
@@ -520,6 +539,7 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
 
   const busy = operationState !== 'IDLE';
   const approvalState = String(pipeline?.approvalState || 'PENDING').toUpperCase();
+  const hasCaseRun = !!pipeline?.runId;
 
   return <section className="hierarchyWorkspace" data-mode={mode} aria-label="Hierarchy workspace">
     <div className="hierarchyWorkspaceModes" role="tablist" aria-label="Hierarchy modes">
@@ -626,21 +646,27 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
         <div className="weeklyPipelineSummary" aria-label="Weekly analysis run summary">
           <b>{pipeline?.pipelineName || 'Weekly analysis'}</b>
           <span>Version {pipeline?.version || 'unknown'} · {approvalState}</span>
-          <span>{pipeline?.eligible ?? caseAnalysisNodes.length} eligible · {pipeline?.analysed ?? caseAnalysisNodes.length} analysed</span>
-          <span>{pipeline?.approvalCount ?? 0}/{pipeline?.sampleCount ?? 0} samples approved · {pipeline?.publicationStatus || 'UNPUBLISHED'}</span>
+          {hasCaseRun
+            ? <>
+              <span>{pipeline?.eligible ?? caseAnalysisNodes.length} eligible · {pipeline?.analysed ?? caseAnalysisNodes.length} analysed</span>
+              <span>{pipeline?.approvalCount ?? 0}/{pipeline?.sampleCount ?? 0} samples approved · {pipeline?.publicationStatus || 'UNPUBLISHED'}</span>
+            </>
+            : <span>Approved version ready · run the active pipeline for this case</span>}
         </div>
-        <b className="weeklySampleTitle">
-          {approvalState === 'APPROVED' ? 'Approved sample' : 'Validation sample'} ({validationSample.length})
-        </b>
-        <WeeklyValidationSample nodes={validationSample} ranges={ranges} decisions={sampleDecisions}
-          saving={operationState === 'REVIEWING'} reviewEnabled={approvalState === 'PENDING'}
-          onNavigateRange={onNavigateRange} onDecision={(id, decision) => void saveReview(id, decision)} />
-        {!validationSample.length && <div className="weeklyScript1Empty">
-          {approvalState === 'APPROVED'
-            ? 'This version is approved. No stored sample rows were available to display.'
-            : approvalState === 'REJECTED'
+        {hasCaseRun ? <>
+          <b className="weeklySampleTitle">
+            {approvalState === 'APPROVED' ? 'Approved sample' : 'Validation sample'} ({validationSample.length})
+          </b>
+          <WeeklyValidationSample nodes={validationSample} ranges={ranges} decisions={sampleDecisions}
+            saving={operationState === 'REVIEWING'} reviewEnabled={approvalState === 'PENDING'}
+            onNavigateRange={onNavigateRange} onDecision={(id, decision) => void saveReview(id, decision)} />
+          {!validationSample.length && <div className="weeklyScript1Empty">
+            {approvalState === 'REJECTED'
               ? 'This analysis version was rejected and remains unpublished.'
               : 'No eligible Weekly results are available for validation.'}
+          </div>}
+        </> : <div className="weeklyScript1Empty">
+          Approved script memory loaded. Run Active Pipeline to enrich this selected case.
         </div>}
         {reviewError && <span role="alert">{reviewError}</span>}
       </>}
