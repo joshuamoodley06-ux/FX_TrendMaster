@@ -71,6 +71,23 @@ type Props = {
 
 type OperationState = 'IDLE' | 'RESTORING' | 'RUNNING' | 'REVIEWING' | 'REFRESHING' | 'INSERTING';
 type TraderEnrichment = { chronology: string; bos: string; status: string };
+type PipelineView = {
+  pipelineName: string;
+  version: string;
+  runId: string;
+  approvalState: string;
+  eligible: number;
+  analysed: number;
+  approvalCount: number;
+  sampleCount: number;
+  publicationStatus: string;
+  validationSamples: {
+    canonicalRangeId: string;
+    sampleOrder: number;
+    decision: string;
+    decidedAt: string | null;
+  }[];
+};
 
 const LAYERS: HierarchyLayer[] = ['WEEKLY', 'DAILY', 'INTRADAY', 'MICRO'];
 
@@ -151,8 +168,9 @@ function elementRangeId(node: React.ReactElement): string {
   const props = node.props as Record<string, unknown>;
   const explicit = String(props['data-range-id'] || '').trim();
   if (explicit) return explicit;
-  const key = String(node.key || '').trim();
-  return key.startsWith('orphan-') ? key.slice('orphan-'.length) : key;
+  const rawKey = String(node.key || '').trim();
+  const normalized = rawKey.includes('$') ? rawKey.split('$').at(-1) || '' : rawKey;
+  return normalized.startsWith('orphan-') ? normalized.slice('orphan-'.length) : normalized;
 }
 
 function enrichStructureTree(node: ReactNode, enrichments: Map<string, TraderEnrichment>): ReactNode {
@@ -232,6 +250,23 @@ function CoverageRow({ row, onNavigate }: {
   </div>;
 }
 
+function legacyPipelineView(document: MasterMapDocument | null): PipelineView | null {
+  const legacy = document?.weeklyAnalysis;
+  if (!legacy) return null;
+  return {
+    pipelineName: legacy.pipelineName,
+    version: legacy.version,
+    runId: legacy.runId,
+    approvalState: legacy.approvalState,
+    eligible: legacy.eligible,
+    analysed: legacy.analysed,
+    approvalCount: legacy.approvalCount,
+    sampleCount: legacy.sampleCount,
+    publicationStatus: legacy.publicationStatus,
+    validationSamples: legacy.validationSamples,
+  };
+}
+
 export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef, symbol, weeklyAnalysisBridge }: Props) {
   const [mode, setMode] = useState<HierarchyWorkspaceMode>('structure');
   const [layer, setLayer] = useState<HierarchyLayer>('WEEKLY');
@@ -255,8 +290,10 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
   const [insertVersion, setInsertVersion] = useState('1');
   const [pipelineSummary, setPipelineSummary] = useState<any>(null);
   const previousLayer = useRef<HierarchyLayer>(layer);
-
-  const bridge = weeklyAnalysisBridge === undefined ? defaultWeeklyAnalysisBridge() : weeklyAnalysisBridge;
+  const bridge = useMemo(
+    () => weeklyAnalysisBridge === undefined ? defaultWeeklyAnalysisBridge() : weeklyAnalysisBridge,
+    [weeklyAnalysisBridge],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -336,7 +373,7 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
       setAnalysisDatabasePath(result.analysisDatabasePath);
       setLiveDatabasePath(databasePath);
       setDoctrineState(result.doctrineState || null);
-      setStoredScripts(Array.isArray(result.scripts) ? result.scripts : storedScripts);
+      if (Array.isArray(result.scripts)) setStoredScripts(result.scripts);
       setAnalysisState('active');
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -354,7 +391,6 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
     (node) => node.layer === 'WEEKLY' && node.sourceRefs.some((ref) => ref.caseRef === caseRef),
   ) || [], [analysisDocument, caseRef]);
 
-  const legacyPipeline = analysisDocument?.weeklyAnalysis || null;
   const doctrineRuns = Array.isArray(doctrineState?.runs) ? doctrineState.runs : [];
   const doctrineRunState = doctrineState?.run
     ? doctrineState
@@ -363,7 +399,7 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
       || doctrineRuns[0] || null;
   const doctrineRun = doctrineRunState?.run || null;
   const doctrineSamples = doctrineRunState?.samples || [];
-  const pipeline = doctrineRun ? {
+  const pipeline: PipelineView | null = doctrineRun ? {
     pipelineName: 'Weekly analysis',
     version: doctrineState?.versions?.find((version: any) => version.version_id === doctrineRun.version_id)?.version_label || '1',
     runId: doctrineRun.run_id,
@@ -377,9 +413,9 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
       canonicalRangeId: sample.canonical_range_id,
       sampleOrder: sample.sample_order,
       decision: sample.decision,
-      decidedAt: sample.decided_at,
+      decidedAt: sample.decided_at || null,
     })),
-  } : legacyPipeline;
+  } : legacyPipelineView(analysisDocument);
 
   const validationSample = useMemo(() => {
     if (!pipeline) return [];
@@ -455,7 +491,8 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
       });
       if (result.ok) {
         setInsertOpen(false);
-        await loadStoredScripts();
+        const listed = await bridge.listDoctrineScripts?.({ analysisDatabasePath });
+        if (listed?.ok && Array.isArray(listed.result)) setStoredScripts(listed.result);
       }
     } finally {
       setOperationState('IDLE');
