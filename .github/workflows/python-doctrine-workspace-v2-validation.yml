@@ -1,9 +1,9 @@
 name: Python Doctrine Workspace V2 Validation
 
 on:
-  pull_request:
+  push:
     branches:
-      - feat/weekly-script1-activation-v01
+      - fix/python-doctrine-workspace-v2
   workflow_dispatch:
 
 jobs:
@@ -17,7 +17,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: pip
       - run: python -m pip install --upgrade pip pytest
       - run: python -m pytest range_library_memory/tests/test_doctrine_pipeline.py -q
 
