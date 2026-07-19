@@ -6354,6 +6354,12 @@ body.mapStudioPilot .mapStudioShell.chartFullscreenActive .map-studio-shell:has(
 .weeklyScript1Header>div{display:flex;flex-direction:column;gap:2px;}
 .weeklyScript1Header button{border:1px solid #3b82f6;border-radius:6px;background:#1d4ed8;color:#eff6ff;font-size:10px;font-weight:800;padding:6px 8px;cursor:pointer;}
 .weeklyScript1Header button:disabled{cursor:wait;opacity:.65;}
+.doctrineScriptControls{display:flex;gap:6px;margin-bottom:4px;}
+.doctrineScriptControls button,.doctrineInsertForm button{border:1px solid #475569;border-radius:5px;background:#172033;color:#e2e8f0;padding:5px 7px;font-size:10px;cursor:pointer;}
+.doctrineInsertForm{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:7px;border:1px solid #334155;border-radius:6px;background:#0f172a;}
+.doctrineInsertForm label{display:flex;flex-direction:column;gap:2px;color:#94a3b8;font-size:9px;}
+.doctrineInsertForm input,.doctrineInsertForm select{min-width:0;border:1px solid #334155;border-radius:4px;background:#111827;color:#e2e8f0;padding:4px;font-size:10px;}
+.doctrineStoredScripts{display:flex;flex-direction:column;gap:3px;padding:6px;border-left:2px solid #22c55e;color:#94a3b8;}
 .weeklyScript1State{text-transform:uppercase;color:#94a3b8;font-size:8px;font-weight:800;}
 .weeklyScript1State.active{color:#86efac;}
 .weeklyScript1State.error{color:#fca5a5;}

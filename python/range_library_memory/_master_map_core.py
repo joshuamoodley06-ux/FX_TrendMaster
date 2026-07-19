@@ -220,8 +220,10 @@ def build_master_map(
         # Re-apply rebuildable Weekly Script 1 analysis after canonical rows are
         # rebuilt. This projection never participates in structural hashing.
         from .weekly_chronology_bos import project_stored_results
+        from .doctrine_pipeline import apply_approved_enrichments
 
         project_stored_results(con, output, symbol=symbol)
+        apply_approved_enrichments(con, output, symbol=symbol)
         con.commit()
 
     if output_path is not None:

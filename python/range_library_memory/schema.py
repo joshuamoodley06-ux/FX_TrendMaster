@@ -499,4 +499,7 @@ def init_schema(db_path: str | Path) -> Path:
     path = Path(db_path)
     with connect(path, initialize=True) as connection:
         connection.executescript(SCHEMA_SQL)
+        from .doctrine_pipeline import ensure_schema as ensure_doctrine_schema
+
+        ensure_doctrine_schema(connection)
     return path

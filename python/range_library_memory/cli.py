@@ -81,6 +81,16 @@ from .weekly_chronology_bos import (
     concise_summary as concise_weekly_script1_summary,
     review_weekly_script1_run,
 )
+from .doctrine_pipeline import (
+    DoctrinePipelineError,
+    insert_script,
+    list_scripts,
+    retire_script,
+    review_sample,
+    run_active_pipeline,
+    run_version,
+    show_script,
+)
 from .xauusd_first_query_doctrine import (
     DoctrineError,
     build_first_query_doctrine_report,
@@ -322,6 +332,42 @@ def build_parser() -> argparse.ArgumentParser:
     weekly_script1_review_parser.add_argument("--canonical-range-id", required=True)
     weekly_script1_review_parser.add_argument("--decision", required=True, choices=("APPROVED", "REJECTED"))
     weekly_script1_review_parser.add_argument("--json", action="store_true")
+
+    insert_doctrine = subparsers.add_parser("insert-script", help="Store a registered doctrine package version.")
+    insert_doctrine.add_argument("--db-path", type=Path, required=True)
+    insert_doctrine.add_argument("--script-key", required=True)
+    insert_doctrine.add_argument("--display-name", required=True)
+    insert_doctrine.add_argument("--version-label", required=True)
+    source = insert_doctrine.add_mutually_exclusive_group(required=True)
+    source.add_argument("--source-file", type=Path)
+    source.add_argument("--source-text")
+    insert_doctrine.add_argument("--adapter-key", required=True)
+    insert_doctrine.add_argument("--execution-order", type=int, default=100)
+    insert_doctrine.add_argument("--description")
+
+    list_doctrine = subparsers.add_parser("list-scripts", help="List stored doctrine scripts.")
+    list_doctrine.add_argument("--db-path", type=Path, required=True)
+
+    show_doctrine = subparsers.add_parser("show-script", help="Show one stored doctrine script.")
+    show_doctrine.add_argument("--db-path", type=Path, required=True)
+    show_doctrine.add_argument("--script-key", required=True)
+
+    retire_doctrine = subparsers.add_parser("retire-script", help="Retire a stored doctrine script.")
+    retire_doctrine.add_argument("--db-path", type=Path, required=True)
+    retire_doctrine.add_argument("--script-key", required=True)
+
+    run_doctrine = subparsers.add_parser("run-doctrine-pipeline", help="Run one pending version or the active pipeline.")
+    run_doctrine.add_argument("--db-path", type=Path, required=True)
+    run_doctrine.add_argument("--source-db", type=Path, required=True)
+    run_doctrine.add_argument("--case-ref", required=True)
+    run_doctrine.add_argument("--symbol", default="XAUUSD", choices=("XAUUSD",))
+    run_doctrine.add_argument("--version-id")
+
+    review_doctrine = subparsers.add_parser("review-doctrine-sample", help="Review a persisted doctrine validation sample.")
+    review_doctrine.add_argument("--db-path", type=Path, required=True)
+    review_doctrine.add_argument("--run-id", required=True)
+    review_doctrine.add_argument("--canonical-range-id", required=True)
+    review_doctrine.add_argument("--decision", required=True, choices=("APPROVED", "REJECTED"))
 
     first_query_parser = subparsers.add_parser(
         "first-query-doctrine",
@@ -673,6 +719,51 @@ def main(argv: list[str] | None = None) -> int:
         except (InspectionError, WeeklyChronologyBosError, ValueError) as exc:
             parser.error(str(exc))
         print(json.dumps(result, sort_keys=True, separators=(",", ":")) if args.json else result)
+        return 0
+
+    if args.command == "insert-script":
+        try:
+            source_text = args.source_text if args.source_text is not None else args.source_file.read_text(encoding="utf-8")
+            result = insert_script(args.db_path, script_key=args.script_key, display_name=args.display_name,
+                version_label=args.version_label, source_code=source_text, adapter_key=args.adapter_key,
+                execution_order=args.execution_order, description=args.description)
+        except (DoctrinePipelineError, OSError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+
+    if args.command == "list-scripts":
+        try: result = list_scripts(args.db_path)
+        except DoctrinePipelineError as exc: parser.error(str(exc))
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+
+    if args.command == "show-script":
+        try: result = show_script(args.db_path, args.script_key)
+        except DoctrinePipelineError as exc: parser.error(str(exc))
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+
+    if args.command == "retire-script":
+        try: retire_script(args.db_path, args.script_key)
+        except DoctrinePipelineError as exc: parser.error(str(exc))
+        print(json.dumps({"script_key": args.script_key, "status": "RETIRED"}, sort_keys=True))
+        return 0
+
+    if args.command == "run-doctrine-pipeline":
+        try:
+            result = (run_version(args.db_path, version_id=args.version_id, case_ref=args.case_ref,
+                symbol=args.symbol, source_db=args.source_db) if args.version_id else
+                run_active_pipeline(args.db_path, case_ref=args.case_ref, symbol=args.symbol, source_db=args.source_db))
+        except (DoctrinePipelineError, WeeklyChronologyBosError, ValueError) as exc:
+            parser.error(str(exc))
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+        return 0
+
+    if args.command == "review-doctrine-sample":
+        try: result = review_sample(args.db_path, run_id=args.run_id, canonical_range_id=args.canonical_range_id, decision=args.decision)
+        except (DoctrinePipelineError, ValueError) as exc: parser.error(str(exc))
+        print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
 
     if args.command == "first-query-doctrine":

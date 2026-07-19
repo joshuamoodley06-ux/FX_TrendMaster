@@ -52,6 +52,10 @@ contextBridge.exposeInMainWorld('localResearch', {
   runWeeklyScript1: (args) => ipcRenderer.invoke('local-research:weekly-script1', args),
   getWeeklyScript1State: (args) => ipcRenderer.invoke('local-research:weekly-script1-state', args),
   reviewWeeklyScript1: (args) => ipcRenderer.invoke('local-research:weekly-script1-review', args),
+  listDoctrineScripts: (args) => ipcRenderer.invoke('local-research:doctrine-list', args),
+  insertDoctrineScript: (args) => ipcRenderer.invoke('local-research:doctrine-insert', args),
+  runDoctrinePipeline: (args) => ipcRenderer.invoke('local-research:doctrine-run', args),
+  reviewDoctrineSample: (args) => ipcRenderer.invoke('local-research:doctrine-review', args),
 });
 
 contextBridge.exposeInMainWorld('localMappingBridge', {

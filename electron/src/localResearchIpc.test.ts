@@ -184,16 +184,16 @@ describe('localResearchIpc runner args', () => {
     const calls: any[] = [];
     const runScript = vi.fn(async (spec: any) => {
       calls.push(spec);
-      return spec.args.includes('review-weekly-script1')
-        ? { ok: true }
-        : { ok: true, parsed: { schema_version: 'xauusd_master_map_v0.1' } };
+      if (spec.args.includes('review-doctrine-sample')) return { ok: true, parsed: { publication_status: 'PUBLISHED' } };
+      if (spec.args.includes('show-script')) return { ok: true, parsed: { script_key: 'weekly_structure' } };
+      return { ok: true, parsed: { schema_version: 'xauusd_master_map_v0.1' } };
     });
     const result = await runWeeklyScript1Review({ analysisDatabasePath: copy, liveDatabasePath: live,
       runId: 'run-1', caseRef: 'case:live', symbol: 'XAUUSD', canonicalRangeId: 'weekly-1', decision: 'APPROVED',
       pythonRoot: PYTHON_ROOT }, { allowedCopies: new Set([copy]), runScript });
     expect(result.ok).toBe(true);
     expect(calls[0].args).toEqual(expect.arrayContaining([
-      'review-weekly-script1', '--db-path', copy, '--run-id', 'run-1', '--canonical-range-id', 'weekly-1', '--decision', 'APPROVED',
+      'review-doctrine-sample', '--db-path', copy, '--run-id', 'run-1', '--canonical-range-id', 'weekly-1', '--decision', 'APPROVED',
     ]));
     expect(calls[0].args).not.toContain(live);
     await expect(runWeeklyScript1Review({ analysisDatabasePath: live, liveDatabasePath: live,
@@ -205,11 +205,13 @@ describe('localResearchIpc runner args', () => {
     const calls: string[] = [];
     const analysisRoot = path.resolve(__dirname, '../work/weekly-script1-test');
     const copyDatabase = vi.fn(async (_live: string, copy: string) => { calls.push(`copy:${copy}`); return copy; });
-    const runScript = vi.fn(async (spec: { script: string }) => {
+    const runScript = vi.fn(async (spec: { script: string; args: string[] }) => {
       calls.push(spec.script);
+      if (spec.args.includes('insert-script')) return { ok: true, parsed: { version_id: 'version-1' } };
+      if (spec.args.includes('run-doctrine-pipeline')) return { ok: true, parsed: { run: { sample_count: 5 } } };
       return spec.script === 'range_library_memory.master_map'
         ? { ok: true, parsed: { schema_version: 'xauusd_master_map_v0.1' } }
-        : { ok: true };
+        : { ok: true, parsed: {} };
     });
     const existingSource = path.resolve(__dirname, '../package.json');
     const existingCandleSource = path.resolve(__dirname, '../package-lock.json');
@@ -219,7 +221,7 @@ describe('localResearchIpc runner args', () => {
       analysisRoot, runId: 'test' }, { copyDatabase, runScript, preflight });
     expect(result.source).toBe('DISPOSABLE_ANALYSIS_COPY');
     expect(result.analysisDatabasePath).not.toBe(existingSource);
-    expect(calls.slice(1)).toEqual(['range_library_memory.cli', 'range_library_memory.master_map']);
+    expect(calls.slice(1)).toEqual(['range_library_memory.cli', 'range_library_memory.cli', 'range_library_memory.master_map']);
     expect(calls[0]).toBe(`copy:${result.analysisDatabasePath}`);
     expect(preflight).toHaveBeenCalledWith(expect.objectContaining({
       caseRef: 'case:live', symbol: 'XAUUSD', analysisDatabasePath: result.analysisDatabasePath,
@@ -245,6 +247,8 @@ describe('preload localResearch API', () => {
     expect(src).toContain('runMappingAssistant');
     expect(src).toContain('runWeeklyScript1');
     expect(src).toContain('reviewWeeklyScript1');
+    expect(src).toContain('insertDoctrineScript');
+    expect(src).toContain('listDoctrineScripts');
     expect(src).toContain('local-research:weekly-script1');
     expect(src).toContain('local-research:mapping-assistant');
     expect(src).toContain('local-research:seed');
