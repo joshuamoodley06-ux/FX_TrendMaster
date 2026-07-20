@@ -63,6 +63,7 @@ export type WeeklyAnalysisBridge = {
     analysisDatabasePath: string;
     caseRef: string;
     symbol: string;
+    versionId?: string;
   }) => Promise<{
     ok: boolean;
     result?: unknown;
@@ -154,8 +155,23 @@ function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
   return { chronology: chronologyLabel(chronology), bos: bosLabel(bos), status };
 }
 
+function script1CandidateLabels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
+  const approved = node.analysisEnrichments.weekly_structure?.payload || {};
+  const chronology = node.script1Chronology ?? approved.chronology;
+  const bos = node.script1BosDirection ?? approved.bos_direction;
+  const processing = String(node.script1ProcessingStatus || '').toUpperCase();
+  const status = processing === 'NEEDS_REVIEW' ? 'Needs Review'
+    : node.script1ReviewStatus === 'REJECTED' ? 'Rejected' : 'Pending';
+  return { chronology: chronologyLabel(chronology), bos: bosLabel(bos), status };
+}
+
 function matchingRange(node: MasterMapRangeNode, ranges: Record<string, unknown>[]) {
-  const sourceIds = new Set(node.sourceRefs.map((ref) => String(ref.sourceRecordId)));
+  const sourceIds = new Set<string>();
+  for (const ref of node.sourceRefs) {
+    if (ref.rawId !== null && ref.rawId !== undefined) sourceIds.add(String(ref.rawId));
+    const sourceRecordId = String(ref.sourceRecordId || '').trim();
+    if (sourceRecordId) sourceIds.add(sourceRecordId);
+  }
   return ranges.find((item) => sourceIds.has(String(item.range_id || item.id || ''))) || null;
 }
 
@@ -177,18 +193,21 @@ export function selectWeeklyValidationSample(nodes: MasterMapRangeNode[], limit 
   return selected;
 }
 
-function WeeklyValidationSample({ nodes, ranges, decisions, saving, reviewEnabled, onNavigateRange, onDecision }: {
+function WeeklyValidationSample({
+  nodes, ranges, decisions, saving, reviewEnabled, candidateOutput, onNavigateRange, onDecision,
+}: {
   nodes: MasterMapRangeNode[];
   ranges: Record<string, unknown>[];
   decisions: Map<string, string>;
   saving: boolean;
   reviewEnabled: boolean;
+  candidateOutput: boolean;
   onNavigateRange: (range: Record<string, unknown>) => void;
   onDecision: (canonicalRangeId: string, decision: 'APPROVED' | 'REJECTED') => void;
 }) {
   return <div className="weeklyScript1Rows" aria-label="Weekly analysis validation sample">
     {nodes.map((node) => {
-      const labels = script1Labels(node);
+      const labels = candidateOutput ? script1CandidateLabels(node) : script1Labels(node);
       const range = matchingRange(node, ranges);
       const decision = decisions.get(node.canonicalRangeId) || 'PENDING';
       return <div key={node.canonicalRangeId} className="weeklyScript1Sample">
@@ -279,7 +298,8 @@ export function HierarchyWorkspace({
   const [insertOpen, setInsertOpen] = useState(false);
   const [insertName, setInsertName] = useState('Weekly Script');
   const [insertKey, setInsertKey] = useState('weekly_structure');
-  const [insertVersion, setInsertVersion] = useState('1');
+  const [insertVersion, setInsertVersion] = useState('2');
+  const [insertAdapter, setInsertAdapter] = useState('weekly_chronology_bos_v2');
   const [pipelineSummary, setPipelineSummary] = useState<any>(null);
   const previousLayer = useRef<HierarchyLayer>(layer);
   const bridge = useMemo(
@@ -452,20 +472,26 @@ export function HierarchyWorkspace({
   ) || [], [analysisDocument, caseRef]);
 
   const doctrineRuns = Array.isArray(doctrineState?.runs) ? doctrineState.runs : [];
+  const matchingDoctrineRuns = doctrineRuns.filter((entry: any) => entry?.run?.case_ref === caseRef
+    && String(entry?.run?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase());
   const directRunMatchesCase = doctrineState?.run
     && doctrineState.run.case_ref === caseRef
     && String(doctrineState.run.symbol || '').toUpperCase() === String(symbol || '').toUpperCase();
-  const doctrineRunState = directRunMatchesCase
-    ? doctrineState
-    : doctrineRuns.find((entry: any) => entry?.run?.case_ref === caseRef
-      && String(entry?.run?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase()) || null;
-  const doctrineRun = doctrineRunState?.run || null;
-  const doctrineSamples = doctrineRunState?.samples || [];
   const approvedVersion = Array.isArray(doctrineState?.versions)
     ? doctrineState.versions.find((version: any) => version.version_id === doctrineState?.current_approved_version_id)
     : null;
   const globalApprovalReady = doctrineState?.status === 'APPROVED'
     && !!doctrineState?.current_approved_version_id;
+  const activeRunState = matchingDoctrineRuns.find((entry: any) => entry?.run?.approval_status === 'APPROVED'
+    && entry?.run?.publication_status === 'PUBLISHED'
+    && (!doctrineState?.current_approved_version_id
+      || entry?.run?.version_id === doctrineState.current_approved_version_id)) || null;
+  const candidateRunState = matchingDoctrineRuns.find((entry: any) => entry?.run?.approval_status === 'PENDING') || null;
+  const doctrineRunState = directRunMatchesCase
+    ? doctrineState
+    : candidateRunState || activeRunState || matchingDoctrineRuns[0] || null;
+  const doctrineRun = doctrineRunState?.run || null;
+  const doctrineSamples = doctrineRunState?.samples || [];
   const pipeline: PipelineView | null = doctrineRun ? {
     pipelineName: 'Weekly analysis',
     version: doctrineState?.versions?.find((version: any) => version.version_id === doctrineRun.version_id)?.version_label || '1',
@@ -509,8 +535,9 @@ export function HierarchyWorkspace({
 
   const approvedByRangeId = useMemo(() => {
     const result = new Map<string, HierarchyRangeEnrichment>();
-    if (String(pipeline?.approvalState || '').toUpperCase() !== 'APPROVED'
-      || String(pipeline?.publicationStatus || '').toUpperCase() !== 'PUBLISHED') return result;
+    const legacyApproved = String(pipeline?.approvalState || '').toUpperCase() === 'APPROVED'
+      && String(pipeline?.publicationStatus || '').toUpperCase() === 'PUBLISHED';
+    if (!globalApprovalReady && !activeRunState && !legacyApproved) return result;
     for (const node of caseAnalysisNodes) {
       const approvedEnrichment = node.analysisEnrichments.weekly_structure;
       if (!approvedEnrichment) continue;
@@ -533,7 +560,8 @@ export function HierarchyWorkspace({
       }
     }
     return result;
-  }, [caseAnalysisNodes, caseRef, pipeline?.approvalState, pipeline?.publicationStatus]);
+  }, [activeRunState, caseAnalysisNodes, caseRef, globalApprovalReady,
+    pipeline?.approvalState, pipeline?.publicationStatus]);
 
   const saveReview = async (canonicalRangeId: string, decision: 'APPROVED' | 'REJECTED') => {
     if (!bridge || !pipeline?.runId || !analysisDatabasePath) return;
@@ -574,20 +602,40 @@ export function HierarchyWorkspace({
   const insertStoredScript = async () => {
     if (!bridge?.insertDoctrineScript || !analysisDatabasePath) return;
     setOperationState('INSERTING');
+    setAnalysisError('');
     try {
       const result = await bridge.insertDoctrineScript({
         analysisDatabasePath,
         displayName: insertName,
         scriptKey: insertKey,
         versionLabel: insertVersion,
-        adapterKey: 'weekly_chronology_bos_v1',
+        adapterKey: insertAdapter,
         executionOrder: 100,
       });
-      if (result.ok) {
-        setInsertOpen(false);
+      if (!result.ok) {
+        if (!result.canceled) throw new Error(result.error || 'Doctrine package insertion failed.');
+        return;
+      }
+      setInsertOpen(false);
+      const versionId = String((result.result as any)?.version_id || '').trim();
+      if (versionId && bridge.runDoctrinePipeline && caseRef && symbol) {
+        setOperationState('RUNNING');
+        const run = await bridge.runDoctrinePipeline({
+          analysisDatabasePath, caseRef, symbol, versionId,
+        });
+        if (!run.ok) throw new Error(run.error || 'Inserted doctrine version could not run.');
+        setPipelineSummary(run.result || null);
+        if (run.masterMap) setAnalysisDocument(adaptMasterMapOutput(run.masterMap));
+        if (run.doctrineState) setDoctrineState(run.doctrineState);
+        if (Array.isArray(run.scripts)) setStoredScripts(run.scripts);
+        setAnalysisState('active');
+      } else {
         const listed = await bridge.listDoctrineScripts?.({ analysisDatabasePath });
         if (listed?.ok && Array.isArray(listed.result)) setStoredScripts(listed.result);
       }
+    } catch {
+      setAnalysisError('The doctrine package could not be inserted and run safely.');
+      setAnalysisState('error');
     } finally {
       setOperationState('IDLE');
     }
@@ -615,6 +663,7 @@ export function HierarchyWorkspace({
   const busy = operationState !== 'IDLE';
   const approvalState = String(pipeline?.approvalState || 'PENDING').toUpperCase();
   const hasCaseRun = !!pipeline?.runId;
+  const candidateOutput = approvalState === 'PENDING';
 
   return <section className="hierarchyWorkspace" data-mode={mode} aria-label="Hierarchy workspace">
     <div className="hierarchyWorkspaceModes" role="tablist" aria-label="Hierarchy modes">
@@ -663,7 +712,7 @@ export function HierarchyWorkspace({
           onClick={() => setInsertOpen((value) => !value)}>Insert Script</button>
         <button type="button" disabled={!analysisDatabasePath || busy}
           onClick={() => void loadStoredScripts()}>Stored Scripts</button>
-        <button type="button" disabled={!analysisDatabasePath || approvalState !== 'APPROVED' || busy}
+        <button type="button" disabled={!analysisDatabasePath || !globalApprovalReady || busy}
           onClick={() => void rerunActivePipeline()}>
           {operationState === 'RUNNING' ? 'Running Pipeline…' : 'Run Active Pipeline'}
         </button>
@@ -677,8 +726,9 @@ export function HierarchyWorkspace({
         <label>Name<input value={insertName} onChange={(event) => setInsertName(event.target.value)} /></label>
         <label>Script key<input value={insertKey} onChange={(event) => setInsertKey(event.target.value)} /></label>
         <label>Version<input value={insertVersion} onChange={(event) => setInsertVersion(event.target.value)} /></label>
-        <label>Adapter<select value="weekly_chronology_bos_v1" disabled>
-          <option>weekly_chronology_bos_v1</option>
+        <label>Adapter<select value={insertAdapter} onChange={(event) => setInsertAdapter(event.target.value)}>
+          <option value="weekly_chronology_bos_v2">Sequential Weekly BOS v2</option>
+          <option value="weekly_chronology_bos_v1">Weekly BOS v1</option>
         </select></label>
         <button type="button" disabled={!insertName.trim() || !insertKey.trim() || !insertVersion.trim() || busy}
           onClick={() => void insertStoredScript()}>Choose package…</button>
@@ -711,7 +761,7 @@ export function HierarchyWorkspace({
         {analysisState === 'active' ? 'XAUUSD ANALYSIS WORKSPACE V2' : 'LIVE'}
       </span>
       {operationState === 'RESTORING' && <span role="status">Restoring XAUUSD script memory…</span>}
-      {operationState === 'RUNNING' && <span role="status">Running approved structure logic…</span>}
+      {operationState === 'RUNNING' && <span role="status">Running selected structure logic…</span>}
       {operationState === 'REVIEWING' && <span role="status">Saving validation decision…</span>}
       {analysisState === 'dormant' && operationState === 'IDLE'
         && <span role="status">Analysis dormant until manually activated.</span>}
@@ -737,6 +787,7 @@ export function HierarchyWorkspace({
           </b>
           <WeeklyValidationSample nodes={validationSample} ranges={ranges} decisions={sampleDecisions}
             saving={operationState === 'REVIEWING'} reviewEnabled={approvalState === 'PENDING'}
+            candidateOutput={candidateOutput}
             onNavigateRange={onNavigateRange} onDecision={(id, decision) => void saveReview(id, decision)} />
           {!validationSample.length && <div className="weeklyScript1Empty">
             {approvalState === 'REJECTED'
