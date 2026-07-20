@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
+  applyCandleAvailabilityToCoverageRow,
   buildHierarchyCoverageRows,
+  coverageCandleTimeframe,
   compactDate,
   deriveCoverageYearOptions,
   filterCoverageRowsByYear,
@@ -10,6 +12,7 @@ import {
   type HierarchyLayer,
 } from './hierarchyCoverage';
 import { adaptMasterMapOutput, type MasterMapDocument, type MasterMapRangeNode } from './masterMapAdapter';
+import { fetchLocalCandles, getElectronApiBridge } from './localResearchClient';
 
 export type HierarchyWorkspaceMode = 'structure' | 'coverage' | 'python';
 export type HierarchyRangeEnrichment = {
@@ -18,6 +21,11 @@ export type HierarchyRangeEnrichment = {
   status: string;
 };
 export type WeeklyAnalysisApprovalState = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type CoverageCandleFetcher = (
+  symbol: string,
+  timeframe: string,
+  range: { from?: string; to?: string; limit?: number },
+) => Promise<{ ok: boolean; candles: { time: string }[]; error?: string }>;
 export type WeeklyAnalysisActivationResult = {
   ok: boolean;
   source?: 'LIVE' | 'DISPOSABLE_ANALYSIS_COPY';
@@ -72,6 +80,7 @@ type Props = {
   caseRef: string;
   symbol: string;
   weeklyAnalysisBridge?: WeeklyAnalysisBridge | null;
+  coverageCandleFetcher?: CoverageCandleFetcher | null;
 };
 
 type OperationState = 'IDLE' | 'RESTORING' | 'RUNNING' | 'REVIEWING' | 'REFRESHING' | 'INSERTING';
@@ -219,7 +228,10 @@ function CoverageRow({ row, onNavigate }: {
     </div>
     {open && <div className="hierarchyCoverageGaps">
       {row.childLayer === null && <span>Micro has no configured child layer.</span>}
-      {row.childLayer !== null && !row.gaps.length && <span>Full {row.childLayer.toLowerCase()} coverage.</span>}
+      {row.childLayer !== null && row.marketDataStatus === 'NO_DATA' && !row.gaps.length
+        && <span>No local OHLC in this parent window; excluded from the gap queue.</span>}
+      {row.childLayer !== null && row.marketDataStatus !== 'NO_DATA' && !row.gaps.length
+        && <span>Full {row.childLayer.toLowerCase()} coverage.</span>}
       {row.gaps.map((gap) => <button key={`${gap.startMs}-${gap.endMs}`} type="button"
         onClick={() => onNavigate({ ...row.parent, range_start_time: gap.startIso, range_end_time: gap.endIso })}>
         {compactDate(gap.startMs)} <span aria-hidden="true">&lt;-----&gt;</span> {compactDate(gap.endMs)}
@@ -245,7 +257,9 @@ function legacyPipelineView(document: MasterMapDocument | null): PipelineView | 
   };
 }
 
-export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef, symbol, weeklyAnalysisBridge }: Props) {
+export function HierarchyWorkspace({
+  ranges, structure, onNavigateRange, caseRef, symbol, weeklyAnalysisBridge, coverageCandleFetcher,
+}: Props) {
   const [mode, setMode] = useState<HierarchyWorkspaceMode>('structure');
   const [layer, setLayer] = useState<HierarchyLayer>('WEEKLY');
   const rows = useMemo(() => buildHierarchyCoverageRows(ranges, layer), [ranges, layer]);
@@ -321,6 +335,74 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
     if (fromYear === null || toYear === null) return rows;
     return filterCoverageRowsByYear(rows, fromYear, toYear);
   }, [rows, fromYear, toYear]);
+  const effectiveCoverageCandleFetcher = coverageCandleFetcher === undefined
+    ? (getElectronApiBridge()?.candles?.fetch ? fetchLocalCandles : null)
+    : coverageCandleFetcher;
+  const coverageScopeKey = useMemo(() => [symbol, layer, ...filteredRows.map((row) => (
+    `${row.parentId}:${row.gaps.map((gap) => `${gap.startMs}-${gap.endMs}`).join(',')}`
+  ))].join('|'), [filteredRows, layer, symbol]);
+  const [coverageResult, setCoverageResult] = useState<{ key: string; rows: HierarchyCoverageRow[] } | null>(null);
+  const [coverageLoading, setCoverageLoading] = useState(false);
+  const [coverageWarning, setCoverageWarning] = useState('');
+  const displayedCoverageRows = effectiveCoverageCandleFetcher
+    ? coverageResult?.key === coverageScopeKey ? coverageResult.rows : []
+    : filteredRows;
+
+  useEffect(() => {
+    if (mode !== 'coverage' || !effectiveCoverageCandleFetcher) return;
+    let cancelled = false;
+    const qualify = async () => {
+      setCoverageLoading(true);
+      setCoverageWarning('');
+      const timeframe = coverageCandleTimeframe(layer);
+      if (!timeframe || !filteredRows.length) {
+        if (!cancelled) {
+          setCoverageResult({ key: coverageScopeKey, rows: filteredRows });
+          setCoverageLoading(false);
+        }
+        return;
+      }
+      const nextRows: HierarchyCoverageRow[] = [];
+      let fetchFailed = false;
+      for (const row of filteredRows) {
+        if (!row.gaps.length) {
+          nextRows.push(row);
+          continue;
+        }
+        const parentWindow = rangeInterval(row.parent);
+        if (!parentWindow) {
+          nextRows.push(row);
+          continue;
+        }
+        try {
+          const result = await effectiveCoverageCandleFetcher(symbol, timeframe, {
+            from: new Date(parentWindow.startMs).toISOString(),
+            to: new Date(parentWindow.endMs).toISOString(),
+            limit: 10_000,
+          });
+          if (cancelled) return;
+          if (!result.ok) {
+            fetchFailed = true;
+            nextRows.push(row);
+          } else {
+            nextRows.push(applyCandleAvailabilityToCoverageRow(row, result.candles || [], timeframe));
+          }
+        } catch {
+          fetchFailed = true;
+          nextRows.push(row);
+        }
+      }
+      if (!cancelled) {
+        setCoverageResult({ key: coverageScopeKey, rows: nextRows });
+        setCoverageWarning(fetchFailed
+          ? 'Local OHLC could not be checked for every range. Unverified gaps remain visible.'
+          : '');
+        setCoverageLoading(false);
+      }
+    };
+    void qualify();
+    return () => { cancelled = true; };
+  }, [coverageScopeKey, effectiveCoverageCandleFetcher, filteredRows, layer, mode, symbol]);
 
   const updateYears = (nextFrom: number, nextTo: number) => {
     const normalized = normalizeCoverageYearRange(nextFrom, nextTo);
@@ -566,9 +648,12 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
             {yearOptions.map((year) => <option key={year} value={year}>{year}</option>)}
           </select></label>
         </div>}
+      {coverageLoading && <span role="status">Checking local OHLC before listing mapping gaps…</span>}
+      {coverageWarning && <span role="alert">{coverageWarning}</span>}
       <div className="hierarchyCoverageScroll">
-        {!filteredRows.length && <span className="caseLedgerEmpty">No {layer.toLowerCase()} ranges in this year range.</span>}
-        {filteredRows.map((row) => <CoverageRow key={row.parentId} row={row} onNavigate={onNavigateRange} />)}
+        {!coverageLoading && !displayedCoverageRows.length
+          && <span className="caseLedgerEmpty">No {layer.toLowerCase()} ranges in this year range.</span>}
+        {displayedCoverageRows.map((row) => <CoverageRow key={row.parentId} row={row} onNavigate={onNavigateRange} />)}
       </div>
     </div>}
 
