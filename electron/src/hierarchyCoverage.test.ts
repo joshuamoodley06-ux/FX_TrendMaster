@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { buildHierarchyCoverageRows, deriveCoverageYearOptions, filterCoverageRowsByYear, mergeClippedIntervals, normalizeCoverageYearRange, uncoveredIntervals } from './hierarchyCoverage';
+import {
+  applyCandleAvailabilityToCoverageRow,
+  buildHierarchyCoverageRows,
+  candleAvailabilityIntervals,
+  coverageCandleTimeframe,
+  deriveCoverageYearOptions,
+  filterCoverageRowsByYear,
+  mergeClippedIntervals,
+  normalizeCoverageYearRange,
+  uncoveredIntervals,
+} from './hierarchyCoverage';
 const day = 24 * 60 * 60 * 1000;
+const hour = 60 * 60 * 1000;
 
 describe('hierarchy coverage intervals', () => {
   it('merges overlaps and clips children without double counting', () => {
@@ -34,6 +45,53 @@ describe('hierarchy coverage intervals', () => {
     ], 'WEEKLY');
     expect(row.coveragePercent).toBe(100);
     expect(row.gaps).toEqual([]);
+  });
+  it('maps each parent layer to the candle timeframe that proves tradable coverage', () => {
+    expect(coverageCandleTimeframe('WEEKLY')).toBe('D1');
+    expect(coverageCandleTimeframe('DAILY')).toBe('H1');
+    expect(coverageCandleTimeframe('INTRADAY')).toBe('M15');
+    expect(coverageCandleTimeframe('MICRO')).toBeNull();
+  });
+  it('uses actual candle intervals instead of bridging a weekend', () => {
+    const window = {
+      startMs: Date.parse('2025-01-03T20:00:00Z'),
+      endMs: Date.parse('2025-01-06T02:00:00Z'),
+    };
+    expect(candleAvailabilityIntervals([
+      { time: '2025.01.03 20:00' },
+      { time: '2025.01.06 00:00' },
+      { time: '2025.01.06 01:00' },
+    ], 'H1', window)).toEqual([
+      { startMs: window.startMs, endMs: window.startMs + hour },
+      { startMs: Date.parse('2025-01-06T00:00:00Z'), endMs: window.endMs },
+    ]);
+  });
+  it('keeps only candle-supported parts of a suspected mapping gap', () => {
+    const [row] = buildHierarchyCoverageRows([
+      { range_id: 1, structure_layer: 'DAILY', range_start_time: '2025-01-03T18:00:00Z', range_end_time: '2025-01-06T02:00:00Z' },
+      { range_id: 2, parent_range_id: 1, structure_layer: 'INTRADAY', range_start_time: '2025-01-03T18:00:00Z', range_end_time: '2025-01-03T20:00:00Z' },
+    ], 'DAILY');
+    const qualified = applyCandleAvailabilityToCoverageRow(row, [
+      { time: '2025.01.03 20:00' },
+      { time: '2025.01.06 00:00' },
+      { time: '2025.01.06 01:00' },
+    ], 'H1');
+    expect(qualified.marketDataStatus).toBe('AVAILABLE');
+    expect(qualified.gaps.map(({ startIso, endIso }) => ({ startIso, endIso }))).toEqual([
+      { startIso: '2025-01-03T20:00:00.000Z', endIso: '2025-01-03T21:00:00.000Z' },
+      { startIso: '2025-01-06T00:00:00.000Z', endIso: '2025-01-06T02:00:00.000Z' },
+    ]);
+    expect(qualified.coveragePercent).toBe(40);
+  });
+  it('removes a suspected gap when the candle store has no OHLC in it', () => {
+    const [row] = buildHierarchyCoverageRows([
+      { range_id: 1, structure_layer: 'WEEKLY', range_start_time: '2025-01-01', range_end_time: '2025-01-11' },
+      { range_id: 2, parent_range_id: 1, structure_layer: 'DAILY', range_start_time: '2025-01-01', range_end_time: '2025-01-06' },
+    ], 'WEEKLY');
+    const qualified = applyCandleAvailabilityToCoverageRow(row, [], 'D1');
+    expect(qualified.marketDataStatus).toBe('NO_DATA');
+    expect(qualified.gaps).toEqual([]);
+    expect(qualified.coveragePercent).toBe(100);
   });
   it('derives every available year from actual parent and gap dates', () => {
     const rows = buildHierarchyCoverageRows([
