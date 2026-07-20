@@ -6,9 +6,12 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
-from range_library_memory.weekly_chronology_bos import (
-    VERSION,
-    build_weekly_chronology_bos,
+from range_library_memory import doctrine_pipeline
+from range_library_memory import weekly_chronology_bos as weekly_core
+from range_library_memory.weekly_chronology_bos_v2 import (
+    ADAPTER_KEY,
+    POLICY_VERSION,
+    build_weekly_chronology_bos_v2,
 )
 
 
@@ -119,6 +122,22 @@ def write_source_db(path: Path, candles: list[tuple]) -> None:
         connection.commit()
 
 
+def build_v2(range_db: Path, candle_db: Path) -> dict:
+    return build_weekly_chronology_bos_v2(
+        weekly_core,
+        range_db,
+        source_db=candle_db,
+        case_ref="case:live",
+    )
+
+
+def test_v2_is_independent_and_preserves_v1_adapter() -> None:
+    assert weekly_core.VERSION == "weekly_script1_v1"
+    assert doctrine_pipeline.WEEKLY_ADAPTER == "weekly_chronology_bos_v1"
+    assert POLICY_VERSION == "weekly_script1_v2"
+    assert ADAPTER_KEY == "weekly_chronology_bos_v2"
+
+
 def test_first_strict_boundary_breach_establishes_direction_and_sequence(tmp_path: Path) -> None:
     range_db = tmp_path / "range.sqlite3"
     candle_db = tmp_path / "candles.sqlite3"
@@ -136,25 +155,21 @@ def test_first_strict_boundary_breach_establishes_direction_and_sequence(tmp_pat
         high_time="2026-03-09T00:00:00Z",
         low_time="2026-03-02T00:00:00Z",
     )
-    # Deliberately reversed input order. Canonical order must use the later
-    # anchor (range-defined time), not source order or canonical id alone.
+    # Deliberately reversed input order. Canonical order uses the later anchor,
+    # not source order or canonical id alone.
     write_range_db(range_db, [second, first])
     write_source_db(candle_db, [
         ("2026-01-12T00:00:00Z", 90, 99, 82, 95, 1),
-        # Gap in stored ranges is irrelevant; this first strict low breach owns
-        # Weekly 1 and establishes BOS_DOWN despite RL forming first.
+        # A calendar/mapping gap does not interrupt the first range's scan.
+        # The first actual strict breach is down, even though chronology's
+        # expected continuation is up.
         ("2026-02-02T00:00:00Z", 90, 98, 79, 82, 1),
         ("2026-03-09T00:00:00Z", 100, 110, 95, 108, 1),
         ("2026-03-16T00:00:00Z", 108, 112, 96, 111, 1),
     ])
 
-    summary = build_weekly_chronology_bos(
-        range_db,
-        source_db=candle_db,
-        case_ref="case:live",
-    )
+    summary = build_v2(range_db, candle_db)
 
-    assert VERSION == "weekly_script1_v2"
     assert summary["sequence_order"] == "RANGE_DEFINED_AT_ASC"
     assert [row["canonical_range_id"] for row in summary["rows"]] == ["weekly-1", "weekly-2"]
     assert summary["rows"][0]["chronology_result"] == "RL_TO_RH"
@@ -174,7 +189,7 @@ def test_first_strict_boundary_breach_establishes_direction_and_sequence(tmp_pat
     assert output["analysis"]["weekly_script1"]["sequence_order"] == "RANGE_DEFINED_AT_ASC"
 
 
-def test_range_scan_stops_at_next_stored_weekly_and_repeats(tmp_path: Path) -> None:
+def test_each_stored_weekly_is_processed_independently_after_mapping_gap(tmp_path: Path) -> None:
     range_db = tmp_path / "range.sqlite3"
     candle_db = tmp_path / "candles.sqlite3"
     first = weekly(
@@ -188,35 +203,48 @@ def test_range_scan_stops_at_next_stored_weekly_and_repeats(tmp_path: Path) -> N
         "weekly-2",
         high=95,
         low=85,
-        high_time="2026-02-02T00:00:00Z",
-        low_time="2026-02-09T00:00:00Z",
+        high_time="2026-03-02T00:00:00Z",
+        low_time="2026-03-09T00:00:00Z",
     )
     write_range_db(range_db, [first, second])
     write_source_db(candle_db, [
         ("2026-01-12T00:00:00Z", 90, 99, 82, 95, 1),
-        ("2026-01-19T00:00:00Z", 95, 99, 82, 90, 1),
-        ("2026-02-09T00:00:00Z", 90, 94, 86, 88, 1),
-        # This belongs to the second stored range. The first range must already
-        # have stopped at Weekly 2's defined time.
-        ("2026-02-16T00:00:00Z", 88, 94, 84, 85, 1),
-        # Later breach of Weekly 1 must never be stolen by Weekly 1.
-        ("2026-02-23T00:00:00Z", 85, 101, 79, 90, 1),
+        ("2026-02-02T00:00:00Z", 95, 101, 83, 100, 1),
+        # No stored range fills February. Python still detects Weekly 1's BOS.
+        ("2026-03-09T00:00:00Z", 90, 94, 86, 88, 1),
+        ("2026-03-16T00:00:00Z", 88, 94, 84, 85, 1),
     ])
 
-    rows = {
-        row["canonical_range_id"]: row
-        for row in build_weekly_chronology_bos(
-            range_db,
-            source_db=candle_db,
-            case_ref="case:live",
-        )["rows"]
-    }
+    rows = {row["canonical_range_id"]: row for row in build_v2(range_db, candle_db)["rows"]}
 
-    assert rows["weekly-1"]["processing_status"] == "PENDING"
-    assert rows["weekly-1"]["bos_direction"] == "PENDING"
-    assert rows["weekly-1"]["reason_codes"] == ["STRICT_BOS_NOT_PROVEN_BEFORE_NEXT_RANGE"]
+    assert rows["weekly-1"]["bos_direction"] == "BOS_UP"
+    assert rows["weekly-1"]["bos_candle_time"] == "2026-02-02T00:00:00Z"
     assert rows["weekly-2"]["bos_direction"] == "BOS_DOWN"
-    assert rows["weekly-2"]["bos_candle_time"] == "2026-02-16T00:00:00Z"
+    assert rows["weekly-2"]["bos_candle_time"] == "2026-03-16T00:00:00Z"
+
+
+def test_first_breach_wins_and_later_opposite_break_does_not_replace_it(tmp_path: Path) -> None:
+    range_db = tmp_path / "range.sqlite3"
+    candle_db = tmp_path / "candles.sqlite3"
+    item = weekly(
+        "weekly-1",
+        high=100,
+        low=80,
+        high_time="2026-01-05T00:00:00Z",
+        low_time="2026-01-12T00:00:00Z",
+    )
+    write_range_db(range_db, [item])
+    write_source_db(candle_db, [
+        ("2026-01-12T00:00:00Z", 90, 99, 82, 95, 1),
+        ("2026-01-19T00:00:00Z", 95, 101, 82, 100, 1),
+        ("2026-01-26T00:00:00Z", 100, 102, 79, 80, 1),
+    ])
+
+    row = build_v2(range_db, candle_db)["rows"][0]
+
+    assert row["bos_direction"] == "BOS_UP"
+    assert row["bos_candle_time"] == "2026-01-19T00:00:00Z"
+    assert row["bos_evidence_price"] == 101
 
 
 def test_same_w1_candle_breaking_both_boundaries_requires_review(tmp_path: Path) -> None:
@@ -235,11 +263,7 @@ def test_same_w1_candle_breaking_both_boundaries_requires_review(tmp_path: Path)
         ("2026-01-19T00:00:00Z", 95, 101, 79, 90, 1),
     ])
 
-    row = build_weekly_chronology_bos(
-        range_db,
-        source_db=candle_db,
-        case_ref="case:live",
-    )["rows"][0]
+    row = build_v2(range_db, candle_db)["rows"][0]
 
     assert row["processing_status"] == "NEEDS_REVIEW"
     assert row["bos_direction"] == "PENDING"
