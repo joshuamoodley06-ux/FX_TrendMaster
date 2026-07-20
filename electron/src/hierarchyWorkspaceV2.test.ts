@@ -82,6 +82,13 @@ describe('HierarchyWorkspace modes', () => {
       weekly.script1_bos_time = '2026-03-01T00:00:00Z'; weekly.script1_processing_status = 'COMPLETE';
       weekly.script1_review_status = 'PENDING';
       weekly.script1_reason_codes = [];
+      weekly.analysis_enrichments = { weekly_structure: {
+        version_id: 'approved-version', version_label: '1', adapter_key: 'weekly_chronology_bos_v1',
+        output_hash: 'approved-output', payload: {
+          chronology: 'RH_TO_RL', bos_direction: 'BOS_DOWN',
+          bos_time: '2026-03-01T00:00:00Z', reasons: [],
+        },
+      } };
     }
     const bridge = {
       getPaths: vi.fn().mockResolvedValue({ ok: true, databasePath: 'C:/live/range-library.sqlite3' }),
@@ -148,6 +155,13 @@ describe('HierarchyWorkspace modes', () => {
       weekly.source_refs = [{ raw_id: 1, case_ref: 'case:live', source_record_id: '1', payload_sha256: 'sha-1' }];
       weekly.script1_chronology = 'RL_TO_RH'; weekly.script1_bos_direction = 'BOS_UP';
       weekly.script1_processing_status = 'COMPLETE'; weekly.script1_review_status = 'APPROVED';
+      weekly.analysis_enrichments = { weekly_structure: {
+        version_id: 'approved-version', version_label: '1', adapter_key: 'weekly_chronology_bos_v1',
+        output_hash: 'approved-output', payload: {
+          chronology: 'RL_TO_RH', bos_direction: 'BOS_UP',
+          bos_time: '2026-03-01T00:00:00Z', reasons: [],
+        },
+      } };
     }
     const bridge = { getPaths: vi.fn().mockResolvedValue({ ok: true, databasePath: 'C:/live.sqlite3' }),
       getWeeklyScript1State: vi.fn().mockResolvedValue({ ok: true, source: 'DISPOSABLE_ANALYSIS_COPY',

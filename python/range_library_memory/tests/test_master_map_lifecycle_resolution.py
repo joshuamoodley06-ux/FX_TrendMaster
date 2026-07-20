@@ -5,6 +5,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from range_library_memory import doctrine_pipeline
 from range_library_memory.master_map import build_master_map
 from range_library_memory.schema import init_schema
 
@@ -109,3 +110,40 @@ def test_incomplete_active_snapshots_merge_into_confirmed_broken_range(tmp_path:
         if weekly["id"] in row["canonical_ids"]
     )
     assert report["automatic_reconciliation"] == "APPLIED_EXACT_BOUNDARY_LIFECYCLE_RULE"
+
+    version = doctrine_pipeline.insert_script(
+        db,
+        script_key="weekly_structure",
+        display_name="Weekly structure",
+        version_label="1",
+        source_code="adapter: weekly\n",
+        adapter_key=doctrine_pipeline.WEEKLY_ADAPTER,
+    )
+    with sqlite3.connect(db) as con:
+        doctrine_pipeline.ensure_schema(con)
+        con.execute(
+            "UPDATE doctrine_scripts SET status='APPROVED',current_approved_version_id=? WHERE script_id=?",
+            (version["version_id"], version["script_id"]),
+        )
+        con.execute(
+            "UPDATE doctrine_script_versions SET approved_at='2026-07-13T01:00:00Z' WHERE version_id=?",
+            (version["version_id"],),
+        )
+        con.execute(
+            "INSERT INTO doctrine_enrichments VALUES (?,?,?,?,?,?,1)",
+            (
+                version["version_id"], weekly["id"], "weekly_structure",
+                dump({"chronology": "RL_TO_RH", "bos_direction": "BOS_UP"}),
+                "approved-output", "2026-07-13T01:00:00Z",
+            ),
+        )
+        con.commit()
+
+    rebuilt = build_master_map(
+        db, source_db=source_db, built_at_utc="2026-07-14T00:00:00Z",
+        build_id="lifecycle-rebuild",
+    )
+    assert rebuilt["root"]["children"][0]["analysis_enrichments"]["weekly_structure"]["payload"] == {
+        "chronology": "RL_TO_RH",
+        "bos_direction": "BOS_UP",
+    }

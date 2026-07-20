@@ -430,12 +430,24 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
     if (String(pipeline?.approvalState || '').toUpperCase() !== 'APPROVED'
       || String(pipeline?.publicationStatus || '').toUpperCase() !== 'PUBLISHED') return result;
     for (const node of caseAnalysisNodes) {
+      const approvedEnrichment = node.analysisEnrichments.weekly_structure;
+      if (!approvedEnrichment) continue;
+
       const labels = script1Labels(node);
-      if (labels.status !== 'Approved') continue;
       for (const sourceRef of node.sourceRefs) {
         if (sourceRef.caseRef && sourceRef.caseRef !== caseRef) continue;
-        const id = String(sourceRef.sourceRecordId || '').trim();
-        if (id) result.set(id, labels);
+        const ids = new Set<string>();
+
+        if (sourceRef.rawId !== null && sourceRef.rawId !== undefined) {
+          ids.add(String(sourceRef.rawId));
+        }
+
+        const sourceRecordId = String(sourceRef.sourceRecordId || '').trim();
+        if (sourceRecordId) ids.add(sourceRecordId);
+
+        for (const id of ids) {
+          result.set(id, labels);
+        }
       }
     }
     return result;
