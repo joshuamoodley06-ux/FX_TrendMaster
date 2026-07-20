@@ -37,3 +37,25 @@ def test_v1_doctrine_reader_remains_explicitly_version_scoped() -> None:
     assert "processing_version=?" in connection.query
     assert connection.params == ("case:live", weekly_core.VERSION)
     assert outputs[0]["payload"]["bos_direction"] == "BOS_UP"
+
+
+def test_validation_sampling_preserves_canonical_input_order() -> None:
+    rows = [
+        {
+            "canonical_range_id": "weekly-later-id",
+            "processing_status": "COMPLETE",
+            "payload": {"chronology": "RL_TO_RH", "bos_direction": "BOS_UP"},
+        },
+        {
+            "canonical_range_id": "weekly-earlier-id",
+            "processing_status": "COMPLETE",
+            "payload": {"chronology": "RH_TO_RL", "bos_direction": "BOS_DOWN"},
+        },
+    ]
+
+    sample = doctrine_pipeline._sample(rows)
+
+    assert [row["canonical_range_id"] for row in sample] == [
+        "weekly-later-id",
+        "weekly-earlier-id",
+    ]
