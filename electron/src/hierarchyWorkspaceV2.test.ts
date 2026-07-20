@@ -4,7 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { HierarchyWorkspace, selectWeeklyValidationSample } from './hierarchyWorkspace';
+import {
+  HierarchyWorkspace,
+  selectWeeklyValidationSample,
+  type HierarchyRangeEnrichment,
+} from './hierarchyWorkspace';
 import { masterMapFixture } from './testFixtures/masterMapFixture';
 
 describe('HierarchyWorkspace modes', () => {
@@ -19,7 +23,13 @@ describe('HierarchyWorkspace modes', () => {
         { range_id: 1, structure_layer: 'WEEKLY', range_start_time: '2025-01-01', range_end_time: '2025-01-11' },
         { range_id: 2, parent_range_id: 1, structure_layer: 'DAILY', range_start_time: '2025-01-01', range_end_time: '2025-01-06' },
       ],
-      structure: createElement('div', { 'data-testid': 'structure', 'data-range-id': '1' }, 'Mapped structure'),
+      structure: (enrichmentsByRangeId: ReadonlyMap<string, HierarchyRangeEnrichment>) => {
+        const enrichment = enrichmentsByRangeId.get('1');
+        return createElement('div', { 'data-testid': 'structure' },
+          'Mapped structure',
+          enrichment && createElement('span', { className: 'weeklyScript1InlineEnrichment' },
+            `${enrichment.chronology} · ${enrichment.bos}`));
+      },
       onNavigateRange,
       caseRef: 'case:live',
       symbol: 'XAUUSD',

@@ -4,7 +4,11 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HierarchyWorkspace, type WeeklyAnalysisBridge } from './hierarchyWorkspace';
+import {
+  HierarchyWorkspace,
+  type HierarchyRangeEnrichment,
+  type WeeklyAnalysisBridge,
+} from './hierarchyWorkspace';
 import { masterMapFixture } from './testFixtures/masterMapFixture';
 
 function weeklyNode(index: number) {
@@ -137,7 +141,20 @@ describe('Hierarchy doctrine workspace v2', () => {
       runDoctrinePipeline: vi.fn(),
     };
     const ranges = [1, 2, 3, 4, 5].map((index) => ({ range_id: String(index) }));
-    const structure = ranges.map((range) => <div key={String(range.range_id)}>Range {String(range.range_id)}</div>);
+    const structure = (enrichmentsByRangeId: ReadonlyMap<string, HierarchyRangeEnrichment>) => <>
+      {ranges.map((range) => {
+        const id = String(range.range_id);
+        const enrichment = enrichmentsByRangeId.get(id);
+        return <div key={id} className="explorerTreeRow">
+          <button type="button" className="explorerTreeRowMain">
+            <span className="explorerTreeLine1">WEEKLY Range {id}</span>
+            {enrichment && <span className="weeklyScript1InlineEnrichment">
+              {enrichment.chronology} · {enrichment.bos}
+            </span>}
+          </button>
+        </div>;
+      })}
+    </>;
 
     await act(async () => {
       root.render(<HierarchyWorkspace ranges={ranges} structure={structure}
@@ -148,6 +165,7 @@ describe('Hierarchy doctrine workspace v2', () => {
     });
 
     expect(container.querySelectorAll('.weeklyScript1InlineEnrichment')).toHaveLength(5);
+    expect(container.querySelectorAll('.explorerTreeRowMain')).toHaveLength(5);
     expect(container.textContent).toContain('RL → RH · BOS Up');
     expect(container.textContent).toContain('RH → RL · BOS Down');
 

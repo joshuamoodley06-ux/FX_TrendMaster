@@ -12,6 +12,11 @@ import {
 import { adaptMasterMapOutput, type MasterMapDocument, type MasterMapRangeNode } from './masterMapAdapter';
 
 export type HierarchyWorkspaceMode = 'structure' | 'coverage' | 'python';
+export type HierarchyRangeEnrichment = {
+  chronology: string;
+  bos: string;
+  status: string;
+};
 export type WeeklyAnalysisApprovalState = 'PENDING' | 'APPROVED' | 'REJECTED';
 export type WeeklyAnalysisActivationResult = {
   ok: boolean;
@@ -62,7 +67,7 @@ export type WeeklyAnalysisBridge = {
 
 type Props = {
   ranges: Record<string, unknown>[];
-  structure: ReactNode;
+  structure: ReactNode | ((enrichmentsByRangeId: ReadonlyMap<string, HierarchyRangeEnrichment>) => ReactNode);
   onNavigateRange: (range: Record<string, unknown>) => void;
   caseRef: string;
   symbol: string;
@@ -70,7 +75,6 @@ type Props = {
 };
 
 type OperationState = 'IDLE' | 'RESTORING' | 'RUNNING' | 'REVIEWING' | 'REFRESHING' | 'INSERTING';
-type TraderEnrichment = { chronology: string; bos: string; status: string };
 type PipelineView = {
   pipelineName: string;
   version: string;
@@ -129,7 +133,7 @@ function bosLabel(value: unknown): string {
   return 'BOS Pending';
 }
 
-function script1Labels(node: MasterMapRangeNode): TraderEnrichment {
+function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
   const generic = node.analysisEnrichments.weekly_structure?.payload || {};
   const chronology = generic.chronology ?? node.script1Chronology;
   const bos = generic.bos_direction ?? node.script1BosDirection;
@@ -162,33 +166,6 @@ export function selectWeeklyValidationSample(nodes: MasterMapRangeNode[], limit 
     if (selected.length >= limit) break;
   }
   return selected;
-}
-
-function elementRangeId(node: React.ReactElement): string {
-  const props = node.props as Record<string, unknown>;
-  const explicit = String(props['data-range-id'] || '').trim();
-  if (explicit) return explicit;
-  const rawKey = String(node.key || '').trim();
-  const keyParts = rawKey.split('$');
-  const normalized = keyParts[keyParts.length - 1] || '';
-  return normalized.startsWith('orphan-') ? normalized.slice('orphan-'.length) : normalized;
-}
-
-function enrichStructureTree(node: ReactNode, enrichments: Map<string, TraderEnrichment>): ReactNode {
-  if (Array.isArray(node)) return node.map((child) => enrichStructureTree(child, enrichments));
-  if (!React.isValidElement(node)) return node;
-  const props = node.props as Record<string, unknown>;
-  const children = React.Children.toArray(props.children as ReactNode)
-    .map((child) => enrichStructureTree(child, enrichments));
-  const enrichment = enrichments.get(elementRangeId(node));
-  if (enrichment) {
-    children.push(
-      <span key="doctrine-enrichment" className="weeklyScript1InlineEnrichment">
-        {enrichment.chronology} · {enrichment.bos}
-      </span>,
-    );
-  }
-  return React.cloneElement(node, undefined, ...children);
 }
 
 function WeeklyValidationSample({ nodes, ranges, decisions, saving, reviewEnabled, onNavigateRange, onDecision }: {
@@ -449,16 +426,20 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
   ), [pipeline]);
 
   const approvedByRangeId = useMemo(() => {
-    const result = new Map<string, TraderEnrichment>();
+    const result = new Map<string, HierarchyRangeEnrichment>();
+    if (String(pipeline?.approvalState || '').toUpperCase() !== 'APPROVED'
+      || String(pipeline?.publicationStatus || '').toUpperCase() !== 'PUBLISHED') return result;
     for (const node of caseAnalysisNodes) {
       const labels = script1Labels(node);
       if (labels.status !== 'Approved') continue;
-      const range = matchingRange(node, ranges);
-      const id = String(range?.range_id || range?.id || '');
-      if (id) result.set(id, labels);
+      for (const sourceRef of node.sourceRefs) {
+        if (sourceRef.caseRef && sourceRef.caseRef !== caseRef) continue;
+        const id = String(sourceRef.sourceRecordId || '').trim();
+        if (id) result.set(id, labels);
+      }
     }
     return result;
-  }, [caseAnalysisNodes, ranges]);
+  }, [caseAnalysisNodes, caseRef, pipeline?.approvalState, pipeline?.publicationStatus]);
 
   const saveReview = async (canonicalRangeId: string, decision: 'APPROVED' | 'REJECTED') => {
     if (!bridge || !pipeline?.runId || !analysisDatabasePath) return;
@@ -551,7 +532,7 @@ export function HierarchyWorkspace({ ranges, structure, onNavigateRange, caseRef
     </div>
 
     {mode === 'structure' && <div className="hierarchyWorkspaceBody structureMode">
-      {enrichStructureTree(structure, approvedByRangeId)}
+      {typeof structure === 'function' ? structure(approvedByRangeId) : structure}
     </div>}
 
     {mode === 'coverage' && <div className="hierarchyWorkspaceBody coverageMode">
