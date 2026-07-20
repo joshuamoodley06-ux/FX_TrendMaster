@@ -4,7 +4,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { HierarchyWorkspace, selectWeeklyValidationSample } from './hierarchyWorkspace';
+import {
+  HierarchyWorkspace,
+  selectWeeklyValidationSample,
+  type HierarchyRangeEnrichment,
+} from './hierarchyWorkspace';
 import { masterMapFixture } from './testFixtures/masterMapFixture';
 
 describe('HierarchyWorkspace modes', () => {
@@ -19,7 +23,13 @@ describe('HierarchyWorkspace modes', () => {
         { range_id: 1, structure_layer: 'WEEKLY', range_start_time: '2025-01-01', range_end_time: '2025-01-11' },
         { range_id: 2, parent_range_id: 1, structure_layer: 'DAILY', range_start_time: '2025-01-01', range_end_time: '2025-01-06' },
       ],
-      structure: createElement('div', { 'data-testid': 'structure', 'data-range-id': '1' }, 'Mapped structure'),
+      structure: (enrichmentsByRangeId: ReadonlyMap<string, HierarchyRangeEnrichment>) => {
+        const enrichment = enrichmentsByRangeId.get('1');
+        return createElement('div', { 'data-testid': 'structure' },
+          'Mapped structure',
+          enrichment && createElement('span', { className: 'weeklyScript1InlineEnrichment' },
+            `${enrichment.chronology} · ${enrichment.bos}`));
+      },
       onNavigateRange,
       caseRef: 'case:live',
       symbol: 'XAUUSD',
@@ -72,6 +82,13 @@ describe('HierarchyWorkspace modes', () => {
       weekly.script1_bos_time = '2026-03-01T00:00:00Z'; weekly.script1_processing_status = 'COMPLETE';
       weekly.script1_review_status = 'PENDING';
       weekly.script1_reason_codes = [];
+      weekly.analysis_enrichments = { weekly_structure: {
+        version_id: 'approved-version', version_label: '1', adapter_key: 'weekly_chronology_bos_v1',
+        output_hash: 'approved-output', payload: {
+          chronology: 'RH_TO_RL', bos_direction: 'BOS_DOWN',
+          bos_time: '2026-03-01T00:00:00Z', reasons: [],
+        },
+      } };
     }
     const bridge = {
       getPaths: vi.fn().mockResolvedValue({ ok: true, databasePath: 'C:/live/range-library.sqlite3' }),
@@ -96,9 +113,9 @@ describe('HierarchyWorkspace modes', () => {
     expect(bridge.runWeeklyScript1).toHaveBeenCalledWith({
       databasePath: 'C:/live/range-library.sqlite3', caseRef: 'case:live', symbol: 'XAUUSD',
     });
-    expect(container!.textContent).toContain('DISPOSABLE ANALYSIS COPY');
+    expect(container!.textContent).toContain('XAUUSD ANALYSIS WORKSPACE V2');
     expect(container!.textContent).toContain('RH → RL');
-    expect(container!.textContent).toContain('BOS ▼');
+    expect(container!.textContent).toContain('BOS Down');
     await act(async () => (container!.querySelector('.weeklyScript1Row') as HTMLButtonElement).click());
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ range_id: 1 }));
     expect(container!.textContent).toContain('PENDING');
@@ -138,6 +155,13 @@ describe('HierarchyWorkspace modes', () => {
       weekly.source_refs = [{ raw_id: 1, case_ref: 'case:live', source_record_id: '1', payload_sha256: 'sha-1' }];
       weekly.script1_chronology = 'RL_TO_RH'; weekly.script1_bos_direction = 'BOS_UP';
       weekly.script1_processing_status = 'COMPLETE'; weekly.script1_review_status = 'APPROVED';
+      weekly.analysis_enrichments = { weekly_structure: {
+        version_id: 'approved-version', version_label: '1', adapter_key: 'weekly_chronology_bos_v1',
+        output_hash: 'approved-output', payload: {
+          chronology: 'RL_TO_RH', bos_direction: 'BOS_UP',
+          bos_time: '2026-03-01T00:00:00Z', reasons: [],
+        },
+      } };
     }
     const bridge = { getPaths: vi.fn().mockResolvedValue({ ok: true, databasePath: 'C:/live.sqlite3' }),
       getWeeklyScript1State: vi.fn().mockResolvedValue({ ok: true, source: 'DISPOSABLE_ANALYSIS_COPY',
@@ -148,7 +172,7 @@ describe('HierarchyWorkspace modes', () => {
     expect(bridge.runWeeklyScript1).not.toHaveBeenCalled();
     expect(container!.querySelector('.weeklyScript1InlineEnrichment')).not.toBeNull();
     await act(async () => Array.from(container!.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((node) => node.textContent === 'Python')!.click());
-    expect(container!.textContent).toContain('approved and published');
+    expect(container!.textContent).toContain('Analysis Approved');
     expect(container!.querySelectorAll('.weeklyScript1Sample')).toHaveLength(0);
   });
 

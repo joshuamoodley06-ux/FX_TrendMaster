@@ -72,6 +72,13 @@ def build_master_map(
             con, symbol, run_id, built_at, ranges, events,
             relationships, reviews, output,
         )
+        # Lifecycle installs this builder over the core implementation, so it
+        # must preserve the core builder's analytical projection contract.
+        from .doctrine_pipeline import apply_approved_enrichments
+        from .weekly_chronology_bos import project_stored_results
+
+        project_stored_results(con, output, symbol=symbol)
+        apply_approved_enrichments(con, output, symbol=symbol)
         con.commit()
     if output_path is not None:
         path = Path(output_path)

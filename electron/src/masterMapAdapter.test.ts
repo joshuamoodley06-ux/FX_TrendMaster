@@ -35,6 +35,36 @@ describe('masterMapAdapter', () => {
     });
   });
 
+  it('adapts cumulative generic doctrine enrichments in trader-readable payloads', () => {
+    const fixture = masterMapFixture();
+    const trustedRoot = fixture.trusted_root as Record<string, unknown>;
+    const weekly = (trustedRoot.children as Record<string, unknown>[])[0];
+    weekly.analysis_enrichments = {
+      weekly_structure: {
+        version_id: 'version-1',
+        version_label: '1',
+        adapter_key: 'weekly_chronology_bos_v1',
+        output_hash: 'output-1',
+        payload: {
+          chronology: 'RL_TO_RH',
+          bos_direction: 'BOS_UP',
+        },
+      },
+    };
+
+    const adapted = adaptMasterMapOutput(fixture).trustedRoot.children[0];
+    expect(adapted.analysisEnrichments.weekly_structure).toMatchObject({
+      versionId: 'version-1',
+      versionLabel: '1',
+      adapterKey: 'weekly_chronology_bos_v1',
+      outputHash: 'output-1',
+      payload: {
+        chronology: 'RL_TO_RH',
+        bos_direction: 'BOS_UP',
+      },
+    });
+  });
+
   it('selects trusted_root for normal, review_root for review, and root only for explicit all mode', () => {
     const document = adaptMasterMapOutput(masterMapFixture());
     const trustedIds = new Set(

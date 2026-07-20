@@ -28,6 +28,10 @@ const {
 } = require('./localResearchSettings.cjs');
 const { inspectDatabaseFile } = require('./localResearchDatabase.cjs');
 const { cacheDbPath } = require('./candleCache.cjs');
+const {
+  instrumentWorkspacePaths,
+  refreshInstrumentWorkspace,
+} = require('./doctrineWorkspace.cjs');
 
 let localResearchBusy = false;
 const weeklyAnalysisCopies = new Set();
@@ -50,9 +54,7 @@ function buildDatabaseStatus(options = {}) {
 function normalizeRunnerArgs(args) {
   const payload = args && typeof args === 'object' ? { ...args } : {};
   payload.databasePath = resolveActiveDatabasePath(payload.databasePath);
-  if (!payload.backendDir) {
-    payload.backendDir = resolveBackendDir();
-  }
+  if (!payload.backendDir) payload.backendDir = resolveBackendDir();
   return payload;
 }
 
@@ -99,9 +101,7 @@ function resolveRangeLibraryPythonRoot(explicit) {
   ].filter(Boolean);
   for (const candidate of candidates) {
     const root = path.resolve(String(candidate));
-    if (fs.existsSync(path.join(root, 'range_library_memory', 'xauusd_mapping_assistant.py'))) {
-      return root;
-    }
+    if (fs.existsSync(path.join(root, 'range_library_memory', 'xauusd_mapping_assistant.py'))) return root;
   }
   return path.resolve(String(candidates[0] || path.resolve(process.cwd(), '../python')));
 }
@@ -115,28 +115,16 @@ function buildMappingAssistantSpec(args = {}) {
   return {
     script: 'range_library_memory.xauusd_mapping_assistant',
     pythonPath,
-    args: [
-      '-m',
-      'range_library_memory.xauusd_mapping_assistant',
-      '--db-path', absoluteDatabasePath,
-      '--symbol', 'XAUUSD',
-      '--json',
-    ],
+    args: ['-m', 'range_library_memory.xauusd_mapping_assistant', '--db-path', absoluteDatabasePath,
+      '--symbol', 'XAUUSD', '--json'],
     cwd: pythonRoot,
-    env: {
-      ...process.env,
-      PYTHONPATH: pythonRoot,
-      PYTHONUNBUFFERED: '1',
-      FXTM_RANGE_LIBRARY_MEMORY_DB: absoluteDatabasePath,
-    },
+    env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1',
+      FXTM_RANGE_LIBRARY_MEMORY_DB: absoluteDatabasePath },
   };
 }
 
 function runMappingAssistant(args = {}) {
-  const spec = buildMappingAssistantSpec(args);
-  return spawnLocalPythonScript(spec, {
-    timeoutMs: args.timeoutMs || 120_000,
-  });
+  return spawnLocalPythonScript(buildMappingAssistantSpec(args), { timeoutMs: args.timeoutMs || 120_000 });
 }
 
 function buildWeeklyScript1Spec(args = {}) {
@@ -154,9 +142,8 @@ function buildWeeklyScript1Spec(args = {}) {
   return {
     script: 'range_library_memory.cli',
     pythonPath: args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python',
-    args: ['-m', 'range_library_memory.cli', 'build-weekly-script1',
-      '--db-path', analysisDatabasePath, '--source-db', candleDatabasePath,
-      '--case-ref', caseRef, '--symbol', symbol, '--json'],
+    args: ['-m', 'range_library_memory.cli', 'build-weekly-script1', '--db-path', analysisDatabasePath,
+      '--source-db', candleDatabasePath, '--case-ref', caseRef, '--symbol', symbol, '--json'],
     cwd: pythonRoot,
     env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1',
       FXTM_RANGE_LIBRARY_MEMORY_DB: analysisDatabasePath },
@@ -198,10 +185,9 @@ function buildWeeklyScript1ReviewSpec(args = {}) {
   return {
     script: 'range_library_memory.cli',
     pythonPath: args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python',
-    args: ['-m', 'range_library_memory.cli', 'review-weekly-script1',
-      '--db-path', analysisDatabasePath, '--run-id', runId,
-      '--case-ref', caseRef, '--symbol', symbol, '--canonical-range-id', canonicalRangeId,
-      '--decision', decision, '--json'],
+    args: ['-m', 'range_library_memory.cli', 'review-weekly-script1', '--db-path', analysisDatabasePath,
+      '--run-id', runId, '--case-ref', caseRef, '--symbol', symbol,
+      '--canonical-range-id', canonicalRangeId, '--decision', decision, '--json'],
     cwd: pythonRoot,
     env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1',
       FXTM_RANGE_LIBRARY_MEMORY_DB: analysisDatabasePath },
@@ -254,20 +240,18 @@ async function createDisposableAnalysisCopy(sourcePath, targetPath) {
   await fsp.mkdir(path.dirname(target), { recursive: true });
   const { DatabaseSync, backup } = require('node:sqlite');
   const database = new DatabaseSync(source, { readOnly: true });
-  try {
-    await backup(database, target);
-  } finally {
-    database.close();
-  }
+  try { await backup(database, target); } finally { database.close(); }
   return target;
 }
 
-function weeklyAnalysisPaths(liveDatabasePath, caseRef, symbol, analysisRoot) {
-  const root = analysisRoot || path.join(researchFolder(), 'analysis-copies', 'weekly-script1');
-  const scopeId = require('node:crypto').createHash('sha256')
-    .update(`${path.resolve(liveDatabasePath)}|${caseRef}|${symbol}`).digest('hex').slice(0, 20);
-  return { analysisDatabasePath: path.join(root, `${scopeId}.sqlite3`),
-    outputPath: path.join(root, `${scopeId}.master-map.json`) };
+function weeklyAnalysisPaths(liveDatabasePath, _caseRef, symbol, analysisRoot) {
+  const root = analysisRoot || path.join(researchFolder(), 'analysis-workspaces', 'v2');
+  return instrumentWorkspacePaths(liveDatabasePath, symbol, root);
+}
+
+async function refreshWeeklyWorkspace(liveDatabasePath, analysisDatabasePath, dependencies = {}) {
+  const refresh = dependencies.refreshWorkspace || dependencies.copyDatabase || refreshInstrumentWorkspace;
+  return refresh(liveDatabasePath, analysisDatabasePath);
 }
 
 async function runWeeklyScript1Activation(args = {}, dependencies = {}) {
@@ -281,26 +265,23 @@ async function runWeeklyScript1Activation(args = {}, dependencies = {}) {
   if (!caseRef || !symbol) throw new Error('Selected case and symbol are required.');
   if (!fs.existsSync(candleDatabasePath)) throw new Error('CANDLE_SOURCE_UNRESOLVED');
   if (candleDatabasePath === liveDatabasePath) throw new Error('CANDLE_AND_RANGE_LIBRARY_MUST_BE_SEPARATE');
-  const analysisRoot = args.analysisRoot
-    ? path.resolve(String(args.analysisRoot))
-    : path.join(researchFolder(), 'analysis-copies', 'weekly-script1');
+  const analysisRoot = args.analysisRoot ? path.resolve(String(args.analysisRoot))
+    : path.join(researchFolder(), 'analysis-workspaces', 'v2');
   const { analysisDatabasePath, outputPath } = weeklyAnalysisPaths(liveDatabasePath, caseRef, symbol, analysisRoot);
-  const copyDatabase = dependencies.copyDatabase || createDisposableAnalysisCopy;
   const runScript = dependencies.runScript || spawnLocalPythonScript;
   const preflight = dependencies.preflight || preflightWeeklyAnalysis;
-  if (!fs.existsSync(analysisDatabasePath)) await copyDatabase(liveDatabasePath, analysisDatabasePath);
+  await refreshWeeklyWorkspace(liveDatabasePath, analysisDatabasePath, dependencies);
   preflight({ candleDatabasePath, analysisDatabasePath, caseRef, symbol });
-  const common = { candleDatabasePath, analysisDatabasePath, caseRef, symbol, pythonPath: args.pythonPath, pythonRoot: args.pythonRoot };
+  const common = { candleDatabasePath, analysisDatabasePath, caseRef, symbol,
+    pythonPath: args.pythonPath, pythonRoot: args.pythonRoot };
   weeklyAnalysisCopies.add(path.resolve(analysisDatabasePath));
   const pythonRoot = resolveRangeLibraryPythonRoot(args.pythonRoot);
   const inserted = await runDoctrineCommand('insert-script', { ...common,
     scriptKey: 'weekly_structure', displayName: 'Weekly Script 1', versionLabel: '1',
     sourceFile: path.join(pythonRoot, 'range_library_memory', 'weekly_chronology_bos.py'),
-    adapterKey: 'weekly_chronology_bos_v1', executionOrder: 10,
-  }, { runScript });
+    adapterKey: 'weekly_chronology_bos_v1', executionOrder: 10 }, { runScript });
   const doctrineState = await runDoctrineCommand('run-doctrine-pipeline', { ...common,
-    versionId: inserted.result.version_id,
-  }, { runScript });
+    versionId: inserted.result.version_id }, { runScript });
   const mapResult = await runScript(buildWeeklyMasterMapSpec({ ...common, outputPath }), {
     timeoutMs: args.timeoutMs || 180_000,
     parse: (stdout) => JSON.parse(String(stdout).trim()),
@@ -309,7 +290,8 @@ async function runWeeklyScript1Activation(args = {}, dependencies = {}) {
     throw new Error(mapResult?.error || mapResult?.stderr || 'Disposable Master Map refresh failed.');
   }
   return { ok: true, source: 'DISPOSABLE_ANALYSIS_COPY', liveDatabasePath, candleDatabasePath,
-    analysisDatabasePath, masterMap: mapResult.parsed, doctrineState: doctrineState.result };
+    analysisDatabasePath, masterMap: mapResult.parsed, doctrineState: doctrineState.result,
+    workspaceVersion: 2 };
 }
 
 async function loadWeeklyScript1State(args = {}, dependencies = {}) {
@@ -318,21 +300,28 @@ async function loadWeeklyScript1State(args = {}, dependencies = {}) {
   const symbol = String(args.symbol || '').trim().toUpperCase();
   if (!liveDatabasePath || !caseRef || !symbol) return { ok: false, source: 'LIVE' };
   const analysisRoot = args.analysisRoot ? path.resolve(String(args.analysisRoot))
-    : path.join(researchFolder(), 'analysis-copies', 'weekly-script1');
+    : path.join(researchFolder(), 'analysis-workspaces', 'v2');
   const { analysisDatabasePath, outputPath } = weeklyAnalysisPaths(liveDatabasePath, caseRef, symbol, analysisRoot);
   if (!fs.existsSync(analysisDatabasePath)) return { ok: false, source: 'LIVE' };
+  await refreshWeeklyWorkspace(liveDatabasePath, analysisDatabasePath, dependencies);
+  weeklyAnalysisCopies.add(path.resolve(analysisDatabasePath));
   const runScript = dependencies.runScript || spawnLocalPythonScript;
   const mapResult = await runScript(buildWeeklyMasterMapSpec({ analysisDatabasePath, outputPath, symbol,
     pythonPath: args.pythonPath, pythonRoot: args.pythonRoot }), {
-    timeoutMs: args.timeoutMs || 180_000, parse: (stdout) => JSON.parse(String(stdout).trim()),
+    timeoutMs: args.timeoutMs || 180_000,
+    parse: (stdout) => JSON.parse(String(stdout).trim()),
   });
   if (!mapResult?.ok || !mapResult?.parsed) return { ok: false, source: 'LIVE' };
-  weeklyAnalysisCopies.add(path.resolve(analysisDatabasePath));
   let doctrineState = null;
-  try { doctrineState = (await runDoctrineCommand('show-script', { analysisDatabasePath, scriptKey: 'weekly_structure',
-    pythonPath: args.pythonPath, pythonRoot: args.pythonRoot }, { runScript })).result; } catch { /* legacy copy */ }
+  let scripts = [];
+  try {
+    doctrineState = (await runDoctrineCommand('show-script', { analysisDatabasePath,
+      scriptKey: 'weekly_structure', pythonPath: args.pythonPath, pythonRoot: args.pythonRoot }, { runScript })).result;
+    scripts = (await runDoctrineCommand('list-scripts', { analysisDatabasePath,
+      pythonPath: args.pythonPath, pythonRoot: args.pythonRoot }, { runScript })).result || [];
+  } catch { /* a clean workspace may have no scripts yet */ }
   return { ok: true, source: 'DISPOSABLE_ANALYSIS_COPY', liveDatabasePath,
-    analysisDatabasePath, masterMap: mapResult.parsed, doctrineState };
+    analysisDatabasePath, masterMap: mapResult.parsed, doctrineState, scripts, workspaceVersion: 2 };
 }
 
 async function runWeeklyScript1Review(args = {}, dependencies = {}) {
@@ -347,18 +336,22 @@ async function runWeeklyScript1Review(args = {}, dependencies = {}) {
   }
   const runScript = dependencies.runScript || spawnLocalPythonScript;
   const common = { ...args, analysisDatabasePath };
-  const reviewResult = await runDoctrineCommand('review-doctrine-sample', { ...common,
-    runId: args.runId, canonicalRangeId: args.canonicalRangeId, decision: args.decision,
-  }, { runScript, allowedCopies });
-  const outputPath = path.join(path.dirname(analysisDatabasePath), `${path.basename(analysisDatabasePath, path.extname(analysisDatabasePath))}.master-map.json`);
+  await runDoctrineCommand('review-doctrine-sample', { ...common,
+    runId: args.runId, canonicalRangeId: args.canonicalRangeId, decision: args.decision },
+  { runScript, allowedCopies });
+  const outputPath = path.join(path.dirname(analysisDatabasePath),
+    `${path.basename(analysisDatabasePath, path.extname(analysisDatabasePath))}.master-map.json`);
   const mapResult = await runScript(buildWeeklyMasterMapSpec({ ...common, outputPath }), {
     timeoutMs: args.timeoutMs || 180_000,
     parse: (stdout) => JSON.parse(String(stdout).trim()),
   });
   if (!mapResult?.ok || !mapResult?.parsed) throw new Error('SCRIPT1_REVIEW_REFRESH_FAILED');
-  const stored = await runDoctrineCommand('show-script', { ...common, scriptKey: 'weekly_structure' }, { runScript, allowedCopies });
+  const stored = await runDoctrineCommand('show-script', { ...common, scriptKey: 'weekly_structure' },
+    { runScript, allowedCopies });
+  const scripts = await runDoctrineCommand('list-scripts', common, { runScript, allowedCopies });
   return { ok: true, source: 'DISPOSABLE_ANALYSIS_COPY', analysisDatabasePath,
-    decision: String(args.decision || '').toUpperCase(), doctrineState: stored.result, masterMap: mapResult.parsed };
+    decision: String(args.decision || '').toUpperCase(), doctrineState: stored.result,
+    masterMap: mapResult.parsed, scripts: scripts.result || [] };
 }
 
 function buildDoctrineSpec(command, args = {}, allowedCopies = weeklyAnalysisCopies) {
@@ -368,83 +361,92 @@ function buildDoctrineSpec(command, args = {}, allowedCopies = weeklyAnalysisCop
   }
   const pythonRoot = resolveRangeLibraryPythonRoot(args.pythonRoot);
   const cliArgs = ['-m', 'range_library_memory.cli', command, '--db-path', databasePath];
-  const add = (flag, value) => { if (value !== undefined && value !== null && String(value) !== '') cliArgs.push(flag, String(value)); };
+  const add = (flag, value) => {
+    if (value !== undefined && value !== null && String(value) !== '') cliArgs.push(flag, String(value));
+  };
   if (command === 'insert-script') {
     add('--script-key', args.scriptKey); add('--display-name', args.displayName);
     add('--version-label', args.versionLabel); add('--source-file', args.sourceFile);
     add('--adapter-key', args.adapterKey); add('--execution-order', args.executionOrder ?? 100);
     add('--description', args.description);
-  } else if (command === 'show-script' || command === 'retire-script') add('--script-key', args.scriptKey);
-  else if (command === 'run-doctrine-pipeline') {
+  } else if (command === 'show-script' || command === 'retire-script') {
+    add('--script-key', args.scriptKey);
+  } else if (command === 'run-doctrine-pipeline') {
     add('--source-db', args.candleDatabasePath || cacheDbPath()); add('--case-ref', args.caseRef);
     add('--symbol', args.symbol); add('--version-id', args.versionId);
   } else if (command === 'review-doctrine-sample') {
-    add('--run-id', args.runId); add('--canonical-range-id', args.canonicalRangeId); add('--decision', args.decision);
+    add('--run-id', args.runId); add('--canonical-range-id', args.canonicalRangeId);
+    add('--decision', args.decision);
   }
-  return { script: 'range_library_memory.cli', pythonPath: args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python',
-    args: cliArgs, cwd: pythonRoot, env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1', FXTM_RANGE_LIBRARY_MEMORY_DB: databasePath } };
+  return {
+    script: 'range_library_memory.cli',
+    pythonPath: args.pythonPath || process.env.FXTM_PYTHON || process.env.PYTHON || 'python',
+    args: cliArgs,
+    cwd: pythonRoot,
+    env: { ...process.env, PYTHONPATH: pythonRoot, PYTHONUNBUFFERED: '1',
+      FXTM_RANGE_LIBRARY_MEMORY_DB: databasePath },
+  };
 }
 
 async function runDoctrineCommand(command, args = {}, dependencies = {}) {
   const runScript = dependencies.runScript || spawnLocalPythonScript;
-  const result = await runScript(buildDoctrineSpec(command, args, dependencies.allowedCopies || weeklyAnalysisCopies), {
-    timeoutMs: args.timeoutMs || 180_000, parse: (stdout) => JSON.parse(String(stdout).trim()),
+  const result = await runScript(buildDoctrineSpec(command, args,
+    dependencies.allowedCopies || weeklyAnalysisCopies), {
+    timeoutMs: args.timeoutMs || 180_000,
+    parse: (stdout) => JSON.parse(String(stdout).trim()),
   });
   if (!result?.ok || result.parsed === undefined) throw new Error('DOCTRINE_COMMAND_FAILED');
   return { ok: true, result: result.parsed };
+}
+
+async function runDoctrinePipelineWithRefresh(args = {}, dependencies = {}) {
+  const analysisDatabasePath = path.resolve(String(args.analysisDatabasePath || ''));
+  const runScript = dependencies.runScript || spawnLocalPythonScript;
+  const allowedCopies = dependencies.allowedCopies || weeklyAnalysisCopies;
+  const pipeline = await runDoctrineCommand('run-doctrine-pipeline', args, { runScript, allowedCopies });
+  const outputPath = path.join(path.dirname(analysisDatabasePath),
+    `${path.basename(analysisDatabasePath, path.extname(analysisDatabasePath))}.master-map.json`);
+  const mapResult = await runScript(buildWeeklyMasterMapSpec({ ...args, analysisDatabasePath, outputPath }), {
+    timeoutMs: args.timeoutMs || 180_000,
+    parse: (stdout) => JSON.parse(String(stdout).trim()),
+  });
+  if (!mapResult?.ok || !mapResult?.parsed) throw new Error('DOCTRINE_PIPELINE_REFRESH_FAILED');
+  const scripts = await runDoctrineCommand('list-scripts', args, { runScript, allowedCopies });
+  let doctrineState = null;
+  try {
+    doctrineState = (await runDoctrineCommand('show-script', { ...args, scriptKey: 'weekly_structure' },
+      { runScript, allowedCopies })).result;
+  } catch { /* no Weekly script registered */ }
+  return { ok: true, result: pipeline.result, masterMap: mapResult.parsed,
+    scripts: scripts.result || [], doctrineState };
 }
 
 function registerLocalResearchIpc() {
   ensureResearchFolder();
 
   ipcMain.handle('local-research:getDatabaseStatus', async (_event, args) => {
-    try {
-      return buildDatabaseStatus(args || {});
-    } catch (err) {
-      return {
-        ok: false,
-        databasePath: defaultDatabasePath(),
-        researchFolder: researchFolder(),
-        exists: false,
-        readable: false,
-        readyForWeeklyScan: false,
-        error: err?.message || String(err),
-      };
+    try { return buildDatabaseStatus(args || {}); }
+    catch (err) {
+      return { ok: false, databasePath: defaultDatabasePath(), researchFolder: researchFolder(),
+        exists: false, readable: false, readyForWeeklyScan: false, error: err?.message || String(err) };
     }
   });
 
   ipcMain.handle('local-research:pickDatabaseFile', async () => {
-    const result = await dialog.showOpenDialog({
-      title: 'Choose local research database',
-      properties: ['openFile'],
-      filters: [
-        { name: 'SQLite database', extensions: ['db', 'sqlite', 'sqlite3'] },
-        { name: 'All files', extensions: ['*'] },
-      ],
-      defaultPath: researchFolder(),
-    });
-    if (result.canceled || !result.filePaths?.length) {
-      return { ok: false, canceled: true };
-    }
+    const result = await dialog.showOpenDialog({ title: 'Choose local research database', properties: ['openFile'],
+      filters: [{ name: 'SQLite database', extensions: ['db', 'sqlite', 'sqlite3'] },
+        { name: 'All files', extensions: ['*'] }], defaultPath: researchFolder() });
+    if (result.canceled || !result.filePaths?.length) return { ok: false, canceled: true };
     const databasePath = result.filePaths[0];
     writeResearchSettings({ databasePath });
-    return {
-      ok: true,
-      canceled: false,
-      ...buildDatabaseStatus({ databasePath }),
-    };
+    return { ok: true, canceled: false, ...buildDatabaseStatus({ databasePath }) };
   });
 
   ipcMain.handle('local-research:setDatabasePath', async (_event, args) => {
     const databasePath = String(args?.databasePath || '').trim();
-    if (!databasePath) {
-      return { ok: false, error: 'databasePath is required' };
-    }
+    if (!databasePath) return { ok: false, error: 'databasePath is required' };
     writeResearchSettings({ databasePath });
-    return {
-      ok: true,
-      ...buildDatabaseStatus({ databasePath }),
-    };
+    return { ok: true, ...buildDatabaseStatus({ databasePath }) };
   });
 
   ipcMain.handle('local-research:openResearchFolder', async () => {
@@ -455,172 +457,93 @@ function registerLocalResearchIpc() {
 
   ipcMain.handle('local-research:pull-vps-candles', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
-    const result = await runExclusive('pull-vps-candles', () => runPullVpsCandles({
-      ...payload,
-      baseUrl: payload.baseUrl,
-      symbol: payload.symbol,
-      timeframes: payload.timeframes,
-      limit: payload.limit,
-      json: payload.json !== false,
-      timeoutMs: 180_000,
-    }));
-    if (result.ok) {
-      writeResearchSettings({ databasePath: payload.databasePath });
-    }
+    const result = await runExclusive('pull-vps-candles', () => runPullVpsCandles({ ...payload,
+      baseUrl: payload.baseUrl, symbol: payload.symbol, timeframes: payload.timeframes,
+      limit: payload.limit, json: payload.json !== false, timeoutMs: 180_000 }));
+    if (result.ok) writeResearchSettings({ databasePath: payload.databasePath });
     return result;
   });
 
   ipcMain.handle('local-research:seed', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
-    if (!payload?.command) {
-      return {
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: 'command is required (check, list, create-manual, activate)',
-      };
-    }
-    return runExclusive('local-research-seed', () => runLocalResearchSeed({
-      ...payload,
-      command: payload.command,
-      symbol: payload.symbol,
-      rangeHigh: payload.rangeHigh,
-      rangeLow: payload.rangeLow,
-      rangeHighTime: payload.rangeHighTime,
-      rangeLowTime: payload.rangeLowTime,
-      rangeId: payload.rangeId,
-      limit: payload.limit,
-      json: payload.json !== false,
-      timeoutMs: 60_000,
-    }));
+    if (!payload?.command) return { ok: false, exitCode: null, stdout: '', stderr: '',
+      error: 'command is required (check, list, create-manual, activate)' };
+    return runExclusive('local-research-seed', () => runLocalResearchSeed({ ...payload,
+      command: payload.command, symbol: payload.symbol, rangeHigh: payload.rangeHigh,
+      rangeLow: payload.rangeLow, rangeHighTime: payload.rangeHighTime,
+      rangeLowTime: payload.rangeLowTime, rangeId: payload.rangeId,
+      limit: payload.limit, json: payload.json !== false, timeoutMs: 60_000 }));
   });
 
   ipcMain.handle('local-research:historical-range-scan', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
     return runExclusive('historical-range-scan', () => runHistoricalRangeScan(payload));
   });
-
   ipcMain.handle('local-research:batch-range-promote', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
     const blocked = validateBatchPromoteArgs(payload);
     if (blocked) return blocked;
     return runExclusive('batch-range-promote', () => runBatchRangePromote(payload));
   });
-
   ipcMain.handle('local-research:detector-performance', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
     return runExclusive('detector-performance', () => runDetectorPerformance(payload));
   });
-
   ipcMain.handle('local-research:run-detector', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
     if (!payload?.payload || typeof payload.payload !== 'object') {
-      return {
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: 'payload object is required',
-      };
+      return { ok: false, exitCode: null, stdout: '', stderr: '', error: 'payload object is required' };
     }
     return runExclusive('run-detector', () => runDetectorLocal(payload));
   });
-
   ipcMain.handle('local-research:list-suggestions', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
     return runExclusive('list-suggestions', () => listDetectorSuggestionsLocal(payload));
   });
-
   ipcMain.handle('local-research:latest-detector-run', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
     return runExclusive('latest-detector-run', () => latestDetectorRunLocal(payload));
   });
-
   ipcMain.handle('local-research:list-detector-run', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
-    if (!payload?.detectionRunId) {
-      return {
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: 'detectionRunId is required',
-      };
-    }
+    if (!payload?.detectionRunId) return { ok: false, exitCode: null, stdout: '', stderr: '',
+      error: 'detectionRunId is required' };
     return runExclusive('list-detector-run', () => listDetectorRunLocal(payload));
   });
-
   ipcMain.handle('local-research:review-suggestion', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
-    if (!payload?.suggestionId || !payload?.action) {
-      return {
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: 'suggestionId and action are required',
-      };
-    }
+    if (!payload?.suggestionId || !payload?.action) return { ok: false, exitCode: null, stdout: '', stderr: '',
+      error: 'suggestionId and action are required' };
     return runExclusive('review-suggestion', () => reviewSuggestionLocal(payload));
   });
-
   ipcMain.handle('local-research:export-detection-audit', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
-    if (!payload?.detectionRunId) {
-      return {
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: 'detectionRunId is required',
-      };
-    }
+    if (!payload?.detectionRunId) return { ok: false, exitCode: null, stdout: '', stderr: '',
+      error: 'detectionRunId is required' };
     return runExclusive('export-detection-audit', () => exportDetectionAuditLocal(payload));
   });
-
   ipcMain.handle('local-research:random-range-audit', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
     return runExclusive('random-range-audit', () => runRandomRangeAudit(payload));
   });
-
   ipcMain.handle('local-research:record-audit-verdict', async (_event, args) => {
     const payload = normalizeRunnerArgs(args);
-    if (!payload?.suggestionId) {
-      return {
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: 'suggestionId is required',
-      };
-    }
+    if (!payload?.suggestionId) return { ok: false, exitCode: null, stdout: '', stderr: '',
+      error: 'suggestionId is required' };
     return runExclusive('record-audit-verdict', () => runRecordAuditVerdict(payload));
   });
 
   ipcMain.handle('local-research:mapping-assistant', async (_event, args) => {
     const databasePath = String(args?.databasePath || '').trim();
-    if (!databasePath) {
-      return {
-        ok: false,
-        exitCode: null,
-        stdout: '',
-        stderr: '',
-        error: 'Mapping Assistant requires an explicit Range Library database path.',
-      };
-    }
-    return runExclusive('mapping-assistant', () => runMappingAssistant({
-      databasePath,
-      pythonPath: args?.pythonPath,
-      pythonRoot: args?.pythonRoot,
-      timeoutMs: args?.timeoutMs,
-    }));
+    if (!databasePath) return { ok: false, exitCode: null, stdout: '', stderr: '',
+      error: 'Mapping Assistant requires an explicit Range Library database path.' };
+    return runExclusive('mapping-assistant', () => runMappingAssistant({ databasePath,
+      pythonPath: args?.pythonPath, pythonRoot: args?.pythonRoot, timeoutMs: args?.timeoutMs }));
   });
 
   ipcMain.handle('local-research:weekly-script1', async (_event, args) => {
-    try {
-      return await runExclusive('weekly-script1', () => runWeeklyScript1Activation(args || {}));
-    } catch (err) {
+    try { return await runExclusive('weekly-script1', () => runWeeklyScript1Activation(args || {})); }
+    catch (err) {
       console.error(`[weekly-script1] ${err?.stack || err?.message || String(err)}`);
       const detail = String(err?.message || err || '');
       const error = detail.includes('CANDLE') || /candles table/i.test(detail)
@@ -631,7 +554,6 @@ function registerLocalResearchIpc() {
       return { ok: false, source: 'LIVE', error };
     }
   });
-
   ipcMain.handle('local-research:weekly-script1-state', async (_event, args) => {
     try { return await loadWeeklyScript1State(args || {}); }
     catch (err) {
@@ -639,11 +561,9 @@ function registerLocalResearchIpc() {
       return { ok: false, source: 'LIVE' };
     }
   });
-
   ipcMain.handle('local-research:weekly-script1-review', async (_event, args) => {
-    try {
-      return await runExclusive('weekly-script1-review', () => runWeeklyScript1Review(args || {}));
-    } catch (err) {
+    try { return await runExclusive('weekly-script1-review', () => runWeeklyScript1Review(args || {})); }
+    catch (err) {
       console.error(`[weekly-script1-review] ${err?.stack || err?.message || String(err)}`);
       return { ok: false, source: 'DISPOSABLE_ANALYSIS_COPY',
         error: 'The Weekly analysis review could not be saved safely.' };
@@ -652,34 +572,42 @@ function registerLocalResearchIpc() {
 
   ipcMain.handle('local-research:doctrine-list', async (_event, args) => {
     try { return await runDoctrineCommand('list-scripts', args || {}); }
-    catch (err) { console.error(`[doctrine-list] ${err?.stack || err}`); return { ok: false, error: 'Stored scripts could not be loaded.' }; }
+    catch (err) {
+      console.error(`[doctrine-list] ${err?.stack || err}`);
+      return { ok: false, error: 'Stored scripts could not be loaded.' };
+    }
   });
   ipcMain.handle('local-research:doctrine-insert', async (_event, args) => {
     try {
-      const picked = args?.sourceFile ? { canceled: false, filePaths: [args.sourceFile] } : await dialog.showOpenDialog({
-        title: 'Insert Doctrine Script', properties: ['openFile'], filters: [{ name: 'Doctrine packages', extensions: ['py', 'json'] }],
-      });
+      const picked = args?.sourceFile ? { canceled: false, filePaths: [args.sourceFile] }
+        : await dialog.showOpenDialog({ title: 'Insert Doctrine Script', properties: ['openFile'],
+          filters: [{ name: 'Doctrine packages', extensions: ['py', 'json'] }] });
       if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true };
       return await runDoctrineCommand('insert-script', { ...(args || {}), sourceFile: picked.filePaths[0] });
-    } catch (err) { console.error(`[doctrine-insert] ${err?.stack || err}`); return { ok: false, error: 'The doctrine package could not be stored safely.' }; }
+    } catch (err) {
+      console.error(`[doctrine-insert] ${err?.stack || err}`);
+      return { ok: false, error: 'The doctrine package could not be stored safely.' };
+    }
   });
   ipcMain.handle('local-research:doctrine-run', async (_event, args) => {
-    try { return await runExclusive('doctrine-run', () => runDoctrineCommand('run-doctrine-pipeline', args || {})); }
-    catch (err) { console.error(`[doctrine-run] ${err?.stack || err}`); return { ok: false, error: 'The doctrine pipeline could not run safely.' }; }
+    try { return await runExclusive('doctrine-run', () => runDoctrinePipelineWithRefresh(args || {})); }
+    catch (err) {
+      console.error(`[doctrine-run] ${err?.stack || err}`);
+      return { ok: false, error: 'The doctrine pipeline could not run safely.' };
+    }
   });
   ipcMain.handle('local-research:doctrine-review', async (_event, args) => {
     try { return await runExclusive('doctrine-review', () => runDoctrineCommand('review-doctrine-sample', args || {})); }
-    catch (err) { console.error(`[doctrine-review] ${err?.stack || err}`); return { ok: false, error: 'The validation decision could not be stored safely.' }; }
+    catch (err) {
+      console.error(`[doctrine-review] ${err?.stack || err}`);
+      return { ok: false, error: 'The validation decision could not be stored safely.' };
+    }
   });
 
   ipcMain.handle('local-research:getPaths', () => {
     const databasePath = resolveActiveDatabasePath();
-    return {
-      ok: true,
-      backendDir: resolveBackendDir(),
-      databasePath,
-      researchFolder: researchFolder(),
-      scripts: {
+    return { ok: true, backendDir: resolveBackendDir(), databasePath,
+      researchFolder: researchFolder(), scripts: {
         historicalRangeScan: path.join(resolveBackendDir(), 'historical_range_scan.py'),
         batchRangePromote: path.join(resolveBackendDir(), 'batch_range_promote.py'),
         detectorPerformance: path.join(resolveBackendDir(), 'detector_performance.py'),
@@ -687,13 +615,9 @@ function registerLocalResearchIpc() {
         recordAuditVerdict: path.join(resolveBackendDir(), 'record_audit_verdict.py'),
         pullVpsCandles: path.join(resolveBackendDir(), 'pull_vps_candles.py'),
         localResearchSeed: path.join(resolveBackendDir(), 'local_research_seed.py'),
-        mappingAssistant: path.join(
-          resolveRangeLibraryPythonRoot(),
-          'range_library_memory',
-          'xauusd_mapping_assistant.py',
-        ),
-      },
-    };
+        mappingAssistant: path.join(resolveRangeLibraryPythonRoot(), 'range_library_memory',
+          'xauusd_mapping_assistant.py'),
+      } };
   });
 }
 
@@ -711,10 +635,12 @@ module.exports = {
   buildWeeklyScript1ReviewSpec,
   buildDoctrineSpec,
   runDoctrineCommand,
+  runDoctrinePipelineWithRefresh,
   createDisposableAnalysisCopy,
   preflightWeeklyAnalysis,
   runWeeklyScript1Activation,
   runWeeklyScript1Review,
   loadWeeklyScript1State,
   weeklyAnalysisPaths,
+  refreshWeeklyWorkspace,
 };

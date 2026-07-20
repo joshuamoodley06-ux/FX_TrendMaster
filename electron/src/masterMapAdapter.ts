@@ -20,6 +20,14 @@ export type MasterMapSourceRef = {
   payloadSha256: string | null;
 };
 
+export type MasterMapAnalysisEnrichment = {
+  versionId: string;
+  versionLabel: string;
+  adapterKey: string;
+  outputHash: string;
+  payload: Record<string, unknown>;
+};
+
 export type MasterMapRangeNode = {
   canonicalRangeId: string;
   layer: MasterMapLayer;
@@ -40,6 +48,7 @@ export type MasterMapRangeNode = {
   script1RunId: string | null;
   script1ReviewStatus: string | null;
   script1ReasonCodes: string[];
+  analysisEnrichments: Record<string, MasterMapAnalysisEnrichment>;
   navigationStatus: MasterMapNavigationStatus;
   statisticsStatus: MasterMapStatisticsStatus;
   ancestorReviewStatus: string;
@@ -92,6 +101,11 @@ function asRecord(value: unknown, path: string): UnknownRecord {
     throw new MasterMapAdapterError(`${path} must be an object.`);
   }
   return value as UnknownRecord;
+}
+
+function asOptionalRecord(value: unknown, path: string): UnknownRecord {
+  if (value === undefined || value === null) return {};
+  return asRecord(value, path);
 }
 
 function asArray(value: unknown, path: string): unknown[] {
@@ -149,6 +163,22 @@ function adaptSourceRef(value: unknown, path: string): MasterMapSourceRef {
   };
 }
 
+function adaptAnalysisEnrichments(value: unknown, path: string): Record<string, MasterMapAnalysisEnrichment> {
+  const source = asOptionalRecord(value, path);
+  const result: Record<string, MasterMapAnalysisEnrichment> = {};
+  for (const [scriptKey, rawValue] of Object.entries(source)) {
+    const row = asRecord(rawValue, `${path}.${scriptKey}`);
+    result[scriptKey] = {
+      versionId: requiredString(row.version_id, `${path}.${scriptKey}.version_id`),
+      versionLabel: requiredString(row.version_label, `${path}.${scriptKey}.version_label`),
+      adapterKey: requiredString(row.adapter_key, `${path}.${scriptKey}.adapter_key`),
+      outputHash: requiredString(row.output_hash, `${path}.${scriptKey}.output_hash`),
+      payload: { ...asOptionalRecord(row.payload, `${path}.${scriptKey}.payload`) },
+    };
+  }
+  return result;
+}
+
 function adaptRangeNode(value: unknown, path: string, unlinkedReview = false): MasterMapRangeNode {
   const row = asRecord(value, path);
   const nodeType = requiredString(row.node_type, `${path}.node_type`).toUpperCase();
@@ -198,6 +228,7 @@ function adaptRangeNode(value: unknown, path: string, unlinkedReview = false): M
     script1RunId: optionalString(row.script1_run_id),
     script1ReviewStatus: optionalString(row.script1_review_status)?.toUpperCase() ?? null,
     script1ReasonCodes: optionalStringArray(row.script1_reason_codes, `${path}.script1_reason_codes`),
+    analysisEnrichments: adaptAnalysisEnrichments(row.analysis_enrichments, `${path}.analysis_enrichments`),
     navigationStatus,
     statisticsStatus,
     ancestorReviewStatus: requiredString(
@@ -297,9 +328,12 @@ export function adaptMasterMapOutput(value: unknown): MasterMapDocument {
     throw new MasterMapAdapterError('Master Map v0.1 is scoped to XAUUSD only.');
   }
   const statistics = asRecord(row.statistics, 'master_map.statistics');
-  const analysis = row.analysis && typeof row.analysis === 'object' ? row.analysis as Record<string, unknown> : {};
+  const analysis = row.analysis && typeof row.analysis === 'object'
+    ? row.analysis as Record<string, unknown>
+    : {};
   const weekly = analysis.weekly_script1 && typeof analysis.weekly_script1 === 'object'
-    ? analysis.weekly_script1 as Record<string, unknown> : null;
+    ? analysis.weekly_script1 as Record<string, unknown>
+    : null;
   const document: MasterMapDocument = {
     schemaVersion: MASTER_MAP_SCHEMA_VERSION,
     buildId: requiredString(row.build_id, 'master_map.build_id'),
@@ -331,11 +365,17 @@ export function adaptMasterMapOutput(value: unknown): MasterMapDocument {
       publicationStatus: optionalString(weekly.publication_status)?.toUpperCase() || 'UNPUBLISHED',
       publicationVersion: optionalString(weekly.publication_version),
       publishedAt: optionalString(weekly.published_at),
-      validationSamples: asArray(weekly.validation_samples, 'master_map.analysis.weekly_script1.validation_samples').map((value, index) => {
+      validationSamples: asArray(
+        weekly.validation_samples,
+        'master_map.analysis.weekly_script1.validation_samples',
+      ).map((value, index) => {
         const sample = asRecord(value, `master_map.analysis.weekly_script1.validation_samples[${index}]`);
-        return { canonicalRangeId: requiredString(sample.canonical_range_id, 'sample.canonical_range_id'),
+        return {
+          canonicalRangeId: requiredString(sample.canonical_range_id, 'sample.canonical_range_id'),
           sampleOrder: optionalNumber(sample.sample_order, 'sample.sample_order') || 0,
-          decision: optionalString(sample.decision)?.toUpperCase() || 'PENDING', decidedAt: optionalString(sample.decided_at) };
+          decision: optionalString(sample.decision)?.toUpperCase() || 'PENDING',
+          decidedAt: optionalString(sample.decided_at),
+        };
       }),
     } : null,
   };

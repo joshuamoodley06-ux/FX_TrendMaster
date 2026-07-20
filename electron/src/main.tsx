@@ -133,7 +133,7 @@ import { computeCampaignStatus } from './mappingCampaignManager';
 import {
   type MasterMapNavigationRequest,
 } from './masterMapHierarchy';
-import { HierarchyWorkspace } from './hierarchyWorkspace';
+import { HierarchyWorkspace, type HierarchyRangeEnrichment } from './hierarchyWorkspace';
 import { masterMapRangeToStructuralRangeRecord } from './masterMapNavigationIntegration';
 import { buildStructuralJumpPlan } from './structuralChartNavigation';
 import { normalizeStructuralRangeTarget } from './structuralJumpTarget';
@@ -9674,7 +9674,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     </details>
   );
 
-  const renderExplorerTreeNodes = (nodes: CaseHierarchyTreeNode[]): React.ReactNode => nodes.flatMap((node) => {
+  const renderExplorerTreeNodes = (
+    nodes: CaseHierarchyTreeNode[],
+    enrichmentsByRangeId: ReadonlyMap<string, HierarchyRangeEnrichment>,
+  ): React.ReactNode => nodes.flatMap((node) => {
     const range = node.range;
     const id = String(range?.range_id || range?.id || '');
     if (!id) return [];
@@ -9689,6 +9692,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     const hasChildren = node.children.length > 0;
     const collapsed = hierarchyCollapsedIds.includes(id);
     const lineVisible = isRangeLineVisible(id);
+    const enrichment = enrichmentsByRangeId.get(id);
     const toggleCollapsed = (e: React.MouseEvent) => {
       e.stopPropagation();
       setHierarchyCollapsedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
@@ -9716,20 +9720,28 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
         <button type="button" className="explorerTreeRowMain" title={lines.title} onClick={() => jumpToStructuralRange(range)}>
           <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.label}</span>
+          {enrichment && layer === 'WEEKLY' && (
+            <span className="weeklyScript1InlineEnrichment">
+              {enrichment.chronology} · {enrichment.bos}
+            </span>
+          )}
         </button>
         {isActive && renderExplorerActiveActions(range)}
       </div>,
-      ...(collapsed ? [] : renderExplorerTreeNodes(node.children)),
+      ...(collapsed ? [] : renderExplorerTreeNodes(node.children, enrichmentsByRangeId)),
     ];
   });
 
-  const renderExplorerOrphanRows = () => caseHierarchyForest.orphans.map((range:any) => {
+  const renderExplorerOrphanRows = (
+    enrichmentsByRangeId: ReadonlyMap<string, HierarchyRangeEnrichment>,
+  ) => caseHierarchyForest.orphans.map((range:any) => {
     const id = String(range.range_id || range.id);
     const layer = normalizeStructureLayer(range.structure_layer || range.layer) || 'WEEKLY';
     const layerKey = layer.toLowerCase();
     const isActive = id === String(activeStructuralRangeId);
     const lines = formatExplorerCompactRowLabel(range, 0);
     const lineVisible = isRangeLineVisible(id);
+    const enrichment = enrichmentsByRangeId.get(id);
     return (
       <div key={`orphan-${id}`} data-range-id={id} className={`explorerTreeRow orphan ${isActive ? 'active' : ''}`}>
         <span className="explorerTreeToggle spacer" />
@@ -9744,6 +9756,11 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         <span className={`explorerLayerDot explorerLayerDot-${layerKey}`} title={layer} />
         <button type="button" className="explorerTreeRowMain" title={lines.title} onClick={() => jumpToStructuralRange(range)}>
           <span className={`explorerTreeLine1 hierarchyLayer-${layerKey}`}>{lines.label}</span>
+          {enrichment && layer === 'WEEKLY' && (
+            <span className="weeklyScript1InlineEnrichment">
+              {enrichment.chronology} · {enrichment.bos}
+            </span>
+          )}
         </button>
         {isActive && renderExplorerActiveActions(range)}
       </div>
@@ -9766,7 +9783,7 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
         caseRef={String(getCurrentMappingCaseRef().case_ref || '')}
         symbol={String(symbol || 'XAUUSD').toUpperCase()}
         onNavigateRange={jumpToStructuralRange}
-        structure={<>
+        structure={(enrichmentsByRangeId) => <>
       <div className="explorerModeRow">
         <span className="explorerOverlayLabel">Mode</span>
         <button
@@ -9857,10 +9874,10 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       </div>
       <div className={scrollClass}>
         {!explorerTreeRanges.length && <div className="caseLedgerEmpty">{savedStructuralRanges.length ? 'No ranges match this filter.' : 'No saved structural ranges for this case yet.'}</div>}
-        {!!caseHierarchyForest.roots.length && renderExplorerTreeNodes(caseHierarchyForest.roots)}
+        {!!caseHierarchyForest.roots.length && renderExplorerTreeNodes(caseHierarchyForest.roots, enrichmentsByRangeId)}
         {!!caseHierarchyForest.orphans.length && <>
           <div className="hierarchyOrphanHeader">Unlinked / Orphans</div>
-          {renderExplorerOrphanRows()}
+          {renderExplorerOrphanRows(enrichmentsByRangeId)}
         </>}
       </div>
         </>}
