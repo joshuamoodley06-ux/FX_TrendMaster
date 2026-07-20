@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 from .weekly_chronology_bos_v2 import install as install_v2
 
@@ -33,5 +33,24 @@ def install(core: Any, pipeline: Any) -> None:
             "output_hash": row["result_hash"],
         } for row in rows]
 
+    def ordered_sample(rows: Sequence[Mapping[str, Any]], limit: int = 5) -> list[Mapping[str, Any]]:
+        chosen: list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            payload = row["payload"]
+            key = f"{payload.get('chronology')}|{payload.get('bos_direction')}|{row['processing_status']}"
+            if key not in seen:
+                chosen.append(row)
+                seen.add(key)
+            if len(chosen) == limit:
+                return chosen
+        for row in rows:
+            if row not in chosen:
+                chosen.append(row)
+            if len(chosen) == limit:
+                break
+        return chosen
+
     pipeline._weekly_outputs = weekly_outputs_v1
+    pipeline._sample = ordered_sample
     pipeline._weekly_v2_registry_installed = True
