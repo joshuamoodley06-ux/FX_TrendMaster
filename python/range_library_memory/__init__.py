@@ -4,14 +4,13 @@ from .config import DEFAULT_DB_PATH, ENV_DB_PATH, resolve_db_path
 from .importer import import_source
 from .schema import REQUIRED_TABLES, init_schema
 
-# Install the explicit sequential Weekly Script 1 v2 policy before callers
-# import the CLI or doctrine pipeline. This mirrors the established Master Map
-# lifecycle installer pattern while preserving the base persistence contract.
+# Register the independent sequential Weekly Script 1 v2 adapter before callers
+# import the CLI. The approved v1 adapter remains untouched and executable.
 from . import doctrine_pipeline as _doctrine_pipeline
 from . import weekly_chronology_bos as _weekly_chronology_bos
-from .weekly_chronology_bos_sequence import install as _install_weekly_sequence
+from .weekly_chronology_bos_v2 import install as _install_weekly_v2
 
-_install_weekly_sequence(_weekly_chronology_bos, _doctrine_pipeline)
+_install_weekly_v2(_weekly_chronology_bos, _doctrine_pipeline)
 
 __all__ = [
     "DEFAULT_DB_PATH",
