@@ -126,8 +126,8 @@ def test_first_strict_boundary_breach_establishes_direction_and_sequence(tmp_pat
         "weekly-1",
         high=100,
         low=80,
-        high_time="2026-01-05T00:00:00Z",
-        low_time="2026-01-12T00:00:00Z",
+        high_time="2026-01-12T00:00:00Z",
+        low_time="2026-01-05T00:00:00Z",
     )
     second = weekly(
         "weekly-2",
@@ -142,7 +142,7 @@ def test_first_strict_boundary_breach_establishes_direction_and_sequence(tmp_pat
     write_source_db(candle_db, [
         ("2026-01-12T00:00:00Z", 90, 99, 82, 95, 1),
         # Gap in stored ranges is irrelevant; this first strict low breach owns
-        # Weekly 1 and establishes BOS_DOWN despite RH forming first.
+        # Weekly 1 and establishes BOS_DOWN despite RL forming first.
         ("2026-02-02T00:00:00Z", 90, 98, 79, 82, 1),
         ("2026-03-09T00:00:00Z", 100, 110, 95, 108, 1),
         ("2026-03-16T00:00:00Z", 108, 112, 96, 111, 1),
@@ -157,8 +157,8 @@ def test_first_strict_boundary_breach_establishes_direction_and_sequence(tmp_pat
     assert VERSION == "weekly_script1_v2"
     assert summary["sequence_order"] == "RANGE_DEFINED_AT_ASC"
     assert [row["canonical_range_id"] for row in summary["rows"]] == ["weekly-1", "weekly-2"]
-    assert summary["rows"][0]["chronology_result"] == "RH_TO_RL"
-    assert summary["rows"][0]["expected_bos_direction"] == "BOS_DOWN"
+    assert summary["rows"][0]["chronology_result"] == "RL_TO_RH"
+    assert summary["rows"][0]["expected_bos_direction"] == "BOS_UP"
     assert summary["rows"][0]["bos_direction"] == "BOS_DOWN"
     assert summary["rows"][0]["bos_candle_time"] == "2026-02-02T00:00:00Z"
     assert summary["rows"][1]["bos_direction"] == "BOS_UP"
