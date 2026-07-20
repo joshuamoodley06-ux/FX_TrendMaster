@@ -96,9 +96,9 @@ describe('HierarchyWorkspace modes', () => {
     expect(bridge.runWeeklyScript1).toHaveBeenCalledWith({
       databasePath: 'C:/live/range-library.sqlite3', caseRef: 'case:live', symbol: 'XAUUSD',
     });
-    expect(container!.textContent).toContain('DISPOSABLE ANALYSIS COPY');
+    expect(container!.textContent).toContain('XAUUSD ANALYSIS WORKSPACE V2');
     expect(container!.textContent).toContain('RH → RL');
-    expect(container!.textContent).toContain('BOS ▼');
+    expect(container!.textContent).toContain('BOS Down');
     await act(async () => (container!.querySelector('.weeklyScript1Row') as HTMLButtonElement).click());
     expect(navigate).toHaveBeenCalledWith(expect.objectContaining({ range_id: 1 }));
     expect(container!.textContent).toContain('PENDING');
@@ -148,7 +148,7 @@ describe('HierarchyWorkspace modes', () => {
     expect(bridge.runWeeklyScript1).not.toHaveBeenCalled();
     expect(container!.querySelector('.weeklyScript1InlineEnrichment')).not.toBeNull();
     await act(async () => Array.from(container!.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((node) => node.textContent === 'Python')!.click());
-    expect(container!.textContent).toContain('approved and published');
+    expect(container!.textContent).toContain('Analysis Approved');
     expect(container!.querySelectorAll('.weeklyScript1Sample')).toHaveLength(0);
   });
 
