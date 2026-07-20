@@ -168,8 +168,10 @@ def _evaluate_weekly(
     latest = core.parse_time(latest_text)
     scan_end_text = str(node.get("_script1_scan_end_time") or "").strip() or None
     scan_end = core.parse_time(scan_end_text)
-    effective_end = min(value for value in (latest, scan_end) if value is not None) if latest or scan_end else None
-    if parsed_end is None or effective_end is None or effective_end <= parsed_end:
+    if parsed_end is None or latest is None:
+        return core.finish(row, "PENDING", {"NO_W1_CANDLES_AFTER_ENDING_ANCHOR"})
+    effective_end = min(latest, scan_end) if scan_end is not None else latest
+    if effective_end <= parsed_end:
         reason = "NO_W1_CANDLES_BEFORE_NEXT_RANGE" if scan_end is not None else "NO_W1_CANDLES_AFTER_ENDING_ANCHOR"
         return core.finish(row, "PENDING", {reason})
 
@@ -178,7 +180,7 @@ def _evaluate_weekly(
         symbol=row["symbol"],
         timeframe="W1",
         start_time=str(end_time),
-        end_time=_iso(effective_end),
+        end_time=str(latest_text),
     )
     candidates = [
         candle
@@ -186,19 +188,16 @@ def _evaluate_weekly(
         if parsed_end < (core.parse_time(candle.time) or parsed_end) <= effective_end
     ]
     row["candles_scanned"] = len(candidates)
-    touches = [
-        example
-        for candle in candidates
-        for example in _touch_examples(core, candle, high, low)
-    ]
-    row["exact_touch_count"] = len(touches)
-    row["exact_touch_examples"] = touches[:3]
+    touches: list[dict[str, Any]] = []
 
     for candle in candidates:
         up = candle.high > high
         down = candle.low < low
         if not up and not down:
+            touches.extend(_touch_examples(core, candle, high, low))
             continue
+        row["exact_touch_count"] = len(touches)
+        row["exact_touch_examples"] = touches[:3]
         if up and down:
             row.update({
                 "bos_candle_time": candle.time,
@@ -224,9 +223,11 @@ def _evaluate_weekly(
             "bos_evidence_price": evidence["price"],
         })
         if aliases and direction not in aliases:
-            return core.finish(row, "NEEDS_REVIEW", {"DETECTED_DIRECTION_CONFLICTS_WITH_STRUCTURAL_ALIAS"})
+            return core.finish(row, "NEEDS_REVIEW", {"DERIVED_DIRECTION_CONFLICTS_WITH_STRUCTURAL_ALIAS"})
         return core.finish(row, "COMPLETE", set())
 
+    row["exact_touch_count"] = len(touches)
+    row["exact_touch_examples"] = touches[:3]
     reason = "STRICT_BOS_NOT_PROVEN_BEFORE_NEXT_RANGE" if scan_end is not None else "STRICT_BOS_NOT_PROVEN"
     return core.finish(row, "PENDING", {reason})
 
