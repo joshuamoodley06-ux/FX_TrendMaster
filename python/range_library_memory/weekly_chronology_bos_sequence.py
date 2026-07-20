@@ -114,6 +114,21 @@ def _trusted_weeklies(base: Any, core: Any, master_map: Mapping[str, Any], year:
     ]
 
 
+def _direction_aliases(core: Any, node: Mapping[str, Any]) -> set[str]:
+    fields = ["direction_of_break", "lifecycle_direction_of_break"]
+    prior_version = str(node.get("script1_processing_version") or "").strip()
+    # A prior v1 analytical projection must not veto v2 candle evidence. Keep
+    # unversioned/current-version aliases only for backward compatibility and
+    # same-version consistency checks.
+    if not prior_version or prior_version == core.VERSION:
+        fields.append("script1_bos_direction")
+    return {
+        normalized
+        for field in fields
+        if (normalized := core.normalized_break_direction(node.get(field))) is not None
+    }
+
+
 def _touch_examples(core: Any, candle: Any, high: float, low: float) -> list[dict[str, Any]]:
     examples: list[dict[str, Any]] = []
     if candle.high == high:
@@ -159,7 +174,7 @@ def _evaluate_weekly(
         "expected_bos_direction": expected_direction,
     })
 
-    aliases = core.direction_aliases(node)
+    aliases = _direction_aliases(core, node)
     if len(aliases) > 1:
         return core.finish(row, "NEEDS_REVIEW", {"CONFLICTING_DIRECTION_ALIASES"})
 
