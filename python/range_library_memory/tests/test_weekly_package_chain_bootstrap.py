@@ -36,3 +36,8 @@ def test_legacy_weekly_activation_bootstraps_all_three_packages(tmp_path) -> Non
     assert by_key["weekly_structure"]["execution_order"] == 10
     assert by_key["weekly_reclaim"]["execution_order"] == 20
     assert by_key["weekly_reclaim_depth"]["execution_order"] == 30
+    for script_key, script in by_key.items():
+        state = script["doctrine_state"]
+        assert state["script_key"] == script_key
+        assert state["versions"]
+        assert state["runs"] == []
