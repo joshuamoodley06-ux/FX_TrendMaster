@@ -65,6 +65,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "bos_time": None,
             "bos_price": None,
             "candles_scanned": 0,
+            "weeks_to_bos": None,
             "reason_codes": [],
         }
 
@@ -109,10 +110,10 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             )
             if (_time(candle.get("time")) or defined_at) > defined_at
         ]
-        payload["candles_scanned"] = len(candles)
 
         completed = False
         for candle in candles:
+            payload["candles_scanned"] += 1
             broke_up = float(candle["high"]) > high
             broke_down = float(candle["low"]) < low
             if not broke_up and not broke_down:
@@ -131,6 +132,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
                 "bos_direction": direction,
                 "bos_time": candle["time"],
                 "bos_price": float(candle["high"] if broke_up else candle["low"]),
+                "weeks_to_bos": payload["candles_scanned"],
             })
             outputs.append(_output(node, "COMPLETE", payload))
             completed = True
