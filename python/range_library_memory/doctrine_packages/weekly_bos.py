@@ -2,7 +2,9 @@
 
 Each Weekly range is analysed forward from the time both anchors are known.
 The first future W1 wick beyond RH or RL establishes BOS. Mapping gaps do not
-stop the scan. A candle breaching both boundaries is held for review.
+stop the scan. RH and RL may belong to the same W1 candle; that leaves anchor
+chronology neutral but does not block later BOS detection. A future candle
+breaching both boundaries is held for review.
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ from typing import Any
 
 FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "weekly_structure"
-VERSION_LABEL = "2"
+VERSION_LABEL = "3"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 10
 
@@ -77,12 +79,12 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             payload["reason_codes"] = ["MISSING_OR_INVALID_ANCHOR_TIME"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
-        if high_time == low_time:
-            payload["reason_codes"] = ["EQUAL_ANCHOR_TIMES"]
-            outputs.append(_output(node, "NEEDS_REVIEW", payload))
-            continue
 
-        if low_time < high_time:
+        if high_time == low_time:
+            chronology = "SAME_W1"
+            defined_at = high_time
+            expected = None
+        elif low_time < high_time:
             chronology = "RL_TO_RH"
             defined_at = high_time
             expected = "BOS_UP"
