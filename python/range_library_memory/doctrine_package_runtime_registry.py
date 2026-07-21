@@ -1,8 +1,8 @@
 """Install the versioned doctrine-package runtime.
 
 Built-in adapters remain readable only for legacy workspace compatibility.
-New doctrine knowledge, including Weekly BOS v1 and v2, enters Python's active
-brain through ordinary package insertion, five-sample review, and approval.
+New doctrine knowledge enters Python's active brain through ordinary package
+insertion, five-sample review, and approval.
 """
 from __future__ import annotations
 
@@ -12,6 +12,56 @@ from typing import Any
 from .doctrine_package_contract import PACKAGE_ADAPTER
 from .doctrine_package_registry_insert import insert_package
 from .doctrine_package_registry_run import run_package_version
+
+
+_WEEKLY_PACKAGE_CHAIN = (
+    ("weekly_bos.py", "Weekly BOS"),
+    ("weekly_reclaim.py", "Weekly Reclaim"),
+    ("weekly_reclaim_depth.py", "Weekly Reclaim Depth"),
+)
+
+
+def _is_legacy_weekly_bootstrap(kwargs: dict[str, Any], source: str) -> bool:
+    return (
+        "FXTM_DOCTRINE_CONTRACT" not in source
+        and str(kwargs.get("script_key") or "").strip().lower() == "weekly_structure"
+        and str(kwargs.get("adapter_key") or "").strip().startswith("weekly_chronology_bos_")
+    )
+
+
+def _bootstrap_weekly_packages(
+    pipeline: Any,
+    base_insert: Any,
+    *args: Any,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    package_dir = Path(__file__).with_name("doctrine_packages")
+    inserted: list[dict[str, Any]] = []
+    for filename, display_name in _WEEKLY_PACKAGE_CHAIN:
+        source_path = package_dir / filename
+        source = source_path.read_text(encoding="utf-8")
+        package_kwargs = dict(kwargs)
+        package_kwargs.update({
+            "source_code": source,
+            "display_name": display_name,
+            "adapter_key": PACKAGE_ADAPTER,
+            "description": f"Bundled FXTM doctrine package: {display_name}",
+        })
+        inserted.append(insert_package(pipeline, base_insert, *args, **package_kwargs))
+
+    # The existing Electron activation expects one inserted version to run first.
+    # Return Weekly BOS while also exposing the full registered chain.
+    return {
+        **inserted[0],
+        "bootstrapped_packages": [
+            {
+                "script_key": item["script_key"],
+                "version_id": item["version_id"],
+                "version_label": item["version_label"],
+            }
+            for item in inserted
+        ],
+    }
 
 
 def install(pipeline: Any) -> None:
@@ -24,6 +74,8 @@ def install(pipeline: Any) -> None:
         source = str(kwargs.get("source_code") or "")
         requested = kwargs.get("adapter_key") == PACKAGE_ADAPTER
         declared = "FXTM_DOCTRINE_CONTRACT" in source
+        if _is_legacy_weekly_bootstrap(kwargs, source):
+            return _bootstrap_weekly_packages(pipeline, base_insert, *args, **kwargs)
         if not requested and not declared:
             return base_insert(*args, **kwargs)
         return insert_package(pipeline, base_insert, *args, **kwargs)
