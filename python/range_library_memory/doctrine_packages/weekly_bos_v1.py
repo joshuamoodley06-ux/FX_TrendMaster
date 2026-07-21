@@ -64,6 +64,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "bos_time": None,
             "bos_price": None,
             "candles_scanned": 0,
+            "weeks_to_bos": None,
             "reason_codes": [],
         }
 
@@ -110,10 +111,10 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             )
             if (_time(candle.get("time")) or defined_at) > defined_at
         ]
-        payload["candles_scanned"] = len(candles)
 
         breach = None
         for candle in candles:
+            payload["candles_scanned"] += 1
             if direction == "BOS_UP" and float(candle["high"]) > boundary:
                 breach = candle
                 break
@@ -130,6 +131,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "bos_direction": direction,
             "bos_time": breach["time"],
             "bos_price": float(breach["high"] if direction == "BOS_UP" else breach["low"]),
+            "weeks_to_bos": payload["candles_scanned"],
         })
         outputs.append(_output(node, "COMPLETE", payload))
 
