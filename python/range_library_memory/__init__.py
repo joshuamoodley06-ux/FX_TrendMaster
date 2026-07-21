@@ -4,8 +4,9 @@ from .config import DEFAULT_DB_PATH, ENV_DB_PATH, resolve_db_path
 from .importer import import_source
 from .schema import REQUIRED_TABLES, init_schema
 
-# Register the independent sequential Weekly Script 1 v2 adapter before callers
-# import the CLI. The approved v1 adapter remains untouched and version-scoped.
+# Legacy Weekly adapters remain registered only so existing analysis workspaces
+# can still be opened. New Weekly knowledge enters the active Python brain as
+# ordinary doctrine packages after five-sample approval.
 from . import doctrine_pipeline as _doctrine_pipeline
 from . import weekly_chronology_bos as _weekly_chronology_bos
 from .doctrine_package_runtime_registry import install as _install_doctrine_packages
