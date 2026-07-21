@@ -12,13 +12,13 @@ from range_library_memory.doctrine_pipeline import (
     run_version,
 )
 
-CASE_REF = "CASE-WEEKLY-PACKAGES"
+CASE_REF = "CASE-WEEKLY-PACKAGE"
 SYMBOL = "XAUUSD"
-PACKAGE_DIR = Path(__file__).resolve().parents[1] / "doctrine_packages"
+PACKAGE_FILE = Path(__file__).resolve().parents[1] / "doctrine_packages" / "weekly_bos.py"
 
 
-def _source(name: str) -> str:
-    return (PACKAGE_DIR / name).read_text(encoding="utf-8")
+def _source() -> str:
+    return PACKAGE_FILE.read_text(encoding="utf-8")
 
 
 def _master_map() -> dict:
@@ -69,16 +69,16 @@ def _candle_db(path: Path) -> None:
         con.executemany("INSERT INTO candles VALUES (?,?,?,?,?,?,?,?,?)", rows)
 
 
-def _insert(db: Path, filename: str, version: str) -> dict:
+def _insert(db: Path) -> dict:
     return insert_script(
         db,
         script_key="weekly_structure",
         display_name="Weekly BOS",
-        version_label=version,
-        source_code=_source(filename),
-        adapter_key="weekly_chronology_bos_v2",
+        version_label="2",
+        source_code=_source(),
+        adapter_key="doctrine_package_v1",
         execution_order=10,
-        description="Ordinary uploadable Weekly doctrine package",
+        description="Single approved Weekly BOS doctrine package",
     )
 
 
@@ -93,72 +93,52 @@ def _approve_all(db: Path, state: dict) -> None:
         )
 
 
-def test_weekly_v1_and_v2_are_ordinary_versions_of_one_brain_script() -> None:
-    v1 = inspect_package(_source("weekly_bos_v1.py"))
-    v2 = inspect_package(_source("weekly_bos_v2.py"))
-    assert v1.script_key == v2.script_key == "weekly_structure"
-    assert v1.adapter_key == v2.adapter_key == "doctrine_package_v1"
-    assert (v1.version_label, v2.version_label) == ("1", "2")
+def test_repository_contains_one_weekly_bos_brain_package() -> None:
+    metadata = inspect_package(_source())
+    assert metadata.script_key == "weekly_structure"
+    assert metadata.adapter_key == "doctrine_package_v1"
+    assert metadata.version_label == "2"
+    assert not (PACKAGE_FILE.parent / "weekly_bos_v1.py").exists()
+    assert not (PACKAGE_FILE.parent / "weekly_bos_v2.py").exists()
 
 
-def test_v1_approval_then_v2_approval_moves_incremental_memory_pointer(tmp_path: Path) -> None:
+def test_one_weekly_package_becomes_the_only_active_brain_script(tmp_path: Path) -> None:
     analysis = tmp_path / "analysis.sqlite3"
     candles = tmp_path / "candles.sqlite3"
     _analysis_db(analysis)
     _candle_db(candles)
 
-    v1 = _insert(analysis, "weekly_bos_v1.py", "1")
-    v1_run = run_version(
+    version = _insert(analysis)
+    candidate = run_version(
         analysis,
-        version_id=v1["version_id"],
+        version_id=version["version_id"],
         case_ref=CASE_REF,
         symbol=SYMBOL,
         source_db=candles,
     )
-    assert v1_run["run"]["approval_status"] == "PENDING"
-    assert v1_run["run"]["publication_status"] == "UNPUBLISHED"
-    _approve_all(analysis, v1_run)
+    assert candidate["run"]["approval_status"] == "PENDING"
+    assert candidate["run"]["publication_status"] == "UNPUBLISHED"
+    assert candidate["run"]["sample_count"] == 5
 
     with sqlite3.connect(analysis) as con:
-        approved_v1 = con.execute(
-            "SELECT current_approved_version_id FROM doctrine_scripts WHERE script_key='weekly_structure'"
-        ).fetchone()[0]
-        assert approved_v1 == v1["version_id"]
-
-    v2 = _insert(analysis, "weekly_bos_v2.py", "2")
-    v2_run = run_version(
-        analysis,
-        version_id=v2["version_id"],
-        case_ref=CASE_REF,
-        symbol=SYMBOL,
-        source_db=candles,
-    )
-    assert v2_run["run"]["sample_count"] == 5
-    assert v2_run["run"]["approval_status"] == "PENDING"
-
-    with sqlite3.connect(analysis) as con:
-        still_v1 = con.execute(
-            "SELECT current_approved_version_id FROM doctrine_scripts WHERE script_key='weekly_structure'"
-        ).fetchone()[0]
-        inactive_v2 = con.execute(
+        inactive = con.execute(
             "SELECT COUNT(*) FROM doctrine_enrichments WHERE version_id=? AND active=0",
-            (v2["version_id"],),
+            (version["version_id"],),
         ).fetchone()[0]
-        assert still_v1 == v1["version_id"]
-        assert inactive_v2 == 6
+        assert inactive == 6
 
-    _approve_all(analysis, v2_run)
+    _approve_all(analysis, candidate)
 
     with sqlite3.connect(analysis) as con:
-        approved_v2 = con.execute(
-            "SELECT current_approved_version_id FROM doctrine_scripts WHERE script_key='weekly_structure'"
-        ).fetchone()[0]
-        active_v2 = con.execute(
+        script = con.execute(
+            "SELECT status,current_approved_version_id FROM doctrine_scripts WHERE script_key='weekly_structure'"
+        ).fetchone()
+        active = con.execute(
             "SELECT COUNT(*) FROM doctrine_enrichments WHERE version_id=? AND active=1",
-            (v2["version_id"],),
+            (version["version_id"],),
         ).fetchone()[0]
-        assert approved_v2 == v2["version_id"]
-        assert active_v2 == 6
+        assert script == ("APPROVED", version["version_id"])
+        assert active == 6
 
     summary = run_active_pipeline(
         analysis,
