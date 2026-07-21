@@ -1,4 +1,9 @@
-"""Install uploaded doctrine packages beside the approved built-in adapters."""
+"""Install the versioned doctrine-package runtime.
+
+Built-in adapters remain readable only for legacy workspace compatibility.
+New doctrine knowledge, including Weekly BOS v1 and v2, enters Python's active
+brain through ordinary package insertion, five-sample review, and approval.
+"""
 from __future__ import annotations
 
 from pathlib import Path
