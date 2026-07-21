@@ -1,9 +1,9 @@
 """Weekly reclaim and abandonment doctrine package.
 
-This package consumes the approved weekly_structure memory. It does not detect
-BOS again. After a Weekly BOS, a later W1 wick back to the breached old RH/RL
-counts as reclaim. If a later-defined Weekly range records a new approved BOS
-before any reclaim, the earlier range is marked abandoned.
+This package consumes approved weekly_structure memory. It does not detect BOS
+again. After a Weekly BOS, a later W1 wick back to the breached old RH/RL counts
+as reclaim. If a later-defined Weekly range records a new approved BOS before
+any reclaim, the earlier range is marked abandoned.
 """
 from __future__ import annotations
 
@@ -15,6 +15,17 @@ SCRIPT_KEY = "weekly_reclaim"
 VERSION_LABEL = "1"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 20
+
+_PENDING_BOS_REASONS = {
+    "WEEKLY_BOS_NOT_FOUND",
+    "NO_W1_CANDLES_AFTER_RANGE_DEFINED",
+}
+_REVIEW_BOS_REASONS = {
+    "INVALID_RANGE_PRICES",
+    "MISSING_OR_INVALID_ANCHOR_TIME",
+    "EQUAL_ANCHOR_TIMES",
+    "BOTH_BOUNDARIES_BREACHED_SAME_W1",
+}
 
 
 def _time(value: Any) -> datetime | None:
@@ -52,15 +63,39 @@ def _output(node: Mapping[str, Any], status: str, payload: dict[str, Any]) -> di
     }
 
 
-def _weekly_bos_payload(context: Any, canonical_range_id: str) -> dict[str, Any] | None:
+def _weekly_bos_memory(
+    context: Any,
+    canonical_range_id: str,
+) -> tuple[dict[str, Any] | None, str]:
     memory = context.approved_memory(canonical_range_id)
     if not isinstance(memory, Mapping):
-        return None
+        return None, "MISSING"
     entry = memory.get("weekly_structure")
     if not isinstance(entry, Mapping):
-        return None
+        return None, "MISSING"
     payload = entry.get("payload")
-    return dict(payload) if isinstance(payload, Mapping) else None
+    if not isinstance(payload, Mapping):
+        return None, "MISSING"
+    value = dict(payload)
+    explicit = str(entry.get("processing_status") or "").upper()
+    if explicit in {"COMPLETE", "PENDING", "NEEDS_REVIEW"}:
+        return value, explicit
+    reasons = {
+        str(reason).upper()
+        for reason in value.get("reason_codes", [])
+        if str(reason).strip()
+    }
+    if reasons & _REVIEW_BOS_REASONS:
+        return value, "NEEDS_REVIEW"
+    if reasons & _PENDING_BOS_REASONS:
+        return value, "PENDING"
+    if (
+        str(value.get("bos_direction") or "").upper() in {"BOS_UP", "BOS_DOWN"}
+        and _time(value.get("bos_time")) is not None
+        and _time(value.get("range_defined_at")) is not None
+    ):
+        return value, "COMPLETE"
+    return value, "INCOMPLETE"
 
 
 def _base_payload() -> dict[str, Any]:
@@ -68,6 +103,7 @@ def _base_payload() -> dict[str, Any]:
         "reclaim_status": "PENDING",
         "source_bos_direction": None,
         "source_bos_time": None,
+        "source_bos_processing_status": None,
         "reclaim_boundary": None,
         "reclaim_time": None,
         "reclaim_wick_price": None,
@@ -86,7 +122,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     for node in nodes:
         canonical_id = str(node.get("id") or "")
-        bos = _weekly_bos_payload(context, canonical_id)
+        bos, bos_status = _weekly_bos_memory(context, canonical_id)
         records.append({
             "node": node,
             "id": canonical_id,
@@ -94,6 +130,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "bos_time": _time((bos or {}).get("bos_time")),
             "bos_direction": str((bos or {}).get("bos_direction") or "").upper(),
             "bos": bos,
+            "bos_status": bos_status,
         })
 
     latest_text = context.latest_candle_time("W1")
@@ -104,9 +141,23 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         node = current["node"]
         payload = _base_payload()
         bos = current["bos"]
+        bos_status = current["bos_status"]
+        payload["source_bos_processing_status"] = bos_status
         if bos is None:
             payload["reason_codes"] = ["APPROVED_WEEKLY_BOS_MEMORY_MISSING"]
             outputs.append(_output(node, "PENDING", payload))
+            continue
+        if bos_status == "PENDING":
+            payload["reason_codes"] = ["WEEKLY_BOS_STILL_PENDING"]
+            outputs.append(_output(node, "PENDING", payload))
+            continue
+        if bos_status == "NEEDS_REVIEW":
+            payload["reason_codes"] = ["WEEKLY_BOS_NEEDS_REVIEW"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
+        if bos_status != "COMPLETE":
+            payload["reason_codes"] = ["APPROVED_WEEKLY_BOS_MEMORY_INCOMPLETE"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
 
         direction = current["bos_direction"]
@@ -116,7 +167,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         low = _number(node.get("range_low"))
         if direction not in {"BOS_UP", "BOS_DOWN"} or bos_time is None or defined_at is None:
             payload["reason_codes"] = ["APPROVED_WEEKLY_BOS_MEMORY_INCOMPLETE"]
-            outputs.append(_output(node, "PENDING", payload))
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
         if high is None or low is None or high <= low:
             payload["reason_codes"] = ["INVALID_RANGE_PRICES"]
@@ -134,6 +185,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             (
                 record for record in records
                 if record["id"] != current["id"]
+                and record["bos_status"] == "COMPLETE"
                 and record["defined_at"] is not None
                 and record["defined_at"] > defined_at
                 and record["bos_time"] is not None
