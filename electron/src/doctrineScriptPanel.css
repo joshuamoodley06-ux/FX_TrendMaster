@@ -1,0 +1,105 @@
+.doctrinePanel {
+  gap: 10px;
+}
+
+.doctrineWorkspaceHeader {
+  align-items: center;
+}
+
+.doctrineStoredScripts {
+  display: grid;
+  gap: 6px;
+}
+
+.doctrineStoredScripts > button {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 3px 8px;
+  width: 100%;
+  padding: 8px 10px;
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.035);
+  color: inherit;
+}
+
+.doctrineStoredScripts > button:hover,
+.doctrineStoredScripts > button.selected {
+  border-color: rgba(80, 190, 255, 0.7);
+  background: rgba(80, 190, 255, 0.1);
+}
+
+.doctrineStoredScripts > button b {
+  grid-column: 1;
+}
+
+.doctrineStoredScripts > button span {
+  grid-column: 1;
+  opacity: 0.8;
+  font-size: 0.78rem;
+}
+
+.doctrineStoredScripts > button strong {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+}
+
+.doctrineSelectedSummary {
+  display: grid;
+  gap: 4px;
+}
+
+.doctrineSelectedSummary > button {
+  justify-self: start;
+  margin-top: 4px;
+}
+
+.doctrineDependencyWarning {
+  color: #f2c46d;
+}
+
+.doctrineValidationRows {
+  display: grid;
+  gap: 6px;
+}
+
+.doctrineValidationSample {
+  display: grid;
+  gap: 4px;
+}
+
+.doctrineValidationRow {
+  display: grid;
+  grid-template-columns: auto repeat(4, minmax(0, 1fr)) auto;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  align-items: center;
+}
+
+.doctrineValidationRow span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doctrineSampleReason {
+  padding-left: 8px;
+  opacity: 0.72;
+  font-size: 0.72rem;
+  text-transform: lowercase;
+}
+
+@media (max-width: 980px) {
+  .doctrineValidationRow {
+    grid-template-columns: auto 1fr auto;
+  }
+
+  .doctrineValidationRow span:nth-of-type(n + 2) {
+    display: none;
+  }
+}
