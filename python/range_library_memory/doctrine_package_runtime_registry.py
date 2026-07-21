@@ -179,9 +179,31 @@ def install(pipeline: Any) -> None:
         for row in rows:
             value = dict(row)
             try:
-                value["doctrine_state"] = pipeline.show_script(db_path, str(row["script_key"]))
+                state = pipeline.show_script(db_path, str(row["script_key"]))
+                value["doctrine_state"] = state
+                current_id = str(state.get("current_approved_version_id") or "")
+                current = next(
+                    (
+                        version for version in state.get("versions", [])
+                        if str(version.get("version_id") or "") == current_id
+                    ),
+                    None,
+                )
+                package_ready = bool(
+                    current_id
+                    and current is not None
+                    and str(current.get("adapter_key") or "") == PACKAGE_ADAPTER
+                )
+                value["package_dependency_ready"] = package_ready
+                # The old built-in Weekly Script 1 may remain approved for rollback,
+                # but it must not unlock the new package chain in the cockpit.
+                if str(row["script_key"]) in {
+                    "weekly_structure", "weekly_reclaim", "weekly_reclaim_depth"
+                } and not package_ready:
+                    value["current_approved_version_id"] = None
             except pipeline.DoctrinePipelineError:
                 value["doctrine_state"] = None
+                value["package_dependency_ready"] = False
             enriched.append(value)
         return enriched
 
