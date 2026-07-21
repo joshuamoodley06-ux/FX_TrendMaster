@@ -74,7 +74,7 @@ def _insert(db: Path) -> dict:
         db,
         script_key="weekly_structure",
         display_name="Weekly BOS",
-        version_label="2",
+        version_label="3",
         source_code=_source(),
         adapter_key="doctrine_package_v1",
         execution_order=10,
@@ -97,7 +97,7 @@ def test_repository_contains_one_weekly_bos_brain_package() -> None:
     metadata = inspect_package(_source())
     assert metadata.script_key == "weekly_structure"
     assert metadata.adapter_key == "doctrine_package_v1"
-    assert metadata.version_label == "2"
+    assert metadata.version_label == "3"
     assert not (PACKAGE_FILE.parent / "weekly_bos_v1.py").exists()
     assert not (PACKAGE_FILE.parent / "weekly_bos_v2.py").exists()
 
