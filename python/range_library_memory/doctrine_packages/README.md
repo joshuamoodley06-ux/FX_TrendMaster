@@ -4,21 +4,23 @@ These files are reviewed analytical packages. Merely storing a file does not app
 
 ## Weekly analysis chain
 
-The repository currently keeps two distinct analytical scripts:
+The repository currently keeps three distinct analytical scripts:
 
 ```text
-weekly_bos.py       -> weekly_structure
-weekly_reclaim.py   -> weekly_reclaim
+weekly_bos.py             -> weekly_structure
+weekly_reclaim.py         -> weekly_reclaim
+weekly_reclaim_depth.py   -> weekly_reclaim_depth
 ```
 
-They do different jobs and execute in order:
+They execute in order:
 
 ```text
 Weekly BOS memory
 -> Weekly reclaim / abandonment memory
+-> Weekly reclaim depth memory
 ```
 
-`weekly_reclaim.py` does not detect BOS again. It reads the approved `weekly_structure` payload for each Weekly range.
+Each script reads approved output from the previous step instead of repeating its work.
 
 ## Weekly BOS
 
@@ -31,7 +33,7 @@ BOS candle and price
 weeks to BOS
 ```
 
-Its permanent memory key is `weekly_structure`. Only one current Weekly BOS package file is maintained. When the logic improves, update this same file and increase its version label. Older approved source versions remain in database history for rollback and audit; they do not remain as parallel package files.
+Its permanent memory key is `weekly_structure`. Only one current Weekly BOS package file is maintained. Older approved source versions remain in database history for rollback and audit; they do not remain as parallel package files.
 
 ## Weekly reclaim and abandonment
 
@@ -48,7 +50,21 @@ If a later-defined Weekly range records a new approved BOS before any reclaim, t
 
 If neither event exists yet, the earlier range remains `PENDING`.
 
-The reclaim script stores the reclaim/abandonment date and the number of W1 candles checked. A reclaim on the same W1 candle as the later BOS still counts as reclaimed because the old boundary was reached; abandonment applies only when no reclaim occurred.
+## Weekly reclaim depth
+
+`weekly_reclaim_depth.py` runs only after an approved reclaim. It records:
+
+```text
+deepest W1 wick after reclaim
+price distance from the reclaimed boundary
+percentage depth through the old Weekly range
+whether the old opposite external was touched or exceeded
+weeks observed
+```
+
+For `BOS_UP`, depth is measured down from old RH. For `BOS_DOWN`, depth is measured up from old RL. Measurement ends at the next approved Weekly BOS, or at the latest W1 candle when no later BOS exists.
+
+Depth is stored continuously. No shallow, medium, or deep category is hardcoded.
 
 ## Approval workflow
 
