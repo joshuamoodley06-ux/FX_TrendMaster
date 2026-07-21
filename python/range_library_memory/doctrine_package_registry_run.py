@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from .doctrine_package_contract import PACKAGE_ADAPTER, DoctrinePackageError
+from .doctrine_package_contract import PACKAGE_ADAPTER
 from .doctrine_package_runtime import execute_package
 
 
@@ -57,8 +57,10 @@ def run_package_version(
             symbol=symbol,
             structural_content_hash=structural,
         )
-    except (DoctrinePackageError, OSError, ValueError) as exc:
-        raise pipeline.DoctrinePipelineError(str(exc)) from exc
+    except Exception as exc:
+        raise pipeline.DoctrinePipelineError(
+            f"Doctrine package execution failed safely: {exc}"
+        ) from exc
 
     with pipeline.connect(db) as connection:
         pipeline.ensure_schema(connection)
