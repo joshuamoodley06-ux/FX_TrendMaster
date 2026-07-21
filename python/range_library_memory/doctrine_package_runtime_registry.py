@@ -69,6 +69,7 @@ def install(pipeline: Any) -> None:
         return
     base_insert = pipeline.insert_script
     base_run = pipeline.run_version
+    base_list = pipeline.list_scripts
 
     def insert_script(*args: Any, **kwargs: Any) -> dict[str, Any]:
         source = str(kwargs.get("source_code") or "")
@@ -91,7 +92,21 @@ def install(pipeline: Any) -> None:
             return run_package_version(pipeline, db_path, **kwargs)
         return base_run(db_path, **kwargs)
 
+    def list_scripts(db_path: str | Path) -> list[dict[str, Any]]:
+        """Return cockpit summaries with each script's own runs and samples."""
+        rows = base_list(db_path)
+        enriched: list[dict[str, Any]] = []
+        for row in rows:
+            value = dict(row)
+            try:
+                value["doctrine_state"] = pipeline.show_script(db_path, str(row["script_key"]))
+            except pipeline.DoctrinePipelineError:
+                value["doctrine_state"] = None
+            enriched.append(value)
+        return enriched
+
     pipeline.PACKAGE_ADAPTER = PACKAGE_ADAPTER
     pipeline.insert_script = insert_script
     pipeline.run_version = run_version
+    pipeline.list_scripts = list_scripts
     pipeline._doctrine_package_runtime_installed = True
