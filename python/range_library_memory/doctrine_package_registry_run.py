@@ -8,6 +8,40 @@ from .doctrine_package_contract import PACKAGE_ADAPTER
 from .doctrine_package_runtime import execute_package
 
 
+_PACKAGE_DEPENDENCIES = {
+    "weekly_reclaim": ("weekly_structure", "Weekly BOS"),
+    "weekly_reclaim_depth": ("weekly_reclaim", "Weekly Reclaim"),
+}
+
+
+def _require_package_dependency(
+    pipeline: Any,
+    connection: Any,
+    *,
+    script_key: str,
+) -> None:
+    dependency = _PACKAGE_DEPENDENCIES.get(script_key)
+    if dependency is None:
+        return
+    dependency_key, display_name = dependency
+    row = connection.execute(
+        """SELECT s.current_approved_version_id,v.adapter_key
+           FROM doctrine_scripts s
+           LEFT JOIN doctrine_script_versions v
+             ON v.version_id=s.current_approved_version_id
+           WHERE s.script_key=?""",
+        (dependency_key,),
+    ).fetchone()
+    if (
+        row is None
+        or not row["current_approved_version_id"]
+        or str(row["adapter_key"] or "") != PACKAGE_ADAPTER
+    ):
+        raise pipeline.DoctrinePipelineError(
+            f"{script_key} requires approved {display_name} package memory."
+        )
+
+
 def run_package_version(
     pipeline: Any,
     db_path: str | Path,
@@ -30,6 +64,11 @@ def run_package_version(
         ).fetchone()
         if version is None or str(version["adapter_key"]) != PACKAGE_ADAPTER:
             raise pipeline.DoctrinePipelineError("Doctrine package adapter mismatch.")
+        _require_package_dependency(
+            pipeline,
+            connection,
+            script_key=str(version["script_key"]),
+        )
         master = pipeline._master_map(connection, symbol)
         structural = str(master.get("structural_content_hash") or "")
         run_id = pipeline.sha([version_id, case_ref, symbol, structural])
