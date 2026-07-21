@@ -69,6 +69,7 @@ def install(pipeline: Any) -> None:
         return
     base_insert = pipeline.insert_script
     base_run = pipeline.run_version
+    base_review = pipeline.review_sample
     base_list = pipeline.list_scripts
 
     def insert_script(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -92,6 +93,85 @@ def install(pipeline: Any) -> None:
             return run_package_version(pipeline, db_path, **kwargs)
         return base_run(db_path, **kwargs)
 
+    def review_sample(db_path: str | Path, **kwargs: Any) -> dict[str, Any]:
+        """Keep short case reviews pending until a true five-sample run exists."""
+        db = pipeline.require_existing_db(db_path)
+        run_id = str(kwargs.get("run_id") or "")
+        decision = str(kwargs.get("decision") or "").upper()
+        canonical_range_id = str(kwargs.get("canonical_range_id") or "")
+        with pipeline.connect(db) as connection:
+            pipeline.ensure_schema(connection)
+            run = connection.execute(
+                """SELECT r.*,v.adapter_key,s.script_id,s.current_approved_version_id
+                   FROM doctrine_script_runs r
+                   JOIN doctrine_script_versions v USING(version_id)
+                   JOIN doctrine_scripts s USING(script_id)
+                   WHERE r.run_id=?""",
+                (run_id,),
+            ).fetchone()
+        if run is None or str(run["adapter_key"]) != PACKAGE_ADAPTER or int(run["sample_count"]) >= 5:
+            return base_review(db_path, **kwargs)
+        if decision not in {"APPROVED", "REJECTED"}:
+            raise pipeline.DoctrinePipelineError("Invalid sample decision.")
+
+        stamp = pipeline.now()
+        with pipeline.connect(db) as connection:
+            pipeline.ensure_schema(connection)
+            sample = connection.execute(
+                "SELECT * FROM doctrine_validation_samples WHERE run_id=? AND canonical_range_id=?",
+                (run_id, canonical_range_id),
+            ).fetchone()
+            if sample is None:
+                raise pipeline.DoctrinePipelineError("Validation sample not found.")
+            if sample["decision"] not in {"PENDING", decision}:
+                raise pipeline.DoctrinePipelineError(
+                    "Validation sample already has a different decision."
+                )
+            if sample["decision"] == "PENDING":
+                connection.execute(
+                    """UPDATE doctrine_validation_samples
+                       SET decision=?,decided_at=?
+                       WHERE run_id=? AND canonical_range_id=?""",
+                    (decision, stamp, run_id, canonical_range_id),
+                )
+            decisions = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT decision FROM doctrine_validation_samples WHERE run_id=?",
+                    (run_id,),
+                )
+            ]
+            approved = decisions.count("APPROVED")
+            rejected = "REJECTED" in decisions
+            if rejected:
+                connection.execute(
+                    """UPDATE doctrine_script_runs
+                       SET approval_status='REJECTED',approval_count=?
+                       WHERE run_id=?""",
+                    (approved, run_id),
+                )
+                connection.execute(
+                    "UPDATE doctrine_script_versions SET rejected_at=? WHERE version_id=?",
+                    (stamp, run["version_id"]),
+                )
+                next_status = "APPROVED" if run["current_approved_version_id"] else "REJECTED"
+                connection.execute(
+                    "UPDATE doctrine_scripts SET status=?,updated_at=? WHERE script_id=?",
+                    (next_status, stamp, run["script_id"]),
+                )
+            else:
+                connection.execute(
+                    """UPDATE doctrine_script_runs
+                       SET approval_status='PENDING',approval_count=?
+                       WHERE run_id=?""",
+                    (approved, run_id),
+                )
+            connection.commit()
+            return dict(connection.execute(
+                "SELECT * FROM doctrine_script_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone())
+
     def list_scripts(db_path: str | Path) -> list[dict[str, Any]]:
         """Return cockpit summaries with each script's own runs and samples."""
         rows = base_list(db_path)
@@ -108,5 +188,6 @@ def install(pipeline: Any) -> None:
     pipeline.PACKAGE_ADAPTER = PACKAGE_ADAPTER
     pipeline.insert_script = insert_script
     pipeline.run_version = run_version
+    pipeline.review_sample = review_sample
     pipeline.list_scripts = list_scripts
     pipeline._doctrine_package_runtime_installed = True
