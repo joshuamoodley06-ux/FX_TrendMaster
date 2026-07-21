@@ -14,15 +14,15 @@ _PACKAGE_DEPENDENCIES = {
 }
 
 
-def _require_package_dependency(
+def _package_dependency_fingerprint(
     pipeline: Any,
     connection: Any,
     *,
     script_key: str,
-) -> None:
+) -> str:
     dependency = _PACKAGE_DEPENDENCIES.get(script_key)
     if dependency is None:
-        return
+        return ""
     dependency_key, display_name = dependency
     row = connection.execute(
         """SELECT s.current_approved_version_id,v.adapter_key
@@ -40,6 +40,19 @@ def _require_package_dependency(
         raise pipeline.DoctrinePipelineError(
             f"{script_key} requires approved {display_name} package memory."
         )
+    version_id = str(row["current_approved_version_id"])
+    output_rows = connection.execute(
+        """SELECT canonical_range_id,output_hash
+           FROM doctrine_enrichments
+           WHERE version_id=? AND active=1
+           ORDER BY canonical_range_id""",
+        (version_id,),
+    ).fetchall()
+    return pipeline.sha([
+        dependency_key,
+        version_id,
+        [[str(item["canonical_range_id"]), str(item["output_hash"])] for item in output_rows],
+    ])
 
 
 def run_package_version(
@@ -64,14 +77,18 @@ def run_package_version(
         ).fetchone()
         if version is None or str(version["adapter_key"]) != PACKAGE_ADAPTER:
             raise pipeline.DoctrinePipelineError("Doctrine package adapter mismatch.")
-        _require_package_dependency(
+        dependency_fingerprint = _package_dependency_fingerprint(
             pipeline,
             connection,
             script_key=str(version["script_key"]),
         )
         master = pipeline._master_map(connection, symbol)
         structural = str(master.get("structural_content_hash") or "")
-        run_id = pipeline.sha([version_id, case_ref, symbol, structural])
+        analysis_input_hash = pipeline.sha([
+            structural,
+            dependency_fingerprint,
+        ]) if dependency_fingerprint else structural
+        run_id = pipeline.sha([version_id, case_ref, symbol, analysis_input_hash])
         existing = connection.execute(
             "SELECT * FROM doctrine_script_runs WHERE run_id=?",
             (run_id,),
@@ -94,7 +111,7 @@ def run_package_version(
             source_db=source_db,
             case_ref=case_ref,
             symbol=symbol,
-            structural_content_hash=structural,
+            structural_content_hash=analysis_input_hash,
         )
     except Exception as exc:
         raise pipeline.DoctrinePipelineError(
@@ -116,7 +133,7 @@ def run_package_version(
                  sample_count,approval_count,executed_at,completed_at,published_at,error_text)
                VALUES (?,?,?,?,?,'COMPLETE',?,?,?,?,?,?,?,?,?,NULL)""",
             (
-                run_id, version_id, case_ref, symbol, structural,
+                run_id, version_id, case_ref, symbol, analysis_input_hash,
                 "APPROVED" if approved else "PENDING",
                 "PUBLISHED" if approved else "UNPUBLISHED",
                 len(outputs), len(outputs), len(samples), 0,
