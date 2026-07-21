@@ -1,31 +1,32 @@
 # FXTM doctrine packages
 
-These are ordinary uploadable doctrine versions, not pre-approved application adapters.
+These files are reviewed analytical packages. Merely storing a file does not approve it.
 
-## Weekly structure brain
+## Weekly structure
 
-Both files use the same script key:
+The repository keeps one current Weekly BOS package:
+
+```text
+weekly_bos.py
+```
+
+Its permanent memory key is:
 
 ```text
 weekly_structure
 ```
 
-Versions:
+The current logic is labelled version `2`. Only one Weekly package file is maintained.
+
+Workflow:
 
 ```text
-weekly_bos_v1.py -> VERSION_LABEL = 1
-weekly_bos_v2.py -> VERSION_LABEL = 2
+select weekly_bos.py
+-> validate the source
+-> run five review cases in the analysis workspace
+-> approve 5/5
+-> store that exact source as the current approved version
+-> run only that approved version in the active pipeline
 ```
 
-Required lifecycle:
-
-```text
-select package
--> validate exact source and metadata
--> run against disposable analysis workspace
--> review five samples
--> 5/5 approval moves current_approved_version_id to that version
--> future active-pipeline runs execute that exact stored source
-```
-
-A pending or rejected v2 never replaces an approved v1. The package files are not activated merely because they exist in the repository.
+When Weekly BOS logic improves, update this same package and increase its version label. Older approved source versions remain in database history for rollback and audit. They do not remain as parallel package files.
