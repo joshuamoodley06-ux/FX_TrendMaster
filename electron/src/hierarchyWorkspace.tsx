@@ -155,16 +155,26 @@ function bosLabel(value: unknown): string {
   return 'BOS Pending';
 }
 
+function reclaimSuffix(value: unknown): string {
+  const normalized = String(value || '').toUpperCase();
+  if (normalized === 'RECLAIMED') return 'RECL';
+  if (normalized === 'ABANDONED') return 'ABND';
+  return '';
+}
+
 function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
   const generic = node.analysisEnrichments.weekly_structure?.payload || {};
+  const reclaim = node.analysisEnrichments.weekly_reclaim?.payload || {};
   const chronology = generic.chronology ?? node.script1Chronology;
   const bos = generic.bos_direction ?? node.script1BosDirection;
+  const suffix = reclaimSuffix(reclaim.reclaim_status);
+  const bosWithReclaim = [bosLabel(bos), suffix].filter(Boolean).join(' · ');
   const status = node.analysisEnrichments.weekly_structure
     ? 'Approved'
     : node.script1ReviewStatus === 'APPROVED' ? 'Approved'
       : node.script1ReviewStatus === 'NEEDS_REVIEW' ? 'Needs Review'
         : node.script1ReviewStatus === 'REJECTED' ? 'Rejected' : 'Pending';
-  return { chronology: chronologyLabel(chronology), bos: bosLabel(bos), status };
+  return { chronology: chronologyLabel(chronology), bos: bosWithReclaim, status };
 }
 
 function matchingRange(node: MasterMapRangeNode | null, ranges: Record<string, unknown>[]) {
