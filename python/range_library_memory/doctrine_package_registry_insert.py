@@ -14,21 +14,13 @@ from .doctrine_package_storage import persist_package
 
 def insert_package(pipeline: Any, base_insert: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
     source = normalize_source(str(kwargs.get("source_code") or ""))
-    key = str(kwargs.get("script_key") or "").strip().lower().replace(" ", "_")
-    label = str(kwargs.get("version_label") or "").strip()
-    order = int(kwargs.get("execution_order", 100))
     db_path = args[0] if args else kwargs.get("db_path")
     if db_path is None:
         raise pipeline.DoctrinePipelineError(
             "Doctrine package insertion requires an analysis database path."
         )
     try:
-        metadata = inspect_package(
-            source,
-            expected_script_key=key,
-            expected_version_label=label,
-            expected_execution_order=order,
-        )
+        metadata = inspect_package(source)
         content_hash = pipeline.sha(source)
         stored = persist_package(
             pipeline.require_existing_db(db_path),
@@ -39,7 +31,13 @@ def insert_package(pipeline: Any, base_insert: Any, *args: Any, **kwargs: Any) -
     except (DoctrinePackageError, OSError, ValueError) as exc:
         raise pipeline.DoctrinePipelineError(str(exc)) from exc
 
+    # The selected package source is authoritative. The cockpit form is only a
+    # friendly launcher and may still contain defaults from the previous script.
+    kwargs["script_key"] = metadata.script_key
+    kwargs["version_label"] = metadata.version_label
+    kwargs["execution_order"] = metadata.execution_order
     kwargs["adapter_key"] = PACKAGE_ADAPTER
+
     original = pipeline.WEEKLY_ADAPTER
     pipeline.WEEKLY_ADAPTER = PACKAGE_ADAPTER
     try:
