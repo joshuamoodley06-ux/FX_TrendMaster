@@ -34,6 +34,7 @@ def _bos(direction: str, defined_at: str, bos_time: str) -> dict:
                 "range_defined_at": defined_at,
                 "bos_direction": direction,
                 "bos_time": bos_time,
+                "reason_codes": [],
             }
         }
     }
@@ -49,6 +50,54 @@ def test_reclaim_waits_for_approved_weekly_bos_memory() -> None:
 
     assert result["processing_status"] == "PENDING"
     assert result["payload"]["reason_codes"] == ["APPROVED_WEEKLY_BOS_MEMORY_MISSING"]
+
+
+def test_reclaim_preserves_valid_pending_bos_as_pending() -> None:
+    context = FakeContext(
+        {
+            "weekly-a": {
+                "weekly_structure": {
+                    "payload": {
+                        "range_defined_at": "2026-01-05T00:00:00Z",
+                        "bos_direction": None,
+                        "bos_time": None,
+                        "reason_codes": ["WEEKLY_BOS_NOT_FOUND"],
+                    }
+                }
+            }
+        },
+        [{"time": "2026-01-19T00:00:00Z", "high": 99, "low": 91}],
+    )
+
+    result = weekly_reclaim.run(context)["outputs"][0]
+
+    assert result["processing_status"] == "PENDING"
+    assert result["payload"]["source_bos_processing_status"] == "PENDING"
+    assert result["payload"]["reason_codes"] == ["WEEKLY_BOS_STILL_PENDING"]
+
+
+def test_reclaim_preserves_bos_review_state_instead_of_calling_memory_incomplete() -> None:
+    context = FakeContext(
+        {
+            "weekly-a": {
+                "weekly_structure": {
+                    "payload": {
+                        "range_defined_at": None,
+                        "bos_direction": None,
+                        "bos_time": None,
+                        "reason_codes": ["EQUAL_ANCHOR_TIMES"],
+                    }
+                }
+            }
+        },
+        [{"time": "2026-01-19T00:00:00Z", "high": 99, "low": 91}],
+    )
+
+    result = weekly_reclaim.run(context)["outputs"][0]
+
+    assert result["processing_status"] == "NEEDS_REVIEW"
+    assert result["payload"]["source_bos_processing_status"] == "NEEDS_REVIEW"
+    assert result["payload"]["reason_codes"] == ["WEEKLY_BOS_NEEDS_REVIEW"]
 
 
 def test_same_w1_candle_reclaim_and_new_bos_counts_as_reclaimed() -> None:
