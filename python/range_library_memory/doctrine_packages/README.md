@@ -33,6 +33,8 @@ BOS candle and price
 weeks to BOS
 ```
 
+If RH and RL come from the same W1 candle, chronology is stored as `SAME_W1`. The script starts scanning after that anchor candle and the first later one-sided wick break establishes BOS. A later candle breaching both boundaries still requires review.
+
 Its permanent memory key is `weekly_structure`. Only one current Weekly BOS package file is maintained. Older approved source versions remain in database history for rollback and audit; they do not remain as parallel package files.
 
 ## Weekly reclaim and abandonment
