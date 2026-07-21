@@ -65,15 +65,10 @@ def run_package_version(
     with pipeline.connect(db) as connection:
         pipeline.ensure_schema(connection)
         approved = pipeline._approved_version(connection, version_id)
-        if not approved and len(outputs) < 5:
-            raise pipeline.DoctrinePipelineError(
-                "A pending doctrine package must produce at least five eligible outputs."
-            )
+        # A selected case may contain fewer than five eligible Weekly ranges.
+        # Run and display what exists, but package approval remains locked until
+        # a separate run provides a genuine five-sample review.
         samples = [] if approved else pipeline._sample(outputs, limit=5)
-        if not approved and len(samples) != 5:
-            raise pipeline.DoctrinePipelineError(
-                "Doctrine package validation requires exactly five samples."
-            )
         stamp = pipeline.now()
         connection.execute(
             """INSERT INTO doctrine_script_runs(
