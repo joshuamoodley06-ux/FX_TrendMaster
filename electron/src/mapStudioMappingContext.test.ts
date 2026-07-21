@@ -10,6 +10,7 @@ import {
   evaluateStructuralBosBlockReason,
   evaluateStructuralNavigationGuard,
   evaluateUnsavedResponsibleChildDraft,
+  factualChildDraftSpan,
   hasMappingSkeletonContext,
   hasUnsavedStructuralDraft,
   isChartTimeframeAllowedForStructureLayer,
@@ -17,10 +18,13 @@ import {
   parentContainsChildByLifecycle,
   purgeStructuralAnchorsByLayer,
   resolveStructuralCommitParentId,
+  resolveStructuralRangeDraftCompletion,
+  shouldAutoRestoreLatestRangeForLayer,
   shouldRetainChildMappingLock,
   shouldBlockResponsibleChildDraftForLayer,
   shouldAllowSelectedRangeUpdate,
   shouldHydrateSavedRangeIntoDraft,
+  shouldHydrateActiveRangeSelection,
   shouldRouteStructuralRangeSaveToNext,
   shouldSuppressAutoParentRewrite,
   shouldSuppressDraftRangeOverlay,
@@ -534,7 +538,7 @@ describe('mapStudioMappingContext', () => {
       })).toBe(false);
     });
 
-    it('does not route Daily selected range edits to Save Next', () => {
+    it('keeps selected Daily read-only until explicit Edit mode', () => {
       expect(shouldRouteStructuralRangeSaveToNext({
         structureLayer: 'DAILY',
         activeRangeLayer: 'DAILY',
@@ -547,10 +551,56 @@ describe('mapStudioMappingContext', () => {
         structureLayer: 'DAILY',
         editMode: false,
         chainDraftMode: false,
-      })).toBe(true);
+      })).toBe(false);
       expect(shouldAllowSelectedRangeUpdate({
         structureLayer: 'DAILY',
         editMode: false,
+      })).toBe(false);
+      expect(shouldHydrateSavedRangeIntoDraft({
+        structureLayer: 'DAILY',
+        editMode: true,
+        chainDraftMode: false,
+      })).toBe(true);
+      expect(shouldAllowSelectedRangeUpdate({
+        structureLayer: 'DAILY',
+        editMode: true,
+      })).toBe(true);
+    });
+
+    it('waits for Enter after both factual anchors exist', () => {
+      expect(resolveStructuralRangeDraftCompletion({
+        rhSet: true,
+        rlSet: false,
+      })).toBe('WAIT_FOR_OTHER_ANCHOR');
+      expect(resolveStructuralRangeDraftCompletion({
+        rhSet: true,
+        rlSet: true,
+      })).toBe('WAIT_FOR_CONFIRM');
+    });
+
+    it('does not auto-restore the latest child while a parent mapping lock owns a new draft', () => {
+      expect(shouldAutoRestoreLatestRangeForLayer({
+        lockedChildMappingParentId: '569',
+        activeRangeId: '',
+      })).toBe(false);
+      expect(shouldAutoRestoreLatestRangeForLayer({
+        lockedChildMappingParentId: '569',
+        activeRangeId: '599',
+      })).toBe(true);
+      expect(shouldAutoRestoreLatestRangeForLayer({
+        lockedChildMappingParentId: '',
+        activeRangeId: '',
+      })).toBe(true);
+    });
+
+    it('does not restore saved Daily anchors over a dirty new-range selection', () => {
+      expect(shouldHydrateActiveRangeSelection({
+        chainDraftMode: false,
+        structuralRangeDraftDirty: true,
+      })).toBe(false);
+      expect(shouldHydrateActiveRangeSelection({
+        chainDraftMode: false,
+        structuralRangeDraftDirty: false,
       })).toBe(true);
     });
 
@@ -945,6 +995,50 @@ describe('mapStudioMappingContext', () => {
       expect(parentContainsChildByLifecycle(endedIntraday, [
         Date.parse('2026-03-03T14:00:00.000Z'),
       ])).toBe(false);
+    });
+
+    it('validates Weekly 569 containment from factual draft anchors, not stale window fallbacks', () => {
+      const weekly569 = {
+        range_id: '569',
+        structure_layer: 'WEEKLY',
+        range_scope: 'MAJOR',
+        status: 'ACTIVE',
+        active_from_time: '2025-12-28T00:00:00.000Z',
+        range_start_time: '2025-12-28T00:00:00.000Z',
+        range_low_time: '2025-12-28T00:00:00.000Z',
+        range_high_time: '2026-01-25T00:00:00.000Z',
+        range_end_time: '2026-01-25T00:00:00.000Z',
+        inactive_from_time: null,
+      };
+      const savedRanges = [weekly569];
+
+      const draft = factualChildDraftSpan(
+        { time: '2025-12-31T00:00:00.000Z' },
+        { time: '2025-12-30T00:00:00.000Z' },
+      );
+      expect(draft).toEqual({
+        range_high_time: '2025-12-31T00:00:00.000Z',
+        range_low_time: '2025-12-30T00:00:00.000Z',
+      });
+
+      expect(evaluateChildMappingParentBlockReason({
+        structureLayer: 'DAILY',
+        rangeScope: 'MAJOR',
+        lockedChildMappingParentId: '569',
+        childSpan: draft,
+        savedRanges,
+        resolvedParentId: '569',
+        allowOrphanOverride: false,
+      })).toBeNull();
+
+      const partialDraft = factualChildDraftSpan(
+        { time: '2025-12-31T00:00:00.000Z' },
+        {},
+      );
+      expect(partialDraft).toEqual({
+        range_high_time: '2025-12-31T00:00:00.000Z',
+        range_low_time: null,
+      });
     });
   });
 

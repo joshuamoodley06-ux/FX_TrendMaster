@@ -466,18 +466,43 @@ export function shouldHydrateSavedRangeIntoDraft(args: {
   editMode: boolean;
   chainDraftMode: boolean;
 }): boolean {
-  const layer = String(args.structureLayer || '').toUpperCase();
-  if (layer === 'WEEKLY' && !args.editMode && !args.chainDraftMode) return false;
-  return true;
+  if (args.chainDraftMode) return false;
+  return !!args.editMode;
+}
+
+export function shouldHydrateActiveRangeSelection(args: {
+  chainDraftMode: boolean;
+  structuralRangeDraftDirty: boolean;
+}): boolean {
+  return !args.chainDraftMode && !args.structuralRangeDraftDirty;
 }
 
 export function shouldAllowSelectedRangeUpdate(args: {
   structureLayer: string;
   editMode: boolean;
 }): boolean {
-  const layer = String(args.structureLayer || '').toUpperCase();
-  if (layer === 'WEEKLY') return !!args.editMode;
-  return true;
+  return !!args.editMode;
+}
+
+export type StructuralRangeDraftCompletion =
+  | 'WAIT_FOR_OTHER_ANCHOR'
+  | 'WAIT_FOR_CONFIRM';
+
+export function resolveStructuralRangeDraftCompletion(args: {
+  rhSet: boolean;
+  rlSet: boolean;
+}): StructuralRangeDraftCompletion {
+  return args.rhSet && args.rlSet
+    ? 'WAIT_FOR_CONFIRM'
+    : 'WAIT_FOR_OTHER_ANCHOR';
+}
+
+export function shouldAutoRestoreLatestRangeForLayer(args: {
+  lockedChildMappingParentId: string;
+  activeRangeId: string;
+}): boolean {
+  return !String(args.lockedChildMappingParentId || '')
+    || !!String(args.activeRangeId || '');
 }
 
 export function shouldSuppressDraftRangeOverlay(args: {
@@ -611,23 +636,50 @@ export function resolveStructuralCommitParentId(args: {
   return { parentId: null, source: 'none' };
 }
 
-export function childDraftAnchorTimesMs(childSpan?: {
+export function factualChildDraftSpan(
+  rhAnchor: { time?: string | null },
+  rlAnchor: { time?: string | null },
+): { range_high_time: string | null; range_low_time: string | null } {
+  return {
+    range_high_time: rhAnchor.time ? String(rhAnchor.time) : null,
+    range_low_time: rlAnchor.time ? String(rlAnchor.time) : null,
+  };
+}
+
+export type StructuralChildLifecycleSpan = {
   range_high_time?: string | null;
   range_low_time?: string | null;
   active_from_time?: string | null;
   range_start_time?: string | null;
   range_end_time?: string | null;
-}): number[] {
-  const values = [
+};
+
+function uniqueStructuralTimes(values: unknown[]): number[] {
+  return Array.from(new Set(
+    values
+      .map(parseStructuralTimeMs)
+      .filter((x): x is number => x !== null),
+  ));
+}
+
+export function childDraftAnchorTimesMs(childSpan?: StructuralChildLifecycleSpan): number[] {
+  const factualAnchorTimes = uniqueStructuralTimes([
     childSpan?.range_high_time,
     childSpan?.range_low_time,
+  ]);
+
+  // Once both factual anchors exist, restored window fields must not widen
+  // the child lifecycle or resurrect an older draft/context.
+  if (factualAnchorTimes.length >= 2) return factualAnchorTimes;
+
+  const fallbackTimes = uniqueStructuralTimes([
     childSpan?.active_from_time,
     childSpan?.range_start_time,
     childSpan?.range_end_time,
-  ];
-  return values.map(parseStructuralTimeMs).filter((x): x is number => x !== null);
-}
+  ]);
 
+  return Array.from(new Set([...factualAnchorTimes, ...fallbackTimes]));
+}
 export function parentLifecycleStartMs(parent: StructuralParentRangeRow): number | null {
   const values = [parent?.active_from_time, parent?.range_start_time]
     .map(parseStructuralTimeMs)
