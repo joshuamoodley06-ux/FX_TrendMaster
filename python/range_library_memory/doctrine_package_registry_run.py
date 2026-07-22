@@ -23,6 +23,14 @@ _PACKAGE_DEPENDENCIES = {
         "weekly_profile_classification",
         "Weekly Profile Classification",
     ),
+    "daily_mapping_coverage_audit": (
+        "weekly_extreme_rejection_destination",
+        "Weekly Extreme Rejection Destination",
+    ),
+    "weekly_daily_relationship_builder": (
+        "daily_mapping_coverage_audit",
+        "Daily Mapping Coverage Audit",
+    ),
 }
 
 
@@ -212,6 +220,46 @@ def _review_samples(
             if str(row.get("processing_status") or "").upper() in {"PENDING", "NEEDS_REVIEW"}:
                 add(row)
                 break
+    elif script_key == "daily_mapping_coverage_audit":
+        ordered = sorted(outputs, key=lambda item: str(item["canonical_range_id"]))
+        for wanted in (
+            "NOT_MAPPED",
+            "COMPLETE",
+            "PARTIAL",
+            "MAPPING_GAP",
+            "INVALID_PARENT_LINK",
+        ):
+            for row in ordered:
+                if str(row.get("payload", {}).get("coverage_status") or "").upper() == wanted:
+                    add(row)
+                    break
+    elif script_key == "weekly_daily_relationship_builder":
+        ordered = sorted(outputs, key=lambda item: str(item["canonical_range_id"]))
+
+        # A future Daily child is the critical historical leakage guard.
+        for row in ordered:
+            if int(row.get("payload", {}).get("future_daily_ranges_excluded") or 0) > 0:
+                add(row)
+                break
+
+        # Prefer a genuine multi-range Daily sequence.
+        for row in ordered:
+            if int(row.get("payload", {}).get("daily_relationship_count") or 0) >= 2:
+                add(row)
+                break
+
+        # Keep an active Daily range visible for the freeze check.
+        for row in ordered:
+            if row.get("payload", {}).get("active_daily_range_id"):
+                add(row)
+                break
+
+        # Show missing mapping and bad relationship evidence when present.
+        for wanted in ("NOT_MAPPED", "MAPPING_GAP", "INVALID_PARENT_LINK"):
+            for row in ordered:
+                if str(row.get("payload", {}).get("coverage_status") or "").upper() == wanted:
+                    add(row)
+                    break
 
     for row in pipeline._sample(outputs, limit=limit):
         add(row)
