@@ -19,6 +19,7 @@ _WEEKLY_PACKAGE_CHAIN = (
     ("weekly_reclaim.py", "Weekly Reclaim"),
     ("weekly_reclaim_depth.py", "Weekly Reclaim Depth"),
     ("weekly_movement_classification.py", "Weekly Movement Classification"),
+    ("weekly_profile_classification.py", "Weekly Profile Classification"),
 )
 
 
@@ -225,6 +226,7 @@ def install(pipeline: Any) -> None:
                     "weekly_reclaim",
                     "weekly_reclaim_depth",
                     "weekly_movement_classification",
+                    "weekly_profile_classification",
                 } and not package_ready:
                     value["current_approved_version_id"] = None
             except pipeline.DoctrinePipelineError:
