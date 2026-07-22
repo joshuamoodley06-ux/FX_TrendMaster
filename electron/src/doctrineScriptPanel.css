@@ -223,6 +223,25 @@
   line-height: 1.2;
 }
 
+.doctrineRangeActions {
+  padding-top: 5px;
+  padding-bottom: 7px;
+  border-top: 1px solid rgba(80, 190, 255, 0.16);
+}
+
+.doctrineRangeActions > button {
+  border-color: rgba(80, 190, 255, 0.48);
+}
+
+.doctrineRangeActions > span {
+  flex: 1 0 100%;
+  min-width: 0;
+  color: rgba(160, 215, 255, 0.92);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
   .doctrinePanel {
     width: 100%;
