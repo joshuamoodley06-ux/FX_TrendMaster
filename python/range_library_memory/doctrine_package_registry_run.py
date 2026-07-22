@@ -15,6 +15,10 @@ _PACKAGE_DEPENDENCIES = {
         "weekly_reclaim_depth",
         "Weekly Reclaim Depth",
     ),
+    "weekly_profile_classification": (
+        "weekly_reclaim_depth",
+        "Weekly Reclaim Depth",
+    ),
 }
 
 
@@ -153,6 +157,28 @@ def _review_samples(
                 "BOUNDARY_TOUCH",
                 "COUNTERTREND_RETRACEMENT",
             }:
+                add(row)
+                break
+    elif script_key == "weekly_profile_classification":
+        ordered = sorted(outputs, key=lambda item: str(item["canonical_range_id"]))
+
+        # Show each approved trader profile where the mapped history provides it.
+        for wanted in ("S&R", "S&R>FP", "S&D"):
+            for row in ordered:
+                if str(row.get("payload", {}).get("profile_classification") or "") == wanted:
+                    add(row)
+                    break
+
+        # The continuation override must be reviewed separately from shallow depth.
+        for row in ordered:
+            if str(row.get("payload", {}).get("classification_basis") or "").upper() == "ABND_SAME_DIRECTION_BOS":
+                add(row)
+                break
+
+        # Keep one unresolved profile visible when available rather than sampling
+        # five already-obvious copies of the same threshold result.
+        for row in ordered:
+            if str(row.get("processing_status") or "").upper() in {"PENDING", "NEEDS_REVIEW"}:
                 add(row)
                 break
 
