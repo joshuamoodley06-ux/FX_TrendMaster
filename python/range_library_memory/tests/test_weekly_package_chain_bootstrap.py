@@ -9,7 +9,7 @@ EXPECTED_VERSIONS = {
     "weekly_structure": "3",
     "weekly_reclaim": "2",
     "weekly_reclaim_depth": "6",
-    "weekly_movement_classification": "3",
+    "weekly_movement_classification": "4",
 }
 
 
