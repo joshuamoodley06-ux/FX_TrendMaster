@@ -5,11 +5,12 @@ These are reviewed analytical packages. Storing a source file does not approve i
 ## Weekly analysis chain
 
 ```text
-10 weekly_bos.py                     -> weekly_structure
-20 weekly_reclaim.py                 -> weekly_reclaim
-30 weekly_reclaim_depth.py           -> weekly_reclaim_depth
-40 weekly_movement_classification.py -> weekly_movement_classification
-50 weekly_profile_classification.py  -> weekly_profile_classification
+10 weekly_bos.py                              -> weekly_structure
+20 weekly_reclaim.py                          -> weekly_reclaim
+30 weekly_reclaim_depth.py                    -> weekly_reclaim_depth
+40 weekly_movement_classification.py          -> weekly_movement_classification
+50 weekly_profile_classification.py           -> weekly_profile_classification
+60 weekly_extreme_rejection_destination.py    -> weekly_extreme_rejection_destination
 ```
 
 Each package owns one job. Later packages consume approved memory instead of redetecting earlier facts.
@@ -109,9 +110,9 @@ This package consumes approved Weekly reclaim and reclaim-depth memory.
 Depth rules:
 
 ```text
-depth < 38.2%       -> S&R
-38.2% <= depth <= 50% -> S&R>FP
-depth > 50%         -> S&D
+depth < 38.2%          -> S&R
+38.2% <= depth <= 50%  -> S&R>FP
+depth > 50%            -> S&D
 ```
 
 Exact 38.2% and exact 50% belong to `S&R>FP`.
@@ -148,6 +149,86 @@ classification basis
 
 Review sampling prioritises all three profiles, the abandonment continuation override, and one unresolved case where available.
 
+## Weekly extreme rejection destination v1
+
+This package studies where price travels after a confirmed rejection from a Weekly extreme zone.
+
+Range geometry:
+
+```text
+Discount extreme = 0% to 25%
+Fair Price       = 50%
+Premium extreme = 75% to 100%
+```
+
+A confirmed rejection is:
+
+```text
+Discount rejection
+wick/body trades at or below 25%
+and the W1 closes back above 25%
+
+Premium rejection
+wick/body trades at or above 75%
+and the W1 closes back below 75%
+```
+
+A candle merely remaining inside an extreme is not a rejection.
+
+Destination ladder:
+
+```text
+NO_FOLLOW_THROUGH
+FAIR_PRICE
+OPPOSITE_EXTREME
+OPPOSITE_EXTERNAL
+```
+
+For a discount rejection:
+
+```text
+Fair Price       = 50%
+Opposite extreme = 75%
+Opposite external = RH
+```
+
+For a premium rejection:
+
+```text
+Fair Price       = 50%
+Opposite extreme = 25%
+Opposite external = RL
+```
+
+The rejection candle may prove a destination only through its close. From the following W1 onward, wick touches count.
+
+Each rejection journey stops when:
+
+```text
+the opposite external is reached
+or
+price later breaks through the origin external
+or
+available W1 data ends and the journey remains pending
+```
+
+This stop prevents old rejections from being credited with destinations reached years after the original range story ended.
+
+Every confirmed rejection event is retained inside the range output. Stored event facts include:
+
+```text
+origin zone
+rejection date and price
+journey status
+maximum destination
+Fair Price reached and weeks
+opposite extreme reached and weeks
+opposite external reached and weeks
+terminal reason and date
+```
+
+If one later W1 touches the origin external and a newly reached destination in the same candle, the event remains `NEEDS_REVIEW` because W1 OHLC cannot prove which side occurred first.
+
 ## Version and dependency workflow
 
 ```text
@@ -156,6 +237,7 @@ approve BOS v3
 -> approve Depth v6
 -> approve Movement v4
 -> approve Profile v1
+-> approve Extreme Rejection Destination v1
 ```
 
 A pending per-range Depth result does not block Movement v4, but profile classification waits for depth unless the explicit `ABND + same-direction BOS` override applies.
