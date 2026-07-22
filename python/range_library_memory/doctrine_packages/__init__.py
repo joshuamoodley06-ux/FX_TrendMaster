@@ -4,5 +4,5 @@ Each doctrine topic has one current package file. Approved source history lives
 in the doctrine database, not as parallel runnable files in this directory.
 
 Current Weekly chain:
-BOS -> reclaim -> reclaim depth -> movement classification.
+BOS -> reclaim -> reclaim depth -> movement classification -> profile classification.
 """
