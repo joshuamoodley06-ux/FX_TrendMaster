@@ -94,3 +94,57 @@ def test_depth_review_prioritizes_both_anchor_stories_then_distinct_outcomes() -
         "CONTINUATION_THEN_OPPOSITE",
         "SAME_W1",
     ]
+
+
+def test_movement_review_prioritizes_sequence_and_retracement_variation() -> None:
+    outputs = [
+        _row(
+            "weekly-1",
+            movement_sequence="COUNTERTREND_THEN_PROTREND",
+            countertrend_classification="COUNTERTREND_RETRACEMENT",
+        ),
+        _row(
+            "weekly-2",
+            movement_sequence="PROTREND_THEN_COUNTERTREND",
+            countertrend_classification="NO_RANGE1_RETRACEMENT",
+        ),
+        _row(
+            "weekly-3",
+            movement_sequence="SAME_W1_MOVEMENTS",
+            countertrend_classification="BOUNDARY_TOUCH",
+        ),
+        _row(
+            "weekly-4",
+            movement_sequence="COUNTERTREND_THEN_PROTREND",
+            countertrend_classification="NO_RANGE1_RETRACEMENT",
+        ),
+        _row(
+            "weekly-5",
+            movement_sequence="PROTREND_THEN_COUNTERTREND",
+            countertrend_classification="COUNTERTREND_RETRACEMENT",
+        ),
+        _row(
+            "weekly-6",
+            movement_sequence="COUNTERTREND_THEN_PROTREND",
+            countertrend_classification="COUNTERTREND_RETRACEMENT",
+        ),
+    ]
+
+    samples = _review_samples(
+        doctrine_pipeline,
+        "weekly_movement_classification",
+        outputs,
+    )
+
+    assert [row["canonical_range_id"] for row in samples] == [
+        "weekly-1",
+        "weekly-2",
+        "weekly-3",
+        "weekly-4",
+        "weekly-5",
+    ]
+    assert [row["payload"]["movement_sequence"] for row in samples[:3]] == [
+        "COUNTERTREND_THEN_PROTREND",
+        "PROTREND_THEN_COUNTERTREND",
+        "SAME_W1_MOVEMENTS",
+    ]
