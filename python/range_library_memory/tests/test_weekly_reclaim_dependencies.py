@@ -30,12 +30,13 @@ class FakeContext:
 def _bos(direction: str, defined_at: str, bos_time: str) -> dict:
     return {
         "weekly_structure": {
+            "processing_status": "COMPLETE",
             "payload": {
                 "range_defined_at": defined_at,
                 "bos_direction": direction,
                 "bos_time": bos_time,
                 "reason_codes": [],
-            }
+            },
         }
     }
 
@@ -43,7 +44,7 @@ def _bos(direction: str, defined_at: str, bos_time: str) -> dict:
 def test_reclaim_waits_for_approved_weekly_bos_memory() -> None:
     context = FakeContext(
         {},
-        [{"time": "2026-01-19T00:00:00Z", "high": 111, "low": 99}],
+        [{"time": "2026-01-19T00:00:00Z", "open": 100, "high": 111, "low": 99, "close": 105}],
     )
 
     result = weekly_reclaim.run(context)["outputs"][0]
@@ -57,16 +58,17 @@ def test_reclaim_preserves_valid_pending_bos_as_pending() -> None:
         {
             "weekly-a": {
                 "weekly_structure": {
+                    "processing_status": "PENDING",
                     "payload": {
                         "range_defined_at": "2026-01-05T00:00:00Z",
                         "bos_direction": None,
                         "bos_time": None,
                         "reason_codes": ["WEEKLY_BOS_NOT_FOUND"],
-                    }
+                    },
                 }
             }
         },
-        [{"time": "2026-01-19T00:00:00Z", "high": 99, "low": 91}],
+        [{"time": "2026-01-19T00:00:00Z", "open": 95, "high": 99, "low": 91, "close": 96}],
     )
 
     result = weekly_reclaim.run(context)["outputs"][0]
@@ -81,16 +83,17 @@ def test_reclaim_preserves_bos_review_state_instead_of_calling_memory_incomplete
         {
             "weekly-a": {
                 "weekly_structure": {
+                    "processing_status": "NEEDS_REVIEW",
                     "payload": {
                         "range_defined_at": None,
                         "bos_direction": None,
                         "bos_time": None,
-                        "reason_codes": ["EQUAL_ANCHOR_TIMES"],
-                    }
+                        "reason_codes": ["BOTH_BOUNDARIES_BREACHED_SAME_W1"],
+                    },
                 }
             }
         },
-        [{"time": "2026-01-19T00:00:00Z", "high": 99, "low": 91}],
+        [{"time": "2026-01-19T00:00:00Z", "open": 95, "high": 99, "low": 91, "close": 96}],
     )
 
     result = weekly_reclaim.run(context)["outputs"][0]
@@ -100,7 +103,7 @@ def test_reclaim_preserves_bos_review_state_instead_of_calling_memory_incomplete
     assert result["payload"]["reason_codes"] == ["WEEKLY_BOS_NEEDS_REVIEW"]
 
 
-def test_same_w1_candle_reclaim_and_new_bos_counts_as_reclaimed() -> None:
+def test_reclaim_and_new_bos_on_same_w1_requires_review() -> None:
     memory = {
         "weekly-a": _bos("BOS_UP", "2026-01-05T00:00:00Z", "2026-01-12T00:00:00Z"),
         "weekly-b": _bos("BOS_UP", "2026-01-26T00:00:00Z", "2026-02-09T00:00:00Z"),
@@ -108,14 +111,18 @@ def test_same_w1_candle_reclaim_and_new_bos_counts_as_reclaimed() -> None:
     context = FakeContext(
         memory,
         [
-            {"time": "2026-01-19T00:00:00Z", "high": 111, "low": 101},
-            {"time": "2026-02-09T00:00:00Z", "high": 121, "low": 100},
+            {"time": "2026-01-12T00:00:00Z", "open": 98, "high": 105, "low": 97, "close": 104},
+            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 111, "low": 101, "close": 108},
+            {"time": "2026-02-09T00:00:00Z", "open": 108, "high": 121, "low": 100, "close": 120},
         ],
     )
 
     result = weekly_reclaim.run(context)["outputs"][0]
 
-    assert result["processing_status"] == "COMPLETE"
-    assert result["payload"]["reclaim_status"] == "RECLAIMED"
+    assert result["processing_status"] == "NEEDS_REVIEW"
+    assert result["payload"]["reclaim_status"] == "NEEDS_REVIEW"
     assert result["payload"]["reclaim_time"] == "2026-02-09T00:00:00Z"
     assert result["payload"]["weeks_to_reclaim"] == 2
+    assert result["payload"]["reason_codes"] == [
+        "RECLAIM_AND_NEW_BOS_SAME_W1_ORDER_UNKNOWN"
+    ]
