@@ -70,25 +70,27 @@ A newer approved Weekly BOS before the first boundary touch marks the old range 
 
 If a later reclaim and a newer BOS occur on the same W1 candle, OHLC cannot prove event order and the result remains `NEEDS_REVIEW`.
 
-## Weekly Range 2 reclaim depth v5
+## Weekly Range 2 reclaim depth v6
 
-The depth window is tied to the actual structural sequence:
+This package reads mapped ranges. It does not infer or build the range lifecycle.
+
+The structural sequence is stored using two separate endpoints:
 
 ```text
 Range 1 BOS
--> reclaim begins the pullback
--> first new Weekly range formed after that reclaim is Range 2
--> Range 2 formation stops the depth window
+-> reclaim starts the next range sequence
+-> new opposite anchor sets retracement depth
+-> the later of RH and RL completes the mapped new range
 ```
 
-The script does not skip the first new range merely because a later range has a more convenient chronology. Chronology remains visible for audit, but it is not allowed to push the measurement months forward.
+The depth endpoint and range-completion endpoint are not assumed to be the same candle.
 
 For `BOS_UP`:
 
 ```text
 Fib 0 = W1 RH
 Fib 1 = W1 RL
-Measured anchor = W2 RL
+Depth endpoint = W2 RL
 Raw depth = (W1 RH - W2 RL) / (W1 RH - W1 RL)
 ```
 
@@ -97,11 +99,38 @@ For `BOS_DOWN`:
 ```text
 Fib 0 = W1 RL
 Fib 1 = W1 RH
-Measured anchor = W2 RH
+Depth endpoint = W2 RH
 Raw depth = (W2 RH - W1 RL) / (W1 RH - W1 RL)
 ```
 
-The trader-facing result is classified as:
+Both mapped anchor sequences remain valid:
+
+```text
+OPPOSITE_THEN_CONTINUATION
+The reclaim/pullback creates the opposite anchor first.
+A later continuation-side anchor completes the range.
+
+CONTINUATION_THEN_OPPOSITE
+The BOS leg has already created the continuation-side anchor.
+A later reclaim creates the opposite anchor and completes the range.
+
+SAME_W1
+Both anchors belong to the same Weekly candle.
+```
+
+Range completion is always calculated from the actual later RH/RL anchor date. `active_from_time` is not allowed to claim that a range was complete before its second anchor existed.
+
+The script selects the first mapped Weekly range that:
+
+```text
+completes on or after the reclaim
+and
+has its direction-specific opposite anchor on or after the reclaim
+```
+
+It does not skip the first valid mapped range merely because a later range looks cleaner.
+
+Trader-facing classification:
 
 ```text
 raw ratio < 0   -> NO_RETRACEMENT, trading depth 0%
@@ -111,25 +140,26 @@ raw ratio = 1   -> TOUCHED_OLD_OPPOSITE, 100%
 raw ratio > 1   -> EXCEEDED_OLD_OPPOSITE
 ```
 
-A Range 2 opposite anchor that remains above the broken RH after `BOS_UP`, or below the broken RL after `BOS_DOWN`, is therefore shown as `NO_RETRACEMENT` rather than a negative percentage. The distance beyond the broken boundary is stored and included in the review reason text.
-
-The script stores both trader-facing and raw audit values:
+The script stores:
 
 ```text
 Range 1 ID, RH, RL and size
 Fib 0 and Fib 1 prices
 Range 2 ID and chronology
-Range 2 selection rule
-reclaim-to-Range-2 depth-window start and stop dates
-W2 opposite anchor type, price and candle
-W2 continuation anchor type, price and candle
-trader-facing depth price, ratio, percentage and classification
-raw depth price, ratio and percentage
-boundary distance and relative position
-weeks from BOS to Range 2 definition
-weeks from reclaim to Range 2 definition
-Range 2 formation weeks
-whether the old opposite external was touched or exceeded
+Range 2 anchor sequence
+new opposite anchor type, price and candle
+continuation-side anchor type, price and candle
+range-completion anchor type, price and candle
+depth-window start and depth-anchor end dates
+Range 2 completion date
+weeks BOS -> depth anchor
+weeks reclaim -> depth anchor
+weeks BOS -> Range 2 completion
+weeks reclaim -> Range 2 completion
+Range 2 anchor-to-anchor formation weeks
+trader-facing and raw Fib values
+boundary position and distance
+old-opposite touch/exceed flags
 source reclaim status and timing
 ```
 
