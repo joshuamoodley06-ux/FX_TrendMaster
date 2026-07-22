@@ -121,6 +121,8 @@ approve latest BOS package
 -> approve latest Range 2 Depth package
 ```
 
+During candidate review, the previous approved run is reused as immutable evidence rather than rerun against a newer pending parent. This keeps the trusted memory active while individual candidate decisions are saved and the cockpit refreshes.
+
 The corrected `SAME_W1` BOS case is prioritized in the BOS v3 five-sample review. Reclaim reviews prioritize distinct lifecycle states such as `RECL`, `ABND`, and `ABND→RECL` when those examples exist.
 
 ## Approval workflow
@@ -136,3 +138,5 @@ register package source
 -> store that exact source as the current approved version
 -> run only the approved versions in execution order
 ```
+
+The Electron audit panel deliberately keeps each fact on a full-width row at every monitor size. Maximizing the window must not transform the fixed Hierarchy rail into a clipped multi-column table.
