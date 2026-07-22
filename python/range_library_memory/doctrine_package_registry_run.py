@@ -11,6 +11,10 @@ from .doctrine_package_runtime import execute_package
 _PACKAGE_DEPENDENCIES = {
     "weekly_reclaim": ("weekly_structure", "Weekly BOS"),
     "weekly_reclaim_depth": ("weekly_reclaim", "Weekly Reclaim"),
+    "weekly_movement_classification": (
+        "weekly_reclaim_depth",
+        "Weekly Reclaim Depth",
+    ),
 }
 
 
@@ -114,6 +118,27 @@ def _review_samples(
         ):
             for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
                 if str(row.get("payload", {}).get("depth_status") or "").upper() == wanted:
+                    add(row)
+                    break
+    elif script_key == "weekly_movement_classification":
+        # Show both possible anchor orders and a no-retracement example where
+        # available. The user is validating movement classification, not random IDs.
+        for wanted in (
+            "COUNTERTREND_THEN_PROTREND",
+            "PROTREND_THEN_COUNTERTREND",
+            "SAME_W1_MOVEMENTS",
+        ):
+            for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+                if str(row.get("payload", {}).get("movement_sequence") or "").upper() == wanted:
+                    add(row)
+                    break
+        for wanted in (
+            "NO_RANGE1_RETRACEMENT",
+            "BOUNDARY_TOUCH",
+            "COUNTERTREND_RETRACEMENT",
+        ):
+            for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+                if str(row.get("payload", {}).get("countertrend_classification") or "").upper() == wanted:
                     add(row)
                     break
 
