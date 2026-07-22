@@ -10,6 +10,7 @@ EXPECTED_VERSIONS = {
     "weekly_reclaim": "2",
     "weekly_reclaim_depth": "6",
     "weekly_movement_classification": "4",
+    "weekly_profile_classification": "1",
 }
 
 
@@ -36,12 +37,14 @@ def test_legacy_weekly_activation_bootstraps_all_current_packages(tmp_path) -> N
         "weekly_reclaim",
         "weekly_reclaim_depth",
         "weekly_movement_classification",
+        "weekly_profile_classification",
     ]
     assert set(by_key) == set(EXPECTED_VERSIONS)
     assert by_key["weekly_structure"]["execution_order"] == 10
     assert by_key["weekly_reclaim"]["execution_order"] == 20
     assert by_key["weekly_reclaim_depth"]["execution_order"] == 30
     assert by_key["weekly_movement_classification"]["execution_order"] == 40
+    assert by_key["weekly_profile_classification"]["execution_order"] == 50
     for script_key, expected_version in EXPECTED_VERSIONS.items():
         script = by_key[script_key]
         assert script["version_label"] == expected_version
@@ -82,11 +85,12 @@ def test_bootstrap_and_script_listing_are_idempotent(tmp_path) -> None:
         "weekly_reclaim",
         "weekly_reclaim_depth",
         "weekly_movement_classification",
+        "weekly_profile_classification",
     ]
     assert [item["script_key"] for item in first["bootstrapped_packages"]] == expected_keys
     assert [item["script_key"] for item in second["bootstrapped_packages"]] == expected_keys
-    assert len(listed_once) == 4
-    assert len(listed_twice) == 4
+    assert len(listed_once) == 5
+    assert len(listed_twice) == 5
     assert {
         row["script_key"]: row["version_label"] for row in listed_twice
     } == EXPECTED_VERSIONS
