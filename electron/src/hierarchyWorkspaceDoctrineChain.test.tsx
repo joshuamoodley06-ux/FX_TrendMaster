@@ -18,11 +18,11 @@ function fixture() {
   return value;
 }
 
-function state(versionId: string, status: string, samples: any[] = []) {
+function state(versionId: string, versionLabel: string, status: string, samples: any[] = []) {
   return {
     status,
     current_approved_version_id: status === 'APPROVED' ? versionId : null,
-    versions: [{ version_id: versionId, version_label: '1' }],
+    versions: [{ version_id: versionId, version_label: versionLabel }],
     runs: samples.length ? [{
       run: {
         run_id: `run-${versionId}`,
@@ -41,8 +41,8 @@ function state(versionId: string, status: string, samples: any[] = []) {
   };
 }
 
-const bosState = state('bos-v1', 'APPROVED');
-const reclaimState = state('reclaim-v1', 'PENDING_APPROVAL', [{
+const bosState = state('bos-v3', '3', 'APPROVED');
+const reclaimState = state('reclaim-v2', '2', 'PENDING_APPROVAL', [{
   canonical_range_id: 'mm:range:weekly-trusted',
   sample_order: 0,
   decision: 'PENDING',
@@ -50,25 +50,32 @@ const reclaimState = state('reclaim-v1', 'PENDING_APPROVAL', [{
   processing_status: 'COMPLETE',
   payload: {
     reclaim_status: 'RECLAIMED',
+    reclaim_abbreviation: 'RECL',
+    source_bos_direction: 'BOS_UP',
+    source_bos_time: '2026-01-12T00:00:00Z',
+    bos_candle_close: 4905,
     reclaim_boundary: 4891,
-    reclaim_time: '2026-02-09T00:00:00Z',
+    same_candle_reclaim: false,
+    reclaim_time: '2026-01-26T00:00:00Z',
+    reclaim_wick_price: 4891,
     weeks_to_reclaim: 2,
+    candles_scanned: 2,
     reason_codes: [],
   },
 }]);
-const depthState = state('depth-v1', 'PENDING_APPROVAL');
+const depthState = state('depth-v3', '3', 'PENDING_APPROVAL');
 
 function scripts() {
   return [
     { script_id: 'bos', script_key: 'weekly_structure', display_name: 'Weekly BOS', execution_order: 10,
-      status: 'APPROVED', current_approved_version_id: 'bos-v1', version_id: 'bos-v1', version_label: '1',
-      latest_version_status: 'APPROVED', doctrine_state: bosState },
+      status: 'APPROVED', current_approved_version_id: 'bos-v3', version_id: 'bos-v3', version_label: '3',
+      latest_version_status: 'APPROVED', package_dependency_ready: true, doctrine_state: bosState },
     { script_id: 'reclaim', script_key: 'weekly_reclaim', display_name: 'Weekly Reclaim', execution_order: 20,
-      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'reclaim-v1', version_label: '1',
-      latest_version_status: 'PENDING_APPROVAL', doctrine_state: reclaimState },
+      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'reclaim-v2', version_label: '2',
+      latest_version_status: 'PENDING_APPROVAL', package_dependency_ready: false, doctrine_state: reclaimState },
     { script_id: 'depth', script_key: 'weekly_reclaim_depth', display_name: 'Weekly Reclaim Depth', execution_order: 30,
-      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'depth-v1', version_label: '1',
-      latest_version_status: 'PENDING_APPROVAL', doctrine_state: depthState },
+      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'depth-v3', version_label: '3',
+      latest_version_status: 'PENDING_APPROVAL', package_dependency_ready: false, doctrine_state: depthState },
   ];
 }
 
@@ -77,7 +84,7 @@ describe('HierarchyWorkspace doctrine chain', () => {
   let root: Root | null = null;
   afterEach(() => { act(() => root?.unmount()); container?.remove(); root = null; container = null; });
 
-  it('selects each script, renders its own payload and enforces approval order', async () => {
+  it('selects each version, renders its full payload and enforces latest-parent approval order', async () => {
     const map = fixture();
     const bridge = {
       getPaths: vi.fn().mockResolvedValue({ ok: true, databasePath: 'C:/live.sqlite3' }),
@@ -118,16 +125,18 @@ describe('HierarchyWorkspace doctrine chain', () => {
 
     const reclaim = container.querySelector<HTMLButtonElement>('[data-script-key="weekly_reclaim"]')!;
     await act(async () => reclaim.click());
-    expect(container.textContent).toContain('RECLAIMED');
-    expect(container.textContent).toContain('Boundary 4891');
-    expect(container.textContent).toContain('2 weeks');
+    expect(container.textContent).toContain('Version 2 · PENDING');
+    expect(container.textContent).toContain('Result: RECL · RECLAIMED');
+    expect(container.textContent).toContain('Broken boundary: 4891');
+    expect(container.textContent).toContain('Weeks to reclaim: 2');
+    expect(container.textContent).toContain('Candles scanned: 2');
 
     const approve = Array.from(container.querySelectorAll<HTMLButtonElement>('.weeklySampleActions button'))
       .find((button) => button.textContent === 'Approve')!;
     await act(async () => { approve.click(); await Promise.resolve(); await Promise.resolve(); });
     expect(bridge.reviewDoctrineSample).toHaveBeenCalledWith({
       analysisDatabasePath: 'C:/analysis.sqlite3',
-      runId: 'run-reclaim-v1',
+      runId: 'run-reclaim-v2',
       canonicalRangeId: 'mm:range:weekly-trusted',
       decision: 'APPROVED',
     });
