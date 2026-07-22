@@ -190,6 +190,17 @@ function matchingRange(node: MasterMapRangeNode | null, ranges: Record<string, u
   return ranges.find((item) => sourceIds.has(String(item.range_id || item.id || ''))) || null;
 }
 
+function matchingCanonicalRange(
+  canonicalRangeId: unknown,
+  nodes: MasterMapRangeNode[],
+  ranges: Record<string, unknown>[],
+) {
+  const identity = String(canonicalRangeId || '').trim();
+  if (!identity) return null;
+  const node = nodes.find((item) => item.canonicalRangeId === identity) || null;
+  return matchingRange(node, ranges);
+}
+
 export function selectWeeklyValidationSample(nodes: MasterMapRangeNode[], limit = 5): MasterMapRangeNode[] {
   const selected: MasterMapRangeNode[] = [];
   const seen = new Set<string>();
@@ -278,16 +289,25 @@ function sampleFacts(scriptKey: string, sample: DoctrineSample, node: MasterMapR
       `Fib 0: ${compactNumber(payload.fib_zero_price)}`,
       `Fib 1: ${compactNumber(payload.fib_one_price)}`,
       `Range 2 ID: ${present(payload.range2_id)}`,
-      `Range 2 defined: ${compactTime(payload.range2_defined_at)}`,
+      `Range 2 completed: ${compactTime(payload.range2_completed_at ?? payload.range2_defined_at)}`,
       `Range 2 chronology: ${chronologyLabel(payload.range2_chronology)}`,
+      `Anchor sequence: ${present(payload.range2_anchor_sequence)}`,
       `W2 opposite anchor: ${present(payload.range2_opposite_anchor_type)} ${compactNumber(payload.range2_opposite_anchor_price)}`,
       `W2 opposite candle: ${compactTime(payload.range2_opposite_anchor_time)}`,
       `W2 continuation anchor: ${present(payload.range2_continuation_anchor_type)} ${compactNumber(payload.range2_continuation_anchor_price)}`,
       `W2 continuation candle: ${compactTime(payload.range2_continuation_anchor_time)}`,
-      `Depth price: ${compactNumber(payload.reclaim_depth_price)}`,
-      `Fib ratio: ${compactNumber(payload.reclaim_depth_ratio)}`,
-      `Depth: ${compactNumber(payload.reclaim_depth_percent)}%`,
-      `Weeks BOS→R2 defined: ${present(payload.weeks_bos_to_range2_definition)}`,
+      `Trading depth price: ${compactNumber(payload.reclaim_depth_price)}`,
+      `Trading Fib ratio: ${compactNumber(payload.reclaim_depth_ratio)}`,
+      `Trading depth: ${compactNumber(payload.reclaim_depth_percent)}%`,
+      `Raw depth price: ${compactNumber(payload.raw_reclaim_depth_price)}`,
+      `Raw Fib ratio: ${compactNumber(payload.raw_reclaim_depth_ratio)}`,
+      `Raw Fib depth: ${compactNumber(payload.raw_reclaim_depth_percent)}%`,
+      `Distance beyond broken boundary: ${compactNumber(payload.boundary_distance_price)}`,
+      `Boundary position: ${present(payload.boundary_position)}`,
+      `Weeks BOS→depth anchor: ${present(payload.weeks_bos_to_depth_anchor)}`,
+      `Weeks reclaim→depth anchor: ${present(payload.weeks_reclaim_to_depth_anchor)}`,
+      `Weeks BOS→R2 complete: ${present(payload.weeks_bos_to_range2_completion ?? payload.weeks_bos_to_range2_definition)}`,
+      `Weeks reclaim→R2 complete: ${present(payload.weeks_reclaim_to_range2_completion ?? payload.weeks_reclaim_to_range2_definition)}`,
       `Range 2 formation weeks: ${present(payload.range2_formation_weeks)}`,
       `Old opposite touched: ${present(payload.old_opposite_external_touched)}`,
       `Old opposite exceeded: ${present(payload.old_opposite_external_exceeded)}`,
@@ -313,17 +333,31 @@ function DoctrineValidationSample({
   return <div className="weeklyScript1Rows doctrineValidationRows" aria-label="Doctrine validation sample">
     {samples.map((sample) => {
       const node = nodes.find((item) => item.canonicalRangeId === sample.canonicalRangeId) || null;
-      const range = matchingRange(node, ranges);
+      const range1 = matchingRange(node, ranges);
+      const range2 = scriptKey === 'weekly_reclaim_depth'
+        ? matchingCanonicalRange(sample.payload?.range2_id, nodes, ranges)
+        : null;
+      const defaultRange = scriptKey === 'weekly_reclaim_depth' ? (range2 || range1) : range1;
       const facts = sampleFacts(scriptKey, sample, node);
       const reasons = Array.isArray(sample.payload?.reason_codes) ? sample.payload.reason_codes : [];
       return <div key={sample.canonicalRangeId} className="weeklyScript1Sample doctrineValidationSample"
         data-decision={sample.decision}>
-        <button type="button" className="weeklyScript1Row doctrineValidationRow" disabled={!range}
-          onClick={() => range && onNavigateRange(range)}>
+        <button type="button" className="weeklyScript1Row doctrineValidationRow" disabled={!defaultRange}
+          onClick={() => defaultRange && onNavigateRange(defaultRange)}>
           <b>WEEKLY</b>
           {facts.map((fact, index) => <span key={`${fact}-${index}`}>{fact}</span>)}
           <strong>{sample.decision}</strong>
         </button>
+        {scriptKey === 'weekly_reclaim_depth' && <div className="weeklySampleActions doctrineRangeActions"
+          aria-label="Depth range navigation">
+          <button type="button" disabled={!range1} onClick={() => range1 && onNavigateRange(range1)}>
+            View Range 1
+          </button>
+          <button type="button" disabled={!range2} onClick={() => range2 && onNavigateRange(range2)}>
+            View Range 2
+          </button>
+          <span>{range2 ? 'Card focus: Range 2' : 'Range 2 mapping link unavailable'}</span>
+        </div>}
         {!!reasons.length && <span className="doctrineSampleReason">Reasons: {reasons.join(' · ').replaceAll('_', ' ')}</span>}
         {reviewEnabled && sample.decision === 'PENDING' && <div className="weeklySampleActions">
           <button type="button" disabled={saving}
