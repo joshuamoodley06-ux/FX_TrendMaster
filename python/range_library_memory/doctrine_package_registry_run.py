@@ -77,6 +77,8 @@ def _review_samples(
             chosen.append(row)
 
     if script_key == "weekly_structure":
+        # A SAME_W1 anchor case previously approved as pending must reappear when
+        # the corrected BOS package is run.
         for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
             if str(row.get("payload", {}).get("chronology") or "").upper() == "SAME_W1":
                 add(row)
@@ -94,6 +96,8 @@ def _review_samples(
                     add(row)
                     break
     elif script_key == "weekly_reclaim_depth":
+        # The five samples must expose both valid mapped range stories, not just
+        # five percentages from the same anchor order.
         for wanted in (
             "OPPOSITE_THEN_CONTINUATION",
             "CONTINUATION_THEN_OPPOSITE",
@@ -133,16 +137,24 @@ def _review_samples(
                     add(row)
                     break
 
-        # Preserve trading-depth variation without duplicating the earlier script.
-        for wanted in (
-            "NO_RANGE1_RETRACEMENT",
-            "BOUNDARY_TOUCH",
-            "COUNTERTREND_RETRACEMENT",
-        ):
-            for row in ordered:
-                if str(row.get("payload", {}).get("countertrend_classification") or "").upper() == wanted:
-                    add(row)
-                    break
+        # Explicitly include a valid movement chapter whose depth is still pending.
+        for row in ordered:
+            if str(row.get("payload", {}).get("reclaim_depth_status") or "").upper() in {
+                "PENDING",
+                "MISSING",
+            } and row.get("payload", {}).get("movement_path"):
+                add(row)
+                break
+
+        # Finish with a normal depth-enriched chapter when one exists.
+        for row in ordered:
+            if str(row.get("payload", {}).get("countertrend_classification") or "").upper() in {
+                "NO_RANGE1_RETRACEMENT",
+                "BOUNDARY_TOUCH",
+                "COUNTERTREND_RETRACEMENT",
+            }:
+                add(row)
+                break
 
     for row in pipeline._sample(outputs, limit=limit):
         add(row)
@@ -270,6 +282,9 @@ def run_package_version(
     with pipeline.connect(db) as connection:
         pipeline.ensure_schema(connection)
         approved = pipeline._approved_version(connection, version_id)
+        # A selected case may contain fewer than five eligible Weekly ranges.
+        # Run and display what exists, but package approval remains locked until
+        # a separate run provides a genuine five-sample review.
         samples = [] if approved else _review_samples(
             pipeline,
             str(version["script_key"]),
