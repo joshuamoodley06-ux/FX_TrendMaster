@@ -18,12 +18,14 @@ def _matches_case(node: Mapping[str, Any], case_ref: str) -> bool:
     )
 
 
-def _ranges(master: Mapping[str, Any], case_ref: str) -> list[dict[str, Any]]:
-    root = master.get("trusted_root")
+def _walk_ranges(root: Any, case_ref: str) -> list[dict[str, Any]]:
     if not isinstance(root, Mapping):
         return []
     result: list[dict[str, Any]] = []
     stack: list[Mapping[str, Any]] = [root]
+    unlinked = root.get("unlinked_review_children")
+    if isinstance(unlinked, list):
+        stack.extend(item for item in unlinked if isinstance(item, Mapping))
     while stack:
         node = stack.pop()
         if str(node.get("node_type") or "").upper() == "RANGE" and _matches_case(node, case_ref):
@@ -32,6 +34,14 @@ def _ranges(master: Mapping[str, Any], case_ref: str) -> list[dict[str, Any]]:
         if isinstance(children, list):
             stack.extend(child for child in reversed(children) if isinstance(child, Mapping))
     return result
+
+
+def _ranges(master: Mapping[str, Any], case_ref: str) -> list[dict[str, Any]]:
+    return _walk_ranges(master.get("trusted_root"), case_ref)
+
+
+def _review_ranges(master: Mapping[str, Any], case_ref: str) -> list[dict[str, Any]]:
+    return _walk_ranges(master.get("review_root"), case_ref)
 
 
 class DoctrinePackageContext:
@@ -52,12 +62,22 @@ class DoctrinePackageContext:
         self.structural_content_hash = str(structural_content_hash)
         self.__source_db = Path(source_db).resolve()
         self.__ranges = tuple(_ranges(master_map, self.case_ref))
+        self.__review_ranges = tuple(_review_ranges(master_map, self.case_ref))
         self.__index = {str(item.get("id") or ""): item for item in self.__ranges}
 
     def selected_ranges(self, *, layer: str | None = None) -> tuple[dict[str, Any], ...]:
         layer_key = str(layer or "").upper()
         rows = self.__ranges if not layer_key else tuple(
             item for item in self.__ranges
+            if str(item.get("structure_layer") or item.get("layer") or "").upper() == layer_key
+        )
+        return tuple(json.loads(stable_json(item)) for item in rows)
+
+    def review_ranges(self, *, layer: str | None = None) -> tuple[dict[str, Any], ...]:
+        """Return review-only structural evidence without making it statistics-eligible."""
+        layer_key = str(layer or "").upper()
+        rows = self.__review_ranges if not layer_key else tuple(
+            item for item in self.__review_ranges
             if str(item.get("structure_layer") or item.get("layer") or "").upper() == layer_key
         )
         return tuple(json.loads(stable_json(item)) for item in rows)
