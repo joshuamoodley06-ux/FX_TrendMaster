@@ -5,7 +5,14 @@ import sqlite3
 from range_library_memory import doctrine_pipeline
 
 
-def test_legacy_weekly_activation_bootstraps_all_three_packages(tmp_path) -> None:
+EXPECTED_VERSIONS = {
+    "weekly_structure": "3",
+    "weekly_reclaim": "2",
+    "weekly_reclaim_depth": "3",
+}
+
+
+def test_legacy_weekly_activation_bootstraps_all_three_current_packages(tmp_path) -> None:
     database = tmp_path / "analysis.sqlite3"
     sqlite3.connect(database).close()
 
@@ -28,22 +35,21 @@ def test_legacy_weekly_activation_bootstraps_all_three_packages(tmp_path) -> Non
         "weekly_reclaim",
         "weekly_reclaim_depth",
     ]
-    assert set(by_key) == {
-        "weekly_structure",
-        "weekly_reclaim",
-        "weekly_reclaim_depth",
-    }
+    assert set(by_key) == set(EXPECTED_VERSIONS)
     assert by_key["weekly_structure"]["execution_order"] == 10
     assert by_key["weekly_reclaim"]["execution_order"] == 20
     assert by_key["weekly_reclaim_depth"]["execution_order"] == 30
-    for script_key, script in by_key.items():
+    for script_key, expected_version in EXPECTED_VERSIONS.items():
+        script = by_key[script_key]
+        assert script["version_label"] == expected_version
+        assert script["latest_version_status"] == "PENDING_APPROVAL"
         state = script["doctrine_state"]
         assert state["script_key"] == script_key
-        assert state["versions"]
+        assert state["versions"][-1]["version_label"] == expected_version
         assert state["runs"] == []
 
 
-def test_bootstrap_is_idempotent_when_old_weekly_memory_already_exists(tmp_path) -> None:
+def test_bootstrap_and_script_listing_are_idempotent(tmp_path) -> None:
     database = tmp_path / "analysis.sqlite3"
     sqlite3.connect(database).close()
 
@@ -65,6 +71,8 @@ def test_bootstrap_is_idempotent_when_old_weekly_memory_already_exists(tmp_path)
         adapter_key="weekly_chronology_bos_v1",
         execution_order=10,
     )
+    listed_once = doctrine_pipeline.list_scripts(database)
+    listed_twice = doctrine_pipeline.list_scripts(database)
 
     assert [item["script_key"] for item in first["bootstrapped_packages"]] == [
         "weekly_structure", "weekly_reclaim", "weekly_reclaim_depth",
@@ -72,4 +80,10 @@ def test_bootstrap_is_idempotent_when_old_weekly_memory_already_exists(tmp_path)
     assert [item["script_key"] for item in second["bootstrapped_packages"]] == [
         "weekly_structure", "weekly_reclaim", "weekly_reclaim_depth",
     ]
-    assert len(doctrine_pipeline.list_scripts(database)) == 3
+    assert len(listed_once) == 3
+    assert len(listed_twice) == 3
+    assert {
+        row["script_key"]: row["version_label"] for row in listed_twice
+    } == EXPECTED_VERSIONS
+    for row in listed_twice:
+        assert len(row["doctrine_state"]["versions"]) == 1
