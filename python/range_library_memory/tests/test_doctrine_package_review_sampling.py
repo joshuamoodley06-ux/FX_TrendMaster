@@ -96,42 +96,54 @@ def test_depth_review_prioritizes_both_anchor_stories_then_distinct_outcomes() -
     ]
 
 
-def test_movement_review_prioritizes_alternating_story_and_both_starting_roles() -> None:
+def test_movement_review_includes_alternating_roles_and_depth_pending_story() -> None:
     outputs = [
         _row(
             "weekly-1",
+            movement_path="CT 1W -> PT 1W -> BOS_UP",
             movement_leg_count=2,
             movement_legs=[{"code": "CT"}, {"code": "PT"}],
+            reclaim_depth_status="RETRACED_INTO_RANGE",
             countertrend_classification="COUNTERTREND_RETRACEMENT",
         ),
         _row(
             "weekly-2",
+            movement_path="PT 1W -> CT 1W -> BOS_DOWN",
             movement_leg_count=2,
             movement_legs=[{"code": "PT"}, {"code": "CT"}],
+            reclaim_depth_status="NO_RETRACEMENT",
             countertrend_classification="NO_RANGE1_RETRACEMENT",
         ),
         _row(
             "weekly-3",
+            movement_path="CT 1W -> PT 1W -> CT 1W -> BOS_UP",
             movement_leg_count=3,
             movement_legs=[{"code": "CT"}, {"code": "PT"}, {"code": "CT"}],
+            reclaim_depth_status="BOUNDARY_TOUCH",
             countertrend_classification="BOUNDARY_TOUCH",
         ),
         _row(
             "weekly-4",
-            movement_leg_count=1,
-            movement_legs=[{"code": "CT"}],
-            countertrend_classification="NO_RANGE1_RETRACEMENT",
+            movement_path="CT 2W -> PT 1W -> BOS_UP",
+            movement_leg_count=2,
+            movement_legs=[{"code": "CT"}, {"code": "PT"}],
+            reclaim_depth_status="PENDING",
+            countertrend_classification="COUNTERTREND_LEG_DEPTH_PENDING",
         ),
         _row(
             "weekly-5",
+            movement_path="PT 1W -> CT 1W -> PT 1W -> BOS_DOWN",
             movement_leg_count=3,
             movement_legs=[{"code": "PT"}, {"code": "CT"}, {"code": "PT"}],
+            reclaim_depth_status="RETRACED_INTO_RANGE",
             countertrend_classification="COUNTERTREND_RETRACEMENT",
         ),
         _row(
             "weekly-6",
+            movement_path="PT 1W -> BOS_DOWN",
             movement_leg_count=1,
             movement_legs=[{"code": "PT"}],
+            reclaim_depth_status="RETRACED_INTO_RANGE",
             countertrend_classification="COUNTERTREND_RETRACEMENT",
         ),
     ]
@@ -149,8 +161,4 @@ def test_movement_review_prioritizes_alternating_story_and_both_starting_roles()
         "weekly-4",
         "weekly-5",
     ]
-    assert samples[0]["payload"]["movement_legs"] == [
-        {"code": "CT"},
-        {"code": "PT"},
-        {"code": "CT"},
-    ]
+    assert samples[3]["payload"]["reclaim_depth_status"] == "PENDING"
