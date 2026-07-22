@@ -70,7 +70,7 @@ A newer approved Weekly BOS before the first boundary touch marks the old range 
 
 If a later reclaim and a newer BOS occur on the same W1 candle, OHLC cannot prove event order and the result remains `NEEDS_REVIEW`.
 
-## Weekly Range 2 reclaim depth v3
+## Weekly Range 2 reclaim depth v4
 
 `weekly_reclaim_depth.py` measures the mapped opposite anchor of Range 2 against the full size of Range 1. It does not keep scanning future candles for an arbitrary deepest wick.
 
@@ -80,7 +80,7 @@ For `BOS_UP`:
 Fib 0 = W1 RH
 Fib 1 = W1 RL
 Measured anchor = W2 RL
-Depth = (W1 RH - W2 RL) / (W1 RH - W1 RL)
+Raw depth = (W1 RH - W2 RL) / (W1 RH - W1 RL)
 ```
 
 For `BOS_DOWN`:
@@ -89,10 +89,22 @@ For `BOS_DOWN`:
 Fib 0 = W1 RL
 Fib 1 = W1 RH
 Measured anchor = W2 RH
-Depth = (W2 RH - W1 RL) / (W1 RH - W1 RL)
+Raw depth = (W2 RH - W1 RL) / (W1 RH - W1 RL)
 ```
 
-The script stores:
+The trader-facing result is classified as:
+
+```text
+raw ratio < 0   -> NO_RETRACEMENT, trading depth 0%
+raw ratio = 0   -> BOUNDARY_TOUCH, trading depth 0%
+0 < ratio < 1   -> RETRACED_INTO_RANGE
+raw ratio = 1   -> TOUCHED_OLD_OPPOSITE, 100%
+raw ratio > 1   -> EXCEEDED_OLD_OPPOSITE
+```
+
+A Range 2 opposite anchor that remains above the broken RH after `BOS_UP`, or below the broken RL after `BOS_DOWN`, is therefore shown as `NO_RETRACEMENT` rather than a negative percentage. The distance beyond the broken boundary is stored and included in the review reason text.
+
+The script stores both trader-facing and raw audit values:
 
 ```text
 Range 1 ID, RH, RL and size
@@ -100,14 +112,16 @@ Fib 0 and Fib 1 prices
 Range 2 ID and chronology
 W2 opposite anchor type, price and candle
 W2 continuation anchor type, price and candle
-depth price, Fib ratio and percentage
+trader-facing depth price, ratio, percentage and classification
+raw depth price, ratio and percentage
+boundary distance and relative position
 weeks from BOS to Range 2 definition
 Range 2 formation weeks
 whether the old opposite external was touched or exceeded
 source reclaim status and timing
 ```
 
-Depth is not clamped. Ratios below 0 or above 1 remain visible for audit and statistics. No shallow, medium, or deep category is hardcoded.
+Raw ratios remain unclamped for audit and research. Trader-facing depth never displays a negative retracement. No shallow, medium, or deep category is hardcoded.
 
 ## Version and dependency workflow
 
@@ -123,7 +137,7 @@ approve latest BOS package
 
 During candidate review, the previous approved run is reused as immutable evidence rather than rerun against a newer pending parent. This keeps the trusted memory active while individual candidate decisions are saved and the cockpit refreshes.
 
-The corrected `SAME_W1` BOS case is prioritized in the BOS v3 five-sample review. Reclaim reviews prioritize distinct lifecycle states such as `RECL`, `ABND`, and `ABND→RECL` when those examples exist.
+The corrected `SAME_W1` BOS case is prioritized in the BOS v3 five-sample review. Reclaim reviews prioritize distinct lifecycle states such as `RECL`, `ABND`, and `ABND→RECL` when those examples exist. Depth reviews prioritize distinct trader outcomes such as `NO_RETRACEMENT`, `BOUNDARY_TOUCH`, ordinary in-range retracement and old-opposite exceedance.
 
 ## Approval workflow
 
