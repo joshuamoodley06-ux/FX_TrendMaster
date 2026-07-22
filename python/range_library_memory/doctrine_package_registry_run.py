@@ -77,8 +77,6 @@ def _review_samples(
             chosen.append(row)
 
     if script_key == "weekly_structure":
-        # A SAME_W1 anchor case previously approved as pending must reappear when
-        # the corrected BOS package is run.
         for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
             if str(row.get("payload", {}).get("chronology") or "").upper() == "SAME_W1":
                 add(row)
@@ -96,8 +94,6 @@ def _review_samples(
                     add(row)
                     break
     elif script_key == "weekly_reclaim_depth":
-        # The five samples must expose both valid mapped range stories, not just
-        # five percentages from the same anchor order.
         for wanted in (
             "OPPOSITE_THEN_CONTINUATION",
             "CONTINUATION_THEN_OPPOSITE",
@@ -121,23 +117,29 @@ def _review_samples(
                     add(row)
                     break
     elif script_key == "weekly_movement_classification":
-        # Show both possible anchor orders and a no-retracement example where
-        # available. The user is validating movement classification, not random IDs.
-        for wanted in (
-            "COUNTERTREND_THEN_PROTREND",
-            "PROTREND_THEN_COUNTERTREND",
-            "SAME_W1_MOVEMENTS",
-        ):
-            for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
-                if str(row.get("payload", {}).get("movement_sequence") or "").upper() == wanted:
+        ordered = sorted(outputs, key=lambda item: str(item["canonical_range_id"]))
+
+        # First show a genuine alternating storyline with at least three legs.
+        for row in ordered:
+            if int(row.get("payload", {}).get("movement_leg_count") or 0) >= 3:
+                add(row)
+                break
+
+        # Then show chapters that begin from each possible movement role.
+        for first_code in ("CT", "PT"):
+            for row in ordered:
+                legs = row.get("payload", {}).get("movement_legs") or []
+                if isinstance(legs, list) and legs and str(legs[0].get("code") or "") == first_code:
                     add(row)
                     break
+
+        # Preserve trading-depth variation without duplicating the earlier script.
         for wanted in (
             "NO_RANGE1_RETRACEMENT",
             "BOUNDARY_TOUCH",
             "COUNTERTREND_RETRACEMENT",
         ):
-            for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+            for row in ordered:
                 if str(row.get("payload", {}).get("countertrend_classification") or "").upper() == wanted:
                     add(row)
                     break
@@ -158,12 +160,7 @@ def _preserved_prior_approved_run(
     case_ref: str,
     symbol: str,
 ) -> dict[str, Any] | None:
-    """Reuse prior approved evidence while a newer version is still a candidate.
-
-    A review refresh must not rerun an older approved script against a newer
-    parent candidate. The already-published run stays trustworthy and visible
-    until the candidate itself reaches 5/5.
-    """
+    """Reuse prior approved evidence while a newer version is still a candidate."""
     if not pipeline._approved_version(connection, version_id):
         return None
     latest = connection.execute(
@@ -273,9 +270,6 @@ def run_package_version(
     with pipeline.connect(db) as connection:
         pipeline.ensure_schema(connection)
         approved = pipeline._approved_version(connection, version_id)
-        # A selected case may contain fewer than five eligible Weekly ranges.
-        # Run and display what exists, but package approval remains locked until
-        # a separate run provides a genuine five-sample review.
         samples = [] if approved else _review_samples(
             pipeline,
             str(version["script_key"]),
