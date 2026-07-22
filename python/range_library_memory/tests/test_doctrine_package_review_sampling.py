@@ -96,36 +96,42 @@ def test_depth_review_prioritizes_both_anchor_stories_then_distinct_outcomes() -
     ]
 
 
-def test_movement_review_prioritizes_sequence_and_retracement_variation() -> None:
+def test_movement_review_prioritizes_alternating_story_and_both_starting_roles() -> None:
     outputs = [
         _row(
             "weekly-1",
-            movement_sequence="COUNTERTREND_THEN_PROTREND",
+            movement_leg_count=2,
+            movement_legs=[{"code": "CT"}, {"code": "PT"}],
             countertrend_classification="COUNTERTREND_RETRACEMENT",
         ),
         _row(
             "weekly-2",
-            movement_sequence="PROTREND_THEN_COUNTERTREND",
+            movement_leg_count=2,
+            movement_legs=[{"code": "PT"}, {"code": "CT"}],
             countertrend_classification="NO_RANGE1_RETRACEMENT",
         ),
         _row(
             "weekly-3",
-            movement_sequence="SAME_W1_MOVEMENTS",
+            movement_leg_count=3,
+            movement_legs=[{"code": "CT"}, {"code": "PT"}, {"code": "CT"}],
             countertrend_classification="BOUNDARY_TOUCH",
         ),
         _row(
             "weekly-4",
-            movement_sequence="COUNTERTREND_THEN_PROTREND",
+            movement_leg_count=1,
+            movement_legs=[{"code": "CT"}],
             countertrend_classification="NO_RANGE1_RETRACEMENT",
         ),
         _row(
             "weekly-5",
-            movement_sequence="PROTREND_THEN_COUNTERTREND",
+            movement_leg_count=3,
+            movement_legs=[{"code": "PT"}, {"code": "CT"}, {"code": "PT"}],
             countertrend_classification="COUNTERTREND_RETRACEMENT",
         ),
         _row(
             "weekly-6",
-            movement_sequence="COUNTERTREND_THEN_PROTREND",
+            movement_leg_count=1,
+            movement_legs=[{"code": "PT"}],
             countertrend_classification="COUNTERTREND_RETRACEMENT",
         ),
     ]
@@ -137,14 +143,14 @@ def test_movement_review_prioritizes_sequence_and_retracement_variation() -> Non
     )
 
     assert [row["canonical_range_id"] for row in samples] == [
+        "weekly-3",
         "weekly-1",
         "weekly-2",
-        "weekly-3",
         "weekly-4",
         "weekly-5",
     ]
-    assert [row["payload"]["movement_sequence"] for row in samples[:3]] == [
-        "COUNTERTREND_THEN_PROTREND",
-        "PROTREND_THEN_COUNTERTREND",
-        "SAME_W1_MOVEMENTS",
+    assert samples[0]["payload"]["movement_legs"] == [
+        {"code": "CT"},
+        {"code": "PT"},
+        {"code": "CT"},
     ]
