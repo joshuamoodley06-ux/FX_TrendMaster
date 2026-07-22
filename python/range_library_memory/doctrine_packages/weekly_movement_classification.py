@@ -77,22 +77,21 @@ def _output(node: Mapping[str, Any], status: str, payload: dict[str, Any]) -> di
 
 
 def _base_payload() -> dict[str, Any]:
+    # Keep the candidate card intentionally small. Detailed anchor geometry stays
+    # in Weekly Reclaim Depth rather than being copied into this script.
     return {
-        "movement_status": "PENDING",
         "movement_sequence": None,
-        "source_range1_id": None,
-        "range2_id": None,
         "source_bos_direction": None,
         "countertrend_classification": None,
         "countertrend_direction": None,
         "countertrend_distance": None,
         "countertrend_depth_percent": None,
         "countertrend_weeks": None,
-        "protrend_classification": None,
         "protrend_direction": None,
         "protrend_distance": None,
         "protrend_weeks": None,
-        "range2_anchor_sequence": None,
+        "source_range1_id": None,
+        "range2_id": None,
         "reason_codes": [],
     }
 
@@ -133,7 +132,6 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             outputs.append(_output(node, "PENDING", payload))
             continue
         if depth_processing == "NEEDS_REVIEW":
-            payload["movement_status"] = "NEEDS_REVIEW"
             payload["reason_codes"] = ["WEEKLY_RECLAIM_DEPTH_NEEDS_REVIEW"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
@@ -154,9 +152,8 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         protrend_weeks = _integer(depth.get("range2_formation_weeks"))
 
         payload.update({
-            "range2_id": range2_id or None,
             "source_bos_direction": direction or None,
-            "range2_anchor_sequence": anchor_sequence or None,
+            "range2_id": range2_id or None,
         })
 
         if depth_status not in _COMPLETE_DEPTH_STATES:
@@ -164,7 +161,6 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             outputs.append(_output(node, "PENDING", payload))
             continue
         if direction not in {"BOS_UP", "BOS_DOWN"}:
-            payload["movement_status"] = "NEEDS_REVIEW"
             payload["reason_codes"] = ["SOURCE_BOS_DIRECTION_INVALID"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
@@ -173,7 +169,6 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "CONTINUATION_THEN_OPPOSITE",
             "SAME_W1",
         }:
-            payload["movement_status"] = "NEEDS_REVIEW"
             payload["reason_codes"] = ["RANGE2_ANCHOR_SEQUENCE_INVALID"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
@@ -186,7 +181,6 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             or countertrend_weeks is None
             or protrend_weeks is None
         ):
-            payload["movement_status"] = "NEEDS_REVIEW"
             payload["reason_codes"] = ["WEEKLY_MOVEMENT_INPUTS_INCOMPLETE"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
@@ -200,14 +194,12 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             protrend_direction = "DOWN"
 
         payload.update({
-            "movement_status": "CLASSIFIED",
             "movement_sequence": _movement_sequence(anchor_sequence),
             "countertrend_classification": _countertrend_classification(depth_status),
             "countertrend_direction": countertrend_direction,
             "countertrend_distance": round(max(0.0, countertrend_distance), 8),
             "countertrend_depth_percent": round(max(0.0, countertrend_percent), 8),
             "countertrend_weeks": max(0, countertrend_weeks),
-            "protrend_classification": "PROTREND_CONTINUATION",
             "protrend_direction": protrend_direction,
             "protrend_distance": round(protrend_distance, 8),
             "protrend_weeks": max(0, protrend_weeks),
