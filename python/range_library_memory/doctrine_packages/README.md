@@ -20,7 +20,7 @@ Weekly BOS
 -> Weekly movement classification
 ```
 
-Each package reads approved memory from the earlier packages instead of repeating their work.
+Each package owns one job. A later package may enrich earlier facts, but it must not delay facts that are already knowable.
 
 ## Weekly BOS v3
 
@@ -97,17 +97,19 @@ raw ratio = 1 -> TOUCHED_OLD_OPPOSITE · 100%
 raw ratio > 1 -> EXCEEDED_OLD_OPPOSITE
 ```
 
-## Weekly movement classification v3
+## Weekly movement classification v4
 
-This package consumes:
+Movement counting starts when the range breaks. It does not wait for reclaim or reclaim-depth confirmation.
+
+The package reads approved Weekly BOS memory for every mapped Weekly range and finds the first later approved BOS event.
 
 ```text
-approved Range 1 Weekly Reclaim Depth memory
-and
-approved Range 2 Weekly BOS memory
+Range 1 BOS candle
+-> excluded from count
+-> classify every later W1 candle
+-> stop immediately before the next approved BOS candle
+-> next BOS is the terminal event
 ```
-
-It does not redetect anchors, rebuild ranges, or recalculate Fib depth.
 
 Weekly OHLC direction doctrine:
 
@@ -128,18 +130,11 @@ bullish W1 = countertrend (CT)
 bearish W1 = protrend (PT)
 ```
 
-The source BOS candle and next BOS candle are excluded from movement-leg counts. Every W1 strictly between the two BOS events is classified chronologically.
-
-Consecutive candles with the same role form one leg. A direction change starts a new leg.
+Consecutive candles with the same role form one leg. A role change starts a new leg.
 
 Example:
 
 ```text
-bearish W1
--> bullish W1
--> bearish W1
--> next BOS Up
-
 CT 1W -> PT 1W -> CT 1W -> BOS_UP
 ```
 
@@ -148,18 +143,29 @@ The package stores:
 ```text
 movement_path
 movement_sequence
-ordered movement_legs with start/end dates and candle dates
+ordered movement_legs with candle dates
 movement leg count
 countertrend leg count and total W1 count
 protrend leg count and total W1 count
 source BOS direction/date
 next BOS direction/date
 Range 1 and Range 2 IDs
-existing Range 2 countertrend depth/distance
-existing Range 2 protrend distance
 ```
 
-A Range 2 without a completed approved BOS remains `PENDING`; Python does not pretend the chapter is finished. A doji between BOS events remains `NEEDS_REVIEW` until its movement role is defined.
+Reclaim Depth is optional enrichment:
+
+```text
+Depth complete
+-> add countertrend depth classification, distance and percentage
+-> add protrend distance
+
+Depth pending
+-> movement path still completes
+-> depth fields remain pending
+-> countertrend classification = COUNTERTREND_LEG_DEPTH_PENDING
+```
+
+A completed movement chapter can therefore be approved while reclaim remains unconfirmed. A missing next approved BOS keeps the chapter `PENDING`. A doji between BOS events remains `NEEDS_REVIEW` until its role is defined.
 
 This is still not the future range lifecycle/storyline builder. It preserves the factual ordered movement path that the later lifecycle script will consume.
 
@@ -172,16 +178,16 @@ approve latest BOS package
 -> approve latest Movement Classification package
 ```
 
-Older approved versions remain active for rollback until the new candidate reaches 5/5, but they cannot unlock a newer child package.
+A pending per-range Depth result no longer blocks Movement v4. Package versions remain chained so updated parent memory invalidates child results safely.
 
-Movement v3 review prioritises:
+Movement v4 review prioritises:
 
 ```text
 an alternating three-leg storyline
 one chapter beginning CT
 one chapter beginning PT
-no-retracement variation
-ordinary retracement variation
+a depth-pending chapter
+ordinary depth variation
 ```
 
 ## Approval workflow
