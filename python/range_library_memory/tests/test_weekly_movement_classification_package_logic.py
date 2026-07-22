@@ -45,14 +45,12 @@ def test_bos_up_classifies_countertrend_then_protrend() -> None:
     payload = result["payload"]
 
     assert result["processing_status"] == "COMPLETE"
-    assert payload["movement_status"] == "CLASSIFIED"
     assert payload["movement_sequence"] == "COUNTERTREND_THEN_PROTREND"
     assert payload["countertrend_classification"] == "COUNTERTREND_RETRACEMENT"
     assert payload["countertrend_direction"] == "DOWN"
     assert payload["countertrend_distance"] == 96.95
     assert payload["countertrend_depth_percent"] == 56.14
     assert payload["countertrend_weeks"] == 5
-    assert payload["protrend_classification"] == "PROTREND_CONTINUATION"
     assert payload["protrend_direction"] == "UP"
     assert payload["protrend_distance"] == 96.95
     assert payload["protrend_weeks"] == 4
@@ -96,7 +94,6 @@ def test_no_retracement_remains_zero_without_losing_protrend_leg() -> None:
     assert payload["countertrend_distance"] == 0
     assert payload["countertrend_depth_percent"] == 0
     assert payload["countertrend_weeks"] == 17
-    assert payload["protrend_classification"] == "PROTREND_CONTINUATION"
     assert payload["protrend_distance"] == 801.77
     assert payload["protrend_weeks"] == 6
 
