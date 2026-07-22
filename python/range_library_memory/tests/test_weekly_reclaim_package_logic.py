@@ -34,15 +34,11 @@ def _range(identity: str, *, high: float = 100, low: float = 90) -> dict:
     }
 
 
-def _bos(
-    *,
-    direction: str,
-    defined_at: str,
-    bos_time: str,
-) -> dict:
+def _bos(*, direction: str, defined_at: str, bos_time: str) -> dict:
     return {
         "weekly_structure": {
-            "version_label": "2",
+            "version_label": "3",
+            "processing_status": "COMPLETE",
             "payload": {
                 "range_defined_at": defined_at,
                 "bos_direction": direction,
@@ -52,58 +48,71 @@ def _bos(
     }
 
 
-def test_bullish_bos_reclaims_on_exact_wick_touch_of_old_high() -> None:
+def test_bullish_bos_candle_close_back_through_boundary_reclaims_at_zero_weeks() -> None:
     context = FakeContext(
         [_range("weekly-a")],
-        {
-            "weekly-a": _bos(
-                direction="BOS_UP",
-                defined_at="2026-01-05T00:00:00Z",
-                bos_time="2026-01-12T00:00:00Z",
-            )
-        },
-        [
-            {"time": "2026-01-19T00:00:00Z", "open": 105, "high": 110, "low": 101, "close": 107},
-            {"time": "2026-01-26T00:00:00Z", "open": 107, "high": 111, "low": 100, "close": 109},
-        ],
+        {"weekly-a": _bos(
+            direction="BOS_UP",
+            defined_at="2026-01-05T00:00:00Z",
+            bos_time="2026-01-12T00:00:00Z",
+        )},
+        [{"time": "2026-01-12T00:00:00Z", "open": 98, "high": 105, "low": 97, "close": 99}],
     )
 
     result = weekly_reclaim.run(context)["outputs"][0]
 
     assert result["processing_status"] == "COMPLETE"
     assert result["payload"]["reclaim_status"] == "RECLAIMED"
-    assert result["payload"]["reclaim_boundary"] == 100
+    assert result["payload"]["reclaim_abbreviation"] == "RECL"
+    assert result["payload"]["same_candle_reclaim"] is True
+    assert result["payload"]["weeks_to_reclaim"] == 0
+    assert result["payload"]["reclaim_time"] == "2026-01-12T00:00:00Z"
+
+
+def test_bearish_bos_candle_close_back_through_boundary_reclaims_at_zero_weeks() -> None:
+    context = FakeContext(
+        [_range("weekly-a")],
+        {"weekly-a": _bos(
+            direction="BOS_DOWN",
+            defined_at="2026-01-05T00:00:00Z",
+            bos_time="2026-01-12T00:00:00Z",
+        )},
+        [{"time": "2026-01-12T00:00:00Z", "open": 92, "high": 93, "low": 85, "close": 91}],
+    )
+
+    result = weekly_reclaim.run(context)["outputs"][0]
+
+    assert result["payload"]["reclaim_status"] == "RECLAIMED"
+    assert result["payload"]["same_candle_reclaim"] is True
+    assert result["payload"]["weeks_to_reclaim"] == 0
+
+
+def test_next_candle_starts_count_and_first_later_touch_stops_it() -> None:
+    context = FakeContext(
+        [_range("weekly-a")],
+        {"weekly-a": _bos(
+            direction="BOS_UP",
+            defined_at="2026-01-05T00:00:00Z",
+            bos_time="2026-01-12T00:00:00Z",
+        )},
+        [
+            {"time": "2026-01-12T00:00:00Z", "open": 98, "high": 105, "low": 97, "close": 104},
+            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 110, "low": 101, "close": 107},
+            {"time": "2026-01-26T00:00:00Z", "open": 107, "high": 111, "low": 100, "close": 109},
+            {"time": "2026-02-02T00:00:00Z", "open": 109, "high": 112, "low": 98, "close": 110},
+        ],
+    )
+
+    result = weekly_reclaim.run(context)["outputs"][0]
+
+    assert result["payload"]["reclaim_status"] == "RECLAIMED"
+    assert result["payload"]["same_candle_reclaim"] is False
     assert result["payload"]["reclaim_time"] == "2026-01-26T00:00:00Z"
     assert result["payload"]["weeks_to_reclaim"] == 2
     assert result["payload"]["candles_scanned"] == 2
 
 
-def test_bearish_bos_reclaims_on_exact_wick_touch_of_old_low() -> None:
-    context = FakeContext(
-        [_range("weekly-a")],
-        {
-            "weekly-a": _bos(
-                direction="BOS_DOWN",
-                defined_at="2026-01-05T00:00:00Z",
-                bos_time="2026-01-12T00:00:00Z",
-            )
-        },
-        [
-            {"time": "2026-01-19T00:00:00Z", "open": 85, "high": 89, "low": 80, "close": 83},
-            {"time": "2026-01-26T00:00:00Z", "open": 83, "high": 90, "low": 79, "close": 82},
-        ],
-    )
-
-    result = weekly_reclaim.run(context)["outputs"][0]
-
-    assert result["processing_status"] == "COMPLETE"
-    assert result["payload"]["reclaim_status"] == "RECLAIMED"
-    assert result["payload"]["reclaim_boundary"] == 90
-    assert result["payload"]["reclaim_time"] == "2026-01-26T00:00:00Z"
-    assert result["payload"]["weeks_to_reclaim"] == 2
-
-
-def test_new_later_weekly_bos_before_reclaim_marks_old_range_abandoned() -> None:
+def test_new_bos_before_later_touch_becomes_abandoned_then_reclaimed() -> None:
     context = FakeContext(
         [_range("weekly-a"), _range("weekly-b", high=120, low=100)],
         {
@@ -119,7 +128,48 @@ def test_new_later_weekly_bos_before_reclaim_marks_old_range_abandoned() -> None
             ),
         },
         [
-            {"time": "2026-01-19T00:00:00Z", "open": 105, "high": 111, "low": 101, "close": 108},
+            {"time": "2026-01-12T00:00:00Z", "open": 98, "high": 105, "low": 97, "close": 104},
+            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 111, "low": 101, "close": 108},
+            {"time": "2026-01-26T00:00:00Z", "open": 108, "high": 115, "low": 102, "close": 112},
+            {"time": "2026-02-02T00:00:00Z", "open": 112, "high": 119, "low": 103, "close": 117},
+            {"time": "2026-02-09T00:00:00Z", "open": 117, "high": 121, "low": 104, "close": 120},
+            {"time": "2026-02-16T00:00:00Z", "open": 120, "high": 122, "low": 102, "close": 118},
+            {"time": "2026-02-23T00:00:00Z", "open": 118, "high": 119, "low": 100, "close": 116},
+        ],
+    )
+
+    result = weekly_reclaim.run(context)["outputs"][0]
+
+    assert result["processing_status"] == "COMPLETE"
+    assert result["payload"]["reclaim_status"] == "ABANDONED_THEN_RECLAIMED"
+    assert result["payload"]["reclaim_abbreviation"] == "ABND→RECL"
+    assert result["payload"]["abandoned_before_reclaim"] is True
+    assert result["payload"]["next_bos_range_id"] == "weekly-b"
+    assert result["payload"]["next_bos_time"] == "2026-02-09T00:00:00Z"
+    assert result["payload"]["reclaim_time"] == "2026-02-23T00:00:00Z"
+    assert result["payload"]["weeks_to_reclaim"] == 6
+    assert result["payload"]["weeks_to_abandonment"] == 4
+    assert result["payload"]["weeks_from_abandonment_to_reclaim"] == 2
+
+
+def test_new_bos_without_any_later_touch_remains_abandoned() -> None:
+    context = FakeContext(
+        [_range("weekly-a"), _range("weekly-b", high=120, low=100)],
+        {
+            "weekly-a": _bos(
+                direction="BOS_UP",
+                defined_at="2026-01-05T00:00:00Z",
+                bos_time="2026-01-12T00:00:00Z",
+            ),
+            "weekly-b": _bos(
+                direction="BOS_UP",
+                defined_at="2026-01-26T00:00:00Z",
+                bos_time="2026-02-09T00:00:00Z",
+            ),
+        },
+        [
+            {"time": "2026-01-12T00:00:00Z", "open": 98, "high": 105, "low": 97, "close": 104},
+            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 111, "low": 101, "close": 108},
             {"time": "2026-01-26T00:00:00Z", "open": 108, "high": 115, "low": 102, "close": 112},
             {"time": "2026-02-02T00:00:00Z", "open": 112, "high": 119, "low": 103, "close": 117},
             {"time": "2026-02-09T00:00:00Z", "open": 117, "high": 121, "low": 104, "close": 120},
@@ -128,34 +178,37 @@ def test_new_later_weekly_bos_before_reclaim_marks_old_range_abandoned() -> None
 
     result = weekly_reclaim.run(context)["outputs"][0]
 
-    assert result["processing_status"] == "COMPLETE"
     assert result["payload"]["reclaim_status"] == "ABANDONED"
-    assert result["payload"]["next_bos_range_id"] == "weekly-b"
-    assert result["payload"]["next_bos_time"] == "2026-02-09T00:00:00Z"
+    assert result["payload"]["reclaim_abbreviation"] == "ABND"
     assert result["payload"]["weeks_to_abandonment"] == 4
-    assert result["payload"]["reason_codes"] == ["NEW_WEEKLY_BOS_BEFORE_RECLAIM"]
 
 
-def test_no_reclaim_and_no_new_bos_remains_pending() -> None:
+def test_reclaim_and_new_bos_on_same_week_requires_review() -> None:
     context = FakeContext(
-        [_range("weekly-a")],
+        [_range("weekly-a"), _range("weekly-b", high=120, low=100)],
         {
             "weekly-a": _bos(
                 direction="BOS_UP",
                 defined_at="2026-01-05T00:00:00Z",
                 bos_time="2026-01-12T00:00:00Z",
-            )
+            ),
+            "weekly-b": _bos(
+                direction="BOS_UP",
+                defined_at="2026-01-26T00:00:00Z",
+                bos_time="2026-02-09T00:00:00Z",
+            ),
         },
         [
-            {"time": "2026-01-19T00:00:00Z", "open": 105, "high": 111, "low": 101, "close": 108},
+            {"time": "2026-01-12T00:00:00Z", "open": 98, "high": 105, "low": 97, "close": 104},
+            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 111, "low": 101, "close": 108},
             {"time": "2026-01-26T00:00:00Z", "open": 108, "high": 115, "low": 102, "close": 112},
+            {"time": "2026-02-02T00:00:00Z", "open": 112, "high": 119, "low": 103, "close": 117},
+            {"time": "2026-02-09T00:00:00Z", "open": 117, "high": 121, "low": 100, "close": 120},
         ],
     )
 
     result = weekly_reclaim.run(context)["outputs"][0]
 
-    assert result["processing_status"] == "PENDING"
-    assert result["payload"]["reclaim_status"] == "PENDING"
-    assert result["payload"]["candles_scanned"] == 2
-    assert result["payload"]["weeks_to_reclaim"] is None
-    assert result["payload"]["reason_codes"] == ["RECLAIM_NOT_YET_PROVEN"]
+    assert result["processing_status"] == "NEEDS_REVIEW"
+    assert result["payload"]["reclaim_status"] == "NEEDS_REVIEW"
+    assert result["payload"]["reason_codes"] == ["RECLAIM_AND_NEW_BOS_SAME_W1_ORDER_UNKNOWN"]
