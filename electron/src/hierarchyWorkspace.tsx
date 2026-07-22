@@ -691,8 +691,10 @@ export function HierarchyWorkspace({
     (node) => node.layer === 'WEEKLY' && node.sourceRefs.some((ref) => ref.caseRef === caseRef),
   ) || [], [analysisDocument, caseRef]);
 
-  const legacy = selectedScriptKey === 'weekly_structure' ? legacyPipelineView(analysisDocument) : null;
   const selectedVersionId = String(selectedScript?.version_id || '') || null;
+  const legacy = selectedScript?.adapter_key === 'doctrine_package_v1'
+    ? null
+    : selectedScriptKey === 'weekly_structure' ? legacyPipelineView(analysisDocument) : null;
   const pipeline = pipelineFromState(
     selectedState,
     String(selectedScript?.display_name || 'Weekly analysis'),
