@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .doctrine_package_contract import PACKAGE_ADAPTER
 from .doctrine_package_runtime import execute_package
@@ -53,6 +53,52 @@ def _package_dependency_fingerprint(
         version_id,
         [[str(item["canonical_range_id"]), str(item["output_hash"])] for item in output_rows],
     ])
+
+
+def _review_samples(
+    pipeline: Any,
+    script_key: str,
+    outputs: list[Mapping[str, Any]],
+    limit: int = 5,
+) -> list[Mapping[str, Any]]:
+    """Keep doctrine edge cases visible in the five-sample review."""
+    chosen: list[Mapping[str, Any]] = []
+
+    def add(row: Mapping[str, Any]) -> None:
+        if row not in chosen and len(chosen) < limit:
+            chosen.append(row)
+
+    if script_key == "weekly_structure":
+        # A SAME_W1 anchor case previously approved as pending must reappear when
+        # the corrected BOS package is run.
+        for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+            if str(row.get("payload", {}).get("chronology") or "").upper() == "SAME_W1":
+                add(row)
+                break
+    elif script_key == "weekly_reclaim":
+        for wanted in (
+            "RECLAIMED",
+            "ABANDONED",
+            "ABANDONED_THEN_RECLAIMED",
+            "NEEDS_REVIEW",
+            "PENDING",
+        ):
+            for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+                if str(row.get("payload", {}).get("reclaim_status") or "").upper() == wanted:
+                    add(row)
+                    break
+    elif script_key == "weekly_reclaim_depth":
+        for wanted in ("MEASURED", "PENDING", "NEEDS_REVIEW"):
+            for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+                if str(row.get("payload", {}).get("depth_status") or "").upper() == wanted:
+                    add(row)
+                    break
+
+    for row in pipeline._sample(outputs, limit=limit):
+        add(row)
+    for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+        add(row)
+    return chosen
 
 
 def run_package_version(
@@ -124,7 +170,12 @@ def run_package_version(
         # A selected case may contain fewer than five eligible Weekly ranges.
         # Run and display what exists, but package approval remains locked until
         # a separate run provides a genuine five-sample review.
-        samples = [] if approved else pipeline._sample(outputs, limit=5)
+        samples = [] if approved else _review_samples(
+            pipeline,
+            str(version["script_key"]),
+            outputs,
+            limit=5,
+        )
         stamp = pipeline.now()
         connection.execute(
             """INSERT INTO doctrine_script_runs(
