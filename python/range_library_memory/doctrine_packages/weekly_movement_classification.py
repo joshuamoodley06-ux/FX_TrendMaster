@@ -1,9 +1,10 @@
-"""Classify the two structural movements that create the next Weekly range.
+"""Build the ordered Weekly movement path between two approved BOS events.
 
-This package consumes approved Weekly Reclaim Depth memory. It does not detect
-new anchors, rebuild ranges, or recalculate Fib depth.
+This package consumes approved Weekly Reclaim Depth memory for Range 1 and
+approved Weekly BOS memory for the mapped Range 2. It does not detect anchors,
+rebuild ranges, or recalculate Fib depth.
 
-Weekly candle direction supplies the movement evidence:
+Weekly candle direction supplies movement evidence:
 
 * bullish W1 path: Open -> Low -> Close -> High;
 * bearish W1 path: Open -> High -> Close -> Low.
@@ -11,10 +12,9 @@ Weekly candle direction supplies the movement evidence:
 For BOS Up, bearish candles are countertrend and bullish candles are protrend.
 For BOS Down, bullish candles are countertrend and bearish candles are protrend.
 
-Range 2 anchor chronology still defines the structural movement windows. When
-both Range 2 anchors belong to the same W1 candle, that candle's OHLC direction
-resolves the likely intrawweek order instead of reporting zero movement merely
-because both mapped anchor timestamps are equal.
+Consecutive candles with the same role form one movement leg. A direction change
+starts a new leg. The next approved Range 2 BOS is the terminal event and its
+candle is excluded from the preceding movement-leg counts.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from typing import Any, Mapping
 
 FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "weekly_movement_classification"
-VERSION_LABEL = "2"
+VERSION_LABEL = "3"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 40
 
@@ -91,21 +91,27 @@ def _output(node: Mapping[str, Any], status: str, payload: dict[str, Any]) -> di
 
 
 def _base_payload() -> dict[str, Any]:
-    # Keep the candidate card intentionally small. Detailed anchor geometry stays
-    # in Weekly Reclaim Depth rather than being copied into this script.
     return {
+        "movement_path": None,
         "movement_sequence": None,
+        "movement_leg_count": None,
+        "countertrend_leg_count": None,
+        "protrend_leg_count": None,
+        "countertrend_weeks": None,
+        "protrend_weeks": None,
         "source_bos_direction": None,
+        "source_bos_time": None,
+        "next_bos_direction": None,
+        "next_bos_time": None,
         "countertrend_classification": None,
         "countertrend_direction": None,
         "countertrend_distance": None,
         "countertrend_depth_percent": None,
-        "countertrend_weeks": None,
         "protrend_direction": None,
         "protrend_distance": None,
-        "protrend_weeks": None,
         "source_range1_id": None,
         "range2_id": None,
+        "movement_legs": [],
         "reason_codes": [],
     }
 
@@ -140,49 +146,63 @@ def _movement_directions(bos_direction: str) -> tuple[str, str, str, str]:
     return "BULLISH", "BEARISH", "UP", "DOWN"
 
 
-def _sequence_from_anchor_order(anchor_sequence: str) -> str:
-    if anchor_sequence == "OPPOSITE_THEN_CONTINUATION":
-        return "COUNTERTREND_THEN_PROTREND"
-    if anchor_sequence == "CONTINUATION_THEN_OPPOSITE":
-        return "PROTREND_THEN_COUNTERTREND"
-    return "SAME_W1_MOVEMENTS"
+def _movement_role(
+    candle: Mapping[str, Any],
+    *,
+    countertrend_candle_type: str,
+    protrend_candle_type: str,
+) -> str:
+    direction = _candle_direction(candle)
+    if direction == countertrend_candle_type:
+        return "CT"
+    if direction == protrend_candle_type:
+        return "PT"
+    return direction
 
 
-def _same_w1_sequence(bos_direction: str, candle_direction: str) -> str | None:
-    """Resolve same-W1 anchor order from the user's OHLC path doctrine."""
-    if candle_direction == "BULLISH":
-        # Open -> Low -> Close -> High.
-        return (
-            "COUNTERTREND_THEN_PROTREND"
-            if bos_direction == "BOS_UP"
-            else "PROTREND_THEN_COUNTERTREND"
-        )
-    if candle_direction == "BEARISH":
-        # Open -> High -> Close -> Low.
-        return (
-            "PROTREND_THEN_COUNTERTREND"
-            if bos_direction == "BOS_UP"
-            else "COUNTERTREND_THEN_PROTREND"
-        )
-    return None
-
-
-def _window_candles(
+def _build_legs(
     candles: list[dict[str, Any]],
     *,
-    start_exclusive: datetime,
-    end_inclusive: datetime,
+    countertrend_candle_type: str,
+    protrend_candle_type: str,
+    countertrend_direction: str,
+    protrend_direction: str,
 ) -> list[dict[str, Any]]:
-    return [
-        candle
-        for candle in candles
-        if (candle_time := _time(candle.get("time"))) is not None
-        and start_exclusive < candle_time <= end_inclusive
-    ]
+    legs: list[dict[str, Any]] = []
+    for candle in candles:
+        role = _movement_role(
+            candle,
+            countertrend_candle_type=countertrend_candle_type,
+            protrend_candle_type=protrend_candle_type,
+        )
+        candle_time = _time(candle.get("time"))
+        if role not in {"CT", "PT"} or candle_time is None:
+            continue
+        if legs and legs[-1]["code"] == role:
+            legs[-1]["weeks"] += 1
+            legs[-1]["end_time"] = _stamp(candle_time)
+            legs[-1]["candle_times"].append(_stamp(candle_time))
+            continue
+        legs.append({
+            "code": role,
+            "classification": "COUNTERTREND" if role == "CT" else "PROTREND",
+            "direction": countertrend_direction if role == "CT" else protrend_direction,
+            "weeks": 1,
+            "start_time": _stamp(candle_time),
+            "end_time": _stamp(candle_time),
+            "candle_times": [_stamp(candle_time)],
+        })
+    return legs
 
 
-def _count_direction(candles: list[dict[str, Any]], wanted: str) -> int:
-    return sum(1 for candle in candles if _candle_direction(candle) == wanted)
+def _path(legs: list[dict[str, Any]], next_bos_direction: str) -> str:
+    tokens = [f"{leg['code']} {leg['weeks']}W" for leg in legs]
+    tokens.append(next_bos_direction)
+    return " -> ".join(tokens)
+
+
+def _sequence(legs: list[dict[str, Any]]) -> str:
+    return "_THEN_".join(str(leg["classification"]) for leg in legs)
 
 
 def run(context: Any) -> dict[str, list[dict[str, Any]]]:
@@ -212,23 +232,17 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             continue
 
         depth_status = str(depth.get("depth_status") or "").upper()
-        bos_direction = str(depth.get("source_bos_direction") or "").upper()
-        anchor_sequence = str(depth.get("range2_anchor_sequence") or "").upper()
+        source_bos_direction = str(depth.get("source_bos_direction") or "").upper()
+        source_bos_time = _time(depth.get("source_bos_time"))
         range2_id = str(depth.get("range2_id") or "").strip()
-        bos_time = _time(depth.get("source_bos_time"))
-        opposite_time = _time(depth.get("range2_opposite_anchor_time"))
-        continuation_time = _time(depth.get("range2_continuation_anchor_time"))
-        completion_time = _time(
-            depth.get("range2_completed_at")
-            or depth.get("range2_completion_anchor_time")
-        )
         opposite_price = _number(depth.get("range2_opposite_anchor_price"))
         continuation_price = _number(depth.get("range2_continuation_anchor_price"))
         countertrend_distance = _number(depth.get("reclaim_depth_price"))
         countertrend_percent = _number(depth.get("reclaim_depth_percent"))
 
         payload.update({
-            "source_bos_direction": bos_direction or None,
+            "source_bos_direction": source_bos_direction or None,
+            "source_bos_time": _stamp(source_bos_time) if source_bos_time else None,
             "range2_id": range2_id or None,
         })
 
@@ -236,24 +250,13 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             payload["reason_codes"] = ["WEEKLY_RECLAIM_DEPTH_STILL_PENDING"]
             outputs.append(_output(node, "PENDING", payload))
             continue
-        if bos_direction not in {"BOS_UP", "BOS_DOWN"}:
+        if source_bos_direction not in {"BOS_UP", "BOS_DOWN"}:
             payload["reason_codes"] = ["SOURCE_BOS_DIRECTION_INVALID"]
-            outputs.append(_output(node, "NEEDS_REVIEW", payload))
-            continue
-        if anchor_sequence not in {
-            "OPPOSITE_THEN_CONTINUATION",
-            "CONTINUATION_THEN_OPPOSITE",
-            "SAME_W1",
-        }:
-            payload["reason_codes"] = ["RANGE2_ANCHOR_SEQUENCE_INVALID"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
         if (
             not range2_id
-            or bos_time is None
-            or opposite_time is None
-            or continuation_time is None
-            or completion_time is None
+            or source_bos_time is None
             or opposite_price is None
             or continuation_price is None
             or countertrend_distance is None
@@ -262,114 +265,109 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             payload["reason_codes"] = ["WEEKLY_MOVEMENT_INPUTS_INCOMPLETE"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
-        if completion_time < bos_time:
-            payload["reason_codes"] = ["RANGE2_COMPLETES_BEFORE_SOURCE_BOS"]
+
+        next_bos, next_bos_processing = _memory_entry(
+            context,
+            range2_id,
+            "weekly_structure",
+        )
+        if next_bos is None:
+            payload["reason_codes"] = ["APPROVED_RANGE2_BOS_MEMORY_MISSING"]
+            outputs.append(_output(node, "PENDING", payload))
+            continue
+        if next_bos_processing == "NEEDS_REVIEW":
+            payload["reason_codes"] = ["RANGE2_BOS_NEEDS_REVIEW"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
+        if next_bos_processing not in {"", "COMPLETE"}:
+            payload["reason_codes"] = ["RANGE2_BOS_STILL_PENDING"]
+            outputs.append(_output(node, "PENDING", payload))
+            continue
+
+        next_bos_direction = str(next_bos.get("bos_direction") or "").upper()
+        next_bos_time = _time(next_bos.get("bos_time"))
+        payload.update({
+            "next_bos_direction": next_bos_direction or None,
+            "next_bos_time": _stamp(next_bos_time) if next_bos_time else None,
+        })
+        if next_bos_direction not in {"BOS_UP", "BOS_DOWN"} or next_bos_time is None:
+            payload["reason_codes"] = ["RANGE2_BOS_INPUTS_INCOMPLETE"]
+            outputs.append(_output(node, "PENDING", payload))
+            continue
+        if next_bos_time <= source_bos_time:
+            payload["reason_codes"] = ["NEXT_BOS_NOT_AFTER_SOURCE_BOS"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
 
         loaded = [dict(candle) for candle in context.load_candles(
             timeframe="W1",
-            start_time=_stamp(bos_time),
-            end_time=_stamp(completion_time),
+            start_time=_stamp(source_bos_time),
+            end_time=_stamp(next_bos_time),
         )]
-        candles = sorted(
+        chapter = sorted(
             (
-                candle for candle in loaded
-                if _time(candle.get("time")) is not None
+                candle
+                for candle in loaded
+                if (candle_time := _time(candle.get("time"))) is not None
+                and source_bos_time < candle_time < next_bos_time
             ),
             key=lambda candle: _time(candle.get("time")),
         )
-        chapter = _window_candles(
-            candles,
-            start_exclusive=bos_time,
-            end_inclusive=completion_time,
-        )
         if not chapter:
-            payload["reason_codes"] = ["NO_W1_CANDLES_AFTER_BOS_BEFORE_RANGE2_COMPLETION"]
+            payload["reason_codes"] = ["NO_W1_MOVEMENT_CANDLES_BETWEEN_BOS_EVENTS"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
-        if any(_candle_direction(candle) == "INVALID" for candle in chapter):
-            payload["reason_codes"] = ["INVALID_W1_OHLC_IN_MOVEMENT_WINDOW"]
+
+        candle_directions = [_candle_direction(candle) for candle in chapter]
+        if "INVALID" in candle_directions:
+            payload["reason_codes"] = ["INVALID_W1_OHLC_IN_MOVEMENT_CHAPTER"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
+        if "DOJI" in candle_directions:
+            payload["reason_codes"] = ["DOJI_W1_MOVEMENT_ROLE_NOT_DEFINED"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
 
         countertrend_candle_type, protrend_candle_type, countertrend_direction, protrend_direction = (
-            _movement_directions(bos_direction)
+            _movement_directions(source_bos_direction)
         )
+        legs = _build_legs(
+            chapter,
+            countertrend_candle_type=countertrend_candle_type,
+            protrend_candle_type=protrend_candle_type,
+            countertrend_direction=countertrend_direction,
+            protrend_direction=protrend_direction,
+        )
+        if not legs:
+            payload["reason_codes"] = ["NO_CLASSIFIABLE_W1_MOVEMENT_LEGS"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
 
-        if anchor_sequence == "OPPOSITE_THEN_CONTINUATION":
-            countertrend_window = _window_candles(
-                candles,
-                start_exclusive=bos_time,
-                end_inclusive=opposite_time,
-            )
-            protrend_window = _window_candles(
-                candles,
-                start_exclusive=opposite_time,
-                end_inclusive=continuation_time,
-            )
-            movement_sequence = "COUNTERTREND_THEN_PROTREND"
-        elif anchor_sequence == "CONTINUATION_THEN_OPPOSITE":
-            protrend_window = _window_candles(
-                candles,
-                start_exclusive=bos_time,
-                end_inclusive=continuation_time,
-            )
-            countertrend_window = _window_candles(
-                candles,
-                start_exclusive=continuation_time,
-                end_inclusive=opposite_time,
-            )
-            movement_sequence = "PROTREND_THEN_COUNTERTREND"
-        else:
-            # Both mapped anchors share one W1 candle. Count the actual bullish and
-            # bearish candles across the full post-BOS chapter, then use the anchor
-            # candle's OHLC path to resolve which side occurred first intrawweek.
-            countertrend_window = chapter
-            protrend_window = chapter
-            anchor_candle = next(
-                (
-                    candle for candle in chapter
-                    if _time(candle.get("time")) == opposite_time
-                ),
-                None,
-            )
-            anchor_direction = (
-                _candle_direction(anchor_candle)
-                if anchor_candle is not None
-                else "MISSING"
-            )
-            movement_sequence = _same_w1_sequence(
-                bos_direction,
-                anchor_direction,
-            )
-            if movement_sequence is None:
-                payload["reason_codes"] = [
-                    "SAME_W1_ORDER_NOT_PROVABLE_FROM_DOJI_OR_MISSING_CANDLE"
-                ]
-                outputs.append(_output(node, "NEEDS_REVIEW", payload))
-                continue
-
-        countertrend_weeks = _count_direction(
-            countertrend_window,
-            countertrend_candle_type,
+        countertrend_weeks = sum(
+            int(leg["weeks"]) for leg in legs if leg["code"] == "CT"
         )
-        protrend_weeks = _count_direction(
-            protrend_window,
-            protrend_candle_type,
+        protrend_weeks = sum(
+            int(leg["weeks"]) for leg in legs if leg["code"] == "PT"
         )
+        countertrend_leg_count = sum(1 for leg in legs if leg["code"] == "CT")
+        protrend_leg_count = sum(1 for leg in legs if leg["code"] == "PT")
         protrend_distance = abs(continuation_price - opposite_price)
 
         payload.update({
-            "movement_sequence": movement_sequence,
+            "movement_path": _path(legs, next_bos_direction),
+            "movement_sequence": _sequence(legs),
+            "movement_leg_count": len(legs),
+            "countertrend_leg_count": countertrend_leg_count,
+            "protrend_leg_count": protrend_leg_count,
+            "countertrend_weeks": countertrend_weeks,
+            "protrend_weeks": protrend_weeks,
             "countertrend_classification": _countertrend_classification(depth_status),
             "countertrend_direction": countertrend_direction,
             "countertrend_distance": round(max(0.0, countertrend_distance), 8),
             "countertrend_depth_percent": round(max(0.0, countertrend_percent), 8),
-            "countertrend_weeks": countertrend_weeks,
             "protrend_direction": protrend_direction,
             "protrend_distance": round(protrend_distance, 8),
-            "protrend_weeks": protrend_weeks,
+            "movement_legs": legs,
             "reason_codes": [],
         })
         outputs.append(_output(node, "COMPLETE", payload))
