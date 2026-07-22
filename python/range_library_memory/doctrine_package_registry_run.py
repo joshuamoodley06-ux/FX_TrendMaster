@@ -19,6 +19,10 @@ _PACKAGE_DEPENDENCIES = {
         "weekly_reclaim_depth",
         "Weekly Reclaim Depth",
     ),
+    "weekly_extreme_rejection_destination": (
+        "weekly_profile_classification",
+        "Weekly Profile Classification",
+    ),
 }
 
 
@@ -177,6 +181,33 @@ def _review_samples(
 
         # Keep one unresolved profile visible when available rather than sampling
         # five already-obvious copies of the same threshold result.
+        for row in ordered:
+            if str(row.get("processing_status") or "").upper() in {"PENDING", "NEEDS_REVIEW"}:
+                add(row)
+                break
+    elif script_key == "weekly_extreme_rejection_destination":
+        ordered = sorted(outputs, key=lambda item: str(item["canonical_range_id"]))
+
+        # Keep both sides of the range represented when the history provides them.
+        for wanted_origin in ("DISCOUNT_EXTREME", "PREMIUM_EXTREME"):
+            for row in ordered:
+                if str(row.get("payload", {}).get("primary_origin_zone") or "").upper() == wanted_origin:
+                    add(row)
+                    break
+
+        # Then show the destination ladder rather than five copies of one outcome.
+        for wanted_destination in (
+            "NO_FOLLOW_THROUGH",
+            "FAIR_PRICE",
+            "OPPOSITE_EXTREME",
+            "OPPOSITE_EXTERNAL",
+        ):
+            for row in ordered:
+                if str(row.get("payload", {}).get("primary_maximum_destination") or "").upper() == wanted_destination:
+                    add(row)
+                    break
+
+        # Leave one open or ambiguous journey visible when available.
         for row in ordered:
             if str(row.get("processing_status") or "").upper() in {"PENDING", "NEEDS_REVIEW"}:
                 add(row)
