@@ -66,6 +66,18 @@ def _output(node: Mapping[str, Any], status: str, payload: dict[str, Any]) -> di
     }
 
 
+def _matches_case(node: Mapping[str, Any], case_ref: str) -> bool:
+    if not case_ref:
+        return True
+    refs = node.get("source_refs")
+    if not isinstance(refs, list):
+        return True
+    return any(
+        isinstance(ref, Mapping) and str(ref.get("case_ref") or "") == case_ref
+        for ref in refs
+    )
+
+
 def _range_start(node: Mapping[str, Any]) -> datetime | None:
     high_time = _time(node.get("range_high_time"))
     low_time = _time(node.get("range_low_time"))
@@ -241,11 +253,13 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         )
 
         raw_children = node.get("children")
+        case_ref = str(getattr(context, "case_ref", "") or "")
         direct_daily = [
             dict(child) for child in raw_children
             if isinstance(raw_children, list)
             and isinstance(child, Mapping)
             and str(child.get("structure_layer") or "").upper() == "DAILY"
+            and _matches_case(child, case_ref)
         ] if isinstance(raw_children, list) else []
         children = [_daily_child(canonical_id, child) for child in direct_daily]
         children.sort(key=lambda child: (
