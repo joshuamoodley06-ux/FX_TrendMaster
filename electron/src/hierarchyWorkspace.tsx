@@ -145,6 +145,7 @@ function chronologyLabel(value: unknown): string {
   const normalized = String(value || '').toUpperCase();
   if (normalized === 'RL_TO_RH') return 'RL → RH';
   if (normalized === 'RH_TO_RL') return 'RH → RL';
+  if (normalized === 'SAME_W1') return 'Same W1';
   return 'Chronology Pending';
 }
 
@@ -159,6 +160,7 @@ function reclaimSuffix(value: unknown): string {
   const normalized = String(value || '').toUpperCase();
   if (normalized === 'RECLAIMED') return 'RECL';
   if (normalized === 'ABANDONED') return 'ABND';
+  if (normalized === 'ABANDONED_THEN_RECLAIMED') return 'ABND→RECL';
   return '';
 }
 
@@ -213,42 +215,86 @@ function compactTime(value: unknown): string {
 
 function compactNumber(value: unknown): string {
   const number = Number(value);
-  return Number.isFinite(number) ? number.toFixed(2).replace(/\.00$/, '') : 'Pending';
+  return Number.isFinite(number) ? number.toFixed(4).replace(/\.0000$/, '').replace(/(\.\d*?)0+$/, '$1') : 'Pending';
+}
+
+function present(value: unknown): string {
+  if (value === null || value === undefined || value === '') return 'Pending';
+  if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  return String(value);
 }
 
 function sampleFacts(scriptKey: string, sample: DoctrineSample, node: MasterMapRangeNode | null): string[] {
   const payload = sample.payload || {};
+  const base = [
+    `Range ID: ${sample.canonicalRangeId}`,
+    `Processing: ${present(sample.processingStatus)}`,
+  ];
   if (scriptKey === 'weekly_structure') {
-    return [
-      chronologyLabel(payload.chronology ?? node?.script1Chronology),
-      bosLabel(payload.bos_direction ?? node?.script1BosDirection),
-      `BOS ${compactTime(payload.bos_time)}`,
-      payload.weeks_to_bos == null ? 'Weeks pending' : `${payload.weeks_to_bos} week${payload.weeks_to_bos === 1 ? '' : 's'} to BOS`,
+    return [...base,
+      `Chronology: ${chronologyLabel(payload.chronology ?? node?.script1Chronology)}`,
+      `Range defined: ${compactTime(payload.range_defined_at)}`,
+      `Expected BOS: ${bosLabel(payload.expected_bos_direction)}`,
+      `Detected BOS: ${bosLabel(payload.bos_direction ?? node?.script1BosDirection)}`,
+      `BOS candle: ${compactTime(payload.bos_time)}`,
+      `BOS price: ${compactNumber(payload.bos_price)}`,
+      `Weeks to BOS: ${present(payload.weeks_to_bos)}`,
+      `Candles scanned: ${present(payload.candles_scanned)}`,
     ];
   }
   if (scriptKey === 'weekly_reclaim') {
     const status = String(payload.reclaim_status || sample.processingStatus || 'PENDING').replaceAll('_', ' ');
-    const timing = payload.reclaim_status === 'RECLAIMED'
-      ? `Reclaim ${compactTime(payload.reclaim_time)}`
-      : payload.reclaim_status === 'ABANDONED'
-        ? `New BOS ${compactTime(payload.next_bos_time)}` : 'Reclaim pending';
-    const weeks = payload.weeks_to_reclaim ?? payload.weeks_to_abandonment;
-    return [status, `Boundary ${compactNumber(payload.reclaim_boundary)}`, timing,
-      weeks == null ? 'Weeks pending' : `${weeks} week${weeks === 1 ? '' : 's'}`];
+    return [...base,
+      `Result: ${present(payload.reclaim_abbreviation)} · ${status}`,
+      `Source BOS: ${bosLabel(payload.source_bos_direction)}`,
+      `BOS candle: ${compactTime(payload.source_bos_time)}`,
+      `BOS candle close: ${compactNumber(payload.bos_candle_close)}`,
+      `Broken boundary: ${compactNumber(payload.reclaim_boundary)}`,
+      `Same-candle reclaim: ${present(payload.same_candle_reclaim)}`,
+      `Reclaim candle: ${compactTime(payload.reclaim_time)}`,
+      `Reclaim wick: ${compactNumber(payload.reclaim_wick_price)}`,
+      `Weeks to reclaim: ${present(payload.weeks_to_reclaim)}`,
+      `Next BOS range: ${present(payload.next_bos_range_id)}`,
+      `Next BOS direction: ${bosLabel(payload.next_bos_direction)}`,
+      `Next BOS candle: ${compactTime(payload.next_bos_time)}`,
+      `Weeks to abandonment: ${present(payload.weeks_to_abandonment)}`,
+      `Weeks ABND→RECL: ${present(payload.weeks_from_abandonment_to_reclaim)}`,
+      `Candles scanned: ${present(payload.candles_scanned)}`,
+    ];
   }
   if (scriptKey === 'weekly_reclaim_depth') {
-    const status = String(payload.depth_status || sample.processingStatus || 'PENDING').replaceAll('_', ' ');
-    const depth = payload.reclaim_depth_percent == null
-      ? 'Depth pending' : `${compactNumber(payload.reclaim_depth_percent)}% depth`;
-    const weeks = payload.weeks_to_deepest_wick;
-    return [status, depth, `Deepest ${compactTime(payload.deepest_wick_time)}`,
-      weeks == null ? 'Weeks pending' : `${weeks} week${weeks === 1 ? '' : 's'} to deepest`];
+    return [...base,
+      `Result: ${String(payload.depth_status || 'PENDING').replaceAll('_', ' ')}`,
+      `Source BOS: ${bosLabel(payload.source_bos_direction)}`,
+      `BOS candle: ${compactTime(payload.source_bos_time)}`,
+      `Reclaim result: ${present(payload.source_reclaim_abbreviation)} · ${present(payload.source_reclaim_status)}`,
+      `Reclaim candle: ${compactTime(payload.source_reclaim_time)}`,
+      `Weeks to reclaim: ${present(payload.source_weeks_to_reclaim)}`,
+      `Range 1 ID: ${present(payload.source_range1_id)}`,
+      `W1 RH: ${compactNumber(payload.range1_high)}`,
+      `W1 RL: ${compactNumber(payload.range1_low)}`,
+      `W1 size: ${compactNumber(payload.range1_size)}`,
+      `Fib 0: ${compactNumber(payload.fib_zero_price)}`,
+      `Fib 1: ${compactNumber(payload.fib_one_price)}`,
+      `Range 2 ID: ${present(payload.range2_id)}`,
+      `Range 2 defined: ${compactTime(payload.range2_defined_at)}`,
+      `Range 2 chronology: ${chronologyLabel(payload.range2_chronology)}`,
+      `W2 opposite anchor: ${present(payload.range2_opposite_anchor_type)} ${compactNumber(payload.range2_opposite_anchor_price)}`,
+      `W2 opposite candle: ${compactTime(payload.range2_opposite_anchor_time)}`,
+      `W2 continuation anchor: ${present(payload.range2_continuation_anchor_type)} ${compactNumber(payload.range2_continuation_anchor_price)}`,
+      `W2 continuation candle: ${compactTime(payload.range2_continuation_anchor_time)}`,
+      `Depth price: ${compactNumber(payload.reclaim_depth_price)}`,
+      `Fib ratio: ${compactNumber(payload.reclaim_depth_ratio)}`,
+      `Depth: ${compactNumber(payload.reclaim_depth_percent)}%`,
+      `Weeks BOS→R2 defined: ${present(payload.weeks_bos_to_range2_definition)}`,
+      `Range 2 formation weeks: ${present(payload.range2_formation_weeks)}`,
+      `Old opposite touched: ${present(payload.old_opposite_external_touched)}`,
+      `Old opposite exceeded: ${present(payload.old_opposite_external_exceeded)}`,
+    ];
   }
   const entries = Object.entries(payload)
-    .filter(([key, value]) => key !== 'reason_codes' && ['string', 'number', 'boolean'].includes(typeof value))
-    .slice(0, 4);
-  return entries.length ? entries.map(([key, value]) => `${key.replaceAll('_', ' ')}: ${String(value)}`)
-    : [sample.processingStatus || 'Pending'];
+    .filter(([key, value]) => key !== 'reason_codes' && ['string', 'number', 'boolean'].includes(typeof value));
+  return [...base, ...entries.map(([key, value]) => `${key.replaceAll('_', ' ')}: ${String(value)}`)];
 }
 
 function DoctrineValidationSample({
@@ -269,14 +315,15 @@ function DoctrineValidationSample({
       const range = matchingRange(node, ranges);
       const facts = sampleFacts(scriptKey, sample, node);
       const reasons = Array.isArray(sample.payload?.reason_codes) ? sample.payload.reason_codes : [];
-      return <div key={sample.canonicalRangeId} className="weeklyScript1Sample doctrineValidationSample">
+      return <div key={sample.canonicalRangeId} className="weeklyScript1Sample doctrineValidationSample"
+        data-decision={sample.decision}>
         <button type="button" className="weeklyScript1Row doctrineValidationRow" disabled={!range}
           onClick={() => range && onNavigateRange(range)}>
           <b>WEEKLY</b>
           {facts.map((fact, index) => <span key={`${fact}-${index}`}>{fact}</span>)}
           <strong>{sample.decision}</strong>
         </button>
-        {!!reasons.length && <span className="doctrineSampleReason">{reasons.join(' · ').replaceAll('_', ' ')}</span>}
+        {!!reasons.length && <span className="doctrineSampleReason">Reasons: {reasons.join(' · ').replaceAll('_', ' ')}</span>}
         {reviewEnabled && sample.decision === 'PENDING' && <div className="weeklySampleActions">
           <button type="button" disabled={saving}
             onClick={() => onDecision(sample.canonicalRangeId, 'APPROVED')}>Approve</button>
