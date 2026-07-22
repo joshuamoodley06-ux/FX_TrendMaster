@@ -72,7 +72,7 @@ If a later reclaim and a newer BOS occur on the same W1 candle, OHLC cannot prov
 
 ## Weekly Range 2 reclaim depth v5
 
-The depth window is now tied to the actual structural sequence:
+The depth window is tied to the actual structural sequence:
 
 ```text
 Range 1 BOS
