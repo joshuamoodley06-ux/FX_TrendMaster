@@ -208,14 +208,18 @@ def install(pipeline: Any) -> None:
                     ),
                     None,
                 )
+                latest_id = str(row.get("version_id") or "")
                 package_ready = bool(
                     current_id
+                    and latest_id
+                    and current_id == latest_id
                     and current is not None
                     and str(current.get("adapter_key") or "") == PACKAGE_ADAPTER
                 )
                 value["package_dependency_ready"] = package_ready
-                # The old built-in Weekly Script 1 may remain approved for rollback,
-                # but it must not unlock the new package chain in the cockpit.
+                # The old built-in Weekly Script 1 or an older package version may
+                # remain approved for rollback, but it must not unlock the latest
+                # package chain in the cockpit.
                 if str(row["script_key"]) in {
                     "weekly_structure", "weekly_reclaim", "weekly_reclaim_depth"
                 } and not package_ready:
