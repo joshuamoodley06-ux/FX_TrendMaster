@@ -92,7 +92,15 @@ def _review_samples(
                     add(row)
                     break
     elif script_key == "weekly_reclaim_depth":
-        for wanted in ("MEASURED", "PENDING", "NEEDS_REVIEW"):
+        for wanted in (
+            "NO_RETRACEMENT",
+            "BOUNDARY_TOUCH",
+            "RETRACED_INTO_RANGE",
+            "TOUCHED_OLD_OPPOSITE",
+            "EXCEEDED_OLD_OPPOSITE",
+            "PENDING",
+            "NEEDS_REVIEW",
+        ):
             for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
                 if str(row.get("payload", {}).get("depth_status") or "").upper() == wanted:
                     add(row)
