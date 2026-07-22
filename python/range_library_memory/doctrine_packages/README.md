@@ -70,9 +70,18 @@ A newer approved Weekly BOS before the first boundary touch marks the old range 
 
 If a later reclaim and a newer BOS occur on the same W1 candle, OHLC cannot prove event order and the result remains `NEEDS_REVIEW`.
 
-## Weekly Range 2 reclaim depth v4
+## Weekly Range 2 reclaim depth v5
 
-`weekly_reclaim_depth.py` measures the mapped opposite anchor of Range 2 against the full size of Range 1. It does not keep scanning future candles for an arbitrary deepest wick.
+The depth window is now tied to the actual structural sequence:
+
+```text
+Range 1 BOS
+-> reclaim begins the pullback
+-> first new Weekly range formed after that reclaim is Range 2
+-> Range 2 formation stops the depth window
+```
+
+The script does not skip the first new range merely because a later range has a more convenient chronology. Chronology remains visible for audit, but it is not allowed to push the measurement months forward.
 
 For `BOS_UP`:
 
@@ -110,16 +119,21 @@ The script stores both trader-facing and raw audit values:
 Range 1 ID, RH, RL and size
 Fib 0 and Fib 1 prices
 Range 2 ID and chronology
+Range 2 selection rule
+reclaim-to-Range-2 depth-window start and stop dates
 W2 opposite anchor type, price and candle
 W2 continuation anchor type, price and candle
 trader-facing depth price, ratio, percentage and classification
 raw depth price, ratio and percentage
 boundary distance and relative position
 weeks from BOS to Range 2 definition
+weeks from reclaim to Range 2 definition
 Range 2 formation weeks
 whether the old opposite external was touched or exceeded
 source reclaim status and timing
 ```
+
+Pure `ABND` without a later reclaim does not create a reclaim-depth measurement. It remains pending until a later reclaim exists. `ABND→RECL` uses the later reclaim candle as the depth-window start.
 
 Raw ratios remain unclamped for audit and research. Trader-facing depth never displays a negative retracement. No shallow, medium, or deep category is hardcoded.
 
