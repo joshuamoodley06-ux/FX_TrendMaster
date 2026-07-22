@@ -1,8 +1,7 @@
 """Build the ordered Weekly movement path between two approved BOS events.
 
-This package consumes approved Weekly Reclaim Depth memory for Range 1 and
-approved Weekly BOS memory for the mapped Range 2. It does not detect anchors,
-rebuild ranges, or recalculate Fib depth.
+This package reads approved Weekly BOS memory first. Reclaim-depth memory is
+optional enrichment and must never delay movement counting.
 
 Weekly candle direction supplies movement evidence:
 
@@ -13,7 +12,7 @@ For BOS Up, bearish candles are countertrend and bullish candles are protrend.
 For BOS Down, bullish candles are countertrend and bearish candles are protrend.
 
 Consecutive candles with the same role form one movement leg. A direction change
-starts a new leg. The next approved Range 2 BOS is the terminal event and its
+starts a new leg. The next approved Weekly BOS is the terminal event and its
 candle is excluded from the preceding movement-leg counts.
 """
 from __future__ import annotations
@@ -23,7 +22,7 @@ from typing import Any, Mapping
 
 FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "weekly_movement_classification"
-VERSION_LABEL = "3"
+VERSION_LABEL = "4"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 40
 
@@ -111,6 +110,7 @@ def _base_payload() -> dict[str, Any]:
         "protrend_distance": None,
         "source_range1_id": None,
         "range2_id": None,
+        "reclaim_depth_status": "PENDING",
         "movement_legs": [],
         "reason_codes": [],
     }
@@ -121,7 +121,9 @@ def _countertrend_classification(depth_status: str) -> str:
         return "NO_RANGE1_RETRACEMENT"
     if depth_status == "BOUNDARY_TOUCH":
         return "BOUNDARY_TOUCH"
-    return "COUNTERTREND_RETRACEMENT"
+    if depth_status in _COMPLETE_DEPTH_STATES:
+        return "COUNTERTREND_RETRACEMENT"
+    return "COUNTERTREND_LEG_DEPTH_PENDING"
 
 
 def _candle_direction(candle: Mapping[str, Any]) -> str:
@@ -205,99 +207,148 @@ def _sequence(legs: list[dict[str, Any]]) -> str:
     return "_THEN_".join(str(leg["classification"]) for leg in legs)
 
 
-def run(context: Any) -> dict[str, list[dict[str, Any]]]:
-    outputs: list[dict[str, Any]] = []
-    for raw_node in context.selected_ranges(layer="WEEKLY"):
-        node = dict(raw_node)
+def _bos_records(context: Any, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for node in nodes:
         canonical_id = str(node.get("id") or "")
+        bos, processing = _memory_entry(context, canonical_id, "weekly_structure")
+        records.append({
+            "node": node,
+            "id": canonical_id,
+            "bos": bos,
+            "processing": processing,
+            "direction": str((bos or {}).get("bos_direction") or "").upper(),
+            "time": _time((bos or {}).get("bos_time")),
+        })
+    return records
+
+
+def _next_complete_bos(
+    records: list[dict[str, Any]],
+    *,
+    current_id: str,
+    source_bos_time: datetime,
+) -> dict[str, Any] | None:
+    candidates = [
+        record
+        for record in records
+        if record["id"] != current_id
+        and record["processing"] in {"", "COMPLETE"}
+        and record["direction"] in {"BOS_UP", "BOS_DOWN"}
+        and record["time"] is not None
+        and record["time"] > source_bos_time
+    ]
+    return min(
+        candidates,
+        key=lambda record: (record["time"], record["id"]),
+        default=None,
+    )
+
+
+def _apply_optional_depth(
+    context: Any,
+    *,
+    canonical_id: str,
+    expected_range2_id: str,
+    payload: dict[str, Any],
+) -> str | None:
+    """Attach depth facts without gating the movement chapter."""
+    depth, processing = _memory_entry(
+        context,
+        canonical_id,
+        "weekly_reclaim_depth",
+    )
+    if depth is None:
+        payload["reclaim_depth_status"] = "MISSING"
+        return None
+
+    depth_status = str(depth.get("depth_status") or "PENDING").upper()
+    payload["reclaim_depth_status"] = depth_status
+    if processing == "NEEDS_REVIEW" or depth_status == "NEEDS_REVIEW":
+        return "WEEKLY_RECLAIM_DEPTH_NEEDS_REVIEW"
+    if processing not in {"", "COMPLETE"} or depth_status not in _COMPLETE_DEPTH_STATES:
+        return None
+
+    mapped_range2_id = str(depth.get("range2_id") or "").strip()
+    if mapped_range2_id and mapped_range2_id != expected_range2_id:
+        return "DEPTH_RANGE2_DIFFERS_FROM_NEXT_BOS_RANGE"
+
+    opposite_price = _number(depth.get("range2_opposite_anchor_price"))
+    continuation_price = _number(depth.get("range2_continuation_anchor_price"))
+    countertrend_distance = _number(depth.get("reclaim_depth_price"))
+    countertrend_percent = _number(depth.get("reclaim_depth_percent"))
+    if (
+        opposite_price is None
+        or continuation_price is None
+        or countertrend_distance is None
+        or countertrend_percent is None
+    ):
+        return "WEEKLY_RECLAIM_DEPTH_FACTS_INCOMPLETE"
+
+    payload.update({
+        "countertrend_distance": round(max(0.0, countertrend_distance), 8),
+        "countertrend_depth_percent": round(max(0.0, countertrend_percent), 8),
+        "protrend_distance": round(abs(continuation_price - opposite_price), 8),
+    })
+    return None
+
+
+def run(context: Any) -> dict[str, list[dict[str, Any]]]:
+    nodes = [dict(node) for node in context.selected_ranges(layer="WEEKLY")]
+    records = _bos_records(context, nodes)
+    outputs: list[dict[str, Any]] = []
+
+    for current in records:
+        node = current["node"]
+        canonical_id = current["id"]
         payload = _base_payload()
         payload["source_range1_id"] = canonical_id
 
-        depth, depth_processing = _memory_entry(
-            context,
-            canonical_id,
-            "weekly_reclaim_depth",
-        )
-        if depth is None:
-            payload["reason_codes"] = ["APPROVED_WEEKLY_RECLAIM_DEPTH_MEMORY_MISSING"]
+        source_bos = current["bos"]
+        source_processing = current["processing"]
+        source_bos_direction = current["direction"]
+        source_bos_time = current["time"]
+
+        if source_bos is None:
+            payload["reason_codes"] = ["APPROVED_WEEKLY_BOS_MEMORY_MISSING"]
             outputs.append(_output(node, "PENDING", payload))
             continue
-        if depth_processing == "NEEDS_REVIEW":
-            payload["reason_codes"] = ["WEEKLY_RECLAIM_DEPTH_NEEDS_REVIEW"]
+        if source_processing == "NEEDS_REVIEW":
+            payload["reason_codes"] = ["SOURCE_WEEKLY_BOS_NEEDS_REVIEW"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
-        if depth_processing not in {"", "COMPLETE"}:
-            payload["reason_codes"] = ["WEEKLY_RECLAIM_DEPTH_NOT_COMPLETE"]
+        if source_processing not in {"", "COMPLETE"}:
+            payload["reason_codes"] = ["SOURCE_WEEKLY_BOS_STILL_PENDING"]
             outputs.append(_output(node, "PENDING", payload))
             continue
-
-        depth_status = str(depth.get("depth_status") or "").upper()
-        source_bos_direction = str(depth.get("source_bos_direction") or "").upper()
-        source_bos_time = _time(depth.get("source_bos_time"))
-        range2_id = str(depth.get("range2_id") or "").strip()
-        opposite_price = _number(depth.get("range2_opposite_anchor_price"))
-        continuation_price = _number(depth.get("range2_continuation_anchor_price"))
-        countertrend_distance = _number(depth.get("reclaim_depth_price"))
-        countertrend_percent = _number(depth.get("reclaim_depth_percent"))
+        if source_bos_direction not in {"BOS_UP", "BOS_DOWN"} or source_bos_time is None:
+            payload["reason_codes"] = ["SOURCE_WEEKLY_BOS_INPUTS_INCOMPLETE"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
 
         payload.update({
-            "source_bos_direction": source_bos_direction or None,
-            "source_bos_time": _stamp(source_bos_time) if source_bos_time else None,
-            "range2_id": range2_id or None,
+            "source_bos_direction": source_bos_direction,
+            "source_bos_time": _stamp(source_bos_time),
         })
 
-        if depth_status not in _COMPLETE_DEPTH_STATES:
-            payload["reason_codes"] = ["WEEKLY_RECLAIM_DEPTH_STILL_PENDING"]
-            outputs.append(_output(node, "PENDING", payload))
-            continue
-        if source_bos_direction not in {"BOS_UP", "BOS_DOWN"}:
-            payload["reason_codes"] = ["SOURCE_BOS_DIRECTION_INVALID"]
-            outputs.append(_output(node, "NEEDS_REVIEW", payload))
-            continue
-        if (
-            not range2_id
-            or source_bos_time is None
-            or opposite_price is None
-            or continuation_price is None
-            or countertrend_distance is None
-            or countertrend_percent is None
-        ):
-            payload["reason_codes"] = ["WEEKLY_MOVEMENT_INPUTS_INCOMPLETE"]
-            outputs.append(_output(node, "NEEDS_REVIEW", payload))
-            continue
-
-        next_bos, next_bos_processing = _memory_entry(
-            context,
-            range2_id,
-            "weekly_structure",
+        next_record = _next_complete_bos(
+            records,
+            current_id=canonical_id,
+            source_bos_time=source_bos_time,
         )
-        if next_bos is None:
-            payload["reason_codes"] = ["APPROVED_RANGE2_BOS_MEMORY_MISSING"]
-            outputs.append(_output(node, "PENDING", payload))
-            continue
-        if next_bos_processing == "NEEDS_REVIEW":
-            payload["reason_codes"] = ["RANGE2_BOS_NEEDS_REVIEW"]
-            outputs.append(_output(node, "NEEDS_REVIEW", payload))
-            continue
-        if next_bos_processing not in {"", "COMPLETE"}:
-            payload["reason_codes"] = ["RANGE2_BOS_STILL_PENDING"]
+        if next_record is None:
+            payload["reason_codes"] = ["NEXT_APPROVED_WEEKLY_BOS_NOT_AVAILABLE"]
             outputs.append(_output(node, "PENDING", payload))
             continue
 
-        next_bos_direction = str(next_bos.get("bos_direction") or "").upper()
-        next_bos_time = _time(next_bos.get("bos_time"))
+        next_bos_direction = str(next_record["direction"])
+        next_bos_time = next_record["time"]
+        range2_id = str(next_record["id"])
         payload.update({
-            "next_bos_direction": next_bos_direction or None,
-            "next_bos_time": _stamp(next_bos_time) if next_bos_time else None,
+            "range2_id": range2_id,
+            "next_bos_direction": next_bos_direction,
+            "next_bos_time": _stamp(next_bos_time),
         })
-        if next_bos_direction not in {"BOS_UP", "BOS_DOWN"} or next_bos_time is None:
-            payload["reason_codes"] = ["RANGE2_BOS_INPUTS_INCOMPLETE"]
-            outputs.append(_output(node, "PENDING", payload))
-            continue
-        if next_bos_time <= source_bos_time:
-            payload["reason_codes"] = ["NEXT_BOS_NOT_AFTER_SOURCE_BOS"]
-            outputs.append(_output(node, "NEEDS_REVIEW", payload))
-            continue
 
         loaded = [dict(candle) for candle in context.load_candles(
             timeframe="W1",
@@ -349,27 +400,33 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         protrend_weeks = sum(
             int(leg["weeks"]) for leg in legs if leg["code"] == "PT"
         )
-        countertrend_leg_count = sum(1 for leg in legs if leg["code"] == "CT")
-        protrend_leg_count = sum(1 for leg in legs if leg["code"] == "PT")
-        protrend_distance = abs(continuation_price - opposite_price)
-
         payload.update({
             "movement_path": _path(legs, next_bos_direction),
             "movement_sequence": _sequence(legs),
             "movement_leg_count": len(legs),
-            "countertrend_leg_count": countertrend_leg_count,
-            "protrend_leg_count": protrend_leg_count,
+            "countertrend_leg_count": sum(1 for leg in legs if leg["code"] == "CT"),
+            "protrend_leg_count": sum(1 for leg in legs if leg["code"] == "PT"),
             "countertrend_weeks": countertrend_weeks,
             "protrend_weeks": protrend_weeks,
-            "countertrend_classification": _countertrend_classification(depth_status),
             "countertrend_direction": countertrend_direction,
-            "countertrend_distance": round(max(0.0, countertrend_distance), 8),
-            "countertrend_depth_percent": round(max(0.0, countertrend_percent), 8),
             "protrend_direction": protrend_direction,
-            "protrend_distance": round(protrend_distance, 8),
             "movement_legs": legs,
-            "reason_codes": [],
         })
+
+        depth_issue = _apply_optional_depth(
+            context,
+            canonical_id=canonical_id,
+            expected_range2_id=range2_id,
+            payload=payload,
+        )
+        depth_status = str(payload.get("reclaim_depth_status") or "PENDING")
+        payload["countertrend_classification"] = _countertrend_classification(depth_status)
+        if depth_issue is not None:
+            payload["reason_codes"] = [depth_issue]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
+
+        payload["reason_codes"] = []
         outputs.append(_output(node, "COMPLETE", payload))
 
     return {"outputs": outputs}
