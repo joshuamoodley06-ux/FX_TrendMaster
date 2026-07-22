@@ -92,6 +92,17 @@ def _review_samples(
                     add(row)
                     break
     elif script_key == "weekly_reclaim_depth":
+        # The five samples must expose both valid mapped range stories, not just
+        # five percentages from the same anchor order.
+        for wanted in (
+            "OPPOSITE_THEN_CONTINUATION",
+            "CONTINUATION_THEN_OPPOSITE",
+            "SAME_W1",
+        ):
+            for row in sorted(outputs, key=lambda item: str(item["canonical_range_id"])):
+                if str(row.get("payload", {}).get("range2_anchor_sequence") or "").upper() == wanted:
+                    add(row)
+                    break
         for wanted in (
             "NO_RETRACEMENT",
             "BOUNDARY_TOUCH",
