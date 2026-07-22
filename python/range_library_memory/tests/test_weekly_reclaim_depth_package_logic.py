@@ -70,11 +70,25 @@ def _memory(
     }
 
 
+def _pending_memory(direction: str, chronology: str, defined_at: str) -> dict:
+    return _memory(
+        direction=direction,
+        chronology=chronology,
+        defined_at=defined_at,
+        bos_time=None,
+        processing_status="PENDING",
+        reclaim_status="PENDING",
+        reclaim_abbreviation="PEND",
+        reclaim_time=None,
+        weeks_to_reclaim=None,
+    )
+
+
 def _output(result: dict, identity: str) -> dict:
     return next(row for row in result["outputs"] if row["canonical_range_id"] == identity)
 
 
-def test_bos_up_measures_first_range_formed_after_reclaim() -> None:
+def test_bos_up_depth_ends_at_new_rl_and_later_rh_completes_range() -> None:
     ranges = [
         _range(
             "weekly-1", high=100, low=90,
@@ -82,65 +96,65 @@ def test_bos_up_measures_first_range_formed_after_reclaim() -> None:
             active_from_time="2026-01-05T00:00:00Z",
         ),
         _range(
-            "weekly-2", high=110, low=92,
-            high_time="2026-01-26T00:00:00Z", low_time="2026-01-12T00:00:00Z",
-            active_from_time="2026-01-26T00:00:00Z",
+            "weekly-2", high=110, low=95,
+            high_time="2026-02-02T00:00:00Z", low_time="2026-01-19T00:00:00Z",
+            active_from_time="2026-01-19T00:00:00Z",
         ),
     ]
     memory = {
         "weekly-1": _memory(
             direction="BOS_UP", chronology="RL_TO_RH",
             defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+            reclaim_time="2026-01-12T00:00:00Z",
         ),
-        "weekly-2": _memory(
-            direction="BOS_UP", chronology="RL_TO_RH",
-            defined_at="2026-01-26T00:00:00Z", bos_time=None,
-            processing_status="PENDING", reclaim_status="PENDING",
-            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
-        ),
+        "weekly-2": _pending_memory("BOS_UP", "RL_TO_RH", "2026-02-02T00:00:00Z"),
     }
 
-    row = _output(weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1")
+    payload = _output(
+        weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
+    )["payload"]
 
-    assert row["processing_status"] == "COMPLETE"
-    payload = row["payload"]
     assert payload["range2_id"] == "weekly-2"
-    assert payload["range2_selection_rule"] == "FIRST_WEEKLY_RANGE_FORMED_AFTER_RECLAIM"
+    assert payload["range2_selection_rule"] == (
+        "FIRST_MAPPED_WEEKLY_RANGE_COMPLETED_AFTER_RECLAIM_WITH_NEW_OPPOSITE_ANCHOR"
+    )
+    assert payload["range2_chronology"] == "RL_TO_RH"
+    assert payload["range2_anchor_sequence"] == "OPPOSITE_THEN_CONTINUATION"
     assert payload["depth_window_start_time"] == "2026-01-12T00:00:00Z"
-    assert payload["depth_window_end_time"] == "2026-01-26T00:00:00Z"
+    assert payload["depth_window_end_time"] == "2026-01-19T00:00:00Z"
     assert payload["range2_opposite_anchor_type"] == "RL"
-    assert payload["range2_opposite_anchor_price"] == 92
-    assert payload["depth_status"] == "RETRACED_INTO_RANGE"
-    assert payload["reclaim_depth_percent"] == 80
-    assert payload["weeks_bos_to_range2_definition"] == 2
-    assert payload["weeks_reclaim_to_range2_definition"] == 2
+    assert payload["range2_opposite_anchor_price"] == 95
+    assert payload["range2_opposite_anchor_time"] == "2026-01-19T00:00:00Z"
+    assert payload["range2_continuation_anchor_type"] == "RH"
+    assert payload["range2_continuation_anchor_time"] == "2026-02-02T00:00:00Z"
+    assert payload["range2_completion_anchor_type"] == "RH"
+    assert payload["range2_completed_at"] == "2026-02-02T00:00:00Z"
+    assert payload["range2_defined_at"] == "2026-02-02T00:00:00Z"
+    assert payload["reclaim_depth_percent"] == 50
+    assert payload["weeks_reclaim_to_depth_anchor"] == 1
+    assert payload["weeks_reclaim_to_range2_completion"] == 3
     assert payload["range2_formation_weeks"] == 2
 
 
-def test_bos_down_measures_first_range_formed_after_reclaim() -> None:
+def test_bos_down_story_uses_new_rh_for_depth_then_new_rl_completes_range() -> None:
     ranges = [
         _range(
             "weekly-1", high=100, low=90,
             high_time="2025-12-01T00:00:00Z", low_time="2026-01-05T00:00:00Z",
-            active_from_time="2026-01-05T00:00:00Z",
         ),
         _range(
             "weekly-2", high=98, low=80,
-            high_time="2026-01-12T00:00:00Z", low_time="2026-01-26T00:00:00Z",
-            active_from_time="2026-01-26T00:00:00Z",
+            high_time="2026-01-12T00:00:00Z", low_time="2026-02-02T00:00:00Z",
+            active_from_time="2026-01-12T00:00:00Z",
         ),
     ]
     memory = {
         "weekly-1": _memory(
             direction="BOS_DOWN", chronology="RH_TO_RL",
-            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-05T00:00:00Z",
+            reclaim_time="2026-01-05T00:00:00Z", weeks_to_reclaim=0,
         ),
-        "weekly-2": _memory(
-            direction="BOS_DOWN", chronology="RH_TO_RL",
-            defined_at="2026-01-26T00:00:00Z", bos_time=None,
-            processing_status="PENDING", reclaim_status="PENDING",
-            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
-        ),
+        "weekly-2": _pending_memory("BOS_DOWN", "RH_TO_RL", "2026-02-02T00:00:00Z"),
     }
 
     payload = _output(
@@ -149,28 +163,104 @@ def test_bos_down_measures_first_range_formed_after_reclaim() -> None:
 
     assert payload["fib_zero_price"] == 90
     assert payload["fib_one_price"] == 100
+    assert payload["range2_chronology"] == "RH_TO_RL"
+    assert payload["range2_anchor_sequence"] == "OPPOSITE_THEN_CONTINUATION"
     assert payload["range2_opposite_anchor_type"] == "RH"
     assert payload["range2_opposite_anchor_price"] == 98
+    assert payload["depth_window_end_time"] == "2026-01-12T00:00:00Z"
+    assert payload["range2_continuation_anchor_type"] == "RL"
+    assert payload["range2_completion_anchor_type"] == "RL"
+    assert payload["range2_completed_at"] == "2026-02-02T00:00:00Z"
     assert payload["depth_status"] == "RETRACED_INTO_RANGE"
     assert payload["reclaim_depth_percent"] == 80
+    assert payload["weeks_reclaim_to_depth_anchor"] == 1
+    assert payload["weeks_reclaim_to_range2_completion"] == 4
+    assert payload["range2_formation_weeks"] == 3
 
 
-def test_depth_stops_at_first_new_range_and_ignores_later_deeper_range() -> None:
+def test_reclaim_can_create_opposite_anchor_and_complete_range_after_existing_continuation_anchor() -> None:
     ranges = [
         _range(
             "weekly-1", high=100, low=90,
             high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=112, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2026-01-12T00:00:00Z",
             active_from_time="2026-01-05T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-05T00:00:00Z",
+            reclaim_time="2026-01-12T00:00:00Z", weeks_to_reclaim=1,
+        ),
+        "weekly-2": _pending_memory("BOS_UP", "RH_TO_RL", "2026-01-12T00:00:00Z"),
+    }
+
+    payload = _output(
+        weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
+    )["payload"]
+
+    assert payload["range2_chronology"] == "RH_TO_RL"
+    assert payload["range2_anchor_sequence"] == "CONTINUATION_THEN_OPPOSITE"
+    assert payload["range2_opposite_anchor_type"] == "RL"
+    assert payload["range2_opposite_anchor_time"] == "2026-01-12T00:00:00Z"
+    assert payload["range2_completion_anchor_type"] == "RL"
+    assert payload["range2_completed_at"] == "2026-01-12T00:00:00Z"
+    assert payload["weeks_reclaim_to_depth_anchor"] == 0
+    assert payload["weeks_reclaim_to_range2_completion"] == 0
+    assert payload["depth_status"] == "TOUCHED_OLD_OPPOSITE"
+    assert payload["reclaim_depth_percent"] == 100
+
+
+def test_active_from_time_cannot_pretend_range_is_complete_before_second_anchor() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=110, low=95,
+            high_time="2026-01-25T00:00:00Z", low_time="2026-02-01T00:00:00Z",
+            active_from_time="2026-01-25T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2025-12-21T00:00:00Z",
+            reclaim_time="2025-12-28T00:00:00Z", weeks_to_reclaim=1,
+        ),
+        "weekly-2": _pending_memory("BOS_UP", "RH_TO_RL", "2026-02-01T00:00:00Z"),
+    }
+
+    payload = _output(
+        weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
+    )["payload"]
+
+    assert payload["range2_defined_at"] == "2026-02-01T00:00:00Z"
+    assert payload["range2_completed_at"] == "2026-02-01T00:00:00Z"
+    assert payload["range2_completion_anchor_type"] == "RL"
+    assert payload["weeks_bos_to_range2_completion"] == 6
+    assert payload["weeks_reclaim_to_range2_completion"] == 5
+    assert payload["range2_formation_weeks"] == 1
+
+
+def test_first_completed_range_is_selected_and_later_deeper_range_is_ignored() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
         ),
         _range(
             "weekly-2", high=112, low=95,
             high_time="2026-01-26T00:00:00Z", low_time="2026-01-12T00:00:00Z",
-            active_from_time="2026-01-26T00:00:00Z",
         ),
         _range(
             "weekly-3", high=120, low=70,
             high_time="2026-04-06T00:00:00Z", low_time="2026-03-02T00:00:00Z",
-            active_from_time="2026-04-06T00:00:00Z",
         ),
     ]
     memory = {
@@ -178,18 +268,8 @@ def test_depth_stops_at_first_new_range_and_ignores_later_deeper_range() -> None
             direction="BOS_UP", chronology="RL_TO_RH",
             defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
         ),
-        "weekly-2": _memory(
-            direction="BOS_UP", chronology="RL_TO_RH",
-            defined_at="2026-01-26T00:00:00Z", bos_time=None,
-            processing_status="PENDING", reclaim_status="PENDING",
-            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
-        ),
-        "weekly-3": _memory(
-            direction="BOS_UP", chronology="RL_TO_RH",
-            defined_at="2026-04-06T00:00:00Z", bos_time=None,
-            processing_status="PENDING", reclaim_status="PENDING",
-            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
-        ),
+        "weekly-2": _pending_memory("BOS_UP", "RL_TO_RH", "2026-01-26T00:00:00Z"),
+        "weekly-3": _pending_memory("BOS_UP", "RL_TO_RH", "2026-04-06T00:00:00Z"),
     }
 
     payload = _output(
@@ -199,53 +279,7 @@ def test_depth_stops_at_first_new_range_and_ignores_later_deeper_range() -> None
     assert payload["range2_id"] == "weekly-2"
     assert payload["range2_opposite_anchor_price"] == 95
     assert payload["reclaim_depth_percent"] == 50
-    assert payload["depth_window_end_time"] == "2026-01-26T00:00:00Z"
-
-
-def test_first_post_reclaim_range_is_not_skipped_for_chronology() -> None:
-    ranges = [
-        _range(
-            "weekly-1", high=100, low=90,
-            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
-            active_from_time="2026-01-05T00:00:00Z",
-        ),
-        _range(
-            "weekly-2", high=108, low=94,
-            high_time="2026-01-19T00:00:00Z", low_time="2026-01-26T00:00:00Z",
-            active_from_time="2026-01-26T00:00:00Z",
-        ),
-        _range(
-            "weekly-3", high=115, low=80,
-            high_time="2026-03-02T00:00:00Z", low_time="2026-02-02T00:00:00Z",
-            active_from_time="2026-03-02T00:00:00Z",
-        ),
-    ]
-    memory = {
-        "weekly-1": _memory(
-            direction="BOS_UP", chronology="RL_TO_RH",
-            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
-        ),
-        "weekly-2": _memory(
-            direction="BOS_DOWN", chronology="RH_TO_RL",
-            defined_at="2026-01-26T00:00:00Z", bos_time=None,
-            processing_status="PENDING", reclaim_status="PENDING",
-            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
-        ),
-        "weekly-3": _memory(
-            direction="BOS_UP", chronology="RL_TO_RH",
-            defined_at="2026-03-02T00:00:00Z", bos_time=None,
-            processing_status="PENDING", reclaim_status="PENDING",
-            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
-        ),
-    }
-
-    payload = _output(
-        weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
-    )["payload"]
-
-    assert payload["range2_id"] == "weekly-2"
-    assert payload["range2_chronology"] == "RH_TO_RL"
-    assert payload["reclaim_depth_percent"] == 60
+    assert payload["range2_completed_at"] == "2026-01-26T00:00:00Z"
 
 
 def test_no_retracement_is_zero_for_trader_but_raw_value_is_preserved() -> None:
@@ -253,12 +287,10 @@ def test_no_retracement_is_zero_for_trader_but_raw_value_is_preserved() -> None:
         _range(
             "weekly-1", high=100, low=90,
             high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
-            active_from_time="2026-01-05T00:00:00Z",
         ),
         _range(
             "weekly-2", high=112, low=102,
             high_time="2026-01-26T00:00:00Z", low_time="2026-01-12T00:00:00Z",
-            active_from_time="2026-01-26T00:00:00Z",
         ),
     ]
     memory = {
@@ -266,12 +298,7 @@ def test_no_retracement_is_zero_for_trader_but_raw_value_is_preserved() -> None:
             direction="BOS_UP", chronology="RL_TO_RH",
             defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
         ),
-        "weekly-2": _memory(
-            direction="BOS_UP", chronology="RL_TO_RH",
-            defined_at="2026-01-26T00:00:00Z", bos_time=None,
-            processing_status="PENDING", reclaim_status="PENDING",
-            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
-        ),
+        "weekly-2": _pending_memory("BOS_UP", "RL_TO_RH", "2026-01-26T00:00:00Z"),
     }
 
     payload = _output(
@@ -289,12 +316,10 @@ def test_abandoned_without_later_reclaim_keeps_depth_pending() -> None:
         _range(
             "weekly-1", high=100, low=90,
             high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
-            active_from_time="2026-01-05T00:00:00Z",
         ),
         _range(
             "weekly-2", high=110, low=80,
             high_time="2026-01-26T00:00:00Z", low_time="2026-01-19T00:00:00Z",
-            active_from_time="2026-01-26T00:00:00Z",
         ),
     ]
     memory = {
@@ -317,7 +342,6 @@ def test_no_later_mapped_range_after_reclaim_keeps_depth_pending() -> None:
         _range(
             "weekly-1", high=100, low=90,
             high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
-            active_from_time="2026-01-05T00:00:00Z",
         )
     ]
     memory = {
