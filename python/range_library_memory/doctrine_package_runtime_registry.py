@@ -29,25 +29,43 @@ def _is_legacy_weekly_bootstrap(kwargs: dict[str, Any], source: str) -> bool:
     )
 
 
+def _ensure_bundled_weekly_packages(
+    pipeline: Any,
+    base_insert: Any,
+    db_path: str | Path,
+) -> list[dict[str, Any]]:
+    """Register current bundled sources without activating or running them."""
+    package_dir = Path(__file__).with_name("doctrine_packages")
+    inserted: list[dict[str, Any]] = []
+    for filename, display_name in _WEEKLY_PACKAGE_CHAIN:
+        source = (package_dir / filename).read_text(encoding="utf-8")
+        inserted.append(insert_package(
+            pipeline,
+            base_insert,
+            db_path,
+            source_code=source,
+            display_name=display_name,
+            script_key="bundled-package-metadata-is-authoritative",
+            version_label="bundled",
+            adapter_key=PACKAGE_ADAPTER,
+            execution_order=0,
+            description=f"Bundled FXTM doctrine package: {display_name}",
+        ))
+    return inserted
+
+
 def _bootstrap_weekly_packages(
     pipeline: Any,
     base_insert: Any,
     *args: Any,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    package_dir = Path(__file__).with_name("doctrine_packages")
-    inserted: list[dict[str, Any]] = []
-    for filename, display_name in _WEEKLY_PACKAGE_CHAIN:
-        source_path = package_dir / filename
-        source = source_path.read_text(encoding="utf-8")
-        package_kwargs = dict(kwargs)
-        package_kwargs.update({
-            "source_code": source,
-            "display_name": display_name,
-            "adapter_key": PACKAGE_ADAPTER,
-            "description": f"Bundled FXTM doctrine package: {display_name}",
-        })
-        inserted.append(insert_package(pipeline, base_insert, *args, **package_kwargs))
+    db_path = args[0] if args else kwargs.get("db_path")
+    if db_path is None:
+        raise pipeline.DoctrinePipelineError(
+            "Weekly package bootstrap requires an analysis database path."
+        )
+    inserted = _ensure_bundled_weekly_packages(pipeline, base_insert, db_path)
 
     # The existing Electron activation expects one inserted version to run first.
     # Return Weekly BOS while also exposing the full registered chain.
@@ -173,7 +191,8 @@ def install(pipeline: Any) -> None:
             ).fetchone())
 
     def list_scripts(db_path: str | Path) -> list[dict[str, Any]]:
-        """Return cockpit summaries with each script's own runs and samples."""
+        """Register current bundles and return each script's own review state."""
+        _ensure_bundled_weekly_packages(pipeline, base_insert, db_path)
         rows = base_list(db_path)
         enriched: list[dict[str, Any]] = []
         for row in rows:
