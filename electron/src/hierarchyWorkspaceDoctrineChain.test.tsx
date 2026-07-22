@@ -140,12 +140,18 @@ describe('HierarchyWorkspace doctrine chain', () => {
       canonicalRangeId: 'mm:range:weekly-trusted',
       decision: 'APPROVED',
     });
+    expect(bridge.runDoctrinePipeline).toHaveBeenCalledWith({
+      analysisDatabasePath: 'C:/analysis.sqlite3',
+      caseRef: 'case:live',
+      symbol: 'XAUUSD',
+    });
+    expect(container.textContent).not.toContain('The review could not be saved safely.');
 
     const depth = container.querySelector<HTMLButtonElement>('[data-script-key="weekly_reclaim_depth"]')!;
     await act(async () => depth.click());
     const runCandidate = Array.from(container.querySelectorAll<HTMLButtonElement>('.doctrineSelectedSummary button'))
       .find((button) => button.textContent === 'Run Candidate')!;
     expect(runCandidate.disabled).toBe(true);
-    expect(container.textContent).toContain('Approve the previous script first.');
+    expect(container.textContent).toContain('Approve the latest previous script first.');
   });
 });
