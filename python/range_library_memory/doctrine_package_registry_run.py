@@ -25,7 +25,10 @@ def _package_dependency_fingerprint(
         return ""
     dependency_key, display_name = dependency
     row = connection.execute(
-        """SELECT s.current_approved_version_id,v.adapter_key
+        """SELECT s.current_approved_version_id,v.adapter_key,
+                  (SELECT v2.version_id FROM doctrine_script_versions v2
+                   WHERE v2.script_id=s.script_id
+                   ORDER BY v2.created_at DESC LIMIT 1) AS latest_version_id
            FROM doctrine_scripts s
            LEFT JOIN doctrine_script_versions v
              ON v.version_id=s.current_approved_version_id
@@ -36,9 +39,10 @@ def _package_dependency_fingerprint(
         row is None
         or not row["current_approved_version_id"]
         or str(row["adapter_key"] or "") != PACKAGE_ADAPTER
+        or str(row["current_approved_version_id"]) != str(row["latest_version_id"] or "")
     ):
         raise pipeline.DoctrinePipelineError(
-            f"{script_key} requires approved {display_name} package memory."
+            f"{script_key} requires the latest approved {display_name} package memory."
         )
     version_id = str(row["current_approved_version_id"])
     output_rows = connection.execute(
