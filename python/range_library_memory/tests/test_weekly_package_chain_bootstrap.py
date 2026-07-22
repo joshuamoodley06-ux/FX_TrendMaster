@@ -12,7 +12,21 @@ EXPECTED_VERSIONS = {
     "weekly_movement_classification": "4",
     "weekly_profile_classification": "1",
     "weekly_extreme_rejection_destination": "1",
+    "daily_mapping_coverage_audit": "1",
+    "weekly_daily_relationship_builder": "1",
 }
+
+
+EXPECTED_KEYS = [
+    "weekly_structure",
+    "weekly_reclaim",
+    "weekly_reclaim_depth",
+    "weekly_movement_classification",
+    "weekly_profile_classification",
+    "weekly_extreme_rejection_destination",
+    "daily_mapping_coverage_audit",
+    "weekly_daily_relationship_builder",
+]
 
 
 def test_legacy_weekly_activation_bootstraps_all_current_packages(tmp_path) -> None:
@@ -33,14 +47,7 @@ def test_legacy_weekly_activation_bootstraps_all_current_packages(tmp_path) -> N
     by_key = {row["script_key"]: row for row in scripts}
 
     assert inserted["script_key"] == "weekly_structure"
-    assert [item["script_key"] for item in inserted["bootstrapped_packages"]] == [
-        "weekly_structure",
-        "weekly_reclaim",
-        "weekly_reclaim_depth",
-        "weekly_movement_classification",
-        "weekly_profile_classification",
-        "weekly_extreme_rejection_destination",
-    ]
+    assert [item["script_key"] for item in inserted["bootstrapped_packages"]] == EXPECTED_KEYS
     assert set(by_key) == set(EXPECTED_VERSIONS)
     assert by_key["weekly_structure"]["execution_order"] == 10
     assert by_key["weekly_reclaim"]["execution_order"] == 20
@@ -48,6 +55,8 @@ def test_legacy_weekly_activation_bootstraps_all_current_packages(tmp_path) -> N
     assert by_key["weekly_movement_classification"]["execution_order"] == 40
     assert by_key["weekly_profile_classification"]["execution_order"] == 50
     assert by_key["weekly_extreme_rejection_destination"]["execution_order"] == 60
+    assert by_key["daily_mapping_coverage_audit"]["execution_order"] == 70
+    assert by_key["weekly_daily_relationship_builder"]["execution_order"] == 80
     for script_key, expected_version in EXPECTED_VERSIONS.items():
         script = by_key[script_key]
         assert script["version_label"] == expected_version
@@ -83,18 +92,10 @@ def test_bootstrap_and_script_listing_are_idempotent(tmp_path) -> None:
     listed_once = doctrine_pipeline.list_scripts(database)
     listed_twice = doctrine_pipeline.list_scripts(database)
 
-    expected_keys = [
-        "weekly_structure",
-        "weekly_reclaim",
-        "weekly_reclaim_depth",
-        "weekly_movement_classification",
-        "weekly_profile_classification",
-        "weekly_extreme_rejection_destination",
-    ]
-    assert [item["script_key"] for item in first["bootstrapped_packages"]] == expected_keys
-    assert [item["script_key"] for item in second["bootstrapped_packages"]] == expected_keys
-    assert len(listed_once) == 6
-    assert len(listed_twice) == 6
+    assert [item["script_key"] for item in first["bootstrapped_packages"]] == EXPECTED_KEYS
+    assert [item["script_key"] for item in second["bootstrapped_packages"]] == EXPECTED_KEYS
+    assert len(listed_once) == 8
+    assert len(listed_twice) == 8
     assert {
         row["script_key"]: row["version_label"] for row in listed_twice
     } == EXPECTED_VERSIONS
