@@ -44,16 +44,16 @@ describe('HierarchyWorkspace reclaim depth review', () => {
   let root: Root | null = null;
   afterEach(() => { act(() => root?.unmount()); container?.remove(); root = null; container = null; });
 
-  it('shows continuous reclaim depth facts instead of BOS labels', async () => {
+  it('shows depth, deepest wick date and weeks to deepest wick', async () => {
     const map = fixture();
     const depthState = {
       status: 'PENDING_APPROVAL',
       current_approved_version_id: null,
-      versions: [{ version_id: 'depth-v1', version_label: '1' }],
+      versions: [{ version_id: 'depth-v2', version_label: '2' }],
       runs: [{
         run: {
-          run_id: 'run-depth-v1',
-          version_id: 'depth-v1',
+          run_id: 'run-depth-v2',
+          version_id: 'depth-v2',
           case_ref: 'case:live',
           symbol: 'XAUUSD',
           approval_status: 'PENDING',
@@ -73,7 +73,9 @@ describe('HierarchyWorkspace reclaim depth review', () => {
             depth_status: 'MEASURED',
             reclaim_depth_percent: 50,
             deepest_wick_price: 95,
-            weeks_observed: 3,
+            deepest_wick_time: '2026-01-26T00:00:00Z',
+            weeks_to_deepest_wick: 3,
+            weeks_observed: 5,
             reason_codes: [],
           },
         }],
@@ -85,7 +87,7 @@ describe('HierarchyWorkspace reclaim depth review', () => {
       {
         script_id: 'depth', script_key: 'weekly_reclaim_depth', display_name: 'Weekly Reclaim Depth',
         execution_order: 30, status: 'PENDING_APPROVAL', current_approved_version_id: null,
-        version_id: 'depth-v1', version_label: '1', latest_version_status: 'PENDING_APPROVAL',
+        version_id: 'depth-v2', version_label: '2', latest_version_status: 'PENDING_APPROVAL',
         doctrine_state: depthState,
       },
     ];
@@ -127,8 +129,9 @@ describe('HierarchyWorkspace reclaim depth review', () => {
 
     expect(container.textContent).toContain('MEASURED');
     expect(container.textContent).toContain('50% depth');
-    expect(container.textContent).toContain('Deepest wick 95');
-    expect(container.textContent).toContain('3 weeks observed');
+    expect(container.textContent).toContain('Deepest 2026-01-26');
+    expect(container.textContent).toContain('3 weeks to deepest');
+    expect(container.textContent).not.toContain('5 weeks observed');
     expect(container.textContent).not.toContain('BOS Pending');
 
     const runCandidate = Array.from(container.querySelectorAll<HTMLButtonElement>('.doctrineSelectedSummary button'))
