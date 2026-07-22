@@ -146,7 +146,7 @@ Pure `ABND` without a later reclaim does not create a reclaim-depth measurement.
 
 Raw ratios remain unclamped for audit and research. Trader-facing depth never displays a negative retracement. No shallow, medium, or deep category is hardcoded.
 
-## Weekly movement classification v1
+## Weekly movement classification v2
 
 This package consumes approved `weekly_reclaim_depth` memory. It does not redetect BOS, reclaim, Range 2, or Fib depth.
 
@@ -174,17 +174,39 @@ W2 RH -> W2 RL
 Direction: DOWN
 ```
 
-Reclaim is the timeline boundary for the countertrend chapter. Countertrend weeks use reclaim-to-depth-anchor timing. Protrend weeks use the mapped Range 2 anchor-to-anchor formation time.
+Movement weeks are counted from actual W1 candles, not by subtracting mapped anchor dates.
 
-The mapped anchor order produces one of three movement sequences:
+Weekly OHLC path doctrine:
 
 ```text
-COUNTERTREND_THEN_PROTREND
-PROTREND_THEN_COUNTERTREND
-SAME_W1_MOVEMENTS
+Bullish W1 = Open -> Low -> Close -> High
+Bearish W1 = Open -> High -> Close -> Low
 ```
 
-A `SAME_W1` result keeps both structural movement classifications and zero formation weeks, but records that intrawweek movement order cannot be proven from W1 OHLC.
+Therefore:
+
+```text
+BOS_UP
+bearish W1 = countertrend
+bullish W1 = protrend
+
+BOS_DOWN
+bullish W1 = countertrend
+bearish W1 = protrend
+```
+
+The BOS candle is excluded from the new movement chapter. The script loads subsequent W1 candles through Range 2 completion and counts only candles matching each movement direction.
+
+For mapped anchors on different W1 candles, their chronology defines the two movement windows. For `SAME_W1`, the shared anchor candle resolves the likely order:
+
+```text
+BOS_UP + bullish anchor W1  -> COUNTERTREND_THEN_PROTREND
+BOS_UP + bearish anchor W1  -> PROTREND_THEN_COUNTERTREND
+BOS_DOWN + bullish anchor W1 -> PROTREND_THEN_COUNTERTREND
+BOS_DOWN + bearish anchor W1 -> COUNTERTREND_THEN_PROTREND
+```
+
+A same-W1 doji remains `NEEDS_REVIEW` because the specified OHLC path cannot establish the order.
 
 The package stores only the basics needed for review and later statistics:
 
@@ -193,8 +215,8 @@ Range 1 ID
 Range 2 ID
 BOS direction
 movement sequence
-countertrend classification, direction, distance, depth %, weeks
-protrend classification, direction, distance, weeks
+countertrend classification, direction, distance, depth %, W1 count
+protrend direction, distance, W1 count
 ```
 
 This is not the future range-lifecycle/storyline builder. It labels movements already supported by approved mapped-range memory.
@@ -214,7 +236,7 @@ approve latest BOS package
 
 During candidate review, the previous approved run is reused as immutable evidence rather than rerun against a newer pending parent. This keeps the trusted memory active while individual candidate decisions are saved and the cockpit refreshes.
 
-The corrected `SAME_W1` BOS case is prioritized in the BOS v3 five-sample review. Reclaim reviews prioritize distinct lifecycle states such as `RECL`, `ABND`, and `ABND→RECL` when those examples exist. Depth reviews prioritize both anchor-order stories and distinct trader outcomes. Movement reviews prioritize countertrend-first, protrend-first, same-W1, no-retracement and ordinary-retracement examples where available.
+The corrected `SAME_W1` BOS case is prioritized in the BOS v3 five-sample review. Reclaim reviews prioritize distinct lifecycle states such as `RECL`, `ABND`, and `ABND→RECL` when those examples exist. Depth reviews prioritize both anchor-order stories and distinct trader outcomes. Movement reviews prioritize both resolved movement orders, no-retracement, boundary-touch and ordinary-retracement examples where available.
 
 ## Approval workflow
 
