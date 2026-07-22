@@ -214,6 +214,7 @@ function compactTime(value: unknown): string {
 }
 
 function compactNumber(value: unknown): string {
+  if (value === null || value === undefined || value === '') return 'Pending';
   const number = Number(value);
   return Number.isFinite(number) ? number.toFixed(4).replace(/\.0000$/, '').replace(/(\.\d*?)0+$/, '$1') : 'Pending';
 }
@@ -397,14 +398,19 @@ function pipelineFromState(
   scriptName: string,
   caseRef: string,
   symbol: string,
+  selectedVersionId: string | null,
   fallback: PipelineView | null,
 ): PipelineView | null {
   if (!state) return fallback;
   const runs = Array.isArray(state.runs) ? state.runs : [];
-  const matching = runs.filter((entry: any) => entry?.run?.case_ref === caseRef
+  const allMatching = runs.filter((entry: any) => entry?.run?.case_ref === caseRef
     && String(entry?.run?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase());
+  const matching = selectedVersionId
+    ? allMatching.filter((entry: any) => String(entry?.run?.version_id || '') === selectedVersionId)
+    : allMatching;
   const direct = state?.run?.case_ref === caseRef
     && String(state?.run?.symbol || '').toUpperCase() === String(symbol || '').toUpperCase()
+    && (!selectedVersionId || String(state?.run?.version_id || '') === selectedVersionId)
     ? state : null;
   const candidate = matching.find((entry: any) => entry?.run?.approval_status === 'PENDING') || null;
   const active = matching.find((entry: any) => entry?.run?.approval_status === 'APPROVED'
@@ -413,7 +419,9 @@ function pipelineFromState(
   const chosen = direct || candidate || active || matching[0] || null;
   const versions = Array.isArray(state.versions) ? state.versions : [];
   if (!chosen?.run) {
-    if (state.status === 'APPROVED' && state.current_approved_version_id) {
+    const selectedIsCurrent = !!state.current_approved_version_id
+      && (!selectedVersionId || String(state.current_approved_version_id) === selectedVersionId);
+    if (state.status === 'APPROVED' && selectedIsCurrent) {
       const approved = versions.find((version: any) => version.version_id === state.current_approved_version_id);
       return {
         pipelineName: scriptName,
@@ -684,11 +692,13 @@ export function HierarchyWorkspace({
   ) || [], [analysisDocument, caseRef]);
 
   const legacy = selectedScriptKey === 'weekly_structure' ? legacyPipelineView(analysisDocument) : null;
+  const selectedVersionId = String(selectedScript?.version_id || '') || null;
   const pipeline = pipelineFromState(
     selectedState,
     String(selectedScript?.display_name || 'Weekly analysis'),
     caseRef,
     symbol,
+    selectedVersionId,
     legacy,
   );
 
@@ -829,12 +839,12 @@ export function HierarchyWorkspace({
   const busy = operationState !== 'IDLE';
   const approvalState = String(pipeline?.approvalState || selectedScript?.latest_version_status || 'PENDING').toUpperCase();
   const hasCaseRun = !!pipeline?.runId;
-  const hasApprovedScripts = sortedScripts.some((script) => !!script.current_approved_version_id);
+  const hasApprovedScripts = sortedScripts.some((script) => !!script.doctrine_state?.current_approved_version_id);
   const installedKeys = new Set(sortedScripts.map((script) => String(script.script_key)));
   const fullWeeklyChainInstalled = WEEKLY_CHAIN.every((key) => installedKeys.has(key));
   const selectedIndex = sortedScripts.findIndex((script) => script.script_key === selectedScriptKey);
   const dependenciesReady = selectedIndex <= 0 || sortedScripts.slice(0, selectedIndex)
-    .every((script) => !!script.current_approved_version_id);
+    .every((script) => script.package_dependency_ready ?? !!script.current_approved_version_id);
   const selectedPending = String(selectedScript?.latest_version_status || '').toUpperCase() === 'PENDING_APPROVAL';
 
   return <section className="hierarchyWorkspace" data-mode={mode} aria-label="Hierarchy workspace">
@@ -936,11 +946,15 @@ export function HierarchyWorkspace({
         {sortedScripts.map((script) => {
           const selected = script.script_key === selectedScriptKey;
           const latest = String(script.latest_version_status || script.status || 'PENDING').replaceAll('_', ' ');
+          const priorActive = !!script.doctrine_state?.current_approved_version_id;
+          const memoryLabel = script.package_dependency_ready
+            ? 'ACTIVE MEMORY'
+            : priorActive ? 'CANDIDATE · PRIOR ACTIVE' : 'NOT ACTIVE';
           return <button key={script.script_id} type="button" data-script-key={script.script_key}
             className={selected ? 'selected' : ''} onClick={() => setSelectedScriptKey(String(script.script_key))}>
             <b>{script.display_name}</b>
             <span>Order {script.execution_order} · v{script.version_label} · {latest}</span>
-            <strong>{script.current_approved_version_id ? 'ACTIVE MEMORY' : 'NOT ACTIVE'}</strong>
+            <strong>{memoryLabel}</strong>
           </button>;
         })}
       </div>}
@@ -956,11 +970,13 @@ export function HierarchyWorkspace({
               <span>{pipeline?.approvalCount ?? 0}/{pipeline?.sampleCount ?? 0} samples approved · {pipeline?.publicationStatus || 'UNPUBLISHED'}</span>
             </>
             : <span>{selectedPending ? 'Candidate has not run for this case.' : 'Approved memory ready for this case.'}</span>}
+          {selectedPending && selectedState?.current_approved_version_id
+            && <span>Previous approved version remains active until this candidate reaches 5/5.</span>}
           {selectedPending && <button type="button" disabled={busy || !dependenciesReady}
             onClick={() => void runSelectedCandidate()}>
             {hasCaseRun ? 'Rerun Candidate' : 'Run Candidate'}
           </button>}
-          {!dependenciesReady && <span className="doctrineDependencyWarning">Approve the previous script first.</span>}
+          {!dependenciesReady && <span className="doctrineDependencyWarning">Approve the latest previous script first.</span>}
         </div>
 
         {hasCaseRun ? <>
@@ -978,7 +994,7 @@ export function HierarchyWorkspace({
           </div>}
         </> : <div className="weeklyScript1Empty">
           {selectedPending
-            ? dependenciesReady ? 'Run this candidate to create five review samples.' : 'Approve the previous script before running this candidate.'
+            ? dependenciesReady ? 'Run this candidate to create five review samples.' : 'Approve the latest previous script before running this candidate.'
             : 'Approved script memory loaded. Run Active Pipeline to refresh this case.'}
         </div>}
         {reviewError && <span role="alert">{reviewError}</span>}
