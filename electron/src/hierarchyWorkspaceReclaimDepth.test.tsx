@@ -18,11 +18,12 @@ function fixture() {
   return value;
 }
 
-function approvedScript(id: string, key: string, name: string, order: number) {
+function approvedScript(id: string, key: string, name: string, order: number, version = '1') {
+  const versionId = `${id}-v${version}`;
   const state = {
     status: 'APPROVED',
-    current_approved_version_id: `${id}-v1`,
-    versions: [{ version_id: `${id}-v1`, version_label: '1' }],
+    current_approved_version_id: versionId,
+    versions: [{ version_id: versionId, version_label: version }],
     runs: [],
   };
   return {
@@ -31,63 +32,86 @@ function approvedScript(id: string, key: string, name: string, order: number) {
     display_name: name,
     execution_order: order,
     status: 'APPROVED',
-    current_approved_version_id: `${id}-v1`,
-    version_id: `${id}-v1`,
-    version_label: '1',
+    current_approved_version_id: versionId,
+    version_id: versionId,
+    version_label: version,
     latest_version_status: 'APPROVED',
     doctrine_state: state,
   };
 }
 
-describe('HierarchyWorkspace reclaim depth review', () => {
+describe('HierarchyWorkspace approved reclaim depth audit', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
   afterEach(() => { act(() => root?.unmount()); container?.remove(); root = null; container = null; });
 
-  it('shows depth, deepest wick date and weeks to deepest wick', async () => {
+  it('keeps all Range 1, Range 2 and Fib facts visible after approval', async () => {
     const map = fixture();
     const depthState = {
-      status: 'PENDING_APPROVAL',
-      current_approved_version_id: null,
-      versions: [{ version_id: 'depth-v2', version_label: '2' }],
+      status: 'APPROVED',
+      current_approved_version_id: 'depth-v3',
+      versions: [{ version_id: 'depth-v3', version_label: '3' }],
       runs: [{
         run: {
-          run_id: 'run-depth-v2',
-          version_id: 'depth-v2',
+          run_id: 'run-depth-v3',
+          version_id: 'depth-v3',
           case_ref: 'case:live',
           symbol: 'XAUUSD',
-          approval_status: 'PENDING',
-          publication_status: 'UNPUBLISHED',
+          approval_status: 'APPROVED',
+          publication_status: 'PUBLISHED',
           eligible_count: 1,
           analysed_count: 1,
           sample_count: 1,
-          approval_count: 0,
+          approval_count: 1,
         },
         samples: [{
           canonical_range_id: 'mm:range:weekly-trusted',
           sample_order: 0,
-          decision: 'PENDING',
-          decided_at: null,
+          decision: 'APPROVED',
+          decided_at: '2026-07-22T10:00:00Z',
           processing_status: 'COMPLETE',
           payload: {
             depth_status: 'MEASURED',
-            reclaim_depth_percent: 50,
-            deepest_wick_price: 95,
-            deepest_wick_time: '2026-01-26T00:00:00Z',
-            weeks_to_deepest_wick: 3,
-            weeks_observed: 5,
+            source_range1_id: 'mm:range:weekly-trusted',
+            source_bos_direction: 'BOS_UP',
+            source_bos_time: '2026-01-12T00:00:00Z',
+            source_reclaim_status: 'ABANDONED_THEN_RECLAIMED',
+            source_reclaim_abbreviation: 'ABND→RECL',
+            source_reclaim_time: '2026-03-02T00:00:00Z',
+            source_weeks_to_reclaim: 7,
+            range1_high: 100,
+            range1_low: 90,
+            range1_size: 10,
+            fib_zero_price: 100,
+            fib_one_price: 90,
+            range2_id: 'mm:range:weekly-2',
+            range2_defined_at: '2026-01-26T00:00:00Z',
+            range2_chronology: 'RL_TO_RH',
+            range2_opposite_anchor_type: 'RL',
+            range2_opposite_anchor_price: 92,
+            range2_opposite_anchor_time: '2026-01-05T00:00:00Z',
+            range2_continuation_anchor_type: 'RH',
+            range2_continuation_anchor_price: 110,
+            range2_continuation_anchor_time: '2026-01-26T00:00:00Z',
+            reclaim_depth_price: 8,
+            reclaim_depth_ratio: 0.8,
+            reclaim_depth_percent: 80,
+            weeks_bos_to_range2_definition: 2,
+            range2_formation_weeks: 3,
+            old_opposite_external_touched: false,
+            old_opposite_external_exceeded: false,
             reason_codes: [],
           },
         }],
       }],
     };
     const scripts = [
-      approvedScript('bos', 'weekly_structure', 'Weekly BOS', 10),
-      approvedScript('reclaim', 'weekly_reclaim', 'Weekly Reclaim', 20),
+      approvedScript('bos', 'weekly_structure', 'Weekly BOS', 10, '3'),
+      approvedScript('reclaim', 'weekly_reclaim', 'Weekly Reclaim', 20, '2'),
       {
         script_id: 'depth', script_key: 'weekly_reclaim_depth', display_name: 'Weekly Reclaim Depth',
-        execution_order: 30, status: 'PENDING_APPROVAL', current_approved_version_id: null,
-        version_id: 'depth-v2', version_label: '2', latest_version_status: 'PENDING_APPROVAL',
+        execution_order: 30, status: 'APPROVED', current_approved_version_id: 'depth-v3',
+        version_id: 'depth-v3', version_label: '3', latest_version_status: 'APPROVED',
         doctrine_state: depthState,
       },
     ];
@@ -127,15 +151,19 @@ describe('HierarchyWorkspace reclaim depth review', () => {
     const depth = container.querySelector<HTMLButtonElement>('[data-script-key="weekly_reclaim_depth"]')!;
     await act(async () => depth.click());
 
-    expect(container.textContent).toContain('MEASURED');
-    expect(container.textContent).toContain('50% depth');
-    expect(container.textContent).toContain('Deepest 2026-01-26');
-    expect(container.textContent).toContain('3 weeks to deepest');
-    expect(container.textContent).not.toContain('5 weeks observed');
-    expect(container.textContent).not.toContain('BOS Pending');
-
-    const runCandidate = Array.from(container.querySelectorAll<HTMLButtonElement>('.doctrineSelectedSummary button'))
-      .find((button) => button.textContent === 'Rerun Candidate')!;
-    expect(runCandidate.disabled).toBe(false);
+    expect(container.textContent).toContain('Version 3 · APPROVED');
+    expect(container.textContent).toContain('Reclaim result: ABND→RECL · ABANDONED_THEN_RECLAIMED');
+    expect(container.textContent).toContain('Range 1 ID: mm:range:weekly-trusted');
+    expect(container.textContent).toContain('W1 RH: 100');
+    expect(container.textContent).toContain('W1 RL: 90');
+    expect(container.textContent).toContain('Range 2 ID: mm:range:weekly-2');
+    expect(container.textContent).toContain('W2 opposite anchor: RL 92');
+    expect(container.textContent).toContain('W2 continuation anchor: RH 110');
+    expect(container.textContent).toContain('Fib ratio: 0.8');
+    expect(container.textContent).toContain('Depth: 80%');
+    expect(container.textContent).toContain('Weeks BOS→R2 defined: 2');
+    expect(container.textContent).toContain('Range 2 formation weeks: 3');
+    expect(container.textContent).toContain('APPROVED');
+    expect(container.querySelector('.weeklySampleActions')).toBeNull();
   });
 });
