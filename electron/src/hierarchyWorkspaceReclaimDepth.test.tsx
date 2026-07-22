@@ -45,16 +45,16 @@ describe('HierarchyWorkspace approved reclaim depth audit', () => {
   let root: Root | null = null;
   afterEach(() => { act(() => root?.unmount()); container?.remove(); root = null; container = null; });
 
-  it('keeps all Range 1, Range 2 and Fib facts visible after approval', async () => {
+  it('shows a trader-facing zero-percent result while retaining Range 1 and Range 2 audit facts', async () => {
     const map = fixture();
     const depthState = {
       status: 'APPROVED',
-      current_approved_version_id: 'depth-v3',
-      versions: [{ version_id: 'depth-v3', version_label: '3' }],
+      current_approved_version_id: 'depth-v4',
+      versions: [{ version_id: 'depth-v4', version_label: '4' }],
       runs: [{
         run: {
-          run_id: 'run-depth-v3',
-          version_id: 'depth-v3',
+          run_id: 'run-depth-v4',
+          version_id: 'depth-v4',
           case_ref: 'case:live',
           symbol: 'XAUUSD',
           approval_status: 'APPROVED',
@@ -71,14 +71,15 @@ describe('HierarchyWorkspace approved reclaim depth audit', () => {
           decided_at: '2026-07-22T10:00:00Z',
           processing_status: 'COMPLETE',
           payload: {
-            depth_status: 'MEASURED',
+            depth_status: 'NO_RETRACEMENT',
+            depth_classification: 'NO_RETRACEMENT',
             source_range1_id: 'mm:range:weekly-trusted',
             source_bos_direction: 'BOS_UP',
             source_bos_time: '2026-01-12T00:00:00Z',
-            source_reclaim_status: 'ABANDONED_THEN_RECLAIMED',
-            source_reclaim_abbreviation: 'ABND→RECL',
-            source_reclaim_time: '2026-03-02T00:00:00Z',
-            source_weeks_to_reclaim: 7,
+            source_reclaim_status: 'ABANDONED',
+            source_reclaim_abbreviation: 'ABND',
+            source_reclaim_time: null,
+            source_weeks_to_reclaim: null,
             range1_high: 100,
             range1_low: 90,
             range1_size: 10,
@@ -88,19 +89,24 @@ describe('HierarchyWorkspace approved reclaim depth audit', () => {
             range2_defined_at: '2026-01-26T00:00:00Z',
             range2_chronology: 'RL_TO_RH',
             range2_opposite_anchor_type: 'RL',
-            range2_opposite_anchor_price: 92,
+            range2_opposite_anchor_price: 101.25,
             range2_opposite_anchor_time: '2026-01-05T00:00:00Z',
             range2_continuation_anchor_type: 'RH',
             range2_continuation_anchor_price: 110,
             range2_continuation_anchor_time: '2026-01-26T00:00:00Z',
-            reclaim_depth_price: 8,
-            reclaim_depth_ratio: 0.8,
-            reclaim_depth_percent: 80,
+            reclaim_depth_price: 0,
+            reclaim_depth_ratio: 0,
+            reclaim_depth_percent: 0,
+            raw_reclaim_depth_price: -1.25,
+            raw_reclaim_depth_ratio: -0.125,
+            raw_reclaim_depth_percent: -12.5,
+            boundary_distance_price: 1.25,
+            boundary_position: 'ABOVE_BROKEN_RH',
             weeks_bos_to_range2_definition: 2,
             range2_formation_weeks: 3,
             old_opposite_external_touched: false,
             old_opposite_external_exceeded: false,
-            reason_codes: [],
+            reason_codes: ['RANGE2_OPPOSITE_1.2500_ABOVE_BROKEN_RH'],
           },
         }],
       }],
@@ -110,8 +116,8 @@ describe('HierarchyWorkspace approved reclaim depth audit', () => {
       approvedScript('reclaim', 'weekly_reclaim', 'Weekly Reclaim', 20, '2'),
       {
         script_id: 'depth', script_key: 'weekly_reclaim_depth', display_name: 'Weekly Reclaim Depth',
-        execution_order: 30, status: 'APPROVED', current_approved_version_id: 'depth-v3',
-        version_id: 'depth-v3', version_label: '3', latest_version_status: 'APPROVED',
+        execution_order: 30, status: 'APPROVED', current_approved_version_id: 'depth-v4',
+        version_id: 'depth-v4', version_label: '4', latest_version_status: 'APPROVED',
         doctrine_state: depthState,
       },
     ];
@@ -151,16 +157,18 @@ describe('HierarchyWorkspace approved reclaim depth audit', () => {
     const depth = container.querySelector<HTMLButtonElement>('[data-script-key="weekly_reclaim_depth"]')!;
     await act(async () => depth.click());
 
-    expect(container.textContent).toContain('Version 3 · APPROVED');
-    expect(container.textContent).toContain('Reclaim result: ABND→RECL · ABANDONED_THEN_RECLAIMED');
+    expect(container.textContent).toContain('Version 4 · APPROVED');
+    expect(container.textContent).toContain('Result: NO RETRACEMENT');
+    expect(container.textContent).toContain('Reclaim result: ABND · ABANDONED');
     expect(container.textContent).toContain('Range 1 ID: mm:range:weekly-trusted');
     expect(container.textContent).toContain('W1 RH: 100');
     expect(container.textContent).toContain('W1 RL: 90');
     expect(container.textContent).toContain('Range 2 ID: mm:range:weekly-2');
-    expect(container.textContent).toContain('W2 opposite anchor: RL 92');
+    expect(container.textContent).toContain('W2 opposite anchor: RL 101.25');
     expect(container.textContent).toContain('W2 continuation anchor: RH 110');
-    expect(container.textContent).toContain('Fib ratio: 0.8');
-    expect(container.textContent).toContain('Depth: 80%');
+    expect(container.textContent).toContain('Fib ratio: 0');
+    expect(container.textContent).toContain('Depth: 0%');
+    expect(container.textContent).toContain('Reasons: RANGE2 OPPOSITE 1.2500 ABOVE BROKEN RH');
     expect(container.textContent).toContain('Weeks BOS→R2 defined: 2');
     expect(container.textContent).toContain('Range 2 formation weeks: 3');
     expect(container.textContent).toContain('APPROVED');
