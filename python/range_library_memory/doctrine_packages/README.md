@@ -4,12 +4,13 @@ These files are reviewed analytical packages. Merely storing a file does not app
 
 ## Weekly analysis chain
 
-The repository currently keeps three distinct analytical scripts:
+The repository currently keeps four distinct analytical scripts:
 
 ```text
-weekly_bos.py             -> weekly_structure
-weekly_reclaim.py         -> weekly_reclaim
-weekly_reclaim_depth.py   -> weekly_reclaim_depth
+weekly_bos.py                        -> weekly_structure
+weekly_reclaim.py                    -> weekly_reclaim
+weekly_reclaim_depth.py              -> weekly_reclaim_depth
+weekly_movement_classification.py    -> weekly_movement_classification
 ```
 
 They execute in order:
@@ -18,6 +19,7 @@ They execute in order:
 Weekly BOS memory
 -> Weekly reclaim / abandonment memory
 -> Weekly Range 2 reclaim-depth memory
+-> Weekly movement classification memory
 ```
 
 Each script reads approved output from the previous step instead of repeating its work.
@@ -140,32 +142,62 @@ raw ratio = 1   -> TOUCHED_OLD_OPPOSITE, 100%
 raw ratio > 1   -> EXCEEDED_OLD_OPPOSITE
 ```
 
-The script stores:
-
-```text
-Range 1 ID, RH, RL and size
-Fib 0 and Fib 1 prices
-Range 2 ID and chronology
-Range 2 anchor sequence
-new opposite anchor type, price and candle
-continuation-side anchor type, price and candle
-range-completion anchor type, price and candle
-depth-window start and depth-anchor end dates
-Range 2 completion date
-weeks BOS -> depth anchor
-weeks reclaim -> depth anchor
-weeks BOS -> Range 2 completion
-weeks reclaim -> Range 2 completion
-Range 2 anchor-to-anchor formation weeks
-trader-facing and raw Fib values
-boundary position and distance
-old-opposite touch/exceed flags
-source reclaim status and timing
-```
-
 Pure `ABND` without a later reclaim does not create a reclaim-depth measurement. It remains pending until a later reclaim exists. `ABND→RECL` uses the later reclaim candle as the depth-window start.
 
 Raw ratios remain unclamped for audit and research. Trader-facing depth never displays a negative retracement. No shallow, medium, or deep category is hardcoded.
+
+## Weekly movement classification v1
+
+This package consumes approved `weekly_reclaim_depth` memory. It does not redetect BOS, reclaim, Range 2, or Fib depth.
+
+For `BOS_UP`:
+
+```text
+Countertrend movement:
+old W1 RH -> W2 RL
+Direction: DOWN
+
+Protrend movement:
+W2 RL -> W2 RH
+Direction: UP
+```
+
+For `BOS_DOWN`:
+
+```text
+Countertrend movement:
+old W1 RL -> W2 RH
+Direction: UP
+
+Protrend movement:
+W2 RH -> W2 RL
+Direction: DOWN
+```
+
+Reclaim is the timeline boundary for the countertrend chapter. Countertrend weeks use reclaim-to-depth-anchor timing. Protrend weeks use the mapped Range 2 anchor-to-anchor formation time.
+
+The mapped anchor order produces one of three movement sequences:
+
+```text
+COUNTERTREND_THEN_PROTREND
+PROTREND_THEN_COUNTERTREND
+SAME_W1_MOVEMENTS
+```
+
+A `SAME_W1` result keeps both structural movement classifications and zero formation weeks, but records that intrawweek movement order cannot be proven from W1 OHLC.
+
+The package stores only the basics needed for review and later statistics:
+
+```text
+Range 1 ID
+Range 2 ID
+BOS direction
+movement sequence
+countertrend classification, direction, distance, depth %, weeks
+protrend classification, direction, distance, weeks
+```
+
+This is not the future range-lifecycle/storyline builder. It labels movements already supported by approved mapped-range memory.
 
 ## Version and dependency workflow
 
@@ -177,11 +209,12 @@ The required order is:
 approve latest BOS package
 -> approve latest Reclaim package
 -> approve latest Range 2 Depth package
+-> approve latest Movement Classification package
 ```
 
 During candidate review, the previous approved run is reused as immutable evidence rather than rerun against a newer pending parent. This keeps the trusted memory active while individual candidate decisions are saved and the cockpit refreshes.
 
-The corrected `SAME_W1` BOS case is prioritized in the BOS v3 five-sample review. Reclaim reviews prioritize distinct lifecycle states such as `RECL`, `ABND`, and `ABND→RECL` when those examples exist. Depth reviews prioritize distinct trader outcomes such as `NO_RETRACEMENT`, `BOUNDARY_TOUCH`, ordinary in-range retracement and old-opposite exceedance.
+The corrected `SAME_W1` BOS case is prioritized in the BOS v3 five-sample review. Reclaim reviews prioritize distinct lifecycle states such as `RECL`, `ABND`, and `ABND→RECL` when those examples exist. Depth reviews prioritize both anchor-order stories and distinct trader outcomes. Movement reviews prioritize countertrend-first, protrend-first, same-W1, no-retracement and ordinary-retracement examples where available.
 
 ## Approval workflow
 
