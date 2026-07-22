@@ -50,22 +50,47 @@ def test_reclaim_review_prioritizes_distinct_lifecycle_states() -> None:
     ]
 
 
-def test_depth_review_prioritizes_distinct_trading_outcomes() -> None:
+def test_depth_review_prioritizes_both_anchor_stories_then_distinct_outcomes() -> None:
     outputs = [
-        _row("weekly-1", depth_status="RETRACED_INTO_RANGE"),
-        _row("weekly-2", depth_status="NO_RETRACEMENT"),
-        _row("weekly-3", depth_status="BOUNDARY_TOUCH"),
-        _row("weekly-4", depth_status="TOUCHED_OLD_OPPOSITE"),
-        _row("weekly-5", depth_status="EXCEEDED_OLD_OPPOSITE"),
+        _row(
+            "weekly-1",
+            range2_anchor_sequence="OPPOSITE_THEN_CONTINUATION",
+            depth_status="RETRACED_INTO_RANGE",
+        ),
+        _row(
+            "weekly-2",
+            range2_anchor_sequence="CONTINUATION_THEN_OPPOSITE",
+            depth_status="NO_RETRACEMENT",
+        ),
+        _row(
+            "weekly-3",
+            range2_anchor_sequence="SAME_W1",
+            depth_status="BOUNDARY_TOUCH",
+        ),
+        _row(
+            "weekly-4",
+            range2_anchor_sequence="OPPOSITE_THEN_CONTINUATION",
+            depth_status="TOUCHED_OLD_OPPOSITE",
+        ),
+        _row(
+            "weekly-5",
+            range2_anchor_sequence="CONTINUATION_THEN_OPPOSITE",
+            depth_status="EXCEEDED_OLD_OPPOSITE",
+        ),
         _row("weekly-6", status="PENDING", depth_status="PENDING"),
     ]
 
     samples = _review_samples(doctrine_pipeline, "weekly_reclaim_depth", outputs)
 
-    assert [row["payload"]["depth_status"] for row in samples] == [
-        "NO_RETRACEMENT",
-        "BOUNDARY_TOUCH",
-        "RETRACED_INTO_RANGE",
-        "TOUCHED_OLD_OPPOSITE",
-        "EXCEEDED_OLD_OPPOSITE",
+    assert [row["canonical_range_id"] for row in samples] == [
+        "weekly-1",
+        "weekly-2",
+        "weekly-3",
+        "weekly-4",
+        "weekly-5",
+    ]
+    assert [row["payload"]["range2_anchor_sequence"] for row in samples[:3]] == [
+        "OPPOSITE_THEN_CONTINUATION",
+        "CONTINUATION_THEN_OPPOSITE",
+        "SAME_W1",
     ]
