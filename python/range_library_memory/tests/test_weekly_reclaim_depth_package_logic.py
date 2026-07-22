@@ -108,9 +108,11 @@ def test_bos_up_measures_range2_rl_against_range1_fib() -> None:
     assert payload["range2_opposite_anchor_time"] == "2026-01-05T00:00:00Z"
     assert payload["range2_continuation_anchor_type"] == "RH"
     assert payload["range2_continuation_anchor_price"] == 110
+    assert payload["depth_status"] == "RETRACED_INTO_RANGE"
     assert payload["reclaim_depth_price"] == 8
     assert payload["reclaim_depth_ratio"] == 0.8
     assert payload["reclaim_depth_percent"] == 80
+    assert payload["raw_reclaim_depth_percent"] == 80
     assert payload["weeks_bos_to_range2_definition"] == 2
     assert payload["range2_formation_weeks"] == 3
 
@@ -147,10 +149,84 @@ def test_bos_down_measures_range2_rh_against_range1_fib() -> None:
     assert payload["range2_opposite_anchor_type"] == "RH"
     assert payload["range2_opposite_anchor_price"] == 98
     assert payload["range2_continuation_anchor_type"] == "RL"
+    assert payload["depth_status"] == "RETRACED_INTO_RANGE"
     assert payload["reclaim_depth_percent"] == 80
 
 
-def test_range2_depth_is_not_clamped_above_one_hundred_percent() -> None:
+def test_bos_up_anchor_above_broken_rh_is_zero_percent_no_retracement() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=112, low=101.25,
+            high_time="2026-01-26T00:00:00Z", low_time="2026-01-05T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+        ),
+        "weekly-2": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-26T00:00:00Z", bos_time=None,
+            processing_status="PENDING", reclaim_status="PENDING",
+            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
+        ),
+    }
+
+    payload = _output(
+        weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
+    )["payload"]
+
+    assert payload["depth_status"] == "NO_RETRACEMENT"
+    assert payload["reclaim_depth_price"] == 0
+    assert payload["reclaim_depth_ratio"] == 0
+    assert payload["reclaim_depth_percent"] == 0
+    assert payload["raw_reclaim_depth_price"] == -1.25
+    assert payload["raw_reclaim_depth_ratio"] == -0.125
+    assert payload["raw_reclaim_depth_percent"] == -12.5
+    assert payload["boundary_distance_price"] == 1.25
+    assert payload["boundary_position"] == "ABOVE_BROKEN_RH"
+    assert payload["reason_codes"] == ["RANGE2_OPPOSITE_1.2500_ABOVE_BROKEN_RH"]
+
+
+def test_exact_broken_boundary_touch_is_zero_percent_boundary_touch() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=110, low=100,
+            high_time="2026-01-26T00:00:00Z", low_time="2026-01-05T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+        ),
+        "weekly-2": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-26T00:00:00Z", bos_time=None,
+            processing_status="PENDING", reclaim_status="PENDING",
+            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
+        ),
+    }
+
+    payload = _output(
+        weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
+    )["payload"]
+
+    assert payload["depth_status"] == "BOUNDARY_TOUCH"
+    assert payload["reclaim_depth_percent"] == 0
+    assert payload["boundary_position"] == "AT_BROKEN_RH"
+
+
+def test_range2_depth_above_one_hundred_is_exceeded_old_opposite() -> None:
     ranges = [
         _range(
             "weekly-1", high=100, low=90,
@@ -178,7 +254,11 @@ def test_range2_depth_is_not_clamped_above_one_hundred_percent() -> None:
         weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
     )["payload"]
 
+    assert payload["depth_status"] == "EXCEEDED_OLD_OPPOSITE"
     assert payload["reclaim_depth_percent"] == 120
+    assert payload["raw_reclaim_depth_percent"] == 120
+    assert payload["boundary_distance_price"] == 2
+    assert payload["boundary_position"] == "BELOW_OLD_RL"
     assert payload["old_opposite_external_touched"] is True
     assert payload["old_opposite_external_exceeded"] is True
 
@@ -215,6 +295,7 @@ def test_abandoned_then_reclaimed_context_does_not_block_range2_depth() -> None:
     assert row["processing_status"] == "COMPLETE"
     assert row["payload"]["source_reclaim_abbreviation"] == "ABND→RECL"
     assert row["payload"]["source_weeks_to_reclaim"] == 7
+    assert row["payload"]["depth_status"] == "RETRACED_INTO_RANGE"
     assert row["payload"]["reclaim_depth_percent"] == 50
 
 
