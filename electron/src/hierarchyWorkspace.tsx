@@ -240,8 +240,9 @@ function sampleFacts(scriptKey: string, sample: DoctrineSample, node: MasterMapR
     const status = String(payload.depth_status || sample.processingStatus || 'PENDING').replaceAll('_', ' ');
     const depth = payload.reclaim_depth_percent == null
       ? 'Depth pending' : `${compactNumber(payload.reclaim_depth_percent)}% depth`;
-    return [status, depth, `Deepest wick ${compactNumber(payload.deepest_wick_price)}`,
-      `${payload.weeks_observed ?? 0} week${payload.weeks_observed === 1 ? '' : 's'} observed`];
+    const weeks = payload.weeks_to_deepest_wick;
+    return [status, depth, `Deepest ${compactTime(payload.deepest_wick_time)}`,
+      weeks == null ? 'Weeks pending' : `${weeks} week${weeks === 1 ? '' : 's'} to deepest`];
   }
   const entries = Object.entries(payload)
     .filter(([key, value]) => key !== 'reason_codes' && ['string', 'number', 'boolean'].includes(typeof value))
