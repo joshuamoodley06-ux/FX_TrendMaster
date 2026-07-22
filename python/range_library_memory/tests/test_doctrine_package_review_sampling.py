@@ -162,3 +162,53 @@ def test_movement_review_includes_alternating_roles_and_depth_pending_story() ->
         "weekly-5",
     ]
     assert samples[3]["payload"]["reclaim_depth_status"] == "PENDING"
+
+
+def test_profile_review_prioritizes_all_profiles_and_abandonment_override() -> None:
+    outputs = [
+        _row(
+            "weekly-1",
+            profile_classification="S&R",
+            classification_basis="RECLAIM_DEPTH",
+        ),
+        _row(
+            "weekly-2",
+            profile_classification="S&R>FP",
+            classification_basis="RECLAIM_DEPTH",
+        ),
+        _row(
+            "weekly-3",
+            profile_classification="S&D",
+            classification_basis="RECLAIM_DEPTH",
+        ),
+        _row(
+            "weekly-4",
+            profile_classification="S&R",
+            classification_basis="ABND_SAME_DIRECTION_BOS",
+        ),
+        _row(
+            "weekly-5",
+            status="PENDING",
+            profile_classification=None,
+            classification_basis=None,
+        ),
+        _row(
+            "weekly-6",
+            profile_classification="S&D",
+            classification_basis="RECLAIM_DEPTH",
+        ),
+    ]
+
+    samples = _review_samples(
+        doctrine_pipeline,
+        "weekly_profile_classification",
+        outputs,
+    )
+
+    assert [row["canonical_range_id"] for row in samples] == [
+        "weekly-1",
+        "weekly-2",
+        "weekly-3",
+        "weekly-4",
+        "weekly-5",
+    ]
