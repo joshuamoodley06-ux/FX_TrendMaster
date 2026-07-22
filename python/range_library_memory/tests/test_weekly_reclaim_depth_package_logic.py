@@ -74,6 +74,7 @@ def test_bullish_reclaim_depth_is_continuous_percentage_of_old_weekly_range() ->
     assert result["payload"]["deepest_wick_time"] == "2026-01-19T00:00:00Z"
     assert result["payload"]["reclaim_depth_price"] == 5
     assert result["payload"]["reclaim_depth_percent"] == 50
+    assert result["payload"]["weeks_to_deepest_wick"] == 2
     assert result["payload"]["weeks_observed"] == 3
 
 
@@ -92,6 +93,7 @@ def test_bearish_reclaim_depth_measures_up_from_old_low() -> None:
     assert result["payload"]["deepest_wick_price"] == 96
     assert result["payload"]["reclaim_depth_price"] == 6
     assert result["payload"]["reclaim_depth_percent"] == 60
+    assert result["payload"]["weeks_to_deepest_wick"] == 2
 
 
 def test_depth_can_exceed_one_hundred_percent_when_old_opposite_external_breaks() -> None:
@@ -108,6 +110,26 @@ def test_depth_can_exceed_one_hundred_percent_when_old_opposite_external_breaks(
     assert result["payload"]["reclaim_depth_percent"] == 110
     assert result["payload"]["old_opposite_external_touched"] is True
     assert result["payload"]["old_opposite_external_exceeded"] is True
+    assert result["payload"]["weeks_to_deepest_wick"] == 2
+
+
+def test_weeks_to_deepest_wick_does_not_equal_total_observation_window() -> None:
+    context = FakeContext(
+        _memory(direction="BOS_UP"),
+        [
+            {"time": "2026-01-12T00:00:00Z", "open": 105, "high": 108, "low": 99, "close": 104},
+            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 106, "low": 98, "close": 101},
+            {"time": "2026-01-26T00:00:00Z", "open": 101, "high": 103, "low": 95, "close": 96},
+            {"time": "2026-02-02T00:00:00Z", "open": 96, "high": 101, "low": 97, "close": 100},
+            {"time": "2026-02-09T00:00:00Z", "open": 100, "high": 105, "low": 99, "close": 104},
+        ],
+    )
+
+    result = weekly_reclaim_depth.run(context)["outputs"][0]
+
+    assert result["payload"]["deepest_wick_time"] == "2026-01-26T00:00:00Z"
+    assert result["payload"]["weeks_to_deepest_wick"] == 3
+    assert result["payload"]["weeks_observed"] == 5
 
 
 def test_measurement_stops_at_next_weekly_bos() -> None:
@@ -125,6 +147,7 @@ def test_measurement_stops_at_next_weekly_bos() -> None:
     assert result["payload"]["measurement_end_time"] == "2026-01-19T00:00:00Z"
     assert result["payload"]["deepest_wick_price"] == 95
     assert result["payload"]["reclaim_depth_percent"] == 50
+    assert result["payload"]["weeks_to_deepest_wick"] == 2
     assert result["payload"]["weeks_observed"] == 2
 
 
@@ -139,3 +162,4 @@ def test_abandoned_before_reclaim_has_no_depth_measurement() -> None:
     assert result["processing_status"] == "COMPLETE"
     assert result["payload"]["depth_status"] == "NOT_APPLICABLE_ABANDONED"
     assert result["payload"]["reclaim_depth_percent"] is None
+    assert result["payload"]["weeks_to_deepest_wick"] is None
