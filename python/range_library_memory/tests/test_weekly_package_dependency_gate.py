@@ -43,16 +43,16 @@ def _seed_legacy_bos(database: Path) -> None:
         connection.commit()
 
 
-def _reclaim_source() -> str:
-    return '''FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
+def _reclaim_source(version: str = "1") -> str:
+    return f'''FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "weekly_reclaim"
-VERSION_LABEL = "1"
+VERSION_LABEL = "{version}"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 20
 
 
 def run(context):
-    return {"outputs": []}
+    return {{"outputs": []}}
 '''
 
 
@@ -64,6 +64,7 @@ def test_legacy_bos_does_not_unlock_new_weekly_package_chain(tmp_path) -> None:
     scripts = doctrine_pipeline.list_scripts(database)
     bos = next(row for row in scripts if row["script_key"] == "weekly_structure")
 
+    assert bos["version_label"] == "3"
     assert bos["package_dependency_ready"] is False
     assert bos["current_approved_version_id"] is None
     assert bos["doctrine_state"]["current_approved_version_id"] == "legacy-version"
@@ -88,7 +89,7 @@ def test_reclaim_runtime_rejects_legacy_bos_dependency(tmp_path) -> None:
 
     with pytest.raises(
         doctrine_pipeline.DoctrinePipelineError,
-        match="requires approved Weekly BOS package memory",
+        match="requires the latest approved Weekly BOS package memory",
     ):
         doctrine_pipeline.run_version(
             database,
