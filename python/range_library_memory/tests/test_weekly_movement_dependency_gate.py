@@ -19,7 +19,7 @@ def test_movement_runtime_requires_latest_approved_depth_package(tmp_path: Path)
         database,
         script_key="weekly_movement_classification",
         display_name="Weekly Movement Classification",
-        version_label="1",
+        version_label="4",
         source_code=source,
         adapter_key="doctrine_package_v1",
         execution_order=40,
