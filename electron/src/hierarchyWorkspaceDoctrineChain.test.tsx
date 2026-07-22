@@ -63,7 +63,9 @@ const reclaimState = state('reclaim-v2', '2', 'PENDING_APPROVAL', [{
     reason_codes: [],
   },
 }]);
-const depthState = state('depth-v3', '3', 'PENDING_APPROVAL');
+const depthState = state('depth-v6', '6', 'PENDING_APPROVAL');
+const movementState = state('movement-v4', '4', 'PENDING_APPROVAL');
+const profileState = state('profile-v1', '1', 'PENDING_APPROVAL');
 
 function scripts() {
   return [
@@ -74,8 +76,14 @@ function scripts() {
       status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'reclaim-v2', version_label: '2',
       latest_version_status: 'PENDING_APPROVAL', package_dependency_ready: false, doctrine_state: reclaimState },
     { script_id: 'depth', script_key: 'weekly_reclaim_depth', display_name: 'Weekly Reclaim Depth', execution_order: 30,
-      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'depth-v3', version_label: '3',
+      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'depth-v6', version_label: '6',
       latest_version_status: 'PENDING_APPROVAL', package_dependency_ready: false, doctrine_state: depthState },
+    { script_id: 'movement', script_key: 'weekly_movement_classification', display_name: 'Weekly Movement Classification', execution_order: 40,
+      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'movement-v4', version_label: '4',
+      latest_version_status: 'PENDING_APPROVAL', package_dependency_ready: false, doctrine_state: movementState },
+    { script_id: 'profile', script_key: 'weekly_profile_classification', display_name: 'Weekly Profile Classification', execution_order: 50,
+      status: 'PENDING_APPROVAL', current_approved_version_id: null, version_id: 'profile-v1', version_label: '1',
+      latest_version_status: 'PENDING_APPROVAL', package_dependency_ready: false, doctrine_state: profileState },
   ];
 }
 
@@ -120,8 +128,8 @@ describe('HierarchyWorkspace doctrine chain', () => {
       .find((button) => button.textContent === 'Python')!;
     await act(async () => pythonTab.click());
 
-    expect(container.querySelectorAll('.doctrineStoredScripts > button')).toHaveLength(3);
-    expect(container.textContent).toContain('3-script chain installed');
+    expect(container.querySelectorAll('.doctrineStoredScripts > button')).toHaveLength(5);
+    expect(container.textContent).toContain('5-script chain installed');
 
     const reclaim = container.querySelector<HTMLButtonElement>('[data-script-key="weekly_reclaim"]')!;
     await act(async () => reclaim.click());
