@@ -1,11 +1,21 @@
 """Weekly Range 2 reclaim-depth doctrine package.
 
-This package consumes approved Weekly BOS and reclaim memory. The depth window
-starts on the reclaim candle and ends when the first new mapped Weekly range is
-formed. That first post-reclaim range is Range 2.
+This package consumes approved Weekly BOS and reclaim memory. It does not infer
+or build the range lifecycle. It reads the mapped next Weekly range and keeps
+two separate structural endpoints:
+
+* depth endpoint: the new opposite anchor created by the reclaim/pullback;
+* range completion: the later of the mapped RH and RL anchors.
 
 BOS Up:   W1 RH = 0, W1 RL = 1, measure W2 RL.
 BOS Down: W1 RL = 0, W1 RH = 1, measure W2 RH.
+
+The opposite anchor may form before or after the continuation-side anchor. This
+supports both common stories:
+
+* opposite anchor first, later continuation anchor completes the range;
+* continuation-side anchor already exists, later reclaim creates the opposite
+  anchor and completes the range.
 
 Raw Fib values remain stored for audit. Trader-facing values never show a
 negative retracement: an opposite Range 2 anchor that remains beyond the broken
@@ -18,7 +28,7 @@ from typing import Any, Mapping
 
 FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "weekly_reclaim_depth"
-VERSION_LABEL = "5"
+VERSION_LABEL = "6"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 30
 
@@ -101,8 +111,13 @@ def _base_payload() -> dict[str, Any]:
         "fib_one_price": None,
         "range2_id": None,
         "range2_defined_at": None,
+        "range2_completed_at": None,
         "range2_chronology": None,
+        "range2_anchor_sequence": None,
         "range2_selection_rule": None,
+        "range2_completion_anchor_type": None,
+        "range2_completion_anchor_price": None,
+        "range2_completion_anchor_time": None,
         "depth_window_start_time": None,
         "depth_window_end_time": None,
         "range2_opposite_anchor_type": None,
@@ -119,6 +134,11 @@ def _base_payload() -> dict[str, Any]:
         "raw_reclaim_depth_percent": None,
         "boundary_distance_price": None,
         "boundary_position": None,
+        "weeks_bos_to_depth_anchor": None,
+        "weeks_reclaim_to_depth_anchor": None,
+        "weeks_bos_to_range2_completion": None,
+        "weeks_reclaim_to_range2_completion": None,
+        # Backward-compatible aliases used by the current audit panel.
         "weeks_bos_to_range2_definition": None,
         "weeks_reclaim_to_range2_definition": None,
         "range2_formation_weeks": None,
@@ -128,26 +148,32 @@ def _base_payload() -> dict[str, Any]:
     }
 
 
-def _chronology(payload: Mapping[str, Any], high_time: datetime, low_time: datetime) -> str:
-    explicit = str(payload.get("chronology") or "").upper()
-    if explicit in {"RL_TO_RH", "RH_TO_RL", "SAME_W1"}:
-        return explicit
+def _chronology(high_time: datetime, low_time: datetime) -> str:
     if high_time == low_time:
         return "SAME_W1"
     return "RL_TO_RH" if low_time < high_time else "RH_TO_RL"
 
 
-def _formed_at(node: Mapping[str, Any], bos: Mapping[str, Any] | None,
-               high_time: datetime | None, low_time: datetime | None) -> datetime | None:
-    explicit = _time(node.get("active_from_time"))
-    if explicit is not None:
-        return explicit
-    memory_defined = _time((bos or {}).get("range_defined_at"))
-    if memory_defined is not None:
-        return memory_defined
-    if high_time is not None and low_time is not None:
-        return max(high_time, low_time)
-    return None
+def _completion_anchor(
+    *,
+    high_time: datetime,
+    low_time: datetime,
+    high: float,
+    low: float,
+) -> tuple[str, float | None, datetime]:
+    if high_time > low_time:
+        return "RH", high, high_time
+    if low_time > high_time:
+        return "RL", low, low_time
+    return "SAME_W1", None, high_time
+
+
+def _anchor_sequence(opposite_time: datetime, continuation_time: datetime) -> str:
+    if opposite_time < continuation_time:
+        return "OPPOSITE_THEN_CONTINUATION"
+    if continuation_time < opposite_time:
+        return "CONTINUATION_THEN_OPPOSITE"
+    return "SAME_W1"
 
 
 def _trading_depth(
@@ -235,6 +261,13 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         reclaim, reclaim_status = _memory_entry(context, canonical_id, "weekly_reclaim")
         high_time = _time(node.get("range_high_time"))
         low_time = _time(node.get("range_low_time"))
+        high = _number(node.get("range_high"))
+        low = _number(node.get("range_low"))
+        completion_time = (
+            max(high_time, low_time)
+            if high_time is not None and low_time is not None
+            else None
+        )
         records.append({
             "node": node,
             "id": canonical_id,
@@ -244,11 +277,13 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "reclaim_processing_status": reclaim_status,
             "bos_time": _time((bos or {}).get("bos_time")),
             "bos_direction": str((bos or {}).get("bos_direction") or "").upper(),
-            "defined_at": _formed_at(node, bos, high_time, low_time),
+            "high": high,
+            "low": low,
             "high_time": high_time,
             "low_time": low_time,
+            "completion_time": completion_time,
             "chronology": (
-                _chronology(bos or {}, high_time, low_time)
+                _chronology(high_time, low_time)
                 if high_time is not None and low_time is not None
                 else "PENDING"
             ),
@@ -263,8 +298,8 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         reclaim = current["reclaim"]
         direction = current["bos_direction"]
         bos_time = current["bos_time"]
-        high = _number(node.get("range_high"))
-        low = _number(node.get("range_low"))
+        high = current["high"]
+        low = current["low"]
 
         if bos is None:
             payload["reason_codes"] = ["APPROVED_WEEKLY_BOS_MEMORY_MISSING"]
@@ -321,24 +356,32 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             continue
 
         payload["depth_window_start_time"] = _stamp(reclaim_time)
-        payload["range2_selection_rule"] = "FIRST_WEEKLY_RANGE_FORMED_AFTER_RECLAIM"
+        payload["range2_selection_rule"] = (
+            "FIRST_MAPPED_WEEKLY_RANGE_COMPLETED_AFTER_RECLAIM_WITH_NEW_OPPOSITE_ANCHOR"
+        )
 
         def qualifies(record: Mapping[str, Any]) -> bool:
             if record["id"] == current["id"]:
                 return False
-            formed_at = record["defined_at"]
             high_time = record["high_time"]
             low_time = record["low_time"]
-            if formed_at is None or high_time is None or low_time is None:
-                return False
-            if formed_at <= reclaim_time:
+            completion_time = record["completion_time"]
+            if high_time is None or low_time is None or completion_time is None:
                 return False
             opposite_time = low_time if direction == "BOS_UP" else high_time
-            return opposite_time >= reclaim_time
+            # The new opposite anchor must belong to this reclaim sequence. The
+            # continuation-side anchor may already exist from the BOS leg.
+            if opposite_time < reclaim_time:
+                return False
+            return completion_time >= reclaim_time
 
         candidates = sorted(
             (record for record in records if qualifies(record)),
-            key=lambda record: (record["defined_at"], record["id"]),
+            key=lambda record: (
+                record["completion_time"],
+                record["low_time"] if direction == "BOS_UP" else record["high_time"],
+                record["id"],
+            ),
         )
         range2 = candidates[0] if candidates else None
         if range2 is None:
@@ -346,13 +389,21 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             outputs.append(_output(node, "PENDING", payload))
             continue
 
-        range2_node = range2["node"]
-        range2_high = _number(range2_node.get("range_high"))
-        range2_low = _number(range2_node.get("range_low"))
+        range2_high = range2["high"]
+        range2_low = range2["low"]
+        high_time = range2["high_time"]
+        low_time = range2["low_time"]
+        completion_time = range2["completion_time"]
         if range2_high is None or range2_low is None or range2_high <= range2_low:
             payload["depth_status"] = "NEEDS_REVIEW"
             payload["depth_classification"] = "NEEDS_REVIEW"
             payload["reason_codes"] = ["INVALID_RANGE2_PRICES"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
+        if high_time is None or low_time is None or completion_time is None:
+            payload["depth_status"] = "NEEDS_REVIEW"
+            payload["depth_classification"] = "NEEDS_REVIEW"
+            payload["reason_codes"] = ["RANGE2_ANCHOR_TIME_MISSING"]
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
 
@@ -361,10 +412,10 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             one = low
             opposite_type = "RL"
             opposite_price = range2_low
-            opposite_time = range2["low_time"]
+            opposite_time = low_time
             continuation_type = "RH"
             continuation_price = range2_high
-            continuation_time = range2["high_time"]
+            continuation_time = high_time
             raw_depth_price = zero - opposite_price
             touched = opposite_price <= low
             exceeded = opposite_price < low
@@ -373,21 +424,20 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             one = high
             opposite_type = "RH"
             opposite_price = range2_high
-            opposite_time = range2["high_time"]
+            opposite_time = high_time
             continuation_type = "RL"
             continuation_price = range2_low
-            continuation_time = range2["low_time"]
+            continuation_time = low_time
             raw_depth_price = opposite_price - zero
             touched = opposite_price >= high
             exceeded = opposite_price > high
 
-        if opposite_time is None or continuation_time is None or range2["defined_at"] is None:
-            payload["depth_status"] = "NEEDS_REVIEW"
-            payload["depth_classification"] = "NEEDS_REVIEW"
-            payload["reason_codes"] = ["RANGE2_ANCHOR_TIME_MISSING"]
-            outputs.append(_output(node, "NEEDS_REVIEW", payload))
-            continue
-
+        completion_type, completion_price, completion_time = _completion_anchor(
+            high_time=high_time,
+            low_time=low_time,
+            high=range2_high,
+            low=range2_low,
+        )
         raw_ratio = raw_depth_price / (high - low)
         trading = _trading_depth(
             direction=direction,
@@ -397,15 +447,23 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             range_low=low,
             opposite_price=opposite_price,
         )
+
+        weeks_bos_to_completion = _week_distance(bos_time, completion_time)
+        weeks_reclaim_to_completion = _week_distance(reclaim_time, completion_time)
         payload.update({
             "depth_status": trading["classification"],
             "depth_classification": trading["classification"],
             "fib_zero_price": zero,
             "fib_one_price": one,
             "range2_id": range2["id"],
-            "range2_defined_at": _stamp(range2["defined_at"]),
+            "range2_defined_at": _stamp(completion_time),
+            "range2_completed_at": _stamp(completion_time),
             "range2_chronology": range2["chronology"],
-            "depth_window_end_time": _stamp(range2["defined_at"]),
+            "range2_anchor_sequence": _anchor_sequence(opposite_time, continuation_time),
+            "range2_completion_anchor_type": completion_type,
+            "range2_completion_anchor_price": completion_price,
+            "range2_completion_anchor_time": _stamp(completion_time),
+            "depth_window_end_time": _stamp(opposite_time),
             "range2_opposite_anchor_type": opposite_type,
             "range2_opposite_anchor_price": opposite_price,
             "range2_opposite_anchor_time": _stamp(opposite_time),
@@ -420,9 +478,15 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "raw_reclaim_depth_percent": round(raw_ratio * 100.0, 8),
             "boundary_distance_price": round(float(trading["boundary_distance"]), 8),
             "boundary_position": trading["boundary_position"],
-            "weeks_bos_to_range2_definition": _week_distance(bos_time, range2["defined_at"]),
-            "weeks_reclaim_to_range2_definition": _week_distance(reclaim_time, range2["defined_at"]),
-            "range2_formation_weeks": _week_distance(opposite_time, range2["defined_at"]),
+            "weeks_bos_to_depth_anchor": _week_distance(bos_time, opposite_time),
+            "weeks_reclaim_to_depth_anchor": _week_distance(reclaim_time, opposite_time),
+            "weeks_bos_to_range2_completion": weeks_bos_to_completion,
+            "weeks_reclaim_to_range2_completion": weeks_reclaim_to_completion,
+            "weeks_bos_to_range2_definition": weeks_bos_to_completion,
+            "weeks_reclaim_to_range2_definition": weeks_reclaim_to_completion,
+            "range2_formation_weeks": _week_distance(
+                min(high_time, low_time), max(high_time, low_time)
+            ),
             "old_opposite_external_touched": touched,
             "old_opposite_external_exceeded": exceeded,
             "reason_codes": trading["reason_codes"],
