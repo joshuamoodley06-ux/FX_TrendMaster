@@ -212,3 +212,57 @@ def test_profile_review_prioritizes_all_profiles_and_abandonment_override() -> N
         "weekly-4",
         "weekly-5",
     ]
+
+
+def test_extreme_rejection_review_prioritizes_both_origins_and_destination_ladder() -> None:
+    outputs = [
+        _row(
+            "weekly-1",
+            primary_origin_zone="DISCOUNT_EXTREME",
+            primary_maximum_destination="NO_FOLLOW_THROUGH",
+        ),
+        _row(
+            "weekly-2",
+            primary_origin_zone="PREMIUM_EXTREME",
+            primary_maximum_destination="FAIR_PRICE",
+        ),
+        _row(
+            "weekly-3",
+            primary_origin_zone="DISCOUNT_EXTREME",
+            primary_maximum_destination="OPPOSITE_EXTREME",
+        ),
+        _row(
+            "weekly-4",
+            primary_origin_zone="PREMIUM_EXTREME",
+            primary_maximum_destination="OPPOSITE_EXTERNAL",
+        ),
+        _row(
+            "weekly-5",
+            status="PENDING",
+            primary_origin_zone="DISCOUNT_EXTREME",
+            primary_maximum_destination="FAIR_PRICE",
+        ),
+        _row(
+            "weekly-6",
+            primary_origin_zone="DISCOUNT_EXTREME",
+            primary_maximum_destination="OPPOSITE_EXTERNAL",
+        ),
+    ]
+
+    samples = _review_samples(
+        doctrine_pipeline,
+        "weekly_extreme_rejection_destination",
+        outputs,
+    )
+
+    assert [row["canonical_range_id"] for row in samples] == [
+        "weekly-1",
+        "weekly-2",
+        "weekly-3",
+        "weekly-4",
+        "weekly-5",
+    ]
+    assert {row["payload"]["primary_origin_zone"] for row in samples[:2]} == {
+        "DISCOUNT_EXTREME",
+        "PREMIUM_EXTREME",
+    }
