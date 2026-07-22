@@ -2,7 +2,7 @@
 
 These are reviewed analytical packages. Storing a source file does not approve it.
 
-## Weekly analysis chain
+## Structure analysis chain
 
 ```text
 10 weekly_bos.py                              -> weekly_structure
@@ -11,6 +11,8 @@ These are reviewed analytical packages. Storing a source file does not approve i
 40 weekly_movement_classification.py          -> weekly_movement_classification
 50 weekly_profile_classification.py           -> weekly_profile_classification
 60 weekly_extreme_rejection_destination.py    -> weekly_extreme_rejection_destination
+70 daily_mapping_coverage_audit.py             -> daily_mapping_coverage_audit
+80 weekly_daily_relationship_builder.py        -> weekly_daily_relationship_builder
 ```
 
 Each package owns one job. Later packages consume approved memory instead of redetecting earlier facts.
@@ -136,22 +138,7 @@ Approved hierarchy badges:
 ◆ S&D
 ```
 
-The review card deliberately shows only:
-
-```text
-profile
-depth
-reclaim status
-previous BOS direction
-next BOS direction
-classification basis
-```
-
-Review sampling prioritises all three profiles, the abandonment continuation override, and one unresolved case where available.
-
 ## Weekly extreme rejection destination v1
-
-This package studies where price travels after a confirmed rejection from a Weekly extreme zone.
 
 Range geometry:
 
@@ -161,16 +148,11 @@ Fair Price       = 50%
 Premium extreme = 75% to 100%
 ```
 
-A confirmed rejection is:
+Confirmed rejection:
 
 ```text
-Discount rejection
-wick/body trades at or below 25%
-and the W1 closes back above 25%
-
-Premium rejection
-wick/body trades at or above 75%
-and the W1 closes back below 75%
+Discount: trades at/below 25% and closes back above 25%
+Premium:  trades at/above 75% and closes back below 75%
 ```
 
 A candle merely remaining inside an extreme is not a rejection.
@@ -184,50 +166,94 @@ OPPOSITE_EXTREME
 OPPOSITE_EXTERNAL
 ```
 
-For a discount rejection:
-
-```text
-Fair Price       = 50%
-Opposite extreme = 75%
-Opposite external = RH
-```
-
-For a premium rejection:
-
-```text
-Fair Price       = 50%
-Opposite extreme = 25%
-Opposite external = RL
-```
-
 The rejection candle may prove a destination only through its close. From the following W1 onward, wick touches count.
 
-Each rejection journey stops when:
+Each rejection journey stops when the opposite external is reached, the origin external later breaks, or available W1 data ends.
+
+## Daily mapping coverage audit v1
+
+The first Daily bridge script asks whether mapped Daily evidence was available at the Weekly candidate freeze. It does not interpret missing clicks as missing market structure.
+
+Freeze rule:
 
 ```text
-the opposite external is reached
-or
-price later breaks through the origin external
-or
-available W1 data ends and the journey remains pending
+approved Weekly BOS time
+fallback: persisted Weekly inactive time
 ```
 
-This stop prevents old rejections from being credited with destinations reached years after the original range story ended.
-
-Every confirmed rejection event is retained inside the range output. Stored event facts include:
+Coverage states:
 
 ```text
-origin zone
-rejection date and price
-journey status
-maximum destination
-Fair Price reached and weeks
-opposite extreme reached and weeks
-opposite external reached and weeks
-terminal reason and date
+COMPLETE
+PARTIAL
+NOT_MAPPED
+MAPPING_GAP
+INVALID_PARENT_LINK
 ```
 
-If one later W1 touches the origin external and a newly reached destination in the same candle, the event remains `NEEDS_REVIEW` because W1 OHLC cannot prove which side occurred first.
+Critical distinction:
+
+```text
+Weekly freeze before first mapped Daily history -> NOT_MAPPED
+Daily mapping era exists but no linked Daily child -> MAPPING_GAP
+```
+
+The package reads direct Daily children from the canonical Master Map hierarchy. It never searches for substitute parents or repairs a bad link.
+
+Stored facts include:
+
+```text
+weekly candidate/range ID
+candidate freeze time and basis
+first available mapped Daily time
+Daily ranges found at freeze
+all linked Daily ranges
+future Daily ranges excluded
+earliest/latest Daily range at freeze
+front/middle/tail gaps
+overlap count
+invalid parent links
+```
+
+Future Daily children remain in the audit payload but are excluded from `daily_ranges_found` at the freeze.
+
+## Weekly Daily relationship builder v1
+
+This package consumes approved Daily Mapping Coverage Audit memory and builds one ordered relationship row per linked Daily range.
+
+Each row stores:
+
+```text
+weekly candidate ID
+weekly range ID
+Daily range ID
+Daily sequence number
+Daily start/created/end time
+Daily direction
+Daily status at freeze
+parent range ID
+parent-link validity
+historical availability
+relationship validity
+```
+
+Historical leakage guard:
+
+```text
+Daily created after Weekly freeze -> NOT_YET_CREATED
+```
+
+A future row stays visible for auditing but is not counted as a valid historical relationship.
+
+Daily direction is factual anchor chronology only:
+
+```text
+RL before RH -> UP
+RH before RL -> DOWN
+same/missing anchor time -> UNRESOLVED
+```
+
+The relationship builder does not calculate Daily profile, setup quality, mitigation, phase, or trade direction.
 
 ## Version and dependency workflow
 
@@ -238,9 +264,11 @@ approve BOS v3
 -> approve Movement v4
 -> approve Profile v1
 -> approve Extreme Rejection Destination v1
+-> approve Daily Mapping Coverage Audit v1
+-> approve Weekly Daily Relationship Builder v1
 ```
 
-A pending per-range Depth result does not block Movement v4, but profile classification waits for depth unless the explicit `ABND + same-direction BOS` override applies.
+Scripts 3–5 of the planned Daily bridge remain intentionally unbuilt until the first two scripts pass five-candidate manual review.
 
 ## Approval workflow
 
