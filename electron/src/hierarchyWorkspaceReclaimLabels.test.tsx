@@ -17,8 +17,8 @@ function fixtureWithReclaim(reclaimStatus: string, bosDirection: string, chronol
     }];
     weekly.analysis_enrichments = {
       weekly_structure: {
-        version_id: 'bos-v1',
-        version_label: '1',
+        version_id: 'bos-v3',
+        version_label: '3',
         adapter_key: 'doctrine_package_v1',
         output_hash: 'bos-output',
         payload: {
@@ -27,8 +27,8 @@ function fixtureWithReclaim(reclaimStatus: string, bosDirection: string, chronol
         },
       },
       weekly_reclaim: {
-        version_id: 'reclaim-v1',
-        version_label: '1',
+        version_id: 'reclaim-v2',
+        version_label: '2',
         adapter_key: 'doctrine_package_v1',
         output_hash: 'reclaim-output',
         payload: {
@@ -54,6 +54,7 @@ describe('HierarchyWorkspace Weekly reclaim labels', () => {
   it.each([
     ['RECLAIMED', 'BOS_UP', 'RL_TO_RH', 'RL → RH · BOS Up · RECL'],
     ['ABANDONED', 'BOS_DOWN', 'RH_TO_RL', 'RH → RL · BOS Down · ABND'],
+    ['ABANDONED_THEN_RECLAIMED', 'BOS_UP', 'RL_TO_RH', 'RL → RH · BOS Up · ABND→RECL'],
     ['PENDING', 'BOS_UP', 'RL_TO_RH', 'RL → RH · BOS Up'],
   ])('shows %s beside the approved BOS result', async (
     reclaimStatus,
