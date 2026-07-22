@@ -18,6 +18,7 @@ _WEEKLY_PACKAGE_CHAIN = (
     ("weekly_bos.py", "Weekly BOS"),
     ("weekly_reclaim.py", "Weekly Reclaim"),
     ("weekly_reclaim_depth.py", "Weekly Reclaim Depth"),
+    ("weekly_movement_classification.py", "Weekly Movement Classification"),
 )
 
 
@@ -217,11 +218,13 @@ def install(pipeline: Any) -> None:
                     and str(current.get("adapter_key") or "") == PACKAGE_ADAPTER
                 )
                 value["package_dependency_ready"] = package_ready
-                # The old built-in Weekly Script 1 or an older package version may
-                # remain approved for rollback, but it must not unlock the latest
-                # package chain in the cockpit.
+                # A legacy package or older approved package may remain available
+                # for rollback, but it cannot unlock the latest package chain.
                 if str(row["script_key"]) in {
-                    "weekly_structure", "weekly_reclaim", "weekly_reclaim_depth"
+                    "weekly_structure",
+                    "weekly_reclaim",
+                    "weekly_reclaim_depth",
+                    "weekly_movement_classification",
                 } and not package_ready:
                     value["current_approved_version_id"] = None
             except pipeline.DoctrinePipelineError:
