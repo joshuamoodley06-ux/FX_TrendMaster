@@ -4,162 +4,236 @@ from range_library_memory.doctrine_packages import weekly_reclaim_depth
 
 
 class FakeContext:
-    def __init__(self, memory: dict, candles: list[dict]) -> None:
+    def __init__(self, ranges: list[dict], memory: dict[str, dict]) -> None:
+        self._ranges = ranges
         self._memory = memory
-        self._candles = candles
 
     def selected_ranges(self, *, layer: str | None = None):
         assert layer == "WEEKLY"
-        return ({
-            "id": "weekly-a",
-            "structure_layer": "WEEKLY",
-            "range_high": 100,
-            "range_low": 90,
-        },)
+        return tuple(self._ranges)
 
     def approved_memory(self, canonical_range_id: str):
-        assert canonical_range_id == "weekly-a"
-        return self._memory
+        return self._memory.get(canonical_range_id, {})
 
-    def latest_candle_time(self, timeframe: str):
-        assert timeframe == "W1"
-        return self._candles[-1]["time"] if self._candles else None
 
-    def load_candles(self, *, timeframe: str, start_time: str, end_time: str):
-        assert timeframe == "W1"
-        return tuple(self._candles)
+def _range(
+    identity: str,
+    *,
+    high: float,
+    low: float,
+    high_time: str,
+    low_time: str,
+) -> dict:
+    return {
+        "id": identity,
+        "structure_layer": "WEEKLY",
+        "range_high": high,
+        "range_low": low,
+        "range_high_time": high_time,
+        "range_low_time": low_time,
+    }
 
 
 def _memory(
     *,
     direction: str,
+    chronology: str,
+    defined_at: str,
+    bos_time: str | None,
     reclaim_status: str = "RECLAIMED",
-    reclaim_time: str = "2026-01-12T00:00:00Z",
-    next_bos_time: str | None = None,
+    reclaim_abbreviation: str = "RECL",
+    reclaim_time: str | None = "2026-02-02T00:00:00Z",
+    weeks_to_reclaim: int | None = 3,
+    processing_status: str = "COMPLETE",
 ) -> dict:
-    boundary = 100 if direction == "BOS_UP" else 90
     return {
         "weekly_structure": {
+            "processing_status": processing_status,
             "payload": {
-                "bos_direction": direction,
-                "bos_time": "2026-01-05T00:00:00Z",
-            }
+                "chronology": chronology,
+                "range_defined_at": defined_at,
+                "bos_direction": direction if bos_time else None,
+                "bos_time": bos_time,
+            },
         },
         "weekly_reclaim": {
+            "processing_status": "COMPLETE",
             "payload": {
                 "reclaim_status": reclaim_status,
-                "reclaim_time": reclaim_time if reclaim_status == "RECLAIMED" else None,
-                "reclaim_boundary": boundary,
-                "next_bos_time": next_bos_time,
-            }
+                "reclaim_abbreviation": reclaim_abbreviation,
+                "reclaim_time": reclaim_time,
+                "weeks_to_reclaim": weeks_to_reclaim,
+            },
         },
     }
 
 
-def test_bullish_reclaim_depth_is_continuous_percentage_of_old_weekly_range() -> None:
-    context = FakeContext(
-        _memory(direction="BOS_UP"),
-        [
-            {"time": "2026-01-12T00:00:00Z", "open": 105, "high": 108, "low": 99, "close": 104},
-            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 106, "low": 95, "close": 101},
-            {"time": "2026-01-26T00:00:00Z", "open": 101, "high": 109, "low": 97, "close": 107},
-        ],
-    )
-
-    result = weekly_reclaim_depth.run(context)["outputs"][0]
-
-    assert result["processing_status"] == "COMPLETE"
-    assert result["payload"]["depth_status"] == "MEASURED"
-    assert result["payload"]["deepest_wick_price"] == 95
-    assert result["payload"]["deepest_wick_time"] == "2026-01-19T00:00:00Z"
-    assert result["payload"]["reclaim_depth_price"] == 5
-    assert result["payload"]["reclaim_depth_percent"] == 50
-    assert result["payload"]["weeks_to_deepest_wick"] == 2
-    assert result["payload"]["weeks_observed"] == 3
+def _output(result: dict, identity: str) -> dict:
+    return next(row for row in result["outputs"] if row["canonical_range_id"] == identity)
 
 
-def test_bearish_reclaim_depth_measures_up_from_old_low() -> None:
-    context = FakeContext(
-        _memory(direction="BOS_DOWN"),
-        [
-            {"time": "2026-01-12T00:00:00Z", "open": 85, "high": 91, "low": 80, "close": 84},
-            {"time": "2026-01-19T00:00:00Z", "open": 84, "high": 96, "low": 82, "close": 90},
-        ],
-    )
+def test_bos_up_measures_range2_rl_against_range1_fib() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=110, low=92,
+            high_time="2026-01-26T00:00:00Z", low_time="2026-01-05T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+        ),
+        "weekly-2": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-26T00:00:00Z", bos_time=None,
+            processing_status="PENDING", reclaim_status="PENDING",
+            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
+        ),
+    }
 
-    result = weekly_reclaim_depth.run(context)["outputs"][0]
+    row = _output(weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1")
 
-    assert result["processing_status"] == "COMPLETE"
-    assert result["payload"]["deepest_wick_price"] == 96
-    assert result["payload"]["reclaim_depth_price"] == 6
-    assert result["payload"]["reclaim_depth_percent"] == 60
-    assert result["payload"]["weeks_to_deepest_wick"] == 2
-
-
-def test_depth_can_exceed_one_hundred_percent_when_old_opposite_external_breaks() -> None:
-    context = FakeContext(
-        _memory(direction="BOS_UP"),
-        [
-            {"time": "2026-01-12T00:00:00Z", "open": 105, "high": 108, "low": 99, "close": 104},
-            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 106, "low": 89, "close": 93},
-        ],
-    )
-
-    result = weekly_reclaim_depth.run(context)["outputs"][0]
-
-    assert result["payload"]["reclaim_depth_percent"] == 110
-    assert result["payload"]["old_opposite_external_touched"] is True
-    assert result["payload"]["old_opposite_external_exceeded"] is True
-    assert result["payload"]["weeks_to_deepest_wick"] == 2
-
-
-def test_weeks_to_deepest_wick_does_not_equal_total_observation_window() -> None:
-    context = FakeContext(
-        _memory(direction="BOS_UP"),
-        [
-            {"time": "2026-01-12T00:00:00Z", "open": 105, "high": 108, "low": 99, "close": 104},
-            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 106, "low": 98, "close": 101},
-            {"time": "2026-01-26T00:00:00Z", "open": 101, "high": 103, "low": 95, "close": 96},
-            {"time": "2026-02-02T00:00:00Z", "open": 96, "high": 101, "low": 97, "close": 100},
-            {"time": "2026-02-09T00:00:00Z", "open": 100, "high": 105, "low": 99, "close": 104},
-        ],
-    )
-
-    result = weekly_reclaim_depth.run(context)["outputs"][0]
-
-    assert result["payload"]["deepest_wick_time"] == "2026-01-26T00:00:00Z"
-    assert result["payload"]["weeks_to_deepest_wick"] == 3
-    assert result["payload"]["weeks_observed"] == 5
+    assert row["processing_status"] == "COMPLETE"
+    payload = row["payload"]
+    assert payload["range2_id"] == "weekly-2"
+    assert payload["fib_zero_price"] == 100
+    assert payload["fib_one_price"] == 90
+    assert payload["range2_opposite_anchor_type"] == "RL"
+    assert payload["range2_opposite_anchor_price"] == 92
+    assert payload["range2_opposite_anchor_time"] == "2026-01-05T00:00:00Z"
+    assert payload["range2_continuation_anchor_type"] == "RH"
+    assert payload["range2_continuation_anchor_price"] == 110
+    assert payload["reclaim_depth_price"] == 8
+    assert payload["reclaim_depth_ratio"] == 0.8
+    assert payload["reclaim_depth_percent"] == 80
+    assert payload["weeks_bos_to_range2_definition"] == 2
+    assert payload["range2_formation_weeks"] == 3
 
 
-def test_measurement_stops_at_next_weekly_bos() -> None:
-    context = FakeContext(
-        _memory(direction="BOS_UP", next_bos_time="2026-01-19T00:00:00Z"),
-        [
-            {"time": "2026-01-12T00:00:00Z", "open": 105, "high": 108, "low": 99, "close": 104},
-            {"time": "2026-01-19T00:00:00Z", "open": 104, "high": 106, "low": 95, "close": 101},
-            {"time": "2026-01-26T00:00:00Z", "open": 101, "high": 103, "low": 89, "close": 92},
-        ],
-    )
+def test_bos_down_measures_range2_rh_against_range1_fib() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2025-12-01T00:00:00Z", low_time="2026-01-05T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=98, low=80,
+            high_time="2026-01-05T00:00:00Z", low_time="2026-01-26T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_DOWN", chronology="RH_TO_RL",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+        ),
+        "weekly-2": _memory(
+            direction="BOS_DOWN", chronology="RH_TO_RL",
+            defined_at="2026-01-26T00:00:00Z", bos_time=None,
+            processing_status="PENDING", reclaim_status="PENDING",
+            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
+        ),
+    }
 
-    result = weekly_reclaim_depth.run(context)["outputs"][0]
+    row = _output(weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1")
 
-    assert result["payload"]["measurement_end_time"] == "2026-01-19T00:00:00Z"
-    assert result["payload"]["deepest_wick_price"] == 95
-    assert result["payload"]["reclaim_depth_percent"] == 50
-    assert result["payload"]["weeks_to_deepest_wick"] == 2
-    assert result["payload"]["weeks_observed"] == 2
+    payload = row["payload"]
+    assert payload["fib_zero_price"] == 90
+    assert payload["fib_one_price"] == 100
+    assert payload["range2_opposite_anchor_type"] == "RH"
+    assert payload["range2_opposite_anchor_price"] == 98
+    assert payload["range2_continuation_anchor_type"] == "RL"
+    assert payload["reclaim_depth_percent"] == 80
 
 
-def test_abandoned_before_reclaim_has_no_depth_measurement() -> None:
-    context = FakeContext(
-        _memory(direction="BOS_UP", reclaim_status="ABANDONED"),
-        [{"time": "2026-01-19T00:00:00Z", "open": 105, "high": 110, "low": 101, "close": 108}],
-    )
+def test_range2_depth_is_not_clamped_above_one_hundred_percent() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=110, low=88,
+            high_time="2026-01-26T00:00:00Z", low_time="2026-01-05T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+        ),
+        "weekly-2": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-26T00:00:00Z", bos_time=None,
+            processing_status="PENDING", reclaim_status="PENDING",
+            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
+        ),
+    }
 
-    result = weekly_reclaim_depth.run(context)["outputs"][0]
+    payload = _output(
+        weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1"
+    )["payload"]
 
-    assert result["processing_status"] == "COMPLETE"
-    assert result["payload"]["depth_status"] == "NOT_APPLICABLE_ABANDONED"
-    assert result["payload"]["reclaim_depth_percent"] is None
-    assert result["payload"]["weeks_to_deepest_wick"] is None
+    assert payload["reclaim_depth_percent"] == 120
+    assert payload["old_opposite_external_touched"] is True
+    assert payload["old_opposite_external_exceeded"] is True
+
+
+def test_abandoned_then_reclaimed_context_does_not_block_range2_depth() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        ),
+        _range(
+            "weekly-2", high=110, low=95,
+            high_time="2026-01-26T00:00:00Z", low_time="2026-01-05T00:00:00Z",
+        ),
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+            reclaim_status="ABANDONED_THEN_RECLAIMED",
+            reclaim_abbreviation="ABND→RECL",
+            reclaim_time="2026-03-02T00:00:00Z", weeks_to_reclaim=7,
+        ),
+        "weekly-2": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-26T00:00:00Z", bos_time=None,
+            processing_status="PENDING", reclaim_status="PENDING",
+            reclaim_abbreviation="PEND", reclaim_time=None, weeks_to_reclaim=None,
+        ),
+    }
+
+    row = _output(weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1")
+
+    assert row["processing_status"] == "COMPLETE"
+    assert row["payload"]["source_reclaim_abbreviation"] == "ABND→RECL"
+    assert row["payload"]["source_weeks_to_reclaim"] == 7
+    assert row["payload"]["reclaim_depth_percent"] == 50
+
+
+def test_no_later_mapped_range_keeps_depth_pending() -> None:
+    ranges = [
+        _range(
+            "weekly-1", high=100, low=90,
+            high_time="2026-01-05T00:00:00Z", low_time="2025-12-01T00:00:00Z",
+        )
+    ]
+    memory = {
+        "weekly-1": _memory(
+            direction="BOS_UP", chronology="RL_TO_RH",
+            defined_at="2026-01-05T00:00:00Z", bos_time="2026-01-12T00:00:00Z",
+        )
+    }
+
+    row = _output(weekly_reclaim_depth.run(FakeContext(ranges, memory)), "weekly-1")
+
+    assert row["processing_status"] == "PENDING"
+    assert row["payload"]["depth_status"] == "PENDING"
+    assert row["payload"]["reason_codes"] == ["RANGE2_NOT_YET_MAPPED"]
