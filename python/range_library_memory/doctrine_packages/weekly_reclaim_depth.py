@@ -1,8 +1,8 @@
 """Weekly Range 2 reclaim-depth doctrine package.
 
-This package consumes approved Weekly BOS and reclaim memory. It identifies the
-next mapped Weekly range and measures that Range 2 opposite anchor as a
-Fibonacci retracement of Range 1:
+This package consumes approved Weekly BOS and reclaim memory. The depth window
+starts on the reclaim candle and ends when the first new mapped Weekly range is
+formed. That first post-reclaim range is Range 2.
 
 BOS Up:   W1 RH = 0, W1 RL = 1, measure W2 RL.
 BOS Down: W1 RL = 0, W1 RH = 1, measure W2 RH.
@@ -18,7 +18,7 @@ from typing import Any, Mapping
 
 FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "weekly_reclaim_depth"
-VERSION_LABEL = "4"
+VERSION_LABEL = "5"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 30
 
@@ -102,6 +102,9 @@ def _base_payload() -> dict[str, Any]:
         "range2_id": None,
         "range2_defined_at": None,
         "range2_chronology": None,
+        "range2_selection_rule": None,
+        "depth_window_start_time": None,
+        "depth_window_end_time": None,
         "range2_opposite_anchor_type": None,
         "range2_opposite_anchor_price": None,
         "range2_opposite_anchor_time": None,
@@ -117,6 +120,7 @@ def _base_payload() -> dict[str, Any]:
         "boundary_distance_price": None,
         "boundary_position": None,
         "weeks_bos_to_range2_definition": None,
+        "weeks_reclaim_to_range2_definition": None,
         "range2_formation_weeks": None,
         "old_opposite_external_touched": False,
         "old_opposite_external_exceeded": False,
@@ -131,6 +135,19 @@ def _chronology(payload: Mapping[str, Any], high_time: datetime, low_time: datet
     if high_time == low_time:
         return "SAME_W1"
     return "RL_TO_RH" if low_time < high_time else "RH_TO_RL"
+
+
+def _formed_at(node: Mapping[str, Any], bos: Mapping[str, Any] | None,
+               high_time: datetime | None, low_time: datetime | None) -> datetime | None:
+    explicit = _time(node.get("active_from_time"))
+    if explicit is not None:
+        return explicit
+    memory_defined = _time((bos or {}).get("range_defined_at"))
+    if memory_defined is not None:
+        return memory_defined
+    if high_time is not None and low_time is not None:
+        return max(high_time, low_time)
+    return None
 
 
 def _trading_depth(
@@ -189,7 +206,11 @@ def _trading_depth(
             "boundary_position": "AT_OLD_RL" if direction == "BOS_UP" else "AT_OLD_RH",
             "reason_codes": [],
         }
-    exceeded_distance = (range_low - opposite_price) if direction == "BOS_UP" else (opposite_price - range_high)
+    exceeded_distance = (
+        range_low - opposite_price
+        if direction == "BOS_UP"
+        else opposite_price - range_high
+    )
     opposite_label = "RL" if direction == "BOS_UP" else "RH"
     relation = "BELOW" if direction == "BOS_UP" else "ABOVE"
     return {
@@ -214,9 +235,6 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         reclaim, reclaim_status = _memory_entry(context, canonical_id, "weekly_reclaim")
         high_time = _time(node.get("range_high_time"))
         low_time = _time(node.get("range_low_time"))
-        defined_at = _time((bos or {}).get("range_defined_at"))
-        if defined_at is None and high_time is not None and low_time is not None:
-            defined_at = max(high_time, low_time)
         records.append({
             "node": node,
             "id": canonical_id,
@@ -226,7 +244,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "reclaim_processing_status": reclaim_status,
             "bos_time": _time((bos or {}).get("bos_time")),
             "bos_direction": str((bos or {}).get("bos_direction") or "").upper(),
-            "defined_at": defined_at,
+            "defined_at": _formed_at(node, bos, high_time, low_time),
             "high_time": high_time,
             "low_time": low_time,
             "chronology": (
@@ -276,30 +294,55 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "range1_low": low,
             "range1_size": high - low,
         })
-        if reclaim is not None:
-            payload.update({
-                "source_reclaim_status": reclaim.get("reclaim_status"),
-                "source_reclaim_abbreviation": reclaim.get("reclaim_abbreviation"),
-                "source_reclaim_time": reclaim.get("reclaim_time"),
-                "source_weeks_to_reclaim": reclaim.get("weeks_to_reclaim"),
-            })
 
-        wanted = {"RL_TO_RH", "SAME_W1"} if direction == "BOS_UP" else {"RH_TO_RL", "SAME_W1"}
+        if reclaim is None:
+            payload["reason_codes"] = ["APPROVED_WEEKLY_RECLAIM_MEMORY_MISSING"]
+            outputs.append(_output(node, "PENDING", payload))
+            continue
+
+        reclaim_state = str(reclaim.get("reclaim_status") or "").upper()
+        reclaim_time = _time(reclaim.get("reclaim_time"))
+        payload.update({
+            "source_reclaim_status": reclaim.get("reclaim_status"),
+            "source_reclaim_abbreviation": reclaim.get("reclaim_abbreviation"),
+            "source_reclaim_time": reclaim.get("reclaim_time"),
+            "source_weeks_to_reclaim": reclaim.get("weeks_to_reclaim"),
+        })
+
+        if current["reclaim_processing_status"] == "NEEDS_REVIEW" or reclaim_state == "NEEDS_REVIEW":
+            payload["depth_status"] = "NEEDS_REVIEW"
+            payload["depth_classification"] = "NEEDS_REVIEW"
+            payload["reason_codes"] = ["WEEKLY_RECLAIM_NEEDS_REVIEW"]
+            outputs.append(_output(node, "NEEDS_REVIEW", payload))
+            continue
+        if reclaim_state in {"PENDING", "ABANDONED", ""} or reclaim_time is None:
+            payload["reason_codes"] = ["RANGE2_DEPTH_WAITING_FOR_RECLAIM"]
+            outputs.append(_output(node, "PENDING", payload))
+            continue
+
+        payload["depth_window_start_time"] = _stamp(reclaim_time)
+        payload["range2_selection_rule"] = "FIRST_WEEKLY_RANGE_FORMED_AFTER_RECLAIM"
+
+        def qualifies(record: Mapping[str, Any]) -> bool:
+            if record["id"] == current["id"]:
+                return False
+            formed_at = record["defined_at"]
+            high_time = record["high_time"]
+            low_time = record["low_time"]
+            if formed_at is None or high_time is None or low_time is None:
+                return False
+            if formed_at <= reclaim_time:
+                return False
+            opposite_time = low_time if direction == "BOS_UP" else high_time
+            return opposite_time >= reclaim_time
+
         candidates = sorted(
-            (
-                record for record in records
-                if record["id"] != current["id"]
-                and record["defined_at"] is not None
-                and record["defined_at"] > bos_time
-                and record["high_time"] is not None
-                and record["low_time"] is not None
-                and record["chronology"] in wanted
-            ),
+            (record for record in records if qualifies(record)),
             key=lambda record: (record["defined_at"], record["id"]),
         )
         range2 = candidates[0] if candidates else None
         if range2 is None:
-            payload["reason_codes"] = ["RANGE2_NOT_YET_MAPPED"]
+            payload["reason_codes"] = ["RANGE2_NOT_YET_MAPPED_AFTER_RECLAIM"]
             outputs.append(_output(node, "PENDING", payload))
             continue
 
@@ -362,6 +405,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "range2_id": range2["id"],
             "range2_defined_at": _stamp(range2["defined_at"]),
             "range2_chronology": range2["chronology"],
+            "depth_window_end_time": _stamp(range2["defined_at"]),
             "range2_opposite_anchor_type": opposite_type,
             "range2_opposite_anchor_price": opposite_price,
             "range2_opposite_anchor_time": _stamp(opposite_time),
@@ -377,6 +421,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "boundary_distance_price": round(float(trading["boundary_distance"]), 8),
             "boundary_position": trading["boundary_position"],
             "weeks_bos_to_range2_definition": _week_distance(bos_time, range2["defined_at"]),
+            "weeks_reclaim_to_range2_definition": _week_distance(reclaim_time, range2["defined_at"]),
             "range2_formation_weeks": _week_distance(opposite_time, range2["defined_at"]),
             "old_opposite_external_touched": touched,
             "old_opposite_external_exceeded": exceeded,
