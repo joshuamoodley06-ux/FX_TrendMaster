@@ -114,7 +114,13 @@ type PipelineView = {
 };
 
 const LAYERS: HierarchyLayer[] = ['WEEKLY', 'DAILY', 'INTRADAY', 'MICRO'];
-const WEEKLY_CHAIN = ['weekly_structure', 'weekly_reclaim', 'weekly_reclaim_depth'];
+const WEEKLY_CHAIN = [
+  'weekly_structure',
+  'weekly_reclaim',
+  'weekly_reclaim_depth',
+  'weekly_movement_classification',
+  'weekly_profile_classification',
+];
 
 function defaultWeeklyAnalysisBridge(): WeeklyAnalysisBridge | null {
   const globals = globalThis as typeof globalThis & {
@@ -164,13 +170,23 @@ function reclaimSuffix(value: unknown): string {
   return '';
 }
 
+function profileBadge(value: unknown): string {
+  const normalized = String(value || '').toUpperCase();
+  if (normalized === 'S&R' || normalized === 'S&R>FP' || normalized === 'S&D') {
+    return `◆ ${normalized}`;
+  }
+  return '';
+}
+
 function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
   const generic = node.analysisEnrichments.weekly_structure?.payload || {};
   const reclaim = node.analysisEnrichments.weekly_reclaim?.payload || {};
+  const profile = node.analysisEnrichments.weekly_profile_classification?.payload || {};
   const chronology = generic.chronology ?? node.script1Chronology;
   const bos = generic.bos_direction ?? node.script1BosDirection;
   const suffix = reclaimSuffix(reclaim.reclaim_status);
-  const bosWithReclaim = [bosLabel(bos), suffix].filter(Boolean).join(' · ');
+  const badge = profileBadge(profile.profile_badge ?? profile.profile_classification);
+  const bosWithReclaim = [bosLabel(bos), suffix, badge].filter(Boolean).join(' · ');
   const status = node.analysisEnrichments.weekly_structure
     ? 'Approved'
     : node.script1ReviewStatus === 'APPROVED' ? 'Approved'
@@ -311,6 +327,16 @@ function sampleFacts(scriptKey: string, sample: DoctrineSample, node: MasterMapR
       `Range 2 formation weeks: ${present(payload.range2_formation_weeks)}`,
       `Old opposite touched: ${present(payload.old_opposite_external_touched)}`,
       `Old opposite exceeded: ${present(payload.old_opposite_external_exceeded)}`,
+    ];
+  }
+  if (scriptKey === 'weekly_profile_classification') {
+    return [...base,
+      `Profile: ${present(payload.profile_classification)}`,
+      `Depth: ${compactNumber(payload.reclaim_depth_percent)}%`,
+      `Reclaim: ${String(payload.reclaim_status || 'PENDING').replaceAll('_', ' ')}`,
+      `Previous BOS: ${bosLabel(payload.source_bos_direction)}`,
+      `Next BOS: ${bosLabel(payload.next_bos_direction)}`,
+      `Classification basis: ${String(payload.classification_basis || 'PENDING').replaceAll('_', ' ')}`,
     ];
   }
   const entries = Object.entries(payload)
@@ -961,9 +987,9 @@ export function HierarchyWorkspace({
         </div>
         {!fullWeeklyChainInstalled
           ? <button type="button" onClick={() => void activateWeeklyAnalysis()} disabled={busy}>
-            {operationState === 'RUNNING' ? 'Installing…' : 'Install 3-Script Chain'}
+            {operationState === 'RUNNING' ? 'Installing…' : 'Install 5-Script Chain'}
           </button>
-          : <span className="weeklyScript1ApprovalBadge approved">3-script chain installed</span>}
+          : <span className="weeklyScript1ApprovalBadge approved">5-script chain installed</span>}
       </div>
 
       <span className={`weeklyScript1Source ${analysisState === 'active' ? 'disposable' : 'live'}`}>
