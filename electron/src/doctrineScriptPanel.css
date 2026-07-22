@@ -1,8 +1,17 @@
 .doctrinePanel {
   gap: 10px;
-  width: clamp(440px, 36vw, 680px);
-  max-width: calc(100vw - 96px);
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  overflow-x: hidden;
+  box-sizing: border-box;
+  font-size: 13px;
+}
+
+.doctrinePanel *,
+.doctrinePanel *::before,
+.doctrinePanel *::after {
+  box-sizing: border-box;
 }
 
 .doctrineWorkspaceHeader {
@@ -12,20 +21,24 @@
 .doctrineStoredScripts {
   display: grid;
   gap: 6px;
+  width: 100%;
+  min-width: 0;
 }
 
 .doctrineStoredScripts > button {
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 3px 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
   width: 100%;
   min-width: 0;
-  padding: 9px 11px;
+  padding: 10px 11px;
   text-align: left;
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.035);
   color: inherit;
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .doctrineStoredScripts > button:hover,
@@ -37,6 +50,7 @@
 .doctrineStoredScripts > button b {
   grid-column: 1;
   min-width: 0;
+  font-size: 13px;
 }
 
 .doctrineStoredScripts > button b::after {
@@ -48,8 +62,7 @@
   content: '  ▾';
 }
 
-/* Script cards are collapsed until selected. Selecting one reveals its version
-   and memory state without adding another separate accordion control. */
+/* Script cards stay compact until selected. */
 .doctrineStoredScripts > button span,
 .doctrineStoredScripts > button strong {
   display: none;
@@ -59,8 +72,8 @@
   display: block;
   grid-column: 1;
   min-width: 0;
-  opacity: 0.8;
-  font-size: 0.78rem;
+  opacity: 0.84;
+  font-size: 12px;
   white-space: normal;
   overflow-wrap: anywhere;
 }
@@ -70,22 +83,35 @@
   grid-column: 2;
   grid-row: 1 / span 2;
   align-self: center;
-  max-width: 110px;
+  max-width: 118px;
   text-align: right;
-  font-size: 0.7rem;
-  line-height: 1.25;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  line-height: 1.3;
+  letter-spacing: 0.03em;
   white-space: normal;
 }
 
 .doctrineSelectedSummary {
   display: grid;
-  gap: 4px;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.doctrineSelectedSummary > span {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .doctrineSelectedSummary > button {
   justify-self: start;
+  min-height: 30px;
   margin-top: 4px;
+  padding: 5px 10px;
+  font-size: 12px;
 }
 
 .doctrineDependencyWarning {
@@ -97,7 +123,7 @@
   gap: 10px;
   width: 100%;
   min-width: 0;
-  container-type: inline-size;
+  overflow: visible;
 }
 
 .doctrineValidationSample {
@@ -106,6 +132,7 @@
   width: 100%;
   min-width: 0;
   padding: 8px;
+  overflow: visible;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.025);
@@ -119,45 +146,62 @@
   border-color: rgba(255, 99, 99, 0.42);
 }
 
-/* Safe default: every fact gets its own line, so approval never hides audit data. */
+/* Permanent audit table. Every fact owns a full-width row at every monitor size.
+   Large windows must not invent a second column inside the fixed Hierarchy rail. */
 .doctrineValidationRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 5px 10px;
   width: 100%;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 9px 10px;
+  overflow: visible;
   text-align: left;
   align-items: start;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 .doctrineValidationRow b {
   grid-column: 1;
+  min-width: 0;
+  font-size: 13px;
 }
 
 .doctrineValidationRow strong {
   grid-column: 2;
   grid-row: 1;
   justify-self: end;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .doctrineValidationRow span {
+  display: block;
   grid-column: 1 / -1;
+  width: 100%;
   min-width: 0;
-  padding: 3px 0;
+  padding: 5px 0;
   overflow: visible;
   text-overflow: clip;
   white-space: normal;
   overflow-wrap: anywhere;
-  line-height: 1.35;
-  border-top: 1px solid rgba(255, 255, 255, 0.045);
+  word-break: normal;
+  font-size: 13px;
+  line-height: 1.42;
+  border-top: 1px solid rgba(255, 255, 255, 0.065);
 }
 
 .doctrineSampleReason {
-  padding: 6px 10px;
-  opacity: 0.82;
-  font-size: 0.74rem;
-  line-height: 1.35;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 10px;
+  opacity: 0.88;
+  font-size: 12px;
+  line-height: 1.4;
   text-transform: none;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -167,30 +211,16 @@
 .weeklySampleActions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 10px 4px;
+  gap: 8px;
+  padding: 1px 10px 5px;
 }
 
-/* Two columns only when the card itself is wide enough. Four columns created
-   the cropped pseudo-audit cards that prompted this correction. */
-@container (min-width: 560px) {
-  .doctrineValidationRow {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    align-items: start;
-  }
-
-  .doctrineValidationRow b {
-    grid-column: 1;
-  }
-
-  .doctrineValidationRow strong {
-    grid-column: 2;
-    grid-row: 1;
-  }
-
-  .doctrineValidationRow span {
-    grid-column: auto;
-  }
+.weeklySampleActions > button {
+  min-width: 72px;
+  min-height: 31px;
+  padding: 5px 11px;
+  font-size: 12px;
+  line-height: 1.2;
 }
 
 @media (max-width: 760px) {
