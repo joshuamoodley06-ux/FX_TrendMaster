@@ -8,7 +8,7 @@ from range_library_memory import doctrine_pipeline
 EXPECTED_VERSIONS = {
     "weekly_structure": "3",
     "weekly_reclaim": "2",
-    "weekly_reclaim_depth": "4",
+    "weekly_reclaim_depth": "5",
 }
 
 
