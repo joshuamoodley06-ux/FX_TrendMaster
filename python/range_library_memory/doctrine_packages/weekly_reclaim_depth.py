@@ -2,8 +2,9 @@
 
 This package consumes approved weekly_structure and weekly_reclaim memory. It
 measures the deepest W1 wick reached after reclaim, expressed as both price
-movement and percentage of the old Weekly range. It does not hardcode shallow
-or deep labels.
+movement and percentage of the old Weekly range. It also records how many W1
+candles elapsed before that deepest wick. It does not hardcode shallow or deep
+labels.
 """
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ from typing import Any, Mapping
 
 FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "weekly_reclaim_depth"
-VERSION_LABEL = "1"
+VERSION_LABEL = "2"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 30
 
@@ -76,6 +77,7 @@ def _base_payload() -> dict[str, Any]:
         "reclaim_depth_percent": None,
         "old_opposite_external_touched": False,
         "old_opposite_external_exceeded": False,
+        "weeks_to_deepest_wick": None,
         "weeks_observed": 0,
         "reason_codes": [],
     }
@@ -159,13 +161,19 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             continue
 
         if direction == "BOS_UP":
-            deepest = min(candles, key=lambda candle: float(candle["low"]))
+            deepest_index, deepest = min(
+                enumerate(candles),
+                key=lambda item: float(item[1]["low"]),
+            )
             deepest_price = float(deepest["low"])
             depth_price = max(0.0, boundary - deepest_price)
             touched = deepest_price <= low
             exceeded = deepest_price < low
         else:
-            deepest = max(candles, key=lambda candle: float(candle["high"]))
+            deepest_index, deepest = max(
+                enumerate(candles),
+                key=lambda item: float(item[1]["high"]),
+            )
             deepest_price = float(deepest["high"])
             depth_price = max(0.0, deepest_price - boundary)
             touched = deepest_price >= high
@@ -184,6 +192,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             "reclaim_depth_percent": round((depth_price / range_size) * 100.0, 8),
             "old_opposite_external_touched": touched,
             "old_opposite_external_exceeded": exceeded,
+            "weeks_to_deepest_wick": deepest_index + 1,
             "weeks_observed": len(candles),
         })
         outputs.append(_output(node, "COMPLETE", payload))
