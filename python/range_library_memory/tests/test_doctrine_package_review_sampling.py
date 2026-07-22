@@ -50,14 +50,14 @@ def test_reclaim_review_prioritizes_distinct_lifecycle_states() -> None:
     ]
 
 
-def test_depth_review_prioritizes_distinct_trader_outcomes() -> None:
+def test_depth_review_prioritizes_distinct_trading_outcomes() -> None:
     outputs = [
         _row("weekly-1", depth_status="RETRACED_INTO_RANGE"),
         _row("weekly-2", depth_status="NO_RETRACEMENT"),
         _row("weekly-3", depth_status="BOUNDARY_TOUCH"),
-        _row("weekly-4", depth_status="EXCEEDED_OLD_OPPOSITE"),
-        _row("weekly-5", status="PENDING", depth_status="PENDING"),
-        _row("weekly-6", status="NEEDS_REVIEW", depth_status="NEEDS_REVIEW"),
+        _row("weekly-4", depth_status="TOUCHED_OLD_OPPOSITE"),
+        _row("weekly-5", depth_status="EXCEEDED_OLD_OPPOSITE"),
+        _row("weekly-6", status="PENDING", depth_status="PENDING"),
     ]
 
     samples = _review_samples(doctrine_pipeline, "weekly_reclaim_depth", outputs)
@@ -66,6 +66,6 @@ def test_depth_review_prioritizes_distinct_trader_outcomes() -> None:
         "NO_RETRACEMENT",
         "BOUNDARY_TOUCH",
         "RETRACED_INTO_RANGE",
+        "TOUCHED_OLD_OPPOSITE",
         "EXCEEDED_OLD_OPPOSITE",
-        "PENDING",
     ]
