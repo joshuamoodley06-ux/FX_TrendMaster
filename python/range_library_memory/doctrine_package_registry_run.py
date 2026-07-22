@@ -105,6 +105,54 @@ def _review_samples(
     return chosen
 
 
+def _preserved_prior_approved_run(
+    pipeline: Any,
+    connection: Any,
+    *,
+    version: Any,
+    version_id: str,
+    case_ref: str,
+    symbol: str,
+) -> dict[str, Any] | None:
+    """Reuse prior approved evidence while a newer version is still a candidate.
+
+    A review refresh must not rerun an older approved script against a newer
+    parent candidate. The already-published run stays trustworthy and visible
+    until the candidate itself reaches 5/5.
+    """
+    if not pipeline._approved_version(connection, version_id):
+        return None
+    latest = connection.execute(
+        """SELECT version_id FROM doctrine_script_versions
+           WHERE script_id=? ORDER BY created_at DESC LIMIT 1""",
+        (version["script_id"],),
+    ).fetchone()
+    if latest is None or str(latest["version_id"]) == version_id:
+        return None
+    existing = connection.execute(
+        """SELECT run_id FROM doctrine_script_runs
+           WHERE version_id=? AND case_ref=? AND UPPER(symbol)=?
+             AND run_status='COMPLETE'
+           ORDER BY completed_at DESC,executed_at DESC LIMIT 1""",
+        (version_id, case_ref, symbol.upper()),
+    ).fetchone()
+    if existing is None:
+        return None
+    run_id = str(existing["run_id"])
+    run = connection.execute(
+        "SELECT publication_status FROM doctrine_script_runs WHERE run_id=?",
+        (run_id,),
+    ).fetchone()
+    if run is not None and str(run["publication_status"] or "") != "PUBLISHED":
+        pipeline._publish_version(connection, version_id, symbol, pipeline.now())
+        connection.commit()
+    return {
+        **pipeline._run_state(connection, run_id),
+        "reused": True,
+        "preserved_prior_approved": True,
+    }
+
+
 def run_package_version(
     pipeline: Any,
     db_path: str | Path,
@@ -127,6 +175,16 @@ def run_package_version(
         ).fetchone()
         if version is None or str(version["adapter_key"]) != PACKAGE_ADAPTER:
             raise pipeline.DoctrinePipelineError("Doctrine package adapter mismatch.")
+        preserved = _preserved_prior_approved_run(
+            pipeline,
+            connection,
+            version=version,
+            version_id=version_id,
+            case_ref=case_ref,
+            symbol=symbol,
+        )
+        if preserved is not None:
+            return preserved
         dependency_fingerprint = _package_dependency_fingerprint(
             pipeline,
             connection,
