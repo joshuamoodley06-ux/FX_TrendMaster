@@ -21,6 +21,8 @@ _WEEKLY_PACKAGE_CHAIN = (
     ("weekly_movement_classification.py", "Weekly Movement Classification"),
     ("weekly_profile_classification.py", "Weekly Profile Classification"),
     ("weekly_extreme_rejection_destination.py", "Weekly Extreme Rejection Destination"),
+    ("daily_mapping_coverage_audit.py", "Daily Mapping Coverage Audit"),
+    ("weekly_daily_relationship_builder.py", "Weekly Daily Relationship Builder"),
 )
 
 
@@ -229,6 +231,8 @@ def install(pipeline: Any) -> None:
                     "weekly_movement_classification",
                     "weekly_profile_classification",
                     "weekly_extreme_rejection_destination",
+                    "daily_mapping_coverage_audit",
+                    "weekly_daily_relationship_builder",
                 } and not package_ready:
                     value["current_approved_version_id"] = None
             except pipeline.DoctrinePipelineError:
