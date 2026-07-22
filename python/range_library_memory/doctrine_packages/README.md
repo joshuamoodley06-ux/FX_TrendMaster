@@ -1,26 +1,18 @@
 # FXTM doctrine packages
 
-These files are reviewed analytical packages. Merely storing a file does not approve it.
+These are reviewed analytical packages. Storing a source file does not approve it.
 
 ## Weekly analysis chain
 
 ```text
-weekly_bos.py                        -> weekly_structure
-weekly_reclaim.py                    -> weekly_reclaim
-weekly_reclaim_depth.py              -> weekly_reclaim_depth
-weekly_movement_classification.py    -> weekly_movement_classification
+10 weekly_bos.py                     -> weekly_structure
+20 weekly_reclaim.py                 -> weekly_reclaim
+30 weekly_reclaim_depth.py           -> weekly_reclaim_depth
+40 weekly_movement_classification.py -> weekly_movement_classification
+50 weekly_profile_classification.py  -> weekly_profile_classification
 ```
 
-Execution order:
-
-```text
-Weekly BOS
--> Weekly reclaim / abandonment
--> Weekly Range 2 reclaim depth
--> Weekly movement classification
-```
-
-Each package owns one job. A later package may enrich earlier facts, but it must not delay facts that are already knowable.
+Each package owns one job. Later packages consume approved memory instead of redetecting earlier facts.
 
 ## Weekly BOS v3
 
@@ -38,8 +30,6 @@ BOS_DOWN -> old RL is reclaim boundary
 ```
 
 A same-BOS-candle reclaim stores `weeks_to_reclaim = 0`. Otherwise the next W1 starts at week 1 and the first later boundary touch stops the count.
-
-Lifecycle values:
 
 ```text
 RECLAIMED                -> RECL
@@ -61,21 +51,7 @@ Range 1 BOS
 -> later RH/RL anchor completes Range 2
 ```
 
-For BOS Up:
-
-```text
-Fib 0 = W1 RH
-Fib 1 = W1 RL
-Depth endpoint = W2 RL
-```
-
-For BOS Down:
-
-```text
-Fib 0 = W1 RL
-Fib 1 = W1 RH
-Depth endpoint = W2 RH
-```
+For BOS Up, depth uses W2 RL against W1 RH/RL. For BOS Down, depth uses W2 RH against W1 RL/RH.
 
 Supported mapped anchor sequences:
 
@@ -84,8 +60,6 @@ OPPOSITE_THEN_CONTINUATION
 CONTINUATION_THEN_OPPOSITE
 SAME_W1
 ```
-
-Range completion uses the actual later RH/RL anchor date. `active_from_time` cannot claim completion before the second anchor exists.
 
 Trader-facing depth:
 
@@ -99,38 +73,26 @@ raw ratio > 1 -> EXCEEDED_OLD_OPPOSITE
 
 ## Weekly movement classification v4
 
-Movement counting starts when the range breaks. It does not wait for reclaim or reclaim-depth confirmation.
-
-The package reads approved Weekly BOS memory for every mapped Weekly range and finds the first later approved BOS event.
+Movement counting starts immediately after the range BOS. It does not wait for reclaim or depth confirmation.
 
 ```text
-Range 1 BOS candle
--> excluded from count
--> classify every later W1 candle
--> stop immediately before the next approved BOS candle
--> next BOS is the terminal event
+Range 1 BOS candle excluded
+-> classify each later W1
+-> group consecutive CT/PT candles into legs
+-> stop before the next approved BOS candle
 ```
 
-Weekly OHLC direction doctrine:
+Weekly OHLC doctrine:
 
 ```text
 Bullish W1 = Open -> Low -> Close -> High
 Bearish W1 = Open -> High -> Close -> Low
 ```
 
-Movement roles:
-
 ```text
-BOS_UP
-bearish W1 = countertrend (CT)
-bullish W1 = protrend (PT)
-
-BOS_DOWN
-bullish W1 = countertrend (CT)
-bearish W1 = protrend (PT)
+BOS_UP:   bearish = CT, bullish = PT
+BOS_DOWN: bullish = CT, bearish = PT
 ```
-
-Consecutive candles with the same role form one leg. A role change starts a new leg.
 
 Example:
 
@@ -138,57 +100,65 @@ Example:
 CT 1W -> PT 1W -> CT 1W -> BOS_UP
 ```
 
-The package stores:
+Depth is optional enrichment. A movement path may complete while depth remains pending.
+
+## Weekly profile classification v1
+
+This package consumes approved Weekly reclaim and reclaim-depth memory.
+
+Depth rules:
 
 ```text
-movement_path
-movement_sequence
-ordered movement_legs with candle dates
-movement leg count
-countertrend leg count and total W1 count
-protrend leg count and total W1 count
-source BOS direction/date
-next BOS direction/date
-Range 1 and Range 2 IDs
+depth < 38.2%       -> S&R
+38.2% <= depth <= 50% -> S&R>FP
+depth > 50%         -> S&D
 ```
 
-Reclaim Depth is optional enrichment:
+Exact 38.2% and exact 50% belong to `S&R>FP`.
+
+Continuation override:
 
 ```text
-Depth complete
--> add countertrend depth classification, distance and percentage
--> add protrend distance
-
-Depth pending
--> movement path still completes
--> depth fields remain pending
--> countertrend classification = COUNTERTREND_LEG_DEPTH_PENDING
+previous range = ABANDONED
+and
+next BOS direction = source BOS direction
+-> S&R
 ```
 
-A completed movement chapter can therefore be approved while reclaim remains unconfirmed. A missing next approved BOS keeps the chapter `PENDING`. A doji between BOS events remains `NEEDS_REVIEW` until its role is defined.
+The override may classify S&R without a completed depth result. An abandoned range followed by an opposite-direction BOS stays pending rather than being forced into a profile.
 
-This is still not the future range lifecycle/storyline builder. It preserves the factual ordered movement path that the later lifecycle script will consume.
+Approved hierarchy badges:
+
+```text
+◆ S&R
+◆ S&R>FP
+◆ S&D
+```
+
+The review card deliberately shows only:
+
+```text
+profile
+depth
+reclaim status
+previous BOS direction
+next BOS direction
+classification basis
+```
+
+Review sampling prioritises all three profiles, the abandonment continuation override, and one unresolved case where available.
 
 ## Version and dependency workflow
 
 ```text
-approve latest BOS package
--> approve latest Reclaim package
--> approve latest Range 2 Depth package
--> approve latest Movement Classification package
+approve BOS v3
+-> approve Reclaim v2
+-> approve Depth v6
+-> approve Movement v4
+-> approve Profile v1
 ```
 
-A pending per-range Depth result no longer blocks Movement v4. Package versions remain chained so updated parent memory invalidates child results safely.
-
-Movement v4 review prioritises:
-
-```text
-an alternating three-leg storyline
-one chapter beginning CT
-one chapter beginning PT
-a depth-pending chapter
-ordinary depth variation
-```
+A pending per-range Depth result does not block Movement v4, but profile classification waits for depth unless the explicit `ABND + same-direction BOS` override applies.
 
 ## Approval workflow
 
