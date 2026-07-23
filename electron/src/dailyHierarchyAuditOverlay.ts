@@ -55,23 +55,18 @@ function removeBadge(row: HTMLElement, className: string): void {
 
 function ensureLegend(panel: Element): void {
   const controls = panel.querySelector('.explorerTreeControls');
-  if (!controls) return;
-  let legend = panel.querySelector<HTMLElement>('.dailyHierarchyAuditLegend');
-  if (!legend) {
-    legend = document.createElement('div');
-    legend.className = 'dailyHierarchyAuditLegend';
-    legend.setAttribute(OVERLAY_MARK, 'true');
-    controls.insertAdjacentElement('afterend', legend);
-  }
-  const text = 'R# = Daily order inside Weekly · ✓ linked · ! orphan/unlinked';
-  if (legend.textContent !== text) {
-    legend.replaceChildren();
-    const heading = document.createElement('b');
-    heading.textContent = 'Daily audit';
-    const detail = document.createElement('span');
-    detail.textContent = 'R# = order inside Weekly · ✓ linked · ! orphan/unlinked';
-    legend.append(heading, detail);
-  }
+  if (!controls || panel.querySelector('.dailyHierarchyAuditLegend')) return;
+
+  const legend = document.createElement('div');
+  legend.className = 'dailyHierarchyAuditLegend';
+  legend.setAttribute(OVERLAY_MARK, 'true');
+
+  const heading = document.createElement('b');
+  heading.textContent = 'Daily audit';
+  const detail = document.createElement('span');
+  detail.textContent = 'R# = order inside Weekly · ✓ linked · ! orphan/unlinked';
+  legend.append(heading, detail);
+  controls.insertAdjacentElement('afterend', legend);
 }
 
 function decoratePanel(panel: Element): void {
