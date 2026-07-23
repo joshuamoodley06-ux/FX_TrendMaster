@@ -91,7 +91,7 @@ def _run(
     )["outputs"][0]
 
 
-def test_pre_2025_weekly_freeze_is_not_mapped_not_no_structure() -> None:
+def test_pre_mapping_weekly_freeze_is_not_mapped_not_no_structure() -> None:
     mapped_daily = _daily(
         "daily-2025",
         start="2025-01-01T00:00:00Z",
@@ -106,46 +106,69 @@ def test_pre_2025_weekly_freeze_is_not_mapped_not_no_structure() -> None:
     result = _run(weekly, [mapped_daily], "2024-06-01T00:00:00Z")
 
     assert result["processing_status"] == "COMPLETE"
-    assert result["payload"]["candidate_freeze_basis"] == "WEEKLY_BOS"
     assert result["payload"]["candidate_freeze_time"] == "2024-06-01T00:00:00Z"
     assert result["payload"]["coverage_status"] == "NOT_MAPPED"
-    assert result["payload"]["daily_mapping_coverage_available"] is False
-    assert result["payload"]["reason_codes"] == ["DAILY_NOT_MAPPED_AT_WEEKLY_FREEZE"]
+    assert result["payload"]["daily_mapping_status"] == "Not mapped at this Weekly freeze"
+    assert result["payload"]["reason_codes"] == [
+        "DAILY_NOT_MAPPED_AT_WEEKLY_FREEZE"
+    ]
     assert "NO_DAILY_STRUCTURE" not in str(result)
 
 
-def test_contiguous_daily_children_cover_weekly_freeze_window() -> None:
-    first = _daily(
-        "daily-1",
-        start="2025-01-01T00:00:00Z",
-        created="2025-01-02T00:00:00Z",
-        end="2025-02-01T00:00:00Z",
-        status="BROKEN",
+def test_story_inside_mapping_era_is_complete_even_if_first_child_forms_later() -> None:
+    mapping_anchor = _daily(
+        "daily-mapping-anchor",
+        start="2025-02-03T00:00:00Z",
+        created="2025-02-04T00:00:00Z",
     )
-    second = _daily(
-        "daily-2",
-        start="2025-02-01T00:00:00Z",
-        created="2025-02-02T00:00:00Z",
-    )
+    children = [
+        _daily(
+            f"daily-{index}",
+            start=f"2025-{month_day}T00:00:00Z",
+            created=f"2025-{month_day}T12:00:00Z",
+        )
+        for index, month_day in enumerate(
+            (
+                "09-24",
+                "10-01",
+                "10-10",
+                "10-20",
+                "11-01",
+                "11-12",
+                "11-25",
+                "12-05",
+                "12-18",
+            ),
+            start=1,
+        )
+    ]
     weekly = _weekly(
         "weekly-1",
-        start="2025-01-01T00:00:00Z",
-        children=[first, second],
+        start="2025-09-14T00:00:00Z",
+        children=children,
     )
 
-    result = _run(weekly, [first, second], "2025-03-01T00:00:00Z")
+    result = _run(
+        weekly,
+        [mapping_anchor, *children],
+        "2025-12-21T00:00:00Z",
+    )
 
     assert result["processing_status"] == "COMPLETE"
     assert result["payload"]["coverage_status"] == "COMPLETE"
-    assert result["payload"]["daily_ranges_found"] == 2
-    assert result["payload"]["earliest_daily_range"] == "daily-1"
-    assert result["payload"]["latest_daily_range"] == "daily-2"
-    assert result["payload"]["front_gap"] is None
-    assert result["payload"]["middle_gaps"] == []
-    assert result["payload"]["tail_gap"] is None
+    assert result["payload"]["weekly_story"] == "2025-09-14 -> 2025-12-21"
+    assert result["payload"]["daily_mapping_status"] == "Available since 2025-02-03"
+    assert result["payload"]["daily_ranges_found"] == 9
+    assert result["payload"]["first_daily_child"] == "2025-09-24"
+    assert result["payload"]["last_daily_child_at_freeze"] == "2025-12-18"
+    assert result["payload"]["future_daily_ranges_excluded"] == 0
+    assert result["payload"]["parent_link_summary"] == "Valid"
+    assert result["payload"]["reason_codes"] == [
+        "WEEKLY_STORY_FULLY_INSIDE_DAILY_MAPPING_ERA"
+    ]
 
 
-def test_front_or_tail_only_is_partial() -> None:
+def test_story_crossing_mapping_start_is_partial() -> None:
     child = _daily(
         "daily-1",
         start="2025-01-10T00:00:00Z",
@@ -160,18 +183,21 @@ def test_front_or_tail_only_is_partial() -> None:
     result = _run(weekly, [child], "2025-02-01T00:00:00Z")
 
     assert result["payload"]["coverage_status"] == "PARTIAL"
-    assert result["payload"]["front_gap"] == {
+    assert result["payload"]["audit_details"]["mapping_unavailable_window"] == {
         "start_time": "2025-01-01T00:00:00Z",
         "end_time": "2025-01-10T00:00:00Z",
     }
+    assert result["payload"]["reason_codes"] == [
+        "WEEKLY_STORY_BEGAN_BEFORE_DAILY_MAPPING"
+    ]
 
 
-def test_middle_gap_is_mapping_gap() -> None:
+def test_spaces_and_overlaps_between_structural_ranges_do_not_create_fake_gaps() -> None:
     first = _daily(
         "daily-1",
         start="2025-01-01T00:00:00Z",
         created="2025-01-02T00:00:00Z",
-        end="2025-01-20T00:00:00Z",
+        end="2025-02-10T00:00:00Z",
         status="BROKEN",
     )
     second = _daily(
@@ -187,11 +213,31 @@ def test_middle_gap_is_mapping_gap() -> None:
 
     result = _run(weekly, [first, second], "2025-03-01T00:00:00Z")
 
+    assert result["payload"]["coverage_status"] == "COMPLETE"
+    assert result["payload"]["daily_ranges_found"] == 2
+    assert "middle_gaps" not in result["payload"]
+    assert "overlap_count" not in result["payload"]
+
+
+def test_mapping_gap_requires_mapping_era_but_no_valid_linked_child() -> None:
+    mapped_elsewhere = _daily(
+        "daily-elsewhere",
+        start="2025-01-01T00:00:00Z",
+        created="2025-01-02T00:00:00Z",
+    )
+    weekly = _weekly(
+        "weekly-with-gap",
+        start="2025-02-01T00:00:00Z",
+        children=[],
+    )
+
+    result = _run(weekly, [mapped_elsewhere], "2025-03-01T00:00:00Z")
+
     assert result["payload"]["coverage_status"] == "MAPPING_GAP"
-    assert result["payload"]["middle_gaps"] == [{
-        "start_time": "2025-01-20T00:00:00Z",
-        "end_time": "2025-02-01T00:00:00Z",
-    }]
+    assert result["payload"]["daily_ranges_found"] == 0
+    assert result["payload"]["reason_codes"] == [
+        "DAILY_MAPPING_AVAILABLE_BUT_NO_LINKED_DAILY_AT_FREEZE"
+    ]
 
 
 def test_future_daily_child_is_retained_but_excluded_at_freeze() -> None:
@@ -213,7 +259,7 @@ def test_future_daily_child_is_retained_but_excluded_at_freeze() -> None:
 
     result = _run(weekly, [current, future], "2025-02-01T00:00:00Z")
 
-    assert result["payload"]["daily_ranges_mapped_total"] == 2
+    assert result["payload"]["audit_details"]["daily_ranges_mapped_total"] == 2
     assert result["payload"]["daily_ranges_found"] == 1
     assert result["payload"]["future_daily_ranges_excluded"] == 1
     assert [child["daily_range_id"] for child in result["payload"]["daily_children"]] == [
@@ -239,7 +285,10 @@ def test_invalid_saved_parent_link_is_reported_not_repaired() -> None:
 
     assert result["processing_status"] == "NEEDS_REVIEW"
     assert result["payload"]["coverage_status"] == "INVALID_PARENT_LINK"
-    assert result["payload"]["invalid_parent_links"] == ["daily-bad-parent"]
+    assert result["payload"]["parent_link_summary"] == "INVALID: 1"
+    assert result["payload"]["audit_details"]["invalid_parent_links"] == [
+        "daily-bad-parent"
+    ]
     assert result["payload"]["daily_children"][0]["parent_range_id"] == "weekly-1"
     assert result["payload"]["daily_children"][0]["parent_link_valid"] is False
 
@@ -276,7 +325,9 @@ def test_review_root_invalid_parent_evidence_is_audited_not_promoted() -> None:
 
     assert result["processing_status"] == "NEEDS_REVIEW"
     assert result["payload"]["coverage_status"] == "INVALID_PARENT_LINK"
-    assert result["payload"]["invalid_parent_links"] == ["daily-review-invalid"]
+    assert result["payload"]["audit_details"]["invalid_parent_links"] == [
+        "daily-review-invalid"
+    ]
     by_id = {
         child["daily_range_id"]: child
         for child in result["payload"]["daily_children"]
