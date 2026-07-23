@@ -145,7 +145,11 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             start = _time(child.get("daily_start_time"))
             end = _time(child.get("daily_end_time"))
             state = _status_at_freeze(child, freeze)
-            parent_link_valid = child.get("parent_link_valid") is True
+            parent_range_id = str(child.get("parent_range_id") or "").strip() or None
+            parent_link_valid = (
+                child.get("parent_link_valid") is True
+                and parent_range_id == canonical_id
+            )
             timing_valid = (
                 bool(daily_id)
                 and created is not None
@@ -164,7 +168,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
                 "daily_end_time": child.get("daily_end_time"),
                 "daily_direction": _daily_direction(child),
                 "daily_status_at_freeze": state,
-                "parent_range_id": child.get("parent_range_id"),
+                "parent_range_id": parent_range_id,
                 "parent_link_status": child.get("parent_link_status"),
                 "parent_link_valid": parent_link_valid,
                 "historically_available": historically_available,
