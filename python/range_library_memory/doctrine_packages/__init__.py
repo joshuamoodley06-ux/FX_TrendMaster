@@ -7,4 +7,7 @@ Current structure chain:
 Weekly BOS -> reclaim -> reclaim depth -> movement classification -> profile
 classification -> extreme rejection destination -> Daily mapping coverage audit
 -> Weekly Daily relationship builder.
+
+Daily state-at-freeze, sequence summary, and relationship classification remain
+held until the first two Daily bridge packages pass manual five-candidate review.
 """
