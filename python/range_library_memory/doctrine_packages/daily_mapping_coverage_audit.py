@@ -1,7 +1,11 @@
 """Audit whether Daily mapping existed for each Weekly candidate story.
 
+Completed Weekly stories freeze at their approved Weekly BOS. An open Weekly range
+without a BOS is still analytically useful, so it freezes at the latest available
+D1 candle, with W1 as a fallback, and is labelled IN_PROGRESS.
+
 This package answers a coverage question only. It does not infer Daily trade
-direction, rebuild parent links, or treat gaps between overlapping structural
+direction, rebuild parent links, or treat spaces and overlaps between structural
 ranges as missing mapping.
 
 Coverage is based on the mapped Daily history era:
@@ -34,7 +38,7 @@ from typing import Any, Mapping
 
 FXTM_DOCTRINE_CONTRACT = "fxtm_doctrine_package_v1"
 SCRIPT_KEY = "daily_mapping_coverage_audit"
-VERSION_LABEL = "2"
+VERSION_LABEL = "3"
 ADAPTER_KEY = "doctrine_package_v1"
 EXECUTION_ORDER = 70
 
@@ -147,28 +151,55 @@ def _daily_child(parent_id: str, node: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _latest_market_snapshot(context: Any) -> tuple[datetime | None, str | None]:
+    reader = getattr(context, "latest_candle_time", None)
+    if not callable(reader):
+        return None, None
+
+    for timeframe, basis in (
+        ("D1", "LATEST_D1_CANDLE"),
+        ("W1", "LATEST_W1_CANDLE"),
+    ):
+        try:
+            latest = _time(reader(timeframe))
+        except Exception:
+            latest = None
+        if latest is not None:
+            return latest, basis
+    return None, None
+
+
 def _weekly_freeze(
     context: Any,
     node: Mapping[str, Any],
-) -> tuple[datetime | None, str | None, str | None]:
+) -> tuple[datetime | None, str | None, str | None, str]:
     canonical_id = str(node.get("id") or "")
     structure, processing = _memory_entry(context, canonical_id, "weekly_structure")
     if structure is not None:
         bos_time = _time(structure.get("bos_time"))
         if processing == "NEEDS_REVIEW":
-            return bos_time, "WEEKLY_BOS", "WEEKLY_STRUCTURE_NEEDS_REVIEW"
+            return bos_time, "WEEKLY_BOS", "WEEKLY_STRUCTURE_NEEDS_REVIEW", "COMPLETED"
         if bos_time is not None and processing in {"", "COMPLETE"}:
-            return bos_time, "WEEKLY_BOS", None
+            return bos_time, "WEEKLY_BOS", None, "COMPLETED"
 
     legacy_bos = _time(node.get("script1_bos_time"))
     if legacy_bos is not None:
-        return legacy_bos, "WEEKLY_BOS", None
+        return legacy_bos, "WEEKLY_BOS", None, "COMPLETED"
 
     inactive = _time(node.get("inactive_from_time"))
     if inactive is not None:
-        return inactive, "WEEKLY_INACTIVE_TIME", None
+        return inactive, "WEEKLY_INACTIVE_TIME", None, "COMPLETED"
 
-    return None, None, "WEEKLY_CANDIDATE_FREEZE_TIME_UNAVAILABLE"
+    latest, basis = _latest_market_snapshot(context)
+    if latest is not None:
+        return latest, basis, None, "IN_PROGRESS"
+
+    return (
+        None,
+        None,
+        "ACTIVE_WEEKLY_SNAPSHOT_TIME_UNAVAILABLE",
+        "IN_PROGRESS",
+    )
 
 
 def _base_payload(canonical_id: str) -> dict[str, Any]:
@@ -177,6 +208,8 @@ def _base_payload(canonical_id: str) -> dict[str, Any]:
     # inside audit_details instead of producing a database-shaped wall of text.
     return {
         "weekly_story": "Pending",
+        "weekly_story_state": "Pending",
+        "freeze_basis": "Pending",
         "candidate_freeze_time": None,
         "coverage_status": "PENDING",
         "daily_mapping_status": "Pending",
@@ -218,7 +251,8 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             review_weekly_by_id[str(review_row.get("id") or "")] = review_row
 
     mapped_starts = sorted(
-        start for node in all_daily_nodes
+        start
+        for node in all_daily_nodes
         if (start := _mapping_start(node)) is not None
     )
     first_daily_mapping = mapped_starts[0] if mapped_starts else None
@@ -229,8 +263,10 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         payload = _base_payload(canonical_id)
         audit = payload["audit_details"]
 
-        freeze, freeze_basis, freeze_error = _weekly_freeze(context, node)
+        freeze, freeze_basis, freeze_error, story_state = _weekly_freeze(context, node)
         payload["candidate_freeze_time"] = _stamp(freeze)
+        payload["weekly_story_state"] = story_state
+        payload["freeze_basis"] = freeze_basis or "Pending"
         audit["candidate_freeze_basis"] = freeze_basis
         audit["daily_mapping_first_available_time"] = _stamp(first_daily_mapping)
 
@@ -255,7 +291,10 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             outputs.append(_output(node, "NEEDS_REVIEW", payload))
             continue
 
-        payload["weekly_story"] = f"{_date(weekly_start)} -> {_date(freeze)}"
+        story_suffix = " (IN PROGRESS)" if story_state == "IN_PROGRESS" else ""
+        payload["weekly_story"] = (
+            f"{_date(weekly_start)} -> {_date(freeze)}{story_suffix}"
+        )
         audit["coverage_window_start"] = _stamp(weekly_start)
         audit["coverage_window_end"] = _stamp(freeze)
 
@@ -301,13 +340,15 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             if not child_id:
                 continue
             existing = deduplicated.get(child_id)
-            existing_valid = existing is not None and str(
-                existing.get("direct_parent_link_status") or ""
-            ).upper() in _VALID_PARENT_LINKS
-            child_valid = str(
-                child.get("direct_parent_link_status") or ""
-            ).upper() in _VALID_PARENT_LINKS
-            if existing is None or child_valid or not existing_valid:
+            child_valid = (
+                str(child.get("direct_parent_link_status") or "").upper()
+                in _VALID_PARENT_LINKS
+            )
+            existing_valid = existing is not None and (
+                str(existing.get("direct_parent_link_status") or "").upper()
+                in _VALID_PARENT_LINKS
+            )
+            if existing is None or (child_valid and not existing_valid):
                 deduplicated[child_id] = child
 
         children = [
@@ -394,7 +435,11 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
         else:
             coverage_status = "COMPLETE"
             processing_status = "COMPLETE"
-            reasons = ["WEEKLY_STORY_FULLY_INSIDE_DAILY_MAPPING_ERA"]
+            reasons = [
+                "IN_PROGRESS_WEEKLY_STORY_FULLY_INSIDE_DAILY_MAPPING_ERA"
+                if story_state == "IN_PROGRESS"
+                else "WEEKLY_STORY_FULLY_INSIDE_DAILY_MAPPING_ERA"
+            ]
 
         payload["coverage_status"] = coverage_status
         payload["reason_codes"] = reasons
