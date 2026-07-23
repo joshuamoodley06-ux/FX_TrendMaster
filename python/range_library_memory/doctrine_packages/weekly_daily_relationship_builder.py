@@ -4,6 +4,9 @@ The package consumes approved Daily Mapping Coverage Audit memory. It does not
 search for substitute parents or re-parent Daily ranges. Future Daily ranges stay
 visible as NOT_YET_CREATED rows so historical candidates cannot borrow structure
 from later candles.
+
+Daily direction in this package is anchor chronology only. It is not yet the
+Weekly-relative PRO_TREND / COUNTER_TREND classification.
 """
 from __future__ import annotations
 
