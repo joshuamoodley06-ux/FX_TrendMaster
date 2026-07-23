@@ -4,10 +4,19 @@ from range_library_memory.doctrine_packages import daily_mapping_coverage_audit
 
 
 class FakeContext:
-    def __init__(self, weekly: list[dict], daily: list[dict], memory: dict) -> None:
+    case_ref = "CASE"
+
+    def __init__(
+        self,
+        weekly: list[dict],
+        daily: list[dict],
+        memory: dict,
+        review_weekly: list[dict] | None = None,
+    ) -> None:
         self.weekly = weekly
         self.daily = daily
         self.memory = memory
+        self.review_weekly = review_weekly or []
 
     def selected_ranges(self, *, layer: str | None = None):
         if layer == "WEEKLY":
@@ -15,6 +24,9 @@ class FakeContext:
         if layer == "DAILY":
             return tuple(self.daily)
         return ()
+
+    def review_ranges(self, *, layer: str | None = None):
+        return tuple(self.review_weekly) if layer == "WEEKLY" else ()
 
     def approved_memory(self, canonical_range_id: str):
         return self.memory.get(canonical_range_id, {})
@@ -43,6 +55,7 @@ def _daily(
         "status": status,
         "direction_of_break": None,
         "direct_parent_link_status": link,
+        "source_refs": [{"case_ref": "CASE", "source_record_id": identity}],
         "children": [],
     }
 
@@ -56,18 +69,25 @@ def _weekly(identity: str, *, start: str, children: list[dict]) -> dict:
         "active_from_time": start,
         "inactive_from_time": None,
         "status": "BROKEN",
+        "source_refs": [{"case_ref": "CASE", "source_record_id": identity}],
         "children": children,
     }
 
 
-def _run(weekly: dict, daily: list[dict], freeze: str) -> dict:
+def _run(
+    weekly: dict,
+    daily: list[dict],
+    freeze: str,
+    *,
+    review_weekly: list[dict] | None = None,
+) -> dict:
     memory = {
         weekly["id"]: {
             "weekly_structure": _entry({"bos_time": freeze}),
         },
     }
     return daily_mapping_coverage_audit.run(
-        FakeContext([weekly], daily, memory)
+        FakeContext([weekly], daily, memory, review_weekly)
     )["outputs"][0]
 
 
@@ -220,3 +240,44 @@ def test_invalid_saved_parent_link_is_reported_not_repaired() -> None:
     assert result["payload"]["invalid_parent_links"] == ["daily-bad-parent"]
     assert result["payload"]["daily_children"][0]["parent_range_id"] == "weekly-1"
     assert result["payload"]["daily_children"][0]["parent_link_valid"] is False
+
+
+def test_review_root_invalid_parent_evidence_is_audited_not_promoted() -> None:
+    trusted_child = _daily(
+        "daily-valid",
+        start="2025-01-01T00:00:00Z",
+        created="2025-01-02T00:00:00Z",
+    )
+    invalid_review_child = _daily(
+        "daily-review-invalid",
+        start="2025-01-10T00:00:00Z",
+        created="2025-01-11T00:00:00Z",
+        link="INVALID",
+    )
+    weekly = _weekly(
+        "weekly-1",
+        start="2025-01-01T00:00:00Z",
+        children=[trusted_child],
+    )
+    review_weekly = _weekly(
+        "weekly-1",
+        start="2025-01-01T00:00:00Z",
+        children=[invalid_review_child],
+    )
+
+    result = _run(
+        weekly,
+        [trusted_child],
+        "2025-02-01T00:00:00Z",
+        review_weekly=[review_weekly],
+    )
+
+    assert result["processing_status"] == "NEEDS_REVIEW"
+    assert result["payload"]["coverage_status"] == "INVALID_PARENT_LINK"
+    assert result["payload"]["invalid_parent_links"] == ["daily-review-invalid"]
+    by_id = {
+        child["daily_range_id"]: child
+        for child in result["payload"]["daily_children"]
+    }
+    assert by_id["daily-valid"]["parent_link_valid"] is True
+    assert by_id["daily-review-invalid"]["parent_link_valid"] is False
