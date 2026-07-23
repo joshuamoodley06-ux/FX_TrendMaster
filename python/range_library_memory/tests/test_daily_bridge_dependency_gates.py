@@ -42,7 +42,7 @@ def test_coverage_runtime_requires_latest_approved_extreme_destination(tmp_path:
         database,
         key="daily_mapping_coverage_audit",
         name="Daily Mapping Coverage Audit",
-        version="2",
+        version="3",
         order=70,
         source_module=daily_mapping_coverage_audit,
     )
