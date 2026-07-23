@@ -30,10 +30,11 @@ def _child(
     link_valid: bool = True,
     low_time: str | None = None,
     high_time: str | None = None,
+    parent_range_id: str | None = "weekly-1",
 ) -> dict:
     return {
         "daily_range_id": identity,
-        "parent_range_id": "weekly-1",
+        "parent_range_id": parent_range_id,
         "parent_link_status": "VALID" if link_valid else "INVALID",
         "parent_link_valid": link_valid,
         "daily_start_time": start,
@@ -182,6 +183,25 @@ def test_invalid_historical_relationship_requires_review() -> None:
     assert result["payload"]["reason_codes"] == [
         "ONE_OR_MORE_WEEKLY_DAILY_RELATIONSHIPS_INVALID"
     ]
+
+
+def test_saved_parent_identity_is_not_silently_filled_or_repaired() -> None:
+    result = _run({
+        "candidate_freeze_time": "2025-03-01T00:00:00Z",
+        "coverage_status": "COMPLETE",
+        "daily_children": [
+            _child(
+                "daily-missing-parent",
+                start="2025-01-01T00:00:00Z",
+                created="2025-01-02T00:00:00Z",
+                parent_range_id=None,
+            ),
+        ],
+    })
+
+    row = result["payload"]["relationship_rows"][0]
+    assert row["parent_range_id"] is None
+    assert row["weekly_range_id"] == "weekly-1"
 
 
 def test_missing_approved_coverage_memory_stays_pending() -> None:
