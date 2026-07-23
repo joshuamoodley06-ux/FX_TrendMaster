@@ -55,6 +55,12 @@ export function buildDailyHierarchyAuditLayout(
   let currentWeeklyDepth = -1;
   let dailySequenceNumber = 0;
 
+  const clearWeeklyScope = () => {
+    currentWeeklyRangeId = null;
+    currentWeeklyDepth = -1;
+    dailySequenceNumber = 0;
+  };
+
   for (const source of sourceRows) {
     const rangeId = String(source.rangeId || '').trim();
     const layer = normalizedLayer(source.layer);
@@ -85,10 +91,8 @@ export function buildDailyHierarchyAuditLayout(
       continue;
     }
 
-    if (currentWeeklyRangeId && depth <= currentWeeklyDepth && layer !== 'DAILY') {
-      currentWeeklyRangeId = null;
-      currentWeeklyDepth = -1;
-      dailySequenceNumber = 0;
+    if (orphan || (currentWeeklyRangeId && depth <= currentWeeklyDepth)) {
+      clearWeeklyScope();
     }
 
     if (layer !== 'DAILY') {
