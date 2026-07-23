@@ -3,51 +3,60 @@
 }
 
 .explorerTreeRow.dailyHierarchyAuditDecorated .explorerTreeRowMain {
+  position: relative;
   min-width: 0;
   flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.explorerTreeRow.dailyHierarchyAuditDecorated .explorerTreeLine1,
+.explorerTreeRow.dailyHierarchyAuditDecorated .explorerTreeLine2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorerTreeRowMain[data-daily-sequence-label] {
+  padding-left: 23px;
 }
 
 .explorerTreeRowMain[data-daily-sequence-label]::before,
-.explorerTreeRowMain[data-daily-child-summary]::after,
+.explorerTreeRow[data-daily-child-summary]::after,
 .explorerTreeRow[data-daily-link-status]::after {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 18px;
+  width: 17px;
+  height: 17px;
   border-radius: 4px;
   box-sizing: border-box;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 800;
   line-height: 1;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
 }
 
 .explorerTreeRowMain[data-daily-sequence-label]::before {
   content: attr(data-daily-sequence-label);
-  min-width: 24px;
-  margin-right: 4px;
-  padding: 0 4px;
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
   border: 1px solid rgba(87, 181, 255, 0.48);
   background: rgba(29, 93, 143, 0.28);
   color: #9bd6ff;
 }
 
-.explorerTreeRowMain[data-daily-child-summary]::after {
-  content: attr(data-daily-child-summary);
-  min-width: 42px;
-  margin-left: auto;
-  padding: 0 5px;
-  border: 1px solid rgba(84, 206, 255, 0.28);
-  background: rgba(17, 65, 95, 0.22);
-  color: #b8def4;
-}
-
+.explorerTreeRow[data-daily-child-summary]::after,
 .explorerTreeRow[data-daily-link-status]::after {
-  width: 18px;
-  margin-left: 3px;
+  margin-left: 2px;
+  margin-right: 1px;
 }
 
+.explorerTreeRow[data-daily-child-summary="✓"]::after,
 .explorerTreeRow[data-daily-link-status="VALID"]::after {
   content: "✓";
   border: 1px solid rgba(42, 216, 147, 0.5);
@@ -55,6 +64,7 @@
   color: #45e3a2;
 }
 
+.explorerTreeRow[data-daily-child-summary="!"]::after,
 .explorerTreeRow[data-daily-link-status="INVALID"]::after {
   content: "!";
   border: 1px solid rgba(255, 91, 105, 0.58);
@@ -67,8 +77,12 @@
 }
 
 @media (max-width: 1280px) {
-  .explorerTreeRowMain[data-daily-child-summary]::after {
-    min-width: 36px;
-    padding: 0 3px;
+  .explorerTreeRowMain[data-daily-sequence-label] {
+    padding-left: 21px;
+  }
+
+  .explorerTreeRowMain[data-daily-sequence-label]::before {
+    width: 18px;
+    font-size: 7px;
   }
 }
