@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildDailyHierarchyAuditLayout } from './dailyHierarchyAudit';
 
 describe('buildDailyHierarchyAuditLayout', () => {
-  it('numbers Daily children in visible hierarchy order and resets for each Weekly parent', () => {
+  it('numbers direct Daily children in visible hierarchy order and resets for each Weekly parent', () => {
     const layout = buildDailyHierarchyAuditLayout([
       { rangeId: 'weekly-1', layer: 'WEEKLY', depth: 0 },
       { rangeId: 'daily-1', layer: 'DAILY', depth: 1 },
@@ -70,6 +70,28 @@ describe('buildDailyHierarchyAuditLayout', () => {
       dailySequenceNumber: null,
       linkStatus: 'INVALID',
     });
+  });
+
+  it('marks a Daily nested below Intraday invalid without consuming the next valid R number', () => {
+    const layout = buildDailyHierarchyAuditLayout([
+      { rangeId: 'weekly-1', layer: 'WEEKLY', depth: 0 },
+      { rangeId: 'daily-1', layer: 'DAILY', depth: 1 },
+      { rangeId: 'intraday-1', layer: 'INTRADAY', depth: 2 },
+      { rangeId: 'daily-malformed', layer: 'DAILY', depth: 3 },
+      { rangeId: 'daily-2', layer: 'DAILY', depth: 1 },
+    ]);
+
+    expect(layout.rows.find((row) => row.rangeId === 'daily-malformed')).toMatchObject({
+      parentWeeklyRangeId: null,
+      dailySequenceNumber: null,
+      linkStatus: 'INVALID',
+    });
+    expect(layout.rows.find((row) => row.rangeId === 'daily-malformed')?.linkReason)
+      .toContain('nested too deeply');
+    expect(layout.rows.find((row) => row.rangeId === 'daily-2')?.dailySequenceNumber).toBe(2);
+    expect(layout.weeklySummaries).toEqual([
+      { weeklyRangeId: 'weekly-1', dailyCount: 2, invalidCount: 1 },
+    ]);
   });
 
   it('preserves the hierarchy order instead of sorting by ids', () => {
