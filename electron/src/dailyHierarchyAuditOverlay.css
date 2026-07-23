@@ -1,24 +1,3 @@
-.dailyHierarchyAuditLegend {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 4px 0 6px;
-  padding: 4px 6px;
-  border: 1px solid rgba(97, 218, 251, 0.2);
-  border-radius: 5px;
-  background: rgba(5, 15, 28, 0.72);
-  color: #9fb4c8;
-  font-size: 10px;
-  line-height: 1.2;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.dailyHierarchyAuditLegend b {
-  color: #dcecff;
-}
-
 .explorerTreeRow.dailyHierarchyAuditDecorated {
   min-width: 0;
 }
@@ -28,56 +7,59 @@
   flex: 1 1 auto;
 }
 
-.dailyHierarchySequenceBadge,
-.dailyHierarchyLinkBadge,
-.dailyHierarchyWeeklySummary {
+.explorerTreeRowMain[data-daily-sequence-label]::before,
+.explorerTreeRowMain[data-daily-child-summary]::after,
+.explorerTreeRow[data-daily-link-status]::after {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   height: 18px;
   border-radius: 4px;
+  box-sizing: border-box;
   font-size: 9px;
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0.02em;
-  box-sizing: border-box;
 }
 
-.dailyHierarchySequenceBadge {
+.explorerTreeRowMain[data-daily-sequence-label]::before {
+  content: attr(data-daily-sequence-label);
   min-width: 24px;
-  margin-right: 3px;
+  margin-right: 4px;
   padding: 0 4px;
   border: 1px solid rgba(87, 181, 255, 0.48);
   background: rgba(29, 93, 143, 0.28);
   color: #9bd6ff;
 }
 
-.dailyHierarchyLinkBadge {
-  width: 18px;
-  margin-left: 3px;
-  border: 1px solid transparent;
-}
-
-.dailyHierarchyLinkBadge.valid {
-  border-color: rgba(42, 216, 147, 0.5);
-  background: rgba(20, 128, 88, 0.25);
-  color: #45e3a2;
-}
-
-.dailyHierarchyLinkBadge.invalid {
-  border-color: rgba(255, 91, 105, 0.58);
-  background: rgba(145, 35, 49, 0.3);
-  color: #ff7b88;
-}
-
-.dailyHierarchyWeeklySummary {
+.explorerTreeRowMain[data-daily-child-summary]::after {
+  content: attr(data-daily-child-summary);
   min-width: 42px;
-  margin-left: 3px;
+  margin-left: auto;
   padding: 0 5px;
   border: 1px solid rgba(84, 206, 255, 0.28);
   background: rgba(17, 65, 95, 0.22);
   color: #b8def4;
+}
+
+.explorerTreeRow[data-daily-link-status]::after {
+  width: 18px;
+  margin-left: 3px;
+}
+
+.explorerTreeRow[data-daily-link-status="VALID"]::after {
+  content: "✓";
+  border: 1px solid rgba(42, 216, 147, 0.5);
+  background: rgba(20, 128, 88, 0.25);
+  color: #45e3a2;
+}
+
+.explorerTreeRow[data-daily-link-status="INVALID"]::after {
+  content: "!";
+  border: 1px solid rgba(255, 91, 105, 0.58);
+  background: rgba(145, 35, 49, 0.3);
+  color: #ff7b88;
 }
 
 .explorerTreeRow.dailyHierarchyAuditInvalid {
@@ -85,13 +67,8 @@
 }
 
 @media (max-width: 1280px) {
-  .dailyHierarchyWeeklySummary {
+  .explorerTreeRowMain[data-daily-child-summary]::after {
     min-width: 36px;
     padding: 0 3px;
-  }
-
-  .dailyHierarchyAuditLegend {
-    gap: 5px;
-    font-size: 9px;
   }
 }
