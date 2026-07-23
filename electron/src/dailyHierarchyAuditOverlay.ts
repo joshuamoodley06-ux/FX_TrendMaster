@@ -33,10 +33,11 @@ function clearRowDecoration(row: HTMLElement): void {
   row.classList.remove('dailyHierarchyAuditDecorated', 'dailyHierarchyAuditInvalid');
   delete row.dataset.dailyLinkStatus;
   delete row.dataset.dailyLinkReason;
+  delete row.dataset.dailyChildSummary;
+  delete row.dataset.dailyChildCount;
   const rowMain = row.querySelector<HTMLElement>('.explorerTreeRowMain');
   if (rowMain) {
     delete rowMain.dataset.dailySequenceLabel;
-    delete rowMain.dataset.dailyChildSummary;
   }
 }
 
@@ -75,8 +76,12 @@ function decoratePanel(panel: Element): void {
 
     if (decoration.layer === 'WEEKLY') {
       const summary = summaryByWeeklyId.get(rangeId);
-      if (summary && summary.dailyCount > 0) {
-        rowMain.dataset.dailyChildSummary = `${summary.dailyCount}D ✓`;
+      if (summary && (summary.dailyCount > 0 || summary.invalidCount > 0)) {
+        row.dataset.dailyChildSummary = summary.invalidCount > 0 ? '!' : '✓';
+        row.dataset.dailyChildCount = String(summary.dailyCount);
+        row.dataset.dailyLinkReason = summary.invalidCount > 0
+          ? `${summary.dailyCount} direct Daily children; ${summary.invalidCount} malformed Daily relationship.`
+          : `${summary.dailyCount} direct Daily children; all links valid.`;
       }
     }
   }
