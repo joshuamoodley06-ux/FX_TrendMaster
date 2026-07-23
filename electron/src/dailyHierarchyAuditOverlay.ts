@@ -29,48 +29,18 @@ function hierarchyDepth(row: HTMLElement): number {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
 }
 
-function ensureBadge(
-  row: HTMLElement,
-  className: string,
-  text: string,
-  title: string,
-  before: Element | null,
-): HTMLElement {
-  let badge = row.querySelector<HTMLElement>(`:scope > .${className}`);
-  if (!badge) {
-    badge = document.createElement('span');
-    badge.className = className;
-    badge.setAttribute(OVERLAY_MARK, 'true');
-    if (before) row.insertBefore(badge, before);
-    else row.appendChild(badge);
+function clearRowDecoration(row: HTMLElement): void {
+  row.classList.remove('dailyHierarchyAuditDecorated', 'dailyHierarchyAuditInvalid');
+  delete row.dataset.dailyLinkStatus;
+  delete row.dataset.dailyLinkReason;
+  const rowMain = row.querySelector<HTMLElement>('.explorerTreeRowMain');
+  if (rowMain) {
+    delete rowMain.dataset.dailySequenceLabel;
+    delete rowMain.dataset.dailyChildSummary;
   }
-  if (badge.textContent !== text) badge.textContent = text;
-  if (badge.title !== title) badge.title = title;
-  return badge;
-}
-
-function removeBadge(row: HTMLElement, className: string): void {
-  row.querySelector<HTMLElement>(`:scope > .${className}`)?.remove();
-}
-
-function ensureLegend(panel: Element): void {
-  const controls = panel.querySelector('.explorerTreeControls');
-  if (!controls || panel.querySelector('.dailyHierarchyAuditLegend')) return;
-
-  const legend = document.createElement('div');
-  legend.className = 'dailyHierarchyAuditLegend';
-  legend.setAttribute(OVERLAY_MARK, 'true');
-
-  const heading = document.createElement('b');
-  heading.textContent = 'Daily audit';
-  const detail = document.createElement('span');
-  detail.textContent = 'R# = order inside Weekly · ✓ linked · ! orphan/unlinked';
-  legend.append(heading, detail);
-  controls.insertAdjacentElement('afterend', legend);
 }
 
 function decoratePanel(panel: Element): void {
-  ensureLegend(panel);
   const rowElements = Array.from(panel.querySelectorAll<HTMLElement>('.explorerTreeScroll .explorerTreeRow'));
   if (!rowElements.length) return;
 
@@ -85,65 +55,29 @@ function decoratePanel(panel: Element): void {
   const summaryByWeeklyId = new Map(layout.weeklySummaries.map((item) => [item.weeklyRangeId, item]));
 
   for (const row of rowElements) {
+    clearRowDecoration(row);
     const rangeId = String(row.dataset.rangeId || '');
     const decoration = decorationByRangeId.get(rangeId);
-    const rowMain = row.querySelector('.explorerTreeRowMain');
-    const actionMenu = row.querySelector('.explorerTreeActionMenu');
+    const rowMain = row.querySelector<HTMLElement>('.explorerTreeRowMain');
+    if (!decoration || !rowMain) continue;
+
     row.classList.add('dailyHierarchyAuditDecorated');
-    row.classList.remove('dailyHierarchyAuditInvalid');
 
-    if (decoration?.layer === 'DAILY') {
-      if (decoration.dailySequenceNumber !== null) {
-        ensureBadge(
-          row,
-          'dailyHierarchySequenceBadge',
-          `R${decoration.dailySequenceNumber}`,
-          `Daily range ${decoration.dailySequenceNumber} inside Weekly parent ${decoration.parentWeeklyRangeId}.`,
-          rowMain,
-        );
-      } else {
-        ensureBadge(
-          row,
-          'dailyHierarchySequenceBadge',
-          'R?',
-          'Daily order unavailable because this range is not linked beneath a Weekly parent.',
-          rowMain,
-        );
-      }
-
-      const valid = decoration.linkStatus === 'VALID';
-      const linkBadge = ensureBadge(
-        row,
-        'dailyHierarchyLinkBadge',
-        valid ? '✓' : '!',
-        `${valid ? 'VALID PARENT LINK' : 'INVALID PARENT LINK'} · ${decoration.linkReason || ''}`,
-        actionMenu,
-      );
-      linkBadge.classList.toggle('valid', valid);
-      linkBadge.classList.toggle('invalid', !valid);
-      if (!valid) row.classList.add('dailyHierarchyAuditInvalid');
-      removeBadge(row, 'dailyHierarchyWeeklySummary');
+    if (decoration.layer === 'DAILY') {
+      rowMain.dataset.dailySequenceLabel = decoration.dailySequenceNumber === null
+        ? 'R?'
+        : `R${decoration.dailySequenceNumber}`;
+      row.dataset.dailyLinkStatus = decoration.linkStatus || 'INVALID';
+      row.dataset.dailyLinkReason = decoration.linkReason || '';
+      if (decoration.linkStatus !== 'VALID') row.classList.add('dailyHierarchyAuditInvalid');
       continue;
     }
 
-    removeBadge(row, 'dailyHierarchySequenceBadge');
-    removeBadge(row, 'dailyHierarchyLinkBadge');
-
-    if (decoration?.layer === 'WEEKLY') {
+    if (decoration.layer === 'WEEKLY') {
       const summary = summaryByWeeklyId.get(rangeId);
       if (summary && summary.dailyCount > 0) {
-        ensureBadge(
-          row,
-          'dailyHierarchyWeeklySummary',
-          `${summary.dailyCount}D ✓`,
-          `${summary.dailyCount} visible Daily child range${summary.dailyCount === 1 ? '' : 's'} ordered beneath this Weekly parent.`,
-          actionMenu,
-        );
-      } else {
-        removeBadge(row, 'dailyHierarchyWeeklySummary');
+        rowMain.dataset.dailyChildSummary = `${summary.dailyCount}D ✓`;
       }
-    } else {
-      removeBadge(row, 'dailyHierarchyWeeklySummary');
     }
   }
 }
@@ -170,9 +104,7 @@ export function startDailyHierarchyAuditOverlay(): () => void {
     observer.disconnect();
     if (frame) window.cancelAnimationFrame(frame);
     document.querySelectorAll(`[${OVERLAY_MARK}]`).forEach((node) => node.remove());
-    document.querySelectorAll('.dailyHierarchyAuditDecorated').forEach((node) => {
-      node.classList.remove('dailyHierarchyAuditDecorated', 'dailyHierarchyAuditInvalid');
-    });
+    document.querySelectorAll<HTMLElement>('.explorerTreeRow').forEach(clearRowDecoration);
   };
 }
 
