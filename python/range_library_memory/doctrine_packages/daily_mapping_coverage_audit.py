@@ -212,6 +212,12 @@ def _coverage_gaps(
 def run(context: Any) -> dict[str, list[dict[str, Any]]]:
     weekly_nodes = [dict(node) for node in context.selected_ranges(layer="WEEKLY")]
     all_daily_nodes = [dict(node) for node in context.selected_ranges(layer="DAILY")]
+    review_weekly_by_id: dict[str, dict[str, Any]] = {}
+    review_reader = getattr(context, "review_ranges", None)
+    if callable(review_reader):
+        for review_node in review_reader(layer="WEEKLY"):
+            review_row = dict(review_node)
+            review_weekly_by_id[str(review_row.get("id") or "")] = review_row
     all_daily_created = sorted(
         created for node in all_daily_nodes
         if (created := _range_created(node)) is not None
@@ -261,7 +267,37 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
             and str(child.get("structure_layer") or "").upper() == "DAILY"
             and _matches_case(child, case_ref)
         ] if isinstance(raw_children, list) else []
-        children = [_daily_child(canonical_id, child) for child in direct_daily]
+
+        # Review-root children are audit evidence only. They can expose a bad saved
+        # parent link, but they are never promoted into trusted hierarchy truth.
+        review_parent = review_weekly_by_id.get(canonical_id) or {}
+        review_children = review_parent.get("children")
+        if isinstance(review_children, list):
+            direct_daily.extend(
+                dict(child) for child in review_children
+                if isinstance(child, Mapping)
+                and str(child.get("structure_layer") or "").upper() == "DAILY"
+                and _matches_case(child, case_ref)
+                and str(child.get("direct_parent_link_status") or "").upper() not in _VALID_PARENT_LINKS
+            )
+
+        deduplicated: dict[str, dict[str, Any]] = {}
+        for child in direct_daily:
+            child_id = str(child.get("id") or "")
+            if not child_id:
+                continue
+            existing = deduplicated.get(child_id)
+            existing_valid = existing is not None and str(
+                existing.get("direct_parent_link_status") or ""
+            ).upper() in _VALID_PARENT_LINKS
+            child_valid = str(child.get("direct_parent_link_status") or "").upper() in _VALID_PARENT_LINKS
+            if existing is None or child_valid or not existing_valid:
+                deduplicated[child_id] = child
+
+        children = [
+            _daily_child(canonical_id, child)
+            for child in deduplicated.values()
+        ]
         children.sort(key=lambda child: (
             child.get("daily_created_time") or "9999",
             child.get("daily_start_time") or "9999",
