@@ -42,6 +42,21 @@ describe('buildDailyHierarchyAuditLayout', () => {
     expect(orphan?.linkReason).toContain('unlinked or orphaned');
   });
 
+  it('clears Weekly scope after an orphan so later rows cannot borrow the old parent', () => {
+    const layout = buildDailyHierarchyAuditLayout([
+      { rangeId: 'weekly-1', layer: 'WEEKLY', depth: 0 },
+      { rangeId: 'daily-1', layer: 'DAILY', depth: 1 },
+      { rangeId: 'daily-orphan', layer: 'DAILY', depth: 0, orphan: true },
+      { rangeId: 'daily-after-orphan', layer: 'DAILY', depth: 1 },
+    ]);
+
+    expect(layout.rows.find((row) => row.rangeId === 'daily-after-orphan')).toMatchObject({
+      parentWeeklyRangeId: null,
+      dailySequenceNumber: null,
+      linkStatus: 'INVALID',
+    });
+  });
+
   it('does not borrow the previous Weekly parent after the hierarchy returns to another root layer', () => {
     const layout = buildDailyHierarchyAuditLayout([
       { rangeId: 'weekly-1', layer: 'WEEKLY', depth: 1 },
