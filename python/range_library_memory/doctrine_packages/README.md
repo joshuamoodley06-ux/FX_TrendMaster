@@ -281,6 +281,15 @@ Only Scripts 1 and 2 are built now:
 
 Daily State at Freeze, Daily Sequence Summary, and Weekly/Daily Relationship Classification remain intentionally unbuilt until these first two scripts pass five-candidate manual review. This prevents later Daily analysis from inheriting a bad parent bridge with impressive confidence.
 
+## Validation status
+
+```text
+Local package syntax compile: passed
+Local focused FakeContext bridge smoke: passed
+Full repository pytest: pending local checkout
+Electron candidate review: pending Josh morning smoke
+```
+
 ## Approval workflow
 
 ```text
