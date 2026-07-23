@@ -14,7 +14,7 @@ from .doctrine_package_registry_insert import insert_package
 from .doctrine_package_registry_run import run_package_version
 
 
-_WEEKLY_PACKAGE_CHAIN = (
+_STRUCTURE_PACKAGE_CHAIN = (
     ("weekly_bos.py", "Weekly BOS"),
     ("weekly_reclaim.py", "Weekly Reclaim"),
     ("weekly_reclaim_depth.py", "Weekly Reclaim Depth"),
@@ -34,7 +34,7 @@ def _is_legacy_weekly_bootstrap(kwargs: dict[str, Any], source: str) -> bool:
     )
 
 
-def _ensure_bundled_weekly_packages(
+def _ensure_bundled_structure_packages(
     pipeline: Any,
     base_insert: Any,
     db_path: str | Path,
@@ -42,7 +42,7 @@ def _ensure_bundled_weekly_packages(
     """Register current bundled sources without activating or running them."""
     package_dir = Path(__file__).with_name("doctrine_packages")
     inserted: list[dict[str, Any]] = []
-    for filename, display_name in _WEEKLY_PACKAGE_CHAIN:
+    for filename, display_name in _STRUCTURE_PACKAGE_CHAIN:
         source = (package_dir / filename).read_text(encoding="utf-8")
         inserted.append(insert_package(
             pipeline,
@@ -59,7 +59,7 @@ def _ensure_bundled_weekly_packages(
     return inserted
 
 
-def _bootstrap_weekly_packages(
+def _bootstrap_structure_packages(
     pipeline: Any,
     base_insert: Any,
     *args: Any,
@@ -68,9 +68,9 @@ def _bootstrap_weekly_packages(
     db_path = args[0] if args else kwargs.get("db_path")
     if db_path is None:
         raise pipeline.DoctrinePipelineError(
-            "Weekly package bootstrap requires an analysis database path."
+            "Structure package bootstrap requires an analysis database path."
         )
-    inserted = _ensure_bundled_weekly_packages(pipeline, base_insert, db_path)
+    inserted = _ensure_bundled_structure_packages(pipeline, base_insert, db_path)
 
     # The existing Electron activation expects one inserted version to run first.
     # Return Weekly BOS while also exposing the full registered chain.
@@ -100,7 +100,7 @@ def install(pipeline: Any) -> None:
         requested = kwargs.get("adapter_key") == PACKAGE_ADAPTER
         declared = "FXTM_DOCTRINE_CONTRACT" in source
         if _is_legacy_weekly_bootstrap(kwargs, source):
-            return _bootstrap_weekly_packages(pipeline, base_insert, *args, **kwargs)
+            return _bootstrap_structure_packages(pipeline, base_insert, *args, **kwargs)
         if not requested and not declared:
             return base_insert(*args, **kwargs)
         return insert_package(pipeline, base_insert, *args, **kwargs)
@@ -197,7 +197,7 @@ def install(pipeline: Any) -> None:
 
     def list_scripts(db_path: str | Path) -> list[dict[str, Any]]:
         """Register current bundles and return each script's own review state."""
-        _ensure_bundled_weekly_packages(pipeline, base_insert, db_path)
+        _ensure_bundled_structure_packages(pipeline, base_insert, db_path)
         rows = base_list(db_path)
         enriched: list[dict[str, Any]] = []
         for row in rows:
