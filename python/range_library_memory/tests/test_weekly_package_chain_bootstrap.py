@@ -29,7 +29,7 @@ EXPECTED_KEYS = [
 ]
 
 
-def test_legacy_weekly_activation_bootstraps_all_current_packages(tmp_path) -> None:
+def test_legacy_weekly_activation_bootstraps_current_structure_chain(tmp_path) -> None:
     database = tmp_path / "analysis.sqlite3"
     sqlite3.connect(database).close()
 
