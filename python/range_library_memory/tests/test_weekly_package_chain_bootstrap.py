@@ -12,7 +12,7 @@ EXPECTED_VERSIONS = {
     "weekly_movement_classification": "4",
     "weekly_profile_classification": "1",
     "weekly_extreme_rejection_destination": "1",
-    "daily_mapping_coverage_audit": "1",
+    "daily_mapping_coverage_audit": "2",
     "weekly_daily_relationship_builder": "1",
 }
 
