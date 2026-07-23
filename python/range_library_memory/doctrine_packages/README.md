@@ -270,7 +270,16 @@ approve BOS v3
 -> approve Weekly Daily Relationship Builder v1
 ```
 
-Scripts 3–5 of the planned Daily bridge remain intentionally unbuilt until the first two scripts pass five-candidate manual review.
+## Daily bridge stop gate
+
+Only Scripts 1 and 2 are built now:
+
+```text
+1. Daily Mapping Coverage Audit
+2. Weekly Daily Relationship Builder
+```
+
+Daily State at Freeze, Daily Sequence Summary, and Weekly/Daily Relationship Classification remain intentionally unbuilt until these first two scripts pass five-candidate manual review. This prevents later Daily analysis from inheriting a bad parent bridge with impressive confidence.
 
 ## Approval workflow
 
