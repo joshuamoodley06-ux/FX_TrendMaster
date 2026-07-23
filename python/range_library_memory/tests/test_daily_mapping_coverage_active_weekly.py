@@ -64,6 +64,14 @@ def _weekly(children: list[dict]) -> dict:
     }
 
 
+def _mapping_anchor() -> dict:
+    return _daily(
+        "daily-mapping-anchor",
+        start="2025-02-03T00:00:00Z",
+        created="2025-02-04T00:00:00Z",
+    )
+
+
 def test_active_weekly_without_bos_uses_latest_d1_snapshot() -> None:
     first = _daily(
         "daily-1",
@@ -83,7 +91,7 @@ def test_active_weekly_without_bos_uses_latest_d1_snapshot() -> None:
     weekly = _weekly([future, second, first])
     context = FakeContext(
         weekly,
-        [first, second, future],
+        [_mapping_anchor(), first, second, future],
         {"D1": "2026-07-22T00:00:00Z", "W1": "2026-07-19T00:00:00Z"},
     )
 
@@ -119,7 +127,7 @@ def test_active_weekly_falls_back_to_latest_w1_when_d1_is_unavailable() -> None:
     weekly = _weekly([child])
     context = FakeContext(
         weekly,
-        [child],
+        [_mapping_anchor(), child],
         {"D1": None, "W1": "2026-07-19T00:00:00Z"},
     )
 
@@ -129,3 +137,4 @@ def test_active_weekly_falls_back_to_latest_w1_when_d1_is_unavailable() -> None:
     assert result["payload"]["weekly_story_state"] == "IN_PROGRESS"
     assert result["payload"]["freeze_basis"] == "LATEST_W1_CANDLE"
     assert result["payload"]["candidate_freeze_time"] == "2026-07-19T00:00:00Z"
+    assert result["payload"]["coverage_status"] == "COMPLETE"
