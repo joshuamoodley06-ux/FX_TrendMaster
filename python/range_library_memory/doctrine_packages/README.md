@@ -198,7 +198,7 @@ Weekly freeze before first mapped Daily history -> NOT_MAPPED
 Daily mapping era exists but no linked Daily child -> MAPPING_GAP
 ```
 
-The package reads direct Daily children from the canonical Master Map hierarchy. It never searches for substitute parents or repairs a bad link.
+The package reads direct Daily children from the canonical Master Map hierarchy. It never searches for substitute parents or repairs a bad link. Review-root evidence may expose an invalid link for audit, but it never becomes statistics-eligible hierarchy truth.
 
 Stored facts include:
 
@@ -231,7 +231,7 @@ Daily sequence number
 Daily start/created/end time
 Daily direction
 Daily status at freeze
-parent range ID
+persisted parent relationship identity
 parent-link validity
 historical availability
 relationship validity
@@ -252,6 +252,8 @@ RL before RH -> UP
 RH before RL -> DOWN
 same/missing anchor time -> UNRESOLVED
 ```
+
+The builder preserves missing or invalid parent evidence as stored. It does not silently fill, repair, or substitute a parent ID.
 
 The relationship builder does not calculate Daily profile, setup quality, mitigation, phase, or trade direction.
 
