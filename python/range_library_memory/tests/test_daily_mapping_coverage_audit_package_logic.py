@@ -106,6 +106,8 @@ def test_pre_2025_weekly_freeze_is_not_mapped_not_no_structure() -> None:
     result = _run(weekly, [mapped_daily], "2024-06-01T00:00:00Z")
 
     assert result["processing_status"] == "COMPLETE"
+    assert result["payload"]["candidate_freeze_basis"] == "WEEKLY_BOS"
+    assert result["payload"]["candidate_freeze_time"] == "2024-06-01T00:00:00Z"
     assert result["payload"]["coverage_status"] == "NOT_MAPPED"
     assert result["payload"]["daily_mapping_coverage_available"] is False
     assert result["payload"]["reason_codes"] == ["DAILY_NOT_MAPPED_AT_WEEKLY_FREEZE"]
