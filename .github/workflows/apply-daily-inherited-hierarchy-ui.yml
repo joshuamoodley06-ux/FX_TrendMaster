@@ -1,0 +1,307 @@
+name: Apply Daily inherited hierarchy UI fix
+
+on:
+  push:
+    branches:
+      - feat/doctrine-package-runtime-v1
+    paths:
+      - .github/workflows/apply-daily-inherited-hierarchy-ui.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/doctrine-package-runtime-v1
+          fetch-depth: 0
+
+      - name: Apply guarded hierarchy source edit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('electron/src/hierarchyWorkspace.tsx')
+          text = path.read_text(encoding='utf-8')
+
+          replacements = [
+              (
+                  """  if (normalized === 'SAME_W1') return 'Same W1';
+  return 'Chronology Pending';""",
+                  """  if (normalized === 'SAME_W1') return 'Same W1';
+  if (normalized === 'SAME_D1') return 'Same D1';
+  return 'Chronology Pending';""",
+              ),
+              (
+                  """function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
+  const generic = node.analysisEnrichments.weekly_structure?.payload || {};
+  const reclaim = node.analysisEnrichments.weekly_reclaim?.payload || {};
+  const profile = node.analysisEnrichments.weekly_profile_classification?.payload || {};
+  const chronology = generic.chronology ?? node.script1Chronology;
+  const bos = generic.bos_direction ?? node.script1BosDirection;
+  const suffix = reclaimSuffix(reclaim.reclaim_status);
+  const badge = profileBadge(profile.profile_badge ?? profile.profile_classification);
+  const bosWithReclaim = [bosLabel(bos), suffix, badge].filter(Boolean).join(' · ');
+  const status = node.analysisEnrichments.weekly_structure
+    ? 'Approved'
+    : node.script1ReviewStatus === 'APPROVED' ? 'Approved'
+      : node.script1ReviewStatus === 'NEEDS_REVIEW' ? 'Needs Review'
+        : node.script1ReviewStatus === 'REJECTED' ? 'Rejected' : 'Pending';
+  return { chronology: chronologyLabel(chronology), bos: bosWithReclaim, status };
+}""",
+                  """function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
+  const isDaily = node.layer === 'DAILY';
+  const structureMemory = isDaily
+    ? node.analysisEnrichments.daily_structure || node.analysisEnrichments.weekly_structure
+    : node.analysisEnrichments.weekly_structure;
+  const reclaimMemory = isDaily
+    ? node.analysisEnrichments.daily_reclaim || node.analysisEnrichments.weekly_reclaim
+    : node.analysisEnrichments.weekly_reclaim;
+  const profileMemory = isDaily
+    ? node.analysisEnrichments.daily_profile_classification
+      || node.analysisEnrichments.weekly_profile_classification
+    : node.analysisEnrichments.weekly_profile_classification;
+  const generic = structureMemory?.payload || {};
+  const reclaim = reclaimMemory?.payload || {};
+  const profile = profileMemory?.payload || {};
+  const chronology = generic.chronology ?? node.script1Chronology;
+  const bos = generic.bos_direction ?? node.script1BosDirection;
+  const suffix = reclaimSuffix(reclaim.reclaim_status);
+  const badge = profileBadge(profile.profile_badge ?? profile.profile_classification);
+  const processingStatus = String(
+    generic.inherited_processing_status
+      ?? generic.processing_status
+      ?? node.script1ProcessingStatus
+      ?? '',
+  ).toUpperCase();
+  const reviewLabel = processingStatus === 'NEEDS_REVIEW' ? '⚠ Review' : '';
+  const bosWithReclaim = [bosLabel(bos), suffix, badge, reviewLabel].filter(Boolean).join(' · ');
+  const status = structureMemory
+    ? processingStatus === 'NEEDS_REVIEW'
+      ? 'Needs Review'
+      : processingStatus === 'PENDING'
+        ? 'Pending'
+        : 'Approved'
+    : node.script1ReviewStatus === 'APPROVED' ? 'Approved'
+      : node.script1ReviewStatus === 'NEEDS_REVIEW' ? 'Needs Review'
+        : node.script1ReviewStatus === 'REJECTED' ? 'Rejected' : 'Pending';
+  return { chronology: chronologyLabel(chronology), bos: bosWithReclaim, status };
+}""",
+              ),
+              (
+                  """  const caseAnalysisNodes = useMemo(() => analysisDocument?.trustedRoot.children.filter(
+    (node) => node.layer === 'WEEKLY' && node.sourceRefs.some((ref) => ref.caseRef === caseRef),
+  ) || [], [analysisDocument, caseRef]);
+
+  const selectedVersionId""",
+                  """  const caseAnalysisNodes = useMemo(() => analysisDocument?.trustedRoot.children.filter(
+    (node) => node.layer === 'WEEKLY' && node.sourceRefs.some((ref) => ref.caseRef === caseRef),
+  ) || [], [analysisDocument, caseRef]);
+
+  const caseHierarchyDoctrineNodes = useMemo(() => {
+    const result: MasterMapRangeNode[] = [];
+    const visit = (nodes: MasterMapRangeNode[]) => {
+      for (const node of nodes) {
+        if (node.sourceRefs.some((ref) => ref.caseRef === caseRef)) {
+          result.push(node);
+        }
+        visit(node.children);
+      }
+    };
+    visit(analysisDocument?.trustedRoot.children || []);
+    return result;
+  }, [analysisDocument, caseRef]);
+
+  const selectedVersionId""",
+              ),
+              (
+                  """  const approvedByRangeId = useMemo(() => {
+    const result = new Map<string, HierarchyRangeEnrichment>();
+    for (const node of caseAnalysisNodes) {
+      if (!node.analysisEnrichments.weekly_structure) continue;
+      const labels = script1Labels(node);
+      for (const sourceRef of node.sourceRefs) {
+        if (sourceRef.caseRef && sourceRef.caseRef !== caseRef) continue;
+        const ids = new Set<string>();
+        if (sourceRef.rawId !== null && sourceRef.rawId !== undefined) ids.add(String(sourceRef.rawId));
+        const sourceRecordId = String(sourceRef.sourceRecordId || '').trim();
+        if (sourceRecordId) ids.add(sourceRecordId);
+        for (const id of ids) result.set(id, labels);
+      }
+    }
+    return result;
+  }, [caseAnalysisNodes, caseRef]);""",
+                  """  const approvedByRangeId = useMemo(() => {
+    const result = new Map<string, HierarchyRangeEnrichment>();
+    for (const node of caseHierarchyDoctrineNodes) {
+      const structureMemory = node.layer === 'DAILY'
+        ? node.analysisEnrichments.daily_structure || node.analysisEnrichments.weekly_structure
+        : node.analysisEnrichments.weekly_structure;
+      if (!structureMemory) continue;
+      const labels = script1Labels(node);
+      for (const sourceRef of node.sourceRefs) {
+        if (sourceRef.caseRef && sourceRef.caseRef !== caseRef) continue;
+        const ids = new Set<string>();
+        if (sourceRef.rawId !== null && sourceRef.rawId !== undefined) ids.add(String(sourceRef.rawId));
+        const sourceRecordId = String(sourceRef.sourceRecordId || '').trim();
+        if (sourceRecordId) ids.add(sourceRecordId);
+        for (const id of ids) result.set(id, labels);
+      }
+    }
+    return result;
+  }, [caseHierarchyDoctrineNodes, caseRef]);""",
+              ),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'Guard failed: expected one source match, found {count}')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8', newline='\n')
+
+          test = Path('electron/src/hierarchyWorkspaceDailyInheritedDoctrine.test.tsx')
+          test.write_text(r'''// @vitest-environment happy-dom
+          import { act, createElement } from 'react';
+          import { createRoot, type Root } from 'react-dom/client';
+          import { afterEach, describe, expect, it, vi } from 'vitest';
+          import { HierarchyWorkspace, type HierarchyRangeEnrichment } from './hierarchyWorkspace';
+          import { masterMapFixture } from './testFixtures/masterMapFixture';
+
+          function enrichment(versionId: string, payload: Record<string, unknown>) {
+            return {
+              version_id: versionId,
+              version_label: 'inherited',
+              adapter_key: 'inherited_weekly_doctrine_v1',
+              output_hash: `${versionId}-hash`,
+              processing_status: payload.inherited_processing_status,
+              payload,
+            };
+          }
+
+          function fixture(processingStatus: 'COMPLETE' | 'NEEDS_REVIEW') {
+            const map = masterMapFixture() as any;
+            const daily = map.trusted_root.children[0].children[0];
+            daily.source_refs = [{
+              raw_id: 662,
+              case_ref: 'case:live',
+              source_record_id: 'backend-daily-662',
+              payload_sha256: 'sha-daily-662',
+            }];
+            daily.analysis_enrichments = {
+              daily_structure: enrichment('inherited:weekly-bos-v3', {
+                chronology: 'RL_TO_RH',
+                bos_direction: 'BOS_UP',
+                inherited_processing_status: processingStatus,
+                inherited_from_weekly_script: 'weekly_structure',
+              }),
+              daily_reclaim: enrichment('inherited:weekly-reclaim-v2', {
+                reclaim_status: 'RECLAIMED',
+                inherited_processing_status: 'COMPLETE',
+                inherited_from_weekly_script: 'weekly_reclaim',
+              }),
+              daily_profile_classification: enrichment('inherited:weekly-profile-v1', {
+                profile_classification: 'S&D',
+                profile_badge: '◆ S&D',
+                inherited_processing_status: 'COMPLETE',
+                inherited_from_weekly_script: 'weekly_profile_classification',
+              }),
+            };
+            return map;
+          }
+
+          function bridge(map: any) {
+            return {
+              getPaths: vi.fn().mockResolvedValue({ ok: true, databasePath: 'C:/live.sqlite3' }),
+              getWeeklyScript1State: vi.fn().mockResolvedValue({
+                ok: true,
+                source: 'DISPOSABLE_ANALYSIS_COPY',
+                analysisDatabasePath: 'C:/analysis.sqlite3',
+                masterMap: map,
+                scripts: [],
+              }),
+              runWeeklyScript1: vi.fn(),
+            };
+          }
+
+          function DailyDoctrineProbe({ enrichments }: {
+            enrichments: ReadonlyMap<string, HierarchyRangeEnrichment>;
+          }) {
+            const row = enrichments.get('662');
+            return createElement(
+              'output',
+              { 'data-testid': 'daily-doctrine' },
+              row ? `${row.chronology}|${row.bos}|${row.status}` : 'missing',
+            );
+          }
+
+          describe('HierarchyWorkspace inherited Daily doctrine', () => {
+            let container: HTMLDivElement | null = null;
+            let root: Root | null = null;
+
+            afterEach(() => {
+              act(() => root?.unmount());
+              container?.remove();
+              root = null;
+              container = null;
+            });
+
+            async function render(processingStatus: 'COMPLETE' | 'NEEDS_REVIEW') {
+              const map = fixture(processingStatus);
+              container = document.createElement('div');
+              document.body.appendChild(container);
+              root = createRoot(container);
+              await act(async () => {
+                root!.render(createElement(HierarchyWorkspace, {
+                  ranges: [
+                    { range_id: 1, structure_layer: 'WEEKLY' },
+                    { range_id: 662, structure_layer: 'DAILY', parent_range_id: 1 },
+                  ],
+                  structure: (enrichments: ReadonlyMap<string, HierarchyRangeEnrichment>) =>
+                    createElement(DailyDoctrineProbe, { enrichments }),
+                  onNavigateRange: vi.fn(),
+                  caseRef: 'case:live',
+                  symbol: 'XAUUSD',
+                  weeklyAnalysisBridge: bridge(map),
+                  coverageCandleFetcher: null,
+                }));
+                await Promise.resolve();
+                await Promise.resolve();
+              });
+              return container.querySelector('[data-testid="daily-doctrine"]')?.textContent || '';
+            }
+
+            it('renders approved Weekly doctrine automatically on its Daily hierarchy row', async () => {
+              const text = await render('COMPLETE');
+              expect(text).toBe('RL → RH|BOS Up · RECL · ◆ S&D|Approved');
+            });
+
+            it('surfaces only inherited Daily exceptions for trader review', async () => {
+              const text = await render('NEEDS_REVIEW');
+              expect(text).toBe('RL → RH|BOS Up · RECL · ◆ S&D · ⚠ Review|Needs Review');
+            });
+          });
+          '''.replace('          ', ''), encoding='utf-8', newline='\n')
+          PY
+
+      - name: Validate focused Electron tests and build
+        working-directory: electron
+        run: |
+          npm ci
+          npm test -- src/hierarchyWorkspaceDailyInheritedDoctrine.test.tsx src/hierarchyWorkspaceDoctrineChain.test.tsx
+          npm run build
+
+      - name: Commit implementation and remove one-shot workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/apply-daily-inherited-hierarchy-ui.yml
+          git config user.name "FXTM Repo Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add electron/src/hierarchyWorkspace.tsx electron/src/hierarchyWorkspaceDailyInheritedDoctrine.test.tsx .github/workflows/apply-daily-inherited-hierarchy-ui.yml
+          git commit -m "fix: render inherited Daily doctrine in hierarchy"
+          git push origin HEAD:feat/doctrine-package-runtime-v1
