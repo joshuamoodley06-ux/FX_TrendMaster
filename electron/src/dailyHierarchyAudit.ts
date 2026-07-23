@@ -42,8 +42,8 @@ function safeDepth(value: unknown): number {
  * Decorate the already-rendered hierarchy without rebuilding or re-parenting it.
  *
  * Daily numbering follows the visible saved hierarchy order and resets beneath
- * every Weekly parent. A Daily row is VALID only when it is visibly nested under
- * a Weekly row and is not in the hierarchy orphan group.
+ * every Weekly parent. A Daily row is VALID only when it is a direct child at
+ * Weekly depth + 1 and is not in the hierarchy orphan group.
  */
 export function buildDailyHierarchyAuditLayout(
   sourceRows: DailyHierarchyAuditRowInput[],
@@ -107,19 +107,28 @@ export function buildDailyHierarchyAuditLayout(
       continue;
     }
 
-    const nestedUnderWeekly = !!currentWeeklyRangeId && depth > currentWeeklyDepth;
-    const valid = nestedUnderWeekly && !orphan;
+    const insideWeeklyBranch = !!currentWeeklyRangeId && depth > currentWeeklyDepth;
+    const directWeeklyChild = !!currentWeeklyRangeId && depth === currentWeeklyDepth + 1;
+    const valid = directWeeklyChild && !orphan;
     const parentWeeklyRangeId = valid ? currentWeeklyRangeId : null;
     const sequence = valid ? ++dailySequenceNumber : null;
 
-    if (parentWeeklyRangeId) {
-      const summary = weeklySummaries.get(parentWeeklyRangeId) || {
-        weeklyRangeId: parentWeeklyRangeId,
+    if (valid && currentWeeklyRangeId) {
+      const summary = weeklySummaries.get(currentWeeklyRangeId) || {
+        weeklyRangeId: currentWeeklyRangeId,
         dailyCount: 0,
         invalidCount: 0,
       };
       summary.dailyCount += 1;
-      weeklySummaries.set(parentWeeklyRangeId, summary);
+      weeklySummaries.set(currentWeeklyRangeId, summary);
+    } else if (insideWeeklyBranch && currentWeeklyRangeId && !orphan) {
+      const summary = weeklySummaries.get(currentWeeklyRangeId) || {
+        weeklyRangeId: currentWeeklyRangeId,
+        dailyCount: 0,
+        invalidCount: 0,
+      };
+      summary.invalidCount += 1;
+      weeklySummaries.set(currentWeeklyRangeId, summary);
     }
 
     rows.push({
@@ -129,10 +138,12 @@ export function buildDailyHierarchyAuditLayout(
       dailySequenceNumber: sequence,
       linkStatus: valid ? 'VALID' : 'INVALID',
       linkReason: valid
-        ? 'Saved Daily child is nested under this Weekly parent.'
+        ? 'Saved Daily range is a direct child of this Weekly parent.'
         : orphan
           ? 'Daily range is unlinked or orphaned in the saved hierarchy.'
-          : 'Daily range is not nested under a Weekly parent in the saved hierarchy.',
+          : insideWeeklyBranch
+            ? 'Daily range is nested too deeply and is not a direct Weekly child.'
+            : 'Daily range is not nested under a Weekly parent in the saved hierarchy.',
     });
   }
 
