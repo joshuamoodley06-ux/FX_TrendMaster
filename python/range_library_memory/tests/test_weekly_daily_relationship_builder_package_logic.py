@@ -200,8 +200,10 @@ def test_saved_parent_identity_is_not_silently_filled_or_repaired() -> None:
     })
 
     row = result["payload"]["relationship_rows"][0]
+    assert result["processing_status"] == "NEEDS_REVIEW"
     assert row["parent_range_id"] is None
     assert row["weekly_range_id"] == "weekly-1"
+    assert row["parent_link_valid"] is False
 
 
 def test_missing_approved_coverage_memory_stays_pending() -> None:
