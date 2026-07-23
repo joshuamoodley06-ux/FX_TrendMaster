@@ -74,7 +74,7 @@ class DoctrinePackageContext:
         return tuple(json.loads(stable_json(item)) for item in rows)
 
     def review_ranges(self, *, layer: str | None = None) -> tuple[dict[str, Any], ...]:
-        """Return review-only structural evidence without making it statistics-eligible."""
+        """Expose review-only audit evidence without adding it to trusted memory."""
         layer_key = str(layer or "").upper()
         rows = self.__review_ranges if not layer_key else tuple(
             item for item in self.__review_ranges
