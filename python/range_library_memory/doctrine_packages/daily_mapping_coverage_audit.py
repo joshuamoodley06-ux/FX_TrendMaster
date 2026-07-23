@@ -7,6 +7,10 @@ NOT_MAPPED, never NO_DAILY_STRUCTURE.
 The canonical Master Map hierarchy is structural truth. Direct Daily children are
 read from the Weekly node exactly as stored; bad parent-link evidence is reported
 and never repaired or re-parented by Python.
+
+The first version freezes a completed Weekly candidate at its approved Weekly BOS
+candle, with persisted Weekly inactive time as fallback. That freeze convention
+must pass manual candidate review before later Daily state scripts are built.
 """
 from __future__ import annotations
 
