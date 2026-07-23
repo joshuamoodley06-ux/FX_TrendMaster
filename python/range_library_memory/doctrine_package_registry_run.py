@@ -242,15 +242,17 @@ def _review_samples(
                 add(row)
                 break
 
-        # Prefer a genuine multi-range Daily sequence.
+        # Prefer a second, distinct multi-range Daily sequence. The future-leakage
+        # sample above is often multi-range too, so stopping on it again wastes one
+        # of the five review slots.
         for row in ordered:
-            if int(row.get("payload", {}).get("daily_relationship_count") or 0) >= 2:
+            if row not in chosen and int(row.get("payload", {}).get("daily_relationship_count") or 0) >= 2:
                 add(row)
                 break
 
-        # Keep an active Daily range visible for the freeze check.
+        # Keep a distinct active Daily range visible for the freeze check.
         for row in ordered:
-            if row.get("payload", {}).get("active_daily_range_id"):
+            if row not in chosen and row.get("payload", {}).get("active_daily_range_id"):
                 add(row)
                 break
 
