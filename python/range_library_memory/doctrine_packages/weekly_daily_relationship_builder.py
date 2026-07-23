@@ -164,7 +164,7 @@ def run(context: Any) -> dict[str, list[dict[str, Any]]]:
                 "daily_end_time": child.get("daily_end_time"),
                 "daily_direction": _daily_direction(child),
                 "daily_status_at_freeze": state,
-                "parent_range_id": child.get("parent_range_id") or canonical_id,
+                "parent_range_id": child.get("parent_range_id"),
                 "parent_link_status": child.get("parent_link_status"),
                 "parent_link_valid": parent_link_valid,
                 "historically_available": historically_available,
