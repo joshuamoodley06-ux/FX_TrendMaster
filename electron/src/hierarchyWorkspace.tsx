@@ -13,6 +13,7 @@ import {
   type WeeklyAnalysisActivationResult,
   type WeeklyAnalysisBridge,
 } from './hierarchyWorkspaceCore';
+import { StatisticsReportPanel } from './statisticsReportPanel';
 
 export * from './hierarchyWorkspaceCore';
 
@@ -56,7 +57,9 @@ function sourceIds(node: RawRecord): string[] {
 }
 
 function enrichmentStatus(memory: RawRecord): string {
-  const payload = memory?.payload && typeof memory.payload === 'object' ? memory.payload : {};
+  const payload = memory?.payload && typeof memory.payload === 'object'
+    ? memory.payload
+    : {};
   return String(
     memory?.processing_status
       || payload.inherited_processing_status
@@ -122,15 +125,20 @@ function globalWeeklyAnalysisBridge(): WeeklyAnalysisBridge | null {
   const globals = globalThis as typeof globalThis & {
     localResearch?: Pick<WeeklyAnalysisBridge,
       'getWeeklyScript1State' | 'runWeeklyScript1' | 'reviewWeeklyScript1'
-      | 'listDoctrineScripts' | 'insertDoctrineScript' | 'runDoctrinePipeline' | 'reviewDoctrineSample'>;
+      | 'listDoctrineScripts' | 'insertDoctrineScript' | 'runDoctrinePipeline'
+      | 'reviewDoctrineSample'>;
     localMappingBridge?: Pick<WeeklyAnalysisBridge, 'getPaths'>;
   };
-  if (!globals.localMappingBridge?.getPaths
+  if (
+    !globals.localMappingBridge?.getPaths
     || !globals.localResearch?.getWeeklyScript1State
     || !globals.localResearch?.runWeeklyScript1
     || !globals.localResearch?.listDoctrineScripts
     || !globals.localResearch?.insertDoctrineScript
-    || !globals.localResearch?.runDoctrinePipeline) return null;
+    || !globals.localResearch?.runDoctrinePipeline
+  ) {
+    return null;
+  }
   return {
     getPaths: globals.localMappingBridge.getPaths,
     getWeeklyScript1State: globals.localResearch.getWeeklyScript1State,
@@ -148,14 +156,18 @@ function decorateActivationResult(
   onReviewIds: (ids: Set<string>) => void,
 ): WeeklyAnalysisActivationResult {
   if (!result?.masterMap) return result;
-  const projected = projectInheritedLowerTimeframeDoctrineForHierarchy(result.masterMap);
+  const projected = projectInheritedLowerTimeframeDoctrineForHierarchy(
+    result.masterMap,
+  );
   onReviewIds(projected.needsReviewSourceIds);
   return { ...result, masterMap: projected.masterMap };
 }
 
 function hasClassName(node: ReactNode, className: string): boolean {
   return isValidElement(node)
-    && String((node.props as RawRecord).className || '').split(/\s+/).includes(className);
+    && String((node.props as RawRecord).className || '')
+      .split(/\s+/)
+      .includes(className);
 }
 
 function annotateRowMain(
@@ -192,16 +204,21 @@ export function renderNativeLayerAnnotations(
   const rangeId = String(element.props['data-range-id'] || '').trim();
   const isRow = hasClassName(element, 'explorerTreeRow');
   const enrichment = isRow && rangeId ? enrichments.get(rangeId) : undefined;
-  const children = Children.map(element.props.children, (child) => (
-    enrichment && hasClassName(child, 'explorerTreeRowMain')
+  const children = Children.map(
+    element.props.children,
+    (child) => enrichment && hasClassName(child, 'explorerTreeRowMain')
       ? annotateRowMain(child, enrichment)
-      : renderNativeLayerAnnotations(child, enrichments)
-  ));
+      : renderNativeLayerAnnotations(child, enrichments),
+  );
   return cloneElement(element, undefined, children);
 }
 
 export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
-  const [lowerTimeframeReviewIds, setLowerTimeframeReviewIds] = useState<Set<string>>(() => new Set());
+  const [lowerTimeframeReviewIds, setLowerTimeframeReviewIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const sourceBridge = useMemo(
     () => props.weeklyAnalysisBridge === undefined
       ? globalWeeklyAnalysisBridge()
@@ -215,21 +232,26 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
     return {
       ...sourceBridge,
       getWeeklyScript1State: async (args) => decorateActivationResult(
-        await sourceBridge.getWeeklyScript1State(args), capture,
+        await sourceBridge.getWeeklyScript1State(args),
+        capture,
       ),
       runWeeklyScript1: async (args) => decorateActivationResult(
-        await sourceBridge.runWeeklyScript1(args), capture,
+        await sourceBridge.runWeeklyScript1(args),
+        capture,
       ),
       reviewWeeklyScript1: sourceBridge.reviewWeeklyScript1
         ? async (args) => decorateActivationResult(
-          await sourceBridge.reviewWeeklyScript1!(args), capture,
+          await sourceBridge.reviewWeeklyScript1!(args),
+          capture,
         )
         : undefined,
       runDoctrinePipeline: sourceBridge.runDoctrinePipeline
         ? async (args) => {
           const result = await sourceBridge.runDoctrinePipeline!(args);
           if (!result?.masterMap) return result;
-          const projected = projectInheritedLowerTimeframeDoctrineForHierarchy(result.masterMap);
+          const projected = projectInheritedLowerTimeframeDoctrineForHierarchy(
+            result.masterMap,
+          );
           capture(projected.needsReviewSourceIds);
           return { ...result, masterMap: projected.masterMap };
         }
@@ -244,16 +266,43 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
       for (const id of lowerTimeframeReviewIds) {
         const current = next.get(id);
         if (!current) continue;
-        const marker = current.bos.includes('⚠ Review') ? current.bos : `${current.bos} · ⚠ Review`;
-        next.set(id, { ...current, bos: marker, status: 'Needs Review' });
+        const marker = current.bos.includes('⚠ Review')
+          ? current.bos
+          : `${current.bos} · ⚠ Review`;
+        next.set(id, {
+          ...current,
+          bos: marker,
+          status: 'Needs Review',
+        });
       }
       return renderNativeLayerAnnotations(props.structure(next), next);
     };
   }, [lowerTimeframeReviewIds, props.structure]);
 
-  return <HierarchyWorkspaceCore
-    {...props}
-    structure={projectedStructure}
-    weeklyAnalysisBridge={projectedBridge}
-  />;
+  return <div
+    className="hierarchyWorkspaceReportsShell"
+    data-reports-open={reportsOpen}
+  >
+    <div className={reportsOpen ? 'hierarchyWorkspaceCoreHidden' : undefined}>
+      <HierarchyWorkspaceCore
+        key={workspaceRefreshKey}
+        {...props}
+        structure={projectedStructure}
+        weeklyAnalysisBridge={projectedBridge}
+      />
+      <button
+        type="button"
+        className="hierarchyWorkspaceReportsLauncher"
+        onClick={() => setReportsOpen(true)}
+      >Reports</button>
+    </div>
+    {reportsOpen && <div className="hierarchyWorkspaceReportsView">
+      <StatisticsReportPanel
+        caseRef={props.caseRef}
+        symbol={props.symbol}
+        onClose={() => setReportsOpen(false)}
+        onReportRun={() => setWorkspaceRefreshKey((value) => value + 1)}
+      />
+    </div>}
+  </div>;
 }
