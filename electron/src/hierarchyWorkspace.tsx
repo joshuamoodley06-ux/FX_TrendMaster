@@ -11,9 +11,28 @@ export * from './hierarchyWorkspaceCore';
 type HierarchyWorkspaceProps = React.ComponentProps<typeof HierarchyWorkspaceCore>;
 type RawRecord = Record<string, any>;
 
-type DailyHierarchyProjection = {
+type LowerTimeframeHierarchyProjection = {
   masterMap: unknown;
   needsReviewSourceIds: Set<string>;
+};
+
+type ProjectionKeys = {
+  structure: string;
+  reclaim: string;
+  profile: string;
+};
+
+const LOWER_TIMEFRAME_KEYS: Record<string, ProjectionKeys> = {
+  DAILY: {
+    structure: 'daily_structure',
+    reclaim: 'daily_reclaim',
+    profile: 'daily_profile_classification',
+  },
+  INTRADAY: {
+    structure: 'intraday_structure',
+    reclaim: 'intraday_reclaim',
+    profile: 'intraday_profile_classification',
+  },
 };
 
 function cloneJson<T>(value: T): T {
@@ -33,34 +52,43 @@ function sourceIds(node: RawRecord): string[] {
   return Array.from(ids);
 }
 
-function inheritedProcessingStatus(node: RawRecord): string {
-  const enrichments = node.analysis_enrichments && typeof node.analysis_enrichments === 'object'
-    ? node.analysis_enrichments
-    : {};
-  const structure = enrichments.daily_structure || enrichments.weekly_structure || {};
-  const payload = structure.payload && typeof structure.payload === 'object' ? structure.payload : {};
+function enrichmentStatus(memory: RawRecord): string {
+  const payload = memory?.payload && typeof memory.payload === 'object' ? memory.payload : {};
   return String(
-    structure.processing_status
+    memory?.processing_status
       || payload.inherited_processing_status
       || payload.processing_status
       || '',
   ).toUpperCase();
 }
 
-function projectDailyNode(node: RawRecord): RawRecord | null {
+function inheritedProcessingStatus(node: RawRecord, keys: ProjectionKeys): string {
   const enrichments = node.analysis_enrichments && typeof node.analysis_enrichments === 'object'
     ? node.analysis_enrichments
     : {};
-  const structure = enrichments.daily_structure || enrichments.weekly_structure;
+  const prefix = `${keys.structure.split('_')[0]}_`;
+  const statuses = Object.entries(enrichments)
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([, memory]) => enrichmentStatus(memory as RawRecord))
+    .filter(Boolean);
+  if (statuses.includes('NEEDS_REVIEW')) return 'NEEDS_REVIEW';
+  if (statuses.includes('PENDING')) return 'PENDING';
+  return enrichmentStatus(enrichments[keys.structure] || enrichments.weekly_structure || {});
+}
+
+function projectLowerTimeframeNode(node: RawRecord, keys: ProjectionKeys): RawRecord | null {
+  const enrichments = node.analysis_enrichments && typeof node.analysis_enrichments === 'object'
+    ? node.analysis_enrichments
+    : {};
+  const structure = enrichments[keys.structure] || enrichments.weekly_structure;
   if (!structure) return null;
   const projectedEnrichments: RawRecord = {
     ...enrichments,
     weekly_structure: structure,
   };
-  const reclaim = enrichments.daily_reclaim || enrichments.weekly_reclaim;
+  const reclaim = enrichments[keys.reclaim] || enrichments.weekly_reclaim;
   if (reclaim) projectedEnrichments.weekly_reclaim = reclaim;
-  const profile = enrichments.daily_profile_classification
-    || enrichments.weekly_profile_classification;
+  const profile = enrichments[keys.profile] || enrichments.weekly_profile_classification;
   if (profile) projectedEnrichments.weekly_profile_classification = profile;
   return {
     ...node,
@@ -71,12 +99,13 @@ function projectDailyNode(node: RawRecord): RawRecord | null {
 }
 
 /**
- * The existing hierarchy renderer reads approved doctrine from top-level Weekly
- * analysis nodes. Daily doctrine is inherited automatically from those approved
- * rules, so project trusted Daily nodes into that renderer-only input without
- * changing the saved hierarchy or creating a second tree.
+ * Feed inherited lower-timeframe doctrine into the established hierarchy
+ * renderer without changing saved parent links or creating another tree.
+ * Daily uses this now; Intraday is already wired to the same namespace contract.
  */
-export function projectInheritedDailyDoctrineForHierarchy(masterMap: unknown): DailyHierarchyProjection {
+export function projectInheritedLowerTimeframeDoctrineForHierarchy(
+  masterMap: unknown,
+): LowerTimeframeHierarchyProjection {
   if (!masterMap || typeof masterMap !== 'object') {
     return { masterMap, needsReviewSourceIds: new Set() };
   }
@@ -92,10 +121,12 @@ export function projectInheritedDailyDoctrineForHierarchy(masterMap: unknown): D
     for (const rawNode of nodes) {
       if (!rawNode || typeof rawNode !== 'object') continue;
       const node = rawNode as RawRecord;
-      if (String(node.structure_layer || '').toUpperCase() === 'DAILY') {
-        const projection = projectDailyNode(node);
+      const layer = String(node.structure_layer || '').toUpperCase();
+      const keys = LOWER_TIMEFRAME_KEYS[layer];
+      if (keys) {
+        const projection = projectLowerTimeframeNode(node, keys);
         if (projection) projections.push(projection);
-        if (inheritedProcessingStatus(node) === 'NEEDS_REVIEW') {
+        if (inheritedProcessingStatus(node, keys) === 'NEEDS_REVIEW') {
           for (const id of sourceIds(node)) needsReviewSourceIds.add(id);
         }
       }
@@ -106,6 +137,10 @@ export function projectInheritedDailyDoctrineForHierarchy(masterMap: unknown): D
   trustedChildren.push(...projections);
   return { masterMap: next, needsReviewSourceIds };
 }
+
+// Backward-compatible export for existing tests/importers.
+export const projectInheritedDailyDoctrineForHierarchy =
+  projectInheritedLowerTimeframeDoctrineForHierarchy;
 
 function globalWeeklyAnalysisBridge(): WeeklyAnalysisBridge | null {
   const globals = globalThis as typeof globalThis & {
@@ -137,13 +172,13 @@ function decorateActivationResult(
   onReviewIds: (ids: Set<string>) => void,
 ): WeeklyAnalysisActivationResult {
   if (!result?.masterMap) return result;
-  const projected = projectInheritedDailyDoctrineForHierarchy(result.masterMap);
+  const projected = projectInheritedLowerTimeframeDoctrineForHierarchy(result.masterMap);
   onReviewIds(projected.needsReviewSourceIds);
   return { ...result, masterMap: projected.masterMap };
 }
 
 export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
-  const [dailyReviewIds, setDailyReviewIds] = useState<Set<string>>(() => new Set());
+  const [lowerTimeframeReviewIds, setLowerTimeframeReviewIds] = useState<Set<string>>(() => new Set());
   const sourceBridge = useMemo(
     () => props.weeklyAnalysisBridge === undefined
       ? globalWeeklyAnalysisBridge()
@@ -153,7 +188,7 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
 
   const projectedBridge = useMemo<WeeklyAnalysisBridge | null | undefined>(() => {
     if (!sourceBridge) return sourceBridge;
-    const capture = (ids: Set<string>) => setDailyReviewIds(ids);
+    const capture = (ids: Set<string>) => setLowerTimeframeReviewIds(ids);
     return {
       ...sourceBridge,
       getWeeklyScript1State: async (args) => decorateActivationResult(
@@ -171,7 +206,7 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
         ? async (args) => {
           const result = await sourceBridge.runDoctrinePipeline!(args);
           if (!result?.masterMap) return result;
-          const projected = projectInheritedDailyDoctrineForHierarchy(result.masterMap);
+          const projected = projectInheritedLowerTimeframeDoctrineForHierarchy(result.masterMap);
           capture(projected.needsReviewSourceIds);
           return { ...result, masterMap: projected.masterMap };
         }
@@ -182,9 +217,9 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
   const projectedStructure = useMemo(() => {
     if (typeof props.structure !== 'function') return props.structure;
     return (enrichments: ReadonlyMap<string, HierarchyRangeEnrichment>) => {
-      if (!dailyReviewIds.size) return props.structure(enrichments);
+      if (!lowerTimeframeReviewIds.size) return props.structure(enrichments);
       const next = new Map(enrichments);
-      for (const id of dailyReviewIds) {
+      for (const id of lowerTimeframeReviewIds) {
         const current = next.get(id);
         if (!current) continue;
         const marker = current.bos.includes('⚠ Review') ? current.bos : `${current.bos} · ⚠ Review`;
@@ -192,7 +227,7 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
       }
       return props.structure(next);
     };
-  }, [dailyReviewIds, props.structure]);
+  }, [lowerTimeframeReviewIds, props.structure]);
 
   return <HierarchyWorkspaceCore
     {...props}
