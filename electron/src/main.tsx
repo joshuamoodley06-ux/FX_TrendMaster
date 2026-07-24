@@ -158,6 +158,7 @@ import {
   layersForDeletedRangeIds,
   parentContainsChildByLifecycle,
   purgeStructuralAnchorsByLayer,
+  resolveExplicitHierarchyRangeSelection,
   resolveStructuralCommitParentId,
   resolveStructuralRangeDraftCompletion,
   shouldAutoRestoreLatestRangeForLayer,
@@ -6052,6 +6053,21 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
       (r:any) => normalizeStructureLayer(r.structure_layer || r.layer) === structureLayer,
     );
 
+    const explicitId = String(explicitHierarchySelectionIdRef.current || '');
+    if (explicitId) {
+      const explicitSelection = resolveExplicitHierarchyRangeSelection({
+        savedRanges: safeArray<any>(savedStructuralRanges),
+        structureLayer,
+        explicitRangeId: explicitId,
+      });
+      if (explicitSelection) {
+        selectedParentRangeIdRef.current = explicitSelection.parentRangeId;
+        setSelectedParentRangeId(explicitSelection.parentRangeId);
+        return explicitSelection.rangeId;
+      }
+      explicitHierarchySelectionIdRef.current = '';
+    }
+
     const effectiveParentId = lockedChildMappingParentIdRef.current
       || lockedChildMappingParentId
       || selectedParentRangeIdRef.current
@@ -6067,12 +6083,6 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
     }
 
     const rowById = (id: string) => layerRows.find((r:any) => String(r.range_id || r.id) === String(id));
-    const explicitId = String(explicitHierarchySelectionIdRef.current || '');
-    if (explicitId) {
-      const explicitRow = rowById(explicitId);
-      if (explicitRow) return explicitId;
-      explicitHierarchySelectionIdRef.current = '';
-    }
     if (activeStructuralRangeId) {
       const activeRow = rowById(activeStructuralRangeId);
       if (activeRow && !isBrokenRange(activeRow)) return String(activeStructuralRangeId);
@@ -7236,20 +7246,17 @@ function MapStudio({ symbol, onSymbolChange }: { symbol: string; onSymbolChange?
   const selectSavedStructuralRange = (range:any, opts?: { routeInspector?: boolean; editMode?: boolean }) => {
     const id = String(range?.range_id || range?.id || '');
     if (!id) return;
+    const clickedParentId = String(range?.parent_range_id || '');
     skipSavedReplayHydrateRef.current = true;
     explicitHierarchySelectionIdRef.current = id;
+    selectedParentRangeIdRef.current = clickedParentId;
+    setSelectedParentRangeId(clickedParentId);
     activeStructuralRangeIdRef.current = id;
     setActiveStructuralRangeId(id);
     const nextLayer = normalizeStructureLayer(range.structure_layer || range.layer) || structureLayer;
     setStructureLayer(nextLayer);
     setRangeScope(normalizeRangeScope(range.range_scope));
     if (range.source_timeframe || range.timeframe) setSourceTimeframe(String(range.source_timeframe || range.timeframe).toUpperCase());
-    if (lockedChildMappingParentIdRef.current) {
-      selectedParentRangeIdRef.current = lockedChildMappingParentIdRef.current;
-      setSelectedParentRangeId(lockedChildMappingParentIdRef.current);
-    } else if (range.parent_range_id !== undefined && range.parent_range_id !== null) {
-      setSelectedParentRangeId(String(range.parent_range_id));
-    }
     const high = range.range_high_price ?? range.range_high;
     const low = range.range_low_price ?? range.range_low;
     const broken = isStructuralRangeBrokenStatusValue(range.status);

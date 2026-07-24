@@ -17,6 +17,7 @@ import {
   layersForDeletedRangeIds,
   parentContainsChildByLifecycle,
   purgeStructuralAnchorsByLayer,
+  resolveExplicitHierarchyRangeSelection,
   resolveStructuralCommitParentId,
   resolveStructuralRangeDraftCompletion,
   shouldAutoRestoreLatestRangeForLayer,
@@ -36,6 +37,62 @@ const priceMatches = (a: number, b: number) => Math.abs(a - b) < 0.005;
 const isBroken = (status: string | null | undefined) => String(status || '').toUpperCase() === 'BROKEN';
 
 describe('mapStudioMappingContext', () => {
+  describe('exact hierarchy range selection', () => {
+    const dailySiblings = [
+      { range_id: '692', structure_layer: 'DAILY', parent_range_id: '638', status: 'BROKEN' },
+      { range_id: '693', structure_layer: 'DAILY', parent_range_id: '638', status: 'ACTIVE' },
+      { range_id: '697', structure_layer: 'DAILY', parent_range_id: '638', status: 'ACTIVE' },
+      { range_id: '710', structure_layer: 'DAILY', parent_range_id: '640', status: 'ACTIVE' },
+    ];
+
+    it('preserves the exact clicked sibling instead of restoring a later range', () => {
+      expect(resolveExplicitHierarchyRangeSelection({
+        savedRanges: dailySiblings,
+        structureLayer: 'DAILY',
+        explicitRangeId: '692',
+      })).toEqual({ rangeId: '692', parentRangeId: '638' });
+
+      expect(resolveExplicitHierarchyRangeSelection({
+        savedRanges: dailySiblings,
+        structureLayer: 'DAILY',
+        explicitRangeId: '693',
+      })).toEqual({ rangeId: '693', parentRangeId: '638' });
+    });
+
+    it('ignores stale parent context and preserves a BROKEN historical selection', () => {
+      const staleSelectedParentRangeId = '640';
+      const result = resolveExplicitHierarchyRangeSelection({
+        savedRanges: dailySiblings.filter((row) => (
+          !staleSelectedParentRangeId || row.parent_range_id === staleSelectedParentRangeId
+            ? true
+            : row.range_id === '692'
+        )),
+        structureLayer: 'DAILY',
+        explicitRangeId: '692',
+      });
+      expect(result).toEqual({ rangeId: '692', parentRangeId: '638' });
+    });
+
+    it('derives a new parent when selection crosses Weekly sections', () => {
+      expect(resolveExplicitHierarchyRangeSelection({
+        savedRanges: dailySiblings,
+        structureLayer: 'DAILY',
+        explicitRangeId: '710',
+      })).toEqual({ rangeId: '710', parentRangeId: '640' });
+    });
+
+    it('does not resolve an ID from another structure layer', () => {
+      expect(resolveExplicitHierarchyRangeSelection({
+        savedRanges: [
+          ...dailySiblings,
+          { range_id: '693', structure_layer: 'WEEKLY', parent_range_id: '1', status: 'ACTIVE' },
+        ],
+        structureLayer: 'WEEKLY',
+        explicitRangeId: '692',
+      })).toBeNull();
+    });
+  });
+
   it('requires case plus hierarchy/campaign context', () => {
     expect(hasMappingSkeletonContext({
       hasCase: false,
