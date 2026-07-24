@@ -12,8 +12,15 @@ from .weekly_chronology_bos_v2 import (
 
 
 def _candidate_results(core: Any, connection: Any) -> list[dict[str, Any]]:
+    table = str(core.TABLE)
+    exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    if exists is None:
+        return []
     rows = connection.execute(
-        f"SELECT * FROM {core.TABLE} WHERE processing_version=? "
+        f"SELECT * FROM {table} WHERE processing_version=? "
         "ORDER BY chronology_end_time,chronology_start_time,canonical_range_id",
         (POLICY_VERSION,),
     ).fetchall()

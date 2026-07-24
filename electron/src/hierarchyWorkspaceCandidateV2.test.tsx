@@ -32,7 +32,15 @@ const candidateState = { status: 'APPROVED', current_approved_version_id: 'v1', 
 ], runs: [{ run: { run_id: 'run-v2', version_id: 'v2', case_ref: 'case:live', symbol: 'XAUUSD',
   approval_status: 'PENDING', publication_status: 'UNPUBLISHED', eligible_count: 1, analysed_count: 1,
   sample_count: 1, approval_count: 0 }, samples: [{ canonical_range_id: 'mm:range:weekly-trusted',
-  sample_order: 0, decision: 'PENDING', decided_at: null }] }, approvedRun] };
+  sample_order: 0, decision: 'PENDING', decided_at: null, processing_status: 'COMPLETE',
+  payload: { chronology: 'RH_TO_RL', bos_direction: 'BOS_DOWN', bos_time: '2026-02-01T00:00:00Z', weeks_to_bos: 2 } }] }, approvedRun] };
+
+function script(state: any, versionId: string, versionLabel: string) {
+  return { script_id: 'script-weekly', script_key: 'weekly_structure', display_name: 'Weekly BOS',
+    execution_order: 10, status: 'APPROVED', current_approved_version_id: 'v1', version_id: versionId,
+    version_label: versionLabel, latest_version_status: versionId === 'v2' ? 'PENDING_APPROVAL' : 'APPROVED',
+    doctrine_state: state };
+}
 
 describe('HierarchyWorkspace Weekly v2 candidate', () => {
   let container: HTMLDivElement | null = null;
@@ -44,12 +52,13 @@ describe('HierarchyWorkspace Weekly v2 candidate', () => {
     const bridge = {
       getPaths: vi.fn().mockResolvedValue({ ok: true, databasePath: 'C:/live.sqlite3' }),
       getWeeklyScript1State: vi.fn().mockResolvedValue({ ok: true, source: 'DISPOSABLE_ANALYSIS_COPY',
-        analysisDatabasePath: 'C:/analysis.sqlite3', masterMap: fixture, doctrineState: approvedState, scripts: [] }),
+        analysisDatabasePath: 'C:/analysis.sqlite3', masterMap: fixture, doctrineState: approvedState,
+        scripts: [script(approvedState, 'v1', '1')] }),
       runWeeklyScript1: vi.fn(), reviewWeeklyScript1: vi.fn(),
-      listDoctrineScripts: vi.fn().mockResolvedValue({ ok: true, result: [] }),
-      insertDoctrineScript: vi.fn().mockResolvedValue({ ok: true, result: { version_id: 'v2' } }),
+      listDoctrineScripts: vi.fn().mockResolvedValue({ ok: true, result: [script(approvedState, 'v1', '1')] }),
+      insertDoctrineScript: vi.fn().mockResolvedValue({ ok: true, result: { version_id: 'v2', script_key: 'weekly_structure' } }),
       runDoctrinePipeline: vi.fn().mockResolvedValue({ ok: true, result: { processed: 1 },
-        masterMap: fixture, doctrineState: candidateState, scripts: [] }),
+        masterMap: fixture, doctrineState: candidateState, scripts: [script(candidateState, 'v2', '2')] }),
     };
     container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
     await act(async () => root!.render(createElement(HierarchyWorkspace, {

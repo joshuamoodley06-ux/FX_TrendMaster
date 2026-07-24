@@ -9,6 +9,7 @@ const PRESERVED_ANALYSIS_TABLES = new Set([
   'doctrine_validation_samples',
   'doctrine_range_processing',
   'doctrine_enrichments',
+  'inherited_doctrine_enrichments',
   'weekly_script1_results',
   'weekly_script1_runs',
   'weekly_script1_validation_samples',

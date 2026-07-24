@@ -541,6 +541,32 @@ export type StructuralParentRangeRow = {
   range_low_time?: string | null;
 };
 
+export type ExplicitHierarchyRangeSelection = {
+  rangeId: string;
+  parentRangeId: string;
+};
+
+export function resolveExplicitHierarchyRangeSelection(args: {
+  savedRanges: StructuralParentRangeRow[];
+  structureLayer: string;
+  explicitRangeId: string;
+}): ExplicitHierarchyRangeSelection | null {
+  const explicitRangeId = String(args.explicitRangeId || '');
+  const structureLayer = normalizeStructureLayerId(args.structureLayer);
+  if (!explicitRangeId || !structureLayer) return null;
+
+  const exactRow = args.savedRanges.find((row) => (
+    String(row.range_id || row.id || '') === explicitRangeId
+    && normalizeStructureLayerId(row.structure_layer || row.layer) === structureLayer
+  ));
+  if (!exactRow) return null;
+
+  return {
+    rangeId: explicitRangeId,
+    parentRangeId: String(exactRow.parent_range_id || ''),
+  };
+}
+
 export function parseStructuralTimeMs(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number' && Number.isFinite(value)) return value;

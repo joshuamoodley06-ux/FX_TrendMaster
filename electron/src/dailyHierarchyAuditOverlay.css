@@ -1,0 +1,88 @@
+.explorerTreeRow.dailyHierarchyAuditDecorated {
+  min-width: 0;
+}
+
+.explorerTreeRow.dailyHierarchyAuditDecorated .explorerTreeRowMain {
+  position: relative;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.explorerTreeRow.dailyHierarchyAuditDecorated .explorerTreeLine1,
+.explorerTreeRow.dailyHierarchyAuditDecorated .explorerTreeLine2 {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.explorerTreeRowMain[data-daily-sequence-label] {
+  padding-left: 23px;
+}
+
+.explorerTreeRowMain[data-daily-sequence-label]::before,
+.explorerTreeRow[data-daily-child-summary]::after,
+.explorerTreeRow[data-daily-link-status]::after {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 4px;
+  box-sizing: border-box;
+  font-size: 8px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.explorerTreeRowMain[data-daily-sequence-label]::before {
+  content: attr(data-daily-sequence-label);
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  border: 1px solid rgba(87, 181, 255, 0.48);
+  background: rgba(29, 93, 143, 0.28);
+  color: #9bd6ff;
+}
+
+.explorerTreeRow[data-daily-child-summary]::after,
+.explorerTreeRow[data-daily-link-status]::after {
+  margin-left: 2px;
+  margin-right: 1px;
+}
+
+.explorerTreeRow[data-daily-child-summary="✓"]::after,
+.explorerTreeRow[data-daily-link-status="VALID"]::after {
+  content: "✓";
+  border: 1px solid rgba(42, 216, 147, 0.5);
+  background: rgba(20, 128, 88, 0.25);
+  color: #45e3a2;
+}
+
+.explorerTreeRow[data-daily-child-summary="!"]::after,
+.explorerTreeRow[data-daily-link-status="INVALID"]::after {
+  content: "!";
+  border: 1px solid rgba(255, 91, 105, 0.58);
+  background: rgba(145, 35, 49, 0.3);
+  color: #ff7b88;
+}
+
+.explorerTreeRow.dailyHierarchyAuditInvalid {
+  box-shadow: inset -2px 0 0 rgba(255, 91, 105, 0.72);
+}
+
+@media (max-width: 1280px) {
+  .explorerTreeRowMain[data-daily-sequence-label] {
+    padding-left: 21px;
+  }
+
+  .explorerTreeRowMain[data-daily-sequence-label]::before {
+    width: 18px;
+    font-size: 7px;
+  }
+}

@@ -1,10 +1,14 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { structuralAnchorDraftIntegrityPlugin } from './build/structuralAnchorDraftIntegrityPlugin';
 
 const VPS_TARGET = 'https://api01.apexcoastalrentals.co.za';
 
 export default defineConfig({
-  plugins: [react({ allowConstantExport: true })],
+  plugins: [
+    structuralAnchorDraftIntegrityPlugin(),
+    react({ allowConstantExport: true }),
+  ],
   base: './',
   appType: 'spa',
   server: {
