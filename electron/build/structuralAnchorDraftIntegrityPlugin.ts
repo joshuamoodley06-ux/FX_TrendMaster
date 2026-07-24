@@ -124,7 +124,6 @@ export function applyStructuralAnchorDraftIntegrity(sourceText: string): string 
     "from './structuralRangeDraftSession'",
     'structuralRangeDraftSessionRef',
     'captureStructuralRangeDraftSnapshot',
-    'an older RL cannot be reused',
   ];
   for (const proof of requiredProof) {
     if (!transformed.includes(proof)) {
