@@ -3,6 +3,12 @@ import {
   projectInheritedDailyDoctrineForHierarchy,
   projectInheritedLowerTimeframeDoctrineForHierarchy,
 } from './hierarchyWorkspace';
+import {
+  doctrineNamespacesForLayer,
+  flattenHierarchyNodes,
+  hierarchyEnrichmentLookup,
+  script1Labels,
+} from './hierarchyWorkspaceCore';
 
 function memory(status: string, payload: Record<string, unknown>) {
   return {
@@ -49,31 +55,93 @@ function fixture(status = 'COMPLETE', profileStatus = 'COMPLETE') {
 }
 
 describe('inherited lower-timeframe hierarchy projection', () => {
-  it('projects Daily doctrine into the existing renderer namespace', () => {
+  it('keeps Daily doctrine on the original native Daily node', () => {
     const original = fixture();
     const result = projectInheritedDailyDoctrineForHierarchy(original);
     const children = (result.masterMap as any).trusted_root.children;
-    expect(children).toHaveLength(3);
-    expect(children[1].id).toBe('daily-662');
-    expect(children[1].structure_layer).toBe('WEEKLY');
-    expect(children[1].analysis_enrichments.weekly_structure.payload.bos_direction).toBe('BOS_UP');
-    expect(children[1].analysis_enrichments.weekly_reclaim.payload.reclaim_status).toBe('RECLAIMED');
-    expect(children[1].analysis_enrichments.weekly_profile_classification.payload.profile_classification).toBe('S&D');
-    expect((original as any).trusted_root.children).toHaveLength(1);
+    const daily = children[0].children[0];
+    expect(children).toHaveLength(1);
+    expect(daily.id).toBe('daily-662');
+    expect(daily.structure_layer).toBe('DAILY');
+    expect(daily.analysis_enrichments.daily_structure.payload.bos_direction).toBe('BOS_UP');
+    expect(daily.analysis_enrichments.daily_reclaim.payload.reclaim_status).toBe('RECLAIMED');
+    expect(daily.analysis_enrichments.daily_profile_classification.payload.profile_classification).toBe('S&D');
+    expect(daily.children[0].id).toBe('intraday-900');
+    expect(result.masterMap).toBe(original);
   });
 
-  it('uses the same projection contract for future Intraday doctrine', () => {
+  it('uses the same native namespace resolver for future Intraday doctrine', () => {
     const result = projectInheritedLowerTimeframeDoctrineForHierarchy(fixture());
-    const children = (result.masterMap as any).trusted_root.children;
-    const intraday = children.find((node: any) => node.id === 'intraday-900');
-    expect(intraday.structure_layer).toBe('WEEKLY');
-    expect(intraday.analysis_enrichments.weekly_structure.payload.bos_direction).toBe('BOS_DOWN');
-    expect(intraday.analysis_enrichments.weekly_reclaim.payload.reclaim_status).toBe('ABANDONED');
-    expect(intraday.analysis_enrichments.weekly_profile_classification.payload.profile_classification).toBe('S&R');
+    const intraday = (result.masterMap as any).trusted_root.children[0].children[0].children[0];
+    expect(intraday.structure_layer).toBe('INTRADAY');
+    expect(intraday.analysis_enrichments.intraday_structure.payload.bos_direction).toBe('BOS_DOWN');
+    expect(doctrineNamespacesForLayer('INTRADAY')).toEqual({
+      structure: 'intraday_structure',
+      reclaim: 'intraday_reclaim',
+      profile: 'intraday_profile_classification',
+    });
   });
 
   it('returns lower-timeframe source ids when any inherited stage needs review', () => {
     const result = projectInheritedLowerTimeframeDoctrineForHierarchy(fixture('COMPLETE', 'NEEDS_REVIEW'));
     expect(Array.from(result.needsReviewSourceIds).sort()).toEqual(['662', 'daily-662']);
+  });
+
+  it('renders compact native Daily facts and review from any inherited stage', () => {
+    const raw = fixture('COMPLETE', 'NEEDS_REVIEW').trusted_root.children[0].children[0];
+    const analysisEnrichments = Object.fromEntries(
+      Object.entries(raw.analysis_enrichments).map(([key, value]: [string, any]) => [
+        key,
+        { payload: value.payload },
+      ]),
+    );
+    const labels = script1Labels({
+      layer: 'DAILY',
+      analysisEnrichments,
+      script1Chronology: null,
+      script1BosDirection: null,
+      script1ReviewStatus: null,
+    } as any);
+    expect(labels).toEqual({
+      chronology: 'RL → RH',
+      bos: 'BOS Up · RECL · ◆ S&D',
+      status: 'Needs Review',
+    });
+  });
+
+  it('builds the enrichment lookup recursively without changing hierarchy order', () => {
+    const intraday = { canonicalRangeId: 'intraday', children: [] } as any;
+    const daily1 = { canonicalRangeId: 'daily-1', children: [intraday] } as any;
+    const daily2 = { canonicalRangeId: 'daily-2', children: [] } as any;
+    const weekly = { canonicalRangeId: 'weekly', children: [daily1, daily2] } as any;
+    expect(flattenHierarchyNodes([weekly]).map((node) => node.canonicalRangeId)).toEqual([
+      'weekly', 'daily-1', 'intraday', 'daily-2',
+    ]);
+    expect(weekly.children).toEqual([daily1, daily2]);
+  });
+
+  it('matches persisted raw-prefixed case refs to the active case', () => {
+    const raw = fixture().trusted_root.children[0].children[0];
+    raw.source_refs[0].case_ref = 'raw:0900da83-e96d-4baf-9f49-b7e96e382dfd';
+    const node = {
+      layer: 'DAILY',
+      sourceRefs: raw.source_refs.map((ref) => ({
+        rawId: ref.raw_id,
+        caseRef: ref.case_ref,
+        sourceRecordId: ref.source_record_id,
+      })),
+      analysisEnrichments: Object.fromEntries(
+        Object.entries(raw.analysis_enrichments).map(([key, value]: [string, any]) => [
+          key,
+          { payload: value.payload },
+        ]),
+      ),
+      children: [],
+    } as any;
+    const lookup = hierarchyEnrichmentLookup([node], '0900da83-e96d-4baf-9f49-b7e96e382dfd');
+    expect(lookup.get('662')).toMatchObject({
+      chronology: 'RL → RH',
+      bos: 'BOS Up · RECL · ◆ S&D',
+    });
   });
 });

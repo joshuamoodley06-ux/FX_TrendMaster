@@ -55,6 +55,15 @@ describe('instrument doctrine workspace', () => {
       'script-1', 'weekly_structure', 'Weekly structure', null, 10,
       'APPROVED', 'version-1', 'created', 'updated',
     );
+    approved.exec(`
+      CREATE TABLE inherited_doctrine_enrichments(
+        target_layer TEXT, target_namespace TEXT, canonical_range_id TEXT,
+        symbol TEXT, case_ref TEXT, payload_json TEXT
+      );
+    `);
+    approved.prepare('INSERT INTO inherited_doctrine_enrichments VALUES (?,?,?,?,?,?)').run(
+      'DAILY', 'daily_structure', 'daily-662', 'XAUUSD', 'case:live', '{"bos_direction":"BOS_UP"}',
+    );
     approved.close();
 
     fs.rmSync(live);
@@ -65,6 +74,9 @@ describe('instrument doctrine workspace', () => {
     expect(refreshed.prepare('SELECT marker FROM raw_ranges WHERE id=1').get().marker).toBe('second');
     expect(refreshed.prepare('SELECT status FROM doctrine_scripts WHERE script_id=?').get('script-1').status)
       .toBe('APPROVED');
+    expect(refreshed.prepare(
+      'SELECT canonical_range_id FROM inherited_doctrine_enrichments WHERE case_ref=?',
+    ).get('case:live').canonical_range_id).toBe('daily-662');
     refreshed.close();
   });
 });

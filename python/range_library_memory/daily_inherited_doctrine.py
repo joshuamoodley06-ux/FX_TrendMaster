@@ -34,13 +34,6 @@ _STAGE_SPECS: tuple[tuple[str, str, Callable[[Any], dict[str, list[dict[str, Any
 )
 DAILY_MEMORY_KEYS = tuple(stage for stage, _, _ in _STAGE_SPECS)
 WEEKLY_SOURCE_KEYS = tuple(source for _, source, _ in _STAGE_SPECS)
-_HIERARCHY_ALIASES = {
-    "weekly_structure": "daily_structure",
-    "weekly_reclaim": "daily_reclaim",
-    "weekly_profile_classification": "daily_profile_classification",
-}
-
-
 def _table_exists(connection: Any) -> bool:
     return connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
@@ -120,7 +113,7 @@ def _node_cases(node: Mapping[str, Any]) -> set[str]:
 
 
 def _clear_inherited_daily_memory(master_map: Mapping[str, Any]) -> None:
-    removable = set(DAILY_MEMORY_KEYS) | set(_HIERARCHY_ALIASES)
+    removable = set(DAILY_MEMORY_KEYS)
     for copies in _daily_nodes(master_map).values():
         for node in copies:
             memory = node.get("analysis_enrichments")
@@ -223,7 +216,10 @@ def _project_stage(
         )
     for output in outputs:
         identity = str(output.get("canonical_range_id") or "")
-        copies = nodes.get(identity, [])
+        copies = [
+            node for node in nodes.get(identity, [])
+            if not case_ref or not _node_cases(node) or case_ref in _node_cases(node)
+        ]
         if not copies:
             continue
         status = str(output.get("processing_status") or "PENDING").upper()
@@ -270,23 +266,6 @@ def _project_stage(
     return counts
 
 
-def _project_hierarchy_aliases(master_map: dict[str, Any]) -> None:
-    for copies in _daily_nodes(master_map).values():
-        for node in copies:
-            memory = node.get("analysis_enrichments")
-            if not isinstance(memory, dict):
-                continue
-            for alias_key, daily_key in _HIERARCHY_ALIASES.items():
-                source = memory.get(daily_key)
-                if not isinstance(source, Mapping):
-                    continue
-                alias = json.loads(json.dumps(source))
-                alias["adapter_key"] = f"{INHERITED_ADAPTER}:hierarchy"
-                if isinstance(alias.get("payload"), dict):
-                    alias["payload"]["hierarchy_alias_of"] = daily_key
-                memory[alias_key] = alias
-
-
 def apply_persisted_inherited_enrichments(
     connection: Any,
     master_map: dict[str, Any],
@@ -313,9 +292,6 @@ def apply_persisted_inherited_enrichments(
                     continue
                 for namespace in namespaces:
                     memory.pop(namespace, None)
-                if layer == DAILY_TARGET_LAYER:
-                    for alias in _HIERARCHY_ALIASES:
-                        memory.pop(alias, None)
                 if not memory:
                     node.pop("analysis_enrichments", None)
 
@@ -340,7 +316,6 @@ def apply_persisted_inherited_enrichments(
             }
             applied += 1
             needs_review += int(status == "NEEDS_REVIEW")
-    _project_hierarchy_aliases(master_map)
     summary = {"applied": applied, "needs_review": needs_review}
     master_map.setdefault("analysis", {})["inherited_lower_timeframe_projection"] = summary
     connection.execute(
@@ -404,7 +379,6 @@ def refresh_inherited_daily_doctrine(
                     symbol=symbol_key,
                     case_ref=case_ref,
                 )
-            _project_hierarchy_aliases(master_map)
             summary = {
                 "status": "ACTIVE",
                 "version": INHERITED_VERSION,

@@ -35,11 +35,6 @@ const LOWER_TIMEFRAME_KEYS: Record<string, ProjectionKeys> = {
   },
 };
 
-function cloneJson<T>(value: T): T {
-  if (typeof structuredClone === 'function') return structuredClone(value);
-  return JSON.parse(JSON.stringify(value)) as T;
-}
-
 function sourceIds(node: RawRecord): string[] {
   const ids = new Set<string>();
   const refs = Array.isArray(node.source_refs) ? node.source_refs : [];
@@ -73,35 +68,12 @@ function inheritedProcessingStatus(node: RawRecord, keys: ProjectionKeys): strin
     .filter(Boolean);
   if (statuses.includes('NEEDS_REVIEW')) return 'NEEDS_REVIEW';
   if (statuses.includes('PENDING')) return 'PENDING';
-  return enrichmentStatus(enrichments[keys.structure] || enrichments.weekly_structure || {});
-}
-
-function projectLowerTimeframeNode(node: RawRecord, keys: ProjectionKeys): RawRecord | null {
-  const enrichments = node.analysis_enrichments && typeof node.analysis_enrichments === 'object'
-    ? node.analysis_enrichments
-    : {};
-  const structure = enrichments[keys.structure] || enrichments.weekly_structure;
-  if (!structure) return null;
-  const projectedEnrichments: RawRecord = {
-    ...enrichments,
-    weekly_structure: structure,
-  };
-  const reclaim = enrichments[keys.reclaim] || enrichments.weekly_reclaim;
-  if (reclaim) projectedEnrichments.weekly_reclaim = reclaim;
-  const profile = enrichments[keys.profile] || enrichments.weekly_profile_classification;
-  if (profile) projectedEnrichments.weekly_profile_classification = profile;
-  return {
-    ...node,
-    structure_layer: 'WEEKLY',
-    children: [],
-    analysis_enrichments: projectedEnrichments,
-  };
+  return enrichmentStatus(enrichments[keys.structure] || {});
 }
 
 /**
- * Feed inherited lower-timeframe doctrine into the established hierarchy
- * renderer without changing saved parent links or creating another tree.
- * Daily uses this now; Intraday is already wired to the same namespace contract.
+ * Inspect inherited lower-timeframe doctrine without changing the Master Map.
+ * The renderer resolves native namespaces from each node's real layer.
  */
 export function projectInheritedLowerTimeframeDoctrineForHierarchy(
   masterMap: unknown,
@@ -109,13 +81,12 @@ export function projectInheritedLowerTimeframeDoctrineForHierarchy(
   if (!masterMap || typeof masterMap !== 'object') {
     return { masterMap, needsReviewSourceIds: new Set() };
   }
-  const next = cloneJson(masterMap as RawRecord);
+  const next = masterMap as RawRecord;
   const trustedChildren = next?.trusted_root?.children;
   if (!Array.isArray(trustedChildren)) {
     return { masterMap: next, needsReviewSourceIds: new Set() };
   }
 
-  const projections: RawRecord[] = [];
   const needsReviewSourceIds = new Set<string>();
   const visit = (nodes: unknown[]) => {
     for (const rawNode of nodes) {
@@ -124,8 +95,6 @@ export function projectInheritedLowerTimeframeDoctrineForHierarchy(
       const layer = String(node.structure_layer || '').toUpperCase();
       const keys = LOWER_TIMEFRAME_KEYS[layer];
       if (keys) {
-        const projection = projectLowerTimeframeNode(node, keys);
-        if (projection) projections.push(projection);
         if (inheritedProcessingStatus(node, keys) === 'NEEDS_REVIEW') {
           for (const id of sourceIds(node)) needsReviewSourceIds.add(id);
         }
@@ -134,7 +103,6 @@ export function projectInheritedLowerTimeframeDoctrineForHierarchy(
     }
   };
   visit(trustedChildren);
-  trustedChildren.push(...projections);
   return { masterMap: next, needsReviewSourceIds };
 }
 

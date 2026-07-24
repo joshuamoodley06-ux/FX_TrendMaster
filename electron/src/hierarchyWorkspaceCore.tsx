@@ -178,21 +178,76 @@ function profileBadge(value: unknown): string {
   return '';
 }
 
-function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
-  const generic = node.analysisEnrichments.weekly_structure?.payload || {};
-  const reclaim = node.analysisEnrichments.weekly_reclaim?.payload || {};
-  const profile = node.analysisEnrichments.weekly_profile_classification?.payload || {};
+export function doctrineNamespacesForLayer(layer: string) {
+  const prefix = String(layer || '').toLowerCase();
+  return {
+    structure: `${prefix}_structure`,
+    reclaim: `${prefix}_reclaim`,
+    profile: `${prefix}_profile_classification`,
+  };
+}
+
+export function script1Labels(node: MasterMapRangeNode): HierarchyRangeEnrichment {
+  const namespaces = doctrineNamespacesForLayer(node.layer);
+  const structureMemory = node.analysisEnrichments[namespaces.structure];
+  const generic = structureMemory?.payload || {};
+  const reclaim = node.analysisEnrichments[namespaces.reclaim]?.payload || {};
+  const profile = node.analysisEnrichments[namespaces.profile]?.payload || {};
   const chronology = generic.chronology ?? node.script1Chronology;
   const bos = generic.bos_direction ?? node.script1BosDirection;
   const suffix = reclaimSuffix(reclaim.reclaim_status);
   const badge = profileBadge(profile.profile_badge ?? profile.profile_classification);
   const bosWithReclaim = [bosLabel(bos), suffix, badge].filter(Boolean).join(' · ');
-  const status = node.analysisEnrichments.weekly_structure
-    ? 'Approved'
+  const inheritedStatuses = Object.entries(node.analysisEnrichments)
+    .filter(([key]) => key.startsWith(`${String(node.layer).toLowerCase()}_`))
+    .map(([, entry]) => String(entry.payload?.inherited_processing_status || '').toUpperCase());
+  const status = inheritedStatuses.includes('NEEDS_REVIEW')
+    ? 'Needs Review'
+    : structureMemory
+      ? 'Approved'
     : node.script1ReviewStatus === 'APPROVED' ? 'Approved'
       : node.script1ReviewStatus === 'NEEDS_REVIEW' ? 'Needs Review'
         : node.script1ReviewStatus === 'REJECTED' ? 'Rejected' : 'Pending';
   return { chronology: chronologyLabel(chronology), bos: bosWithReclaim, status };
+}
+
+export function flattenHierarchyNodes(nodes: MasterMapRangeNode[]): MasterMapRangeNode[] {
+  const result: MasterMapRangeNode[] = [];
+  const visit = (node: MasterMapRangeNode) => {
+    result.push(node);
+    node.children.forEach(visit);
+  };
+  nodes.forEach(visit);
+  return result;
+}
+
+function normalizedCaseRef(value: unknown): string {
+  return String(value || '').trim().replace(/^raw:/i, '');
+}
+
+export function hierarchyEnrichmentLookup(
+  nodes: MasterMapRangeNode[],
+  caseRef: string,
+): Map<string, HierarchyRangeEnrichment> {
+  const expectedCaseRef = normalizedCaseRef(caseRef);
+  const result = new Map<string, HierarchyRangeEnrichment>();
+  for (const node of flattenHierarchyNodes(nodes)) {
+    const matchingRefs = node.sourceRefs.filter(
+      (ref) => !ref.caseRef || normalizedCaseRef(ref.caseRef) === expectedCaseRef,
+    );
+    if (!matchingRefs.length) continue;
+    const namespaces = doctrineNamespacesForLayer(node.layer);
+    if (!node.analysisEnrichments[namespaces.structure]) continue;
+    const labels = script1Labels(node);
+    for (const sourceRef of matchingRefs) {
+      const ids = new Set<string>();
+      if (sourceRef.rawId !== null && sourceRef.rawId !== undefined) ids.add(String(sourceRef.rawId));
+      const sourceRecordId = String(sourceRef.sourceRecordId || '').trim();
+      if (sourceRecordId) ids.add(sourceRecordId);
+      for (const id of ids) result.set(id, labels);
+    }
+  }
+  return result;
 }
 
 function matchingRange(node: MasterMapRangeNode | null, ranges: Record<string, unknown>[]) {
@@ -747,9 +802,17 @@ export function HierarchyWorkspace({
     }
   };
 
-  const caseAnalysisNodes = useMemo(() => analysisDocument?.trustedRoot.children.filter(
-    (node) => node.layer === 'WEEKLY' && node.sourceRefs.some((ref) => ref.caseRef === caseRef),
+  const caseAnalysisNodes = useMemo(() => flattenHierarchyNodes(
+    analysisDocument?.trustedRoot.children || [],
+  ).filter(
+    (node) => node.sourceRefs.some(
+      (ref) => !ref.caseRef || normalizedCaseRef(ref.caseRef) === normalizedCaseRef(caseRef),
+    ),
   ) || [], [analysisDocument, caseRef]);
+  const caseWeeklyAnalysisNodes = useMemo(
+    () => caseAnalysisNodes.filter((node) => node.layer === 'WEEKLY'),
+    [caseAnalysisNodes],
+  );
 
   const selectedVersionId = String(selectedScript?.version_id || '') || null;
   const legacy = selectedScript?.adapter_key === 'doctrine_package_v1'
@@ -764,22 +827,10 @@ export function HierarchyWorkspace({
     legacy,
   );
 
-  const approvedByRangeId = useMemo(() => {
-    const result = new Map<string, HierarchyRangeEnrichment>();
-    for (const node of caseAnalysisNodes) {
-      if (!node.analysisEnrichments.weekly_structure) continue;
-      const labels = script1Labels(node);
-      for (const sourceRef of node.sourceRefs) {
-        if (sourceRef.caseRef && sourceRef.caseRef !== caseRef) continue;
-        const ids = new Set<string>();
-        if (sourceRef.rawId !== null && sourceRef.rawId !== undefined) ids.add(String(sourceRef.rawId));
-        const sourceRecordId = String(sourceRef.sourceRecordId || '').trim();
-        if (sourceRecordId) ids.add(sourceRecordId);
-        for (const id of ids) result.set(id, labels);
-      }
-    }
-    return result;
-  }, [caseAnalysisNodes, caseRef]);
+  const approvedByRangeId = useMemo(
+    () => hierarchyEnrichmentLookup(analysisDocument?.trustedRoot.children || [], caseRef),
+    [analysisDocument, caseRef],
+  );
 
   const saveReview = async (canonicalRangeId: string, decision: 'APPROVED' | 'REJECTED') => {
     if (!bridge || !pipeline?.runId || !analysisDatabasePath) return;
@@ -1046,7 +1097,7 @@ export function HierarchyWorkspace({
             {approvalState === 'APPROVED' ? 'Approved sample' : 'Validation sample'} ({pipeline?.validationSamples.length || 0})
           </b>
           <DoctrineValidationSample scriptKey={selectedScriptKey}
-            samples={pipeline?.validationSamples || []} nodes={caseAnalysisNodes} ranges={ranges}
+            samples={pipeline?.validationSamples || []} nodes={caseWeeklyAnalysisNodes} ranges={ranges}
             saving={operationState === 'REVIEWING'} reviewEnabled={approvalState === 'PENDING'}
             onNavigateRange={onNavigateRange} onDecision={(id, decision) => void saveReview(id, decision)} />
           {!pipeline?.validationSamples.length && <div className="weeklyScript1Empty">
