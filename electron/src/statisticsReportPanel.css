@@ -1,0 +1,239 @@
+.statisticsReportPanel {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  padding: 10px;
+  overflow: auto;
+  box-sizing: border-box;
+  font-size: 12px;
+}
+
+.statisticsReportPanel *,
+.statisticsReportPanel *::before,
+.statisticsReportPanel *::after { box-sizing: border-box; }
+
+.statisticsReportHeader,
+.statisticsReportHeaderActions,
+.statisticsReportRunMeta,
+.statisticsSectionTitle,
+.statisticsExports {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.statisticsReportHeader > div:first-child,
+.statisticsExports > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.statisticsReportHeader span,
+.statisticsExports span,
+.statisticsReportRunMeta span {
+  opacity: 0.78;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.statisticsReportHeaderActions { flex-wrap: wrap; justify-content: flex-end; }
+.statisticsReportHeader button,
+.statisticsExports button,
+.statisticsReportViews button,
+.statisticsTableLink {
+  min-height: 30px;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+.statisticsDatasetContract {
+  display: grid;
+  gap: 4px;
+  padding: 8px 9px;
+  border: 1px solid rgba(80, 190, 255, 0.22);
+  border-radius: 7px;
+  background: rgba(80, 190, 255, 0.06);
+}
+
+.statisticsReportError,
+.statisticsReportEmpty {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid rgba(255, 99, 99, 0.35);
+  border-radius: 7px;
+  background: rgba(255, 99, 99, 0.07);
+}
+
+.statisticsReportEmpty {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.03);
+}
+.statisticsReportRunMeta strong { color: #f2c46d; font-size: 11px; }
+
+.statisticsReportViews {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.statisticsReportViews button { flex: 0 0 auto; }
+.statisticsReportViews button.active {
+  border-color: rgba(80, 190, 255, 0.7);
+  background: rgba(80, 190, 255, 0.12);
+}
+
+.statisticsReportView { display: grid; gap: 10px; min-width: 0; }
+.statisticsMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.statisticsMetricGrid.compact {
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  overflow-x: auto;
+}
+.statisticsMetricCard {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.statisticsMetricCard strong { font-size: 20px; line-height: 1.1; }
+.statisticsMetricCard small { opacity: 0.68; }
+
+.statisticsBreakdownGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.statisticsBreakdown {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+}
+.statisticsBreakdown > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.statisticsBreakdown em {
+  font-style: normal;
+  opacity: 0.78;
+  overflow-wrap: anywhere;
+}
+
+.statisticsTableScroll {
+  width: 100%;
+  min-width: 0;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 7px;
+}
+.statisticsTable {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.statisticsTable th,
+.statisticsTable td {
+  padding: 7px 8px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  white-space: nowrap;
+}
+.statisticsTable th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #15191e;
+}
+.statisticsTable tbody tr:last-child td { border-bottom: 0; }
+.statisticsTableLink {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #8ed3ff;
+  text-align: left;
+}
+
+.statisticsParentSelect { display: grid; gap: 4px; }
+.statisticsParentSelect select { width: 100%; min-width: 0; }
+.statisticsParentSummary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.statisticsParentSummary span {
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+}
+
+.statisticsExports {
+  align-items: flex-start;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  flex-wrap: wrap;
+}
+.statisticsExports > div { flex: 1 1 220px; }
+.statisticsExports > span { flex: 1 0 100%; }
+
+.statisticsSnapshotHistory {
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  padding-top: 8px;
+}
+.statisticsSnapshotHistory summary { cursor: pointer; }
+.statisticsSnapshotHistory > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.statisticsSnapshotHistory strong { font-size: 10px; }
+
+.hierarchyWorkspaceReportsShell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+.hierarchyWorkspaceReportsShell .hierarchyWorkspaceModes { padding-right: 76px; }
+.hierarchyWorkspaceReportsLauncher {
+  position: absolute;
+  top: 0;
+  right: 0;
+  z-index: 4;
+  min-height: 31px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+.hierarchyWorkspaceCoreHidden { display: none; }
+.hierarchyWorkspaceReportsView {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  .statisticsBreakdownGrid,
+  .statisticsMetricGrid,
+  .statisticsParentSummary { grid-template-columns: minmax(0, 1fr); }
+}
