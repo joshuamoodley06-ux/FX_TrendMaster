@@ -19,73 +19,100 @@ function extractFilePatch(patchText: string, targetPath: string): string {
   return normalized.slice(start, next < 0 ? normalized.length : next);
 }
 
-export function applyUnifiedFilePatch(sourceText: string, filePatch: string): string {
-  const newline = sourceText.includes('\r\n') ? '\r\n' : '\n';
-  const source = sourceText.replace(/\r\n/g, '\n').split('\n');
-  const patchLines = filePatch.replace(/\r\n/g, '\n').split('\n');
-  const output: string[] = [];
-  let sourceCursor = 0;
-  let patchCursor = 0;
-  let hunkCount = 0;
+type ParsedHunk = {
+  expectedOldStart: number;
+  expectedOldCount: number;
+  expectedNewCount: number;
+  oldLines: string[];
+  newLines: string[];
+};
 
-  while (patchCursor < patchLines.length) {
-    const header = patchLines[patchCursor];
-    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header);
+function parseHunks(filePatch: string): ParsedHunk[] {
+  const patchLines = filePatch.replace(/\r\n/g, '\n').split('\n');
+  const hunks: ParsedHunk[] = [];
+  let cursor = 0;
+
+  while (cursor < patchLines.length) {
+    const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(patchLines[cursor]);
     if (!match) {
-      patchCursor += 1;
+      cursor += 1;
       continue;
     }
 
-    hunkCount += 1;
-    const oldStart = Number(match[1]);
-    const expectedOldCount = Number(match[2] || '1');
-    const expectedNewCount = Number(match[4] || '1');
-    const targetCursor = Math.max(0, oldStart - 1);
-    while (sourceCursor < targetCursor) output.push(source[sourceCursor++]);
+    const hunk: ParsedHunk = {
+      expectedOldStart: Number(match[1]),
+      expectedOldCount: Number(match[2] || '1'),
+      expectedNewCount: Number(match[4] || '1'),
+      oldLines: [],
+      newLines: [],
+    };
+    cursor += 1;
 
-    patchCursor += 1;
-    let consumedOld = 0;
-    let producedNew = 0;
-    while (patchCursor < patchLines.length && !patchLines[patchCursor].startsWith('@@ ')) {
-      const line = patchLines[patchCursor];
+    while (cursor < patchLines.length && !patchLines[cursor].startsWith('@@ ')) {
+      const line = patchLines[cursor];
       if (line.startsWith('diff --git ')) break;
       if (line === '\\ No newline at end of file') {
-        patchCursor += 1;
+        cursor += 1;
         continue;
       }
+
       const prefix = line[0];
       const text = line.slice(1);
-      if (prefix === ' ') {
-        const actual = source[sourceCursor];
-        if (actual !== text) {
-          throw new Error(`[structural-anchor-wip] Context mismatch in hunk ${hunkCount} at source line ${sourceCursor + 1}.`);
-        }
-        output.push(actual);
-        sourceCursor += 1;
-        consumedOld += 1;
-        producedNew += 1;
-      } else if (prefix === '-') {
-        const actual = source[sourceCursor];
-        if (actual !== text) {
-          throw new Error(`[structural-anchor-wip] Removal mismatch in hunk ${hunkCount} at source line ${sourceCursor + 1}.`);
-        }
-        sourceCursor += 1;
-        consumedOld += 1;
-      } else if (prefix === '+') {
-        output.push(text);
-        producedNew += 1;
-      }
-      patchCursor += 1;
+      if (prefix === ' ' || prefix === '-') hunk.oldLines.push(text);
+      if (prefix === ' ' || prefix === '+') hunk.newLines.push(text);
+      cursor += 1;
     }
 
-    if (consumedOld !== expectedOldCount || producedNew !== expectedNewCount) {
+    if (hunk.oldLines.length !== hunk.expectedOldCount || hunk.newLines.length !== hunk.expectedNewCount) {
       throw new Error(
-        `[structural-anchor-wip] Hunk ${hunkCount} count mismatch: old ${consumedOld}/${expectedOldCount}, new ${producedNew}/${expectedNewCount}.`,
+        `[structural-anchor-wip] Hunk count mismatch: old ${hunk.oldLines.length}/${hunk.expectedOldCount}, new ${hunk.newLines.length}/${hunk.expectedNewCount}.`,
       );
     }
+    hunks.push(hunk);
   }
 
-  if (!hunkCount) throw new Error('[structural-anchor-wip] No main.tsx hunks found.');
+  if (!hunks.length) throw new Error('[structural-anchor-wip] No main.tsx hunks found.');
+  return hunks;
+}
+
+function sequenceMatches(source: string[], start: number, expected: string[]): boolean {
+  if (start < 0 || start + expected.length > source.length) return false;
+  for (let index = 0; index < expected.length; index += 1) {
+    if (source[start + index] !== expected[index]) return false;
+  }
+  return true;
+}
+
+function findHunkStart(source: string[], hunk: ParsedHunk, minimumStart: number): number {
+  const expectedIndex = Math.max(minimumStart, hunk.expectedOldStart - 1);
+  const candidates: number[] = [];
+
+  for (let index = minimumStart; index <= source.length - hunk.oldLines.length; index += 1) {
+    if (sequenceMatches(source, index, hunk.oldLines)) candidates.push(index);
+  }
+
+  if (!candidates.length) {
+    const preview = hunk.oldLines.slice(0, 3).join(' | ');
+    throw new Error(`[structural-anchor-wip] Could not locate guarded hunk near source line ${hunk.expectedOldStart}: ${preview}`);
+  }
+
+  candidates.sort((left, right) => Math.abs(left - expectedIndex) - Math.abs(right - expectedIndex));
+  return candidates[0];
+}
+
+export function applyUnifiedFilePatch(sourceText: string, filePatch: string): string {
+  const newline = sourceText.includes('\r\n') ? '\r\n' : '\n';
+  const source = sourceText.replace(/\r\n/g, '\n').split('\n');
+  const output: string[] = [];
+  let sourceCursor = 0;
+
+  for (const hunk of parseHunks(filePatch)) {
+    const hunkStart = findHunkStart(source, hunk, sourceCursor);
+    while (sourceCursor < hunkStart) output.push(source[sourceCursor++]);
+    output.push(...hunk.newLines);
+    sourceCursor = hunkStart + hunk.oldLines.length;
+  }
+
   while (sourceCursor < source.length) output.push(source[sourceCursor++]);
   return output.join('\n').replace(/\n/g, newline);
 }
