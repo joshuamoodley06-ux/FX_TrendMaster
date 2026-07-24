@@ -1,7 +1,11 @@
+// @vitest-environment happy-dom
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
 import { describe, expect, it } from 'vitest';
 import {
   projectInheritedDailyDoctrineForHierarchy,
   projectInheritedLowerTimeframeDoctrineForHierarchy,
+  renderNativeLayerAnnotations,
 } from './hierarchyWorkspace';
 import {
   doctrineNamespacesForLayer,
@@ -143,5 +147,35 @@ describe('inherited lower-timeframe hierarchy projection', () => {
       chronology: 'RL → RH',
       bos: 'BOS Up · RECL · ◆ S&D',
     });
+  });
+
+  it('renders native Daily doctrine on the one original row under its Weekly parent', () => {
+    const enrichment = new Map([['710', {
+      chronology: 'RL → RH',
+      bos: 'BOS Up · RECL · ◆ S&D',
+      status: 'Approved',
+    }]]);
+    const structure = createElement('div', { 'data-range-id': '640', className: 'explorerTreeRow' },
+      createElement('button', { className: 'explorerTreeRowMain' },
+        createElement('span', { className: 'explorerTreeLine1' }, 'WEEKLY MAJOR #640')),
+      createElement('div', { 'data-range-id': '710', className: 'explorerTreeRow' },
+        createElement('button', { className: 'explorerTreeRowMain' },
+          createElement('span', { className: 'explorerTreeLine1' }, 'R1 DAILY MAJOR #710 · Mar 23 2026'))));
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(renderNativeLayerAnnotations(structure, enrichment)));
+
+    const weekly = container.querySelector('[data-range-id="640"]')!;
+    const dailyRows = weekly.querySelectorAll('[data-range-id="710"]');
+    expect(dailyRows).toHaveLength(1);
+    expect(dailyRows[0].textContent).toContain('R1 DAILY MAJOR #710 · Mar 23 2026');
+    expect(dailyRows[0].textContent).toContain('RL → RH');
+    expect(dailyRows[0].textContent).toContain('BOS Up');
+    expect(dailyRows[0].textContent).toContain('RECL');
+    expect(dailyRows[0].textContent).toContain('◆ S&D');
+
+    act(() => root.unmount());
+    container.remove();
   });
 });

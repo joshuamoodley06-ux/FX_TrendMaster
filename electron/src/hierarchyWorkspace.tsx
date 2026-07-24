@@ -1,4 +1,12 @@
-import React, { useMemo, useState, type ReactNode } from 'react';
+import React, {
+  Children,
+  cloneElement,
+  isValidElement,
+  useMemo,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react';
 import {
   HierarchyWorkspace as HierarchyWorkspaceCore,
   type HierarchyRangeEnrichment,
@@ -145,6 +153,53 @@ function decorateActivationResult(
   return { ...result, masterMap: projected.masterMap };
 }
 
+function hasClassName(node: ReactNode, className: string): boolean {
+  return isValidElement(node)
+    && String((node.props as RawRecord).className || '').split(/\s+/).includes(className);
+}
+
+function annotateRowMain(
+  node: ReactNode,
+  enrichment: HierarchyRangeEnrichment,
+): ReactNode {
+  if (!isValidElement(node)) return node;
+  const element = node as ReactElement<RawRecord>;
+  if (!hasClassName(element, 'explorerTreeRowMain')) return element;
+  const children = Children.toArray(element.props.children);
+  const alreadyAnnotated = children.some(
+    (child) => hasClassName(child, 'weeklyScript1InlineEnrichment')
+      || hasClassName(child, 'nativeDoctrineInlineEnrichment'),
+  );
+  if (alreadyAnnotated) return element;
+  return cloneElement(element, undefined, ...children, <span
+    key="native-doctrine"
+    className="nativeDoctrineInlineEnrichment"
+  >
+    {enrichment.chronology} · {enrichment.bos}
+  </span>);
+}
+
+/**
+ * Adds native lower-timeframe doctrine text to the existing rendered row.
+ * It does not add, clone, reorder, or reparent hierarchy rows.
+ */
+export function renderNativeLayerAnnotations(
+  node: ReactNode,
+  enrichments: ReadonlyMap<string, HierarchyRangeEnrichment>,
+): ReactNode {
+  if (!isValidElement(node)) return node;
+  const element = node as ReactElement<RawRecord>;
+  const rangeId = String(element.props['data-range-id'] || '').trim();
+  const isRow = hasClassName(element, 'explorerTreeRow');
+  const enrichment = isRow && rangeId ? enrichments.get(rangeId) : undefined;
+  const children = Children.map(element.props.children, (child) => (
+    enrichment && hasClassName(child, 'explorerTreeRowMain')
+      ? annotateRowMain(child, enrichment)
+      : renderNativeLayerAnnotations(child, enrichments)
+  ));
+  return cloneElement(element, undefined, children);
+}
+
 export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
   const [lowerTimeframeReviewIds, setLowerTimeframeReviewIds] = useState<Set<string>>(() => new Set());
   const sourceBridge = useMemo(
@@ -185,7 +240,6 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
   const projectedStructure = useMemo(() => {
     if (typeof props.structure !== 'function') return props.structure;
     return (enrichments: ReadonlyMap<string, HierarchyRangeEnrichment>) => {
-      if (!lowerTimeframeReviewIds.size) return props.structure(enrichments);
       const next = new Map(enrichments);
       for (const id of lowerTimeframeReviewIds) {
         const current = next.get(id);
@@ -193,7 +247,7 @@ export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
         const marker = current.bos.includes('⚠ Review') ? current.bos : `${current.bos} · ⚠ Review`;
         next.set(id, { ...current, bos: marker, status: 'Needs Review' });
       }
-      return props.structure(next);
+      return renderNativeLayerAnnotations(props.structure(next), next);
     };
   }, [lowerTimeframeReviewIds, props.structure]);
 
