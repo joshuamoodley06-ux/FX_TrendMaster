@@ -183,25 +183,17 @@ function hierarchyRowLayer(element: ReactElement<RawRecord>): string {
   return Object.keys(DOCTRINE_LAYER_ACCENTS).find((layer) => label.includes(layer)) || '';
 }
 
-function rowMainHasDoctrine(node: ReactNode): boolean {
+function rowMainHasLegacyDoctrine(node: ReactNode): boolean {
   if (!isValidElement(node) || !hasClassName(node, 'explorerTreeRowMain')) return false;
   return Children.toArray((node.props as RawRecord).children).some(
-    (child) => hasClassName(child, 'weeklyScript1InlineEnrichment')
-      || hasClassName(child, 'nativeDoctrineInlineEnrichment'),
+    (child) => hasClassName(child, 'weeklyScript1InlineEnrichment'),
   );
 }
 
-function annotateRowMain(
-  node: ReactNode,
+function nativeDoctrineCard(
   enrichment: HierarchyRangeEnrichment,
   layer: string,
-): ReactNode {
-  if (!isValidElement(node)) return node;
-  const element = node as ReactElement<RawRecord>;
-  if (!hasClassName(element, 'explorerTreeRowMain')) return element;
-  const children = Children.toArray(element.props.children);
-  if (rowMainHasDoctrine(element)) return element;
-
+): ReactElement {
   const hasReview = String(enrichment.status || '').toUpperCase().includes('REVIEW')
     || /⚠\s*REVIEW/i.test(String(enrichment.bos || ''));
   const bosFacts = String(enrichment.bos || '')
@@ -211,33 +203,20 @@ function annotateRowMain(
     .filter(Boolean)
     .join(' · ');
   const accent = DOCTRINE_LAYER_ACCENTS[layer] || '#64748b';
-  const existingStyle = element.props.style && typeof element.props.style === 'object'
-    ? element.props.style
-    : {};
 
-  return cloneElement(element, {
-    style: {
-      ...existingStyle,
-      height: 'auto',
-      minHeight: 0,
-      overflow: 'visible',
-      flexWrap: 'wrap',
-      rowGap: '4px',
-      alignItems: 'center',
-    },
-  }, ...children, <span
+  return <div
     key="native-doctrine"
     className="nativeDoctrineInlineEnrichment"
     data-doctrine-layer={layer || 'UNKNOWN'}
     data-needs-review={hasReview ? 'true' : 'false'}
     style={{
       display: 'block',
-      flexBasis: '100%',
-      gridColumn: '1 / -1',
-      width: '100%',
+      position: 'relative',
+      width: 'calc(100% - 34px)',
       minWidth: 0,
-      marginTop: '3px',
+      margin: '2px 4px 4px 30px',
       padding: '5px 8px',
+      boxSizing: 'border-box',
       border: '1px solid rgba(148, 163, 184, 0.28)',
       borderLeft: `3px solid ${accent}`,
       borderRadius: '6px',
@@ -247,7 +226,7 @@ function annotateRowMain(
       fontWeight: 700,
       lineHeight: 1.35,
       whiteSpace: 'normal',
-      overflow: 'visible',
+      overflow: 'hidden',
       overflowWrap: 'anywhere',
       textAlign: 'left',
       pointerEvents: 'none',
@@ -256,12 +235,13 @@ function annotateRowMain(
   >
     <span>{summary}</span>
     {hasReview && <span style={{ color: '#fbbf24', whiteSpace: 'nowrap' }}> · ⚠ Review</span>}
-  </span>);
+  </div>;
 }
 
 /**
- * Adds native lower-timeframe doctrine text to the existing rendered row.
- * It does not add, clone, reorder, or reparent hierarchy rows.
+ * Adds native lower-timeframe doctrine as a sibling immediately below the
+ * canonical hierarchy row button. The button, row identity, nesting, order and
+ * navigation handlers remain untouched.
  */
 export function renderNativeLayerAnnotations(
   node: ReactNode,
@@ -274,18 +254,24 @@ export function renderNativeLayerAnnotations(
   const enrichment = isRow && rangeId ? enrichments.get(rangeId) : undefined;
   const layer = isRow ? hierarchyRowLayer(element) : '';
   const directChildren = Children.toArray(element.props.children);
-  const needsNativeCard = !!enrichment && directChildren.some(
-    (child) => hasClassName(child, 'explorerTreeRowMain') && !rowMainHasDoctrine(child),
-  );
-  const children = Children.map(element.props.children, (child) => (
-    needsNativeCard && hasClassName(child, 'explorerTreeRowMain')
-      ? annotateRowMain(child, enrichment!, layer)
-      : renderNativeLayerAnnotations(child, enrichments)
-  ));
+  const hasNativeCard = directChildren.some((child) => hasClassName(child, 'nativeDoctrineInlineEnrichment'));
+  const hasLegacyCard = directChildren.some((child) => rowMainHasLegacyDoctrine(child));
+  const shouldInsert = !!enrichment && !hasNativeCard && !hasLegacyCard;
+
+  const children: ReactNode[] = [];
+  for (const child of directChildren) {
+    if (shouldInsert && hasClassName(child, 'explorerTreeRowMain')) {
+      children.push(child);
+      children.push(nativeDoctrineCard(enrichment, layer));
+    } else {
+      children.push(renderNativeLayerAnnotations(child, enrichments));
+    }
+  }
+
   const existingStyle = element.props.style && typeof element.props.style === 'object'
     ? element.props.style
     : {};
-  const rowProps = needsNativeCard
+  const rowProps = shouldInsert
     ? {
       'data-doctrine-layer': layer || 'UNKNOWN',
       style: {
@@ -296,7 +282,7 @@ export function renderNativeLayerAnnotations(
       },
     }
     : undefined;
-  return cloneElement(element, rowProps, children);
+  return cloneElement(element, rowProps, ...children);
 }
 
 export function HierarchyWorkspace(props: HierarchyWorkspaceProps): ReactNode {
