@@ -1,0 +1,81 @@
+name: WIP apply structural anchor integrity
+
+on:
+  push:
+    branches:
+      - fix/structural-anchor-draft-integrity-v1
+    paths:
+      - .github/workflows/wip-apply-structural-anchor-integrity.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/structural-anchor-draft-integrity-v1
+
+      - name: Decode patch payload
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import zlib
+
+          encoded = Path('.github/wip/structural_anchor_draft_integrity.patch.zlib.b64').read_text(encoding='utf-8').strip()
+          patch = zlib.decompress(base64.b64decode(encoded))
+          Path('/tmp/structural_anchor_draft_integrity.patch').write_bytes(patch)
+          print(f'decoded patch bytes={len(patch)}')
+          PY
+
+      - name: Apply focused mapping patch
+        shell: bash
+        run: |
+          git apply --check /tmp/structural_anchor_draft_integrity.patch
+          git apply --whitespace=fix /tmp/structural_anchor_draft_integrity.patch
+          git diff --check
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        shell: bash
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Run focused tests
+        working-directory: electron
+        shell: bash
+        run: npx vitest run src/structuralRangeDraftSession.test.ts src/mapStudioMappingContext.test.ts
+
+      - name: Build Electron renderer
+        working-directory: electron
+        shell: bash
+        run: npm run build
+
+      - name: Remove generated and temporary automation files
+        shell: bash
+        run: |
+          git restore --worktree -- electron/electron/localPythonRunner.cjs || true
+          rm -f .github/wip/structural_anchor_draft_integrity.patch.zlib.b64
+          rm -f .github/workflows/wip-apply-structural-anchor-integrity.yml
+          rmdir .github/wip 2>/dev/null || true
+          git diff --check
+
+      - name: Commit WIP implementation
+        shell: bash
+        run: |
+          git config user.name "FXTM WIP Bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git diff --cached --name-only
+          git commit -m "WIP: preserve structural anchor draft integrity"
+          git push origin HEAD:fix/structural-anchor-draft-integrity-v1
